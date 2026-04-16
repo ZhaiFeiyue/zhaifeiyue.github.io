@@ -159,14 +159,29 @@ index_html = f"""<!DOCTYPE html>
   margin-bottom: 8px;
 }}
 .hero p {{ color: var(--mt); font-size: 1rem; }}
-.stats {{
-  display: flex; gap: 24px; justify-content: center; margin: 24px 0 8px;
-  flex-wrap: wrap;
+.chart {{
+  display: flex; align-items: flex-end; justify-content: center;
+  gap: 16px; margin: 32px auto 8px; max-width: 500px; height: 120px;
 }}
-.stat {{
-  font-size: 0.85rem; color: var(--mt);
+.bar-group {{
+  display: flex; flex-direction: column; align-items: center; flex: 1;
 }}
-.stat b {{ font-size: 1.4rem; font-weight: 800; display: block; }}
+.bar {{
+  width: 100%; min-width: 40px; border-radius: 6px 6px 0 0;
+  transition: height .3s;
+}}
+.bar-count {{
+  font-size: 1.1rem; font-weight: 800; margin-bottom: 4px;
+}}
+.bar-label {{
+  font-size: 0.72rem; font-weight: 600; color: var(--mt); margin-top: 6px;
+  text-align: center;
+}}
+.total-badge {{
+  text-align: center; margin: 16px 0 4px;
+  font-size: 0.9rem; color: var(--mt);
+}}
+.total-badge b {{ font-size: 1.6rem; font-weight: 800; color: var(--tx); }}
 .paper-row {{
   display: block; background: var(--sf); border-radius: 12px;
   padding: 20px 24px; margin-bottom: 12px;
@@ -213,9 +228,9 @@ index_html = f"""<!DOCTYPE html>
 <div class="hero">
   <h1>AI Infra Paper Readings</h1>
   <p>AI Infrastructure Paper Notes</p>
-  <div class="stats">
-    <div class="stat"><b>{total}</b>papers</div>
-    {"".join(f'<div class="stat"><b style="color:{CAT_COLORS.get(c,"#6b7280")}">{n}</b>{CAT_LABELS.get(c,c)}</div>' for c, n in sorted(cat_counts.items(), key=lambda x:-x[1]))}
+  <div class="total-badge"><b>{total}</b> papers</div>
+  <div class="chart">
+    {"".join(f'<div class="bar-group"><span class="bar-count" style="color:{CAT_COLORS.get(c,"#6b7280")}">{n}</span><div class="bar" style="background:{CAT_COLORS.get(c,"#6b7280")};height:{max(8, int(n / max(cat_counts.values()) * 80))}px"></div><div class="bar-label">{CAT_LABELS.get(c,c)}</div></div>' for c, n in sorted(cat_counts.items(), key=lambda x:-x[1]))}
   </div>
 </div>
 <div class="w">
@@ -227,7 +242,7 @@ index_html = f"""<!DOCTYPE html>
 {paper_rows if paper_rows else '<div style="text-align:center;padding:40px;color:var(--mt)">No papers yet.</div>'}
 </div>
 </div>
-<footer>Built with paper-reader skill</footer>
+<footer>Built with Claude Opus 4.6</footer>
 <script>
 document.querySelectorAll('.filter-btn').forEach(btn => {{
   btn.addEventListener('click', () => {{
@@ -556,7 +571,7 @@ for p in papers:
   {summary_html}
 </div>
 {"<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>Details</span>" + details_html + "</div>" if details_html else ""}
-<footer>Built with paper-reader skill · <a href="/">Back to index</a></footer>
+<footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
 </body>
 </html>"""
 
