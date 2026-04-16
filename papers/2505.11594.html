@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>SageAttention3: Microscaling FP4 Attention for Inference and An Exploration of 8-Bit Training</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {
+    delimiters: [
+      {left: '$$', right: '$$', display: true},
+      {left: '\\[', right: '\\]', display: true},
+      {left: '$', right: '$', display: false},
+      {left: '\\(', right: '\\)', display: false}
+    ],
+    throwOnError: false
+  });"></script>
 <style>
 
 :root {
@@ -120,6 +132,10 @@ footer {
 .md-table th {
   background: #f8fafc; font-weight: 700;
 }
+.content .katex-display {
+  overflow-x: auto; overflow-y: hidden;
+  padding: 4px 0; margin: 16px 0;
+}
 .back { display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }
 </style>
 </head>
@@ -155,7 +171,7 @@ footer {
 <p><b>背景 (Context):</b></p>
 <blockquote>想象你在一个巨大的图书馆里找一本书。Attention 机制就像逐一对比每一对书的相关性——当书的数量翻倍，工作量翻四倍。FlashAttention 通过聪明的分块策略减少了内存搬运，但计算量本身没变。SageAttention2 用 INT8 量化把计算速度翻了一倍，但 FP4 能提供 8x 的理论加速——问题是 FP4 只有 15 个可表示的值，直接量化会严重损失精度。另外，所有低比特 attention 都只管推理，训练时的反向传播从未被量化加速。</blockquote>
 <p><b>破局 (Insight):</b></p>
-<blockquote>👉 核心洞察：softmax 输出 P 的值在 [0,1] 范围内，FP4 microscaling 的 scale factor 必须用 E4M3 FP8 表示，但 [0, 0.167] 的窄范围只能利用 E4M3 的 35 个值（总共 127 个可用值的 28%）。**通过先做 per-token 归一化将范围扩展到 [0, 448×6]，再做 microscaling FP4 量化**，可用值从 280 个增加到 1016 个——精度提升 3.6 倍。这就像先把所有小数放大成整数再量化，充分利用了数字格式的表示能力。</blockquote>
+<blockquote>👉 核心洞察：softmax 输出 P 的值在 [0,1] 范围内，FP4 microscaling 的 scale factor 必须用 E4M3 FP8 表示，但 [0, 0.167] 的窄范围只能利用 E4M3 的 35 个值（总共 127 个可用值的 28%）。<b>通过先做 per-token 归一化将范围扩展到 [0, 448×6]，再做 microscaling FP4 量化</b>，可用值从 280 个增加到 1016 个——精度提升 3.6 倍。这就像先把所有小数放大成整数再量化，充分利用了数字格式的表示能力。</blockquote>
 <p><b>拆解 (Deconstruction):</b></p>
 <p>1. <b>FP4 Microscaling 量化 Q、K、V</b>: 将 Q、K、V 按 1×16 block 量化为 FP4 + E4M3 scale factor，使用 SageAttention2 的 smooth Q/K 技巧减少离群值</p>
 <p>2. <b>Two-level Quantization for P</b>: 先 per-token 归一化 P̃ 到 [0, 448×6]，再做标准 FP4 microscaling 量化，两个 scale 相乘还原</p>
@@ -192,11 +208,11 @@ footer {
 <h3>Table 1: Accuracy Ablation</h3>
 <table class="md-table"><tr><th>Configuration</th><th>CosSim ↑</th><th>L1 ↓</th><th>RMSE ↓</th></tr>
 <tr><td>(a) MXFP4</td><td>98.37%</td><td>0.294</td><td>0.994</td></tr>
-<tr><td>(a) **NVFP4**</td><td>**99.52%**</td><td>**0.077**</td><td>**0.201**</td></tr>
+<tr><td>(a) <b>NVFP4</b></td><td><b>99.52%</b></td><td><b>0.077</b></td><td><b>0.201</b></td></tr>
 <tr><td>(b) Direct quant for P</td><td>93.32%</td><td>0.193</td><td>1.103</td></tr>
-<tr><td>(b) **Two-level quant**</td><td>**99.52%**</td><td>**0.077**</td><td>**0.201**</td></tr>
+<tr><td>(b) <b>Two-level quant</b></td><td><b>99.52%</b></td><td><b>0.077</b></td><td><b>0.201</b></td></tr>
 <tr><td>(c) INT8 for dO·V^T</td><td>97.47%</td><td>0.171</td><td>2.440</td></tr>
-<tr><td>(c) **FP16 for dO·V^T**</td><td>**99.77%**</td><td>**0.039**</td><td>**0.692**</td></tr>
+<tr><td>(c) <b>FP16 for dO·V^T</b></td><td><b>99.77%</b></td><td><b>0.039</b></td><td><b>0.692</b></td></tr>
 </table>
 <p><b>Takeaway</b>: NVFP4 优于 MXFP4；two-level quantization 将 CosSim 从 93.32% 提升到 99.52%；保持 dO·V^T 在 FP16 将 CosSim 从 97.47% 提升到 99.77%</p>
 <h3>Table 2: End-to-End Metrics (Video/Image Models)</h3>
@@ -211,8 +227,8 @@ footer {
 <p><b>Takeaway</b>: SageAttention3 在所有模型上几乎无质量损失，部分指标甚至略有提升</p>
 <h3>Table 4: End-to-End Speedup</h3>
 <table class="md-table"><tr><th>Model</th><th>Original</th><th>SageAttention3</th><th>Speedup</th></tr>
-<tr><td>CogVideoX (2B)</td><td>64s</td><td>27s</td><td>**2.4x**</td></tr>
-<tr><td>HunyuanVideo</td><td>489s</td><td>164s</td><td>**3.0x**</td></tr>
+<tr><td>CogVideoX (2B)</td><td>64s</td><td>27s</td><td><b>2.4x</b></td></tr>
+<tr><td>HunyuanVideo</td><td>489s</td><td>164s</td><td><b>3.0x</b></td></tr>
 <tr><td>Llama (8K, train)</td><td>2.1s</td><td>1.9s (SageBwd)</td><td>1.1x</td></tr>
 <tr><td>Llama (16K, train)</td><td>6.0s</td><td>5.2s (SageBwd)</td><td>1.15x</td></tr>
 </table>
@@ -224,7 +240,7 @@ footer {
 <tr><td>FlashAttention3 (8bit)</td><td>N/A</td><td>890</td><td>98.570%</td></tr>
 <tr><td>SageAttention1</td><td>479</td><td>518</td><td>99.996%</td></tr>
 <tr><td>SageAttention2 (8bit)</td><td>643</td><td>885</td><td>99.995%</td></tr>
-<tr><td>**SageAttention3 (4bit)**</td><td>**1038**</td><td>N/A</td><td>**99.551%**</td></tr>
+<tr><td><b>SageAttention3 (4bit)</b></td><td><b>1038</b></td><td>N/A</td><td><b>99.551%</b></td></tr>
 </table>
 <p><b>Takeaway</b>: SageAttention3 以 0.45% 的 CosSim 下降换取 5x 的速度提升，性价比极高</p>
 <h2 id="summary">Summary</h2>
@@ -304,7 +320,7 @@ footer {
 <tr><td>Vectorized memory access</td><td>✅</td><td>FP4 格式天然支持 128-bit 向量化（32 个 FP4 = 16 bytes）</td></tr>
 <tr><td>SMEM optimization</td><td>✅</td><td>K permutation 避免 accumulator→operand layout 的 thread shuffle；量化相关数据在 SMEM 中传递</td></tr>
 <tr><td>Register pressure management</td><td>✅</td><td>因寄存器压力放弃了 consumer-side ping-pong，改用 producer warp epilogue</td></tr>
-<tr><td>Kernel fusion</td><td>✅</td><td>**Reuse shuffle**：将 FP4 microscaling 的 max-16 reduction 与 online softmax 的 rowmax 融合，减少 50% shuffle 操作，约 10% kernel 加速</td></tr>
+<tr><td>Kernel fusion</td><td>✅</td><td><b>Reuse shuffle</b>：将 FP4 microscaling 的 max-16 reduction 与 online softmax 的 rowmax 融合，减少 50% shuffle 操作，约 10% kernel 加速</td></tr>
 <tr><td>Asynchronous operations</td><td>✅</td><td>CUTLASS 3.x 的 async copy 用于 global→shared memory 数据搬运</td></tr>
 </table>
 <h3>4. Performance Analysis</h3>

@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>DeepSeek-V3 Technical Report</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {
+    delimiters: [
+      {left: '$$', right: '$$', display: true},
+      {left: '\\[', right: '\\]', display: true},
+      {left: '$', right: '$', display: false},
+      {left: '\\(', right: '\\)', display: false}
+    ],
+    throwOnError: false
+  });"></script>
 <style>
 
 :root {
@@ -120,6 +132,10 @@ footer {
 .md-table th {
   background: #f8fafc; font-weight: 700;
 }
+.content .katex-display {
+  overflow-x: auto; overflow-y: hidden;
+  padding: 4px 0; margin: 16px 0;
+}
 .back { display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }
 </style>
 </head>
@@ -205,14 +221,14 @@ footer {
 <tr><td>Pre-Training</td><td>2,664K</td><td>$5.328M</td></tr>
 <tr><td>Context Extension</td><td>119K</td><td>$0.238M</td></tr>
 <tr><td>Post-Training</td><td>5K</td><td>$0.01M</td></tr>
-<tr><td>**Total**</td><td>**2,788K**</td><td>**$5.576M**</td></tr>
+<tr><td><b>Total</b></td><td><b>2,788K</b></td><td><b>$5.576M</b></td></tr>
 </table>
 <p><b>Takeaway</b>: 全部训练仅花费 $5.576M（H800 $2/GPU-hour），其中预训练占 95.6%，每万亿 token 仅需 180K GPU 小时。</p>
 <h3>Table 2: Pipeline 并行方法对比</h3>
 <table class="md-table"><tr><th>Method</th><th>Bubble</th><th>Parameter Memory</th><th>Activation Memory</th></tr>
 <tr><td>1F1B</td><td>(PP-1)(F+B)</td><td>1×</td><td>PP</td></tr>
 <tr><td>ZB1P</td><td>(PP-1)(F+B-2W)</td><td>1×</td><td>PP</td></tr>
-<tr><td>**DualPipe (Ours)**</td><td>**(PP/2-1)(F&B+B-3W)**</td><td>2×</td><td>PP+1</td></tr>
+<tr><td><b>DualPipe (Ours)</b></td><td><b>(PP/2-1)(F&B+B-3W)</b></td><td>2×</td><td>PP+1</td></tr>
 </table>
 <p><b>Takeaway</b>: DualPipe 的 bubble 公式中系数从 <code>PP-1</code> 降到 <code>PP/2-1</code>，在 16-PP 时 bubble 减少约 60%+。代价是 2× 参数内存，但在大 EP 下影响可忽略。</p>
 <h3>Table 3: DeepSeek-V3 模型配置 (§4.1)</h3>
@@ -312,19 +328,19 @@ footer {
 <p>#### 2b. Data Movement Hotspots</p>
 <p><b>TOP 3 数据搬运瓶颈</b>:</p>
 <table class="md-table"><tr><th>Rank</th><th>Bottleneck</th><th>What Data</th><th>How Much</th><th>From→To</th><th>Frequency</th><th>Overlapped?</th></tr>
-<tr><td>**#1**</td><td>**Cross-node All-to-All (MoE dispatch/combine)**</td><td>Token hidden states</td><td>每 token 7168 dim × FP8 = ~7KB，每层 2× dispatch+combine，61 MoE layers，batch_size up to 15360</td><td>GPU→IB(50GB/s)→GPU→NVLink(160GB/s)→GPU</td><td>每 micro-batch 每 MoE layer 2 次</td><td>**是，DualPipe 的核心创新就是把这个完全隐藏**</td></tr>
-<tr><td>**#2**</td><td>**PP 跨节点 Activation/Gradient 传递**</td><td>层间 hidden states</td><td>[micro_batch_size, seq_len, 7168] BF16 ≈ 数百 MB/次</td><td>PP stage N 的 GPU → PP stage N+1 的 GPU（跨节点 IB）</td><td>每 micro-batch 每 PP boundary 1 次 forward + 1 次 backward</td><td>**是，与 all-to-all 一起被 DualPipe 隐藏**</td></tr>
-<tr><td>**#3**</td><td>**FP8 Quantization/Dequantization 带来的 HBM 读写**</td><td>Activations, weights</td><td>每个 Linear 需要: 读 BF16 → 量化 → 写 FP8 → 读 FP8 → GEMM → 写 BF16</td><td>GPU HBM ↔ GPU SRAM (L2/shared mem)</td><td>每个 GEMM 前后</td><td>**部分 — online quantization 需要额外读写，论文在 §3.5.3 明确指出这是瓶颈，建议未来硬件融合 FP8 cast 和 TMA**</td></tr>
+<tr><td><b>#1</b></td><td><b>Cross-node All-to-All (MoE dispatch/combine)</b></td><td>Token hidden states</td><td>每 token 7168 dim × FP8 = ~7KB，每层 2× dispatch+combine，61 MoE layers，batch_size up to 15360</td><td>GPU→IB(50GB/s)→GPU→NVLink(160GB/s)→GPU</td><td>每 micro-batch 每 MoE layer 2 次</td><td><b>是，DualPipe 的核心创新就是把这个完全隐藏</b></td></tr>
+<tr><td><b>#2</b></td><td><b>PP 跨节点 Activation/Gradient 传递</b></td><td>层间 hidden states</td><td>[micro_batch_size, seq_len, 7168] BF16 ≈ 数百 MB/次</td><td>PP stage N 的 GPU → PP stage N+1 的 GPU（跨节点 IB）</td><td>每 micro-batch 每 PP boundary 1 次 forward + 1 次 backward</td><td><b>是，与 all-to-all 一起被 DualPipe 隐藏</b></td></tr>
+<tr><td><b>#3</b></td><td><b>FP8 Quantization/Dequantization 带来的 HBM 读写</b></td><td>Activations, weights</td><td>每个 Linear 需要: 读 BF16 → 量化 → 写 FP8 → 读 FP8 → GEMM → 写 BF16</td><td>GPU HBM ↔ GPU SRAM (L2/shared mem)</td><td>每个 GEMM 前后</td><td><b>部分 — online quantization 需要额外读写，论文在 §3.5.3 明确指出这是瓶颈，建议未来硬件融合 FP8 cast 和 TMA</b></td></tr>
 </table>
 <p><b>批判性分析</b>: 论文声称"near-zero all-to-all communication overhead"，但这只在 compute:comm ≈ 1:1 时成立。如果 expert 更细粒度（e.g. 512 experts），compute 更少而 comm 不变，overlap 就会破裂。论文没有测量当 compute:comm 比率变化时的 degradation curve。</p>
 <p>---</p>
 <h3>3. Key Innovations</h3>
 <table class="md-table"><tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost/Tradeoff</th></tr>
-<tr><td>**DualPipe**</td><td>双向 pipeline scheduling + 细粒度组件（attention/dispatch/MLP/combine）交错排列，forward 的 comm 与 backward 的 compute 重叠</td><td>Pipeline bubble 从 (PP-1)(F+B) 降到 (PP/2-1)(F&B+B-3W)，约减少 60%+；all-to-all 和 PP comm 完全隐藏</td><td>**2× 模型参数内存**（首尾 PP rank 各存一份完整模型）；要求 PP stages 和 micro-batches 均能被 2 整除；调度逻辑复杂度显著增加</td></tr>
-<tr><td>**Custom All-to-All Kernels**</td><td>20 SM 分 10 channel，warp specialization 区分 IB send / IB-NVLink forward / NVLink recv 三种角色，动态调整 warp 分配；PTX 手写指令</td><td>充分利用 IB 50GB/s + NVLink 160GB/s 异构带宽；只占 20/132 SM（15%）；支持每 token 最多 4 节点、平均 3.2 experts/node</td><td>**高度耦合 H800 拓扑**（NVLink 8-GPU + IB 互联），换其他硬件需要完全重写；PTX 级别优化无法跨架构移植</td></tr>
-<tr><td>**FP8 Mixed Precision Training**</td><td>Tile-wise (1×128) activation quantization + Block-wise (128×128) weight quantization + E4M3 all tensors + 每 128 元素 promote to CUDA Core FP32 累加 + online quantization</td><td>理论 2× 计算加速 + 显存节省（激活值 FP8 存储）；671B 规模验证 relative loss error < 0.25%</td><td>**H800 Tensor Core 的 FP8 累加精度只有 14-bit**，必须每 128 元素手动 promote 到 CUDA Core — 这降低了 WGMMA 发射率；不支持 block-wise activation quantization（Dgrad 对精度敏感，会 diverge）</td></tr>
-<tr><td>**Memory Optimization**</td><td>RMSNorm/MLA up-proj recompute；EMA 异步存 CPU；DualPipe 首尾同 rank 物理共享 embedding/output head；FP8 activation 存储</td><td>**完全避免 Tensor Parallelism**，减少 TP 通信开销和实现复杂度</td><td>Recomputation 增加约 5-10% 额外计算；首尾同 rank 部署约束了 PP stage 分配灵活性</td></tr>
-<tr><td>**Auxiliary-Loss-Free Balancing**</td><td>每 expert 维护一个 bias term b_i，仅用于 routing decision 不用于 gating value；每 step 末根据 expert load 动态 ±γ 调整</td><td>消除 auxiliary loss 对模型性能的损害；实现 batch-wise balancing（而非 sequence-wise），允许 expert 跨 domain 更好地 specialize</td><td>**推理时的 domain shift 可能导致 load imbalance** — 论文承认了这个问题并用 redundant expert deployment 缓解，但没有量化 imbalance 的程度</td></tr>
+<tr><td><b>DualPipe</b></td><td>双向 pipeline scheduling + 细粒度组件（attention/dispatch/MLP/combine）交错排列，forward 的 comm 与 backward 的 compute 重叠</td><td>Pipeline bubble 从 (PP-1)(F+B) 降到 (PP/2-1)(F&B+B-3W)，约减少 60%+；all-to-all 和 PP comm 完全隐藏</td><td><b>2× 模型参数内存</b>（首尾 PP rank 各存一份完整模型）；要求 PP stages 和 micro-batches 均能被 2 整除；调度逻辑复杂度显著增加</td></tr>
+<tr><td><b>Custom All-to-All Kernels</b></td><td>20 SM 分 10 channel，warp specialization 区分 IB send / IB-NVLink forward / NVLink recv 三种角色，动态调整 warp 分配；PTX 手写指令</td><td>充分利用 IB 50GB/s + NVLink 160GB/s 异构带宽；只占 20/132 SM（15%）；支持每 token 最多 4 节点、平均 3.2 experts/node</td><td><b>高度耦合 H800 拓扑</b>（NVLink 8-GPU + IB 互联），换其他硬件需要完全重写；PTX 级别优化无法跨架构移植</td></tr>
+<tr><td><b>FP8 Mixed Precision Training</b></td><td>Tile-wise (1×128) activation quantization + Block-wise (128×128) weight quantization + E4M3 all tensors + 每 128 元素 promote to CUDA Core FP32 累加 + online quantization</td><td>理论 2× 计算加速 + 显存节省（激活值 FP8 存储）；671B 规模验证 relative loss error < 0.25%</td><td><b>H800 Tensor Core 的 FP8 累加精度只有 14-bit</b>，必须每 128 元素手动 promote 到 CUDA Core — 这降低了 WGMMA 发射率；不支持 block-wise activation quantization（Dgrad 对精度敏感，会 diverge）</td></tr>
+<tr><td><b>Memory Optimization</b></td><td>RMSNorm/MLA up-proj recompute；EMA 异步存 CPU；DualPipe 首尾同 rank 物理共享 embedding/output head；FP8 activation 存储</td><td><b>完全避免 Tensor Parallelism</b>，减少 TP 通信开销和实现复杂度</td><td>Recomputation 增加约 5-10% 额外计算；首尾同 rank 部署约束了 PP stage 分配灵活性</td></tr>
+<tr><td><b>Auxiliary-Loss-Free Balancing</b></td><td>每 expert 维护一个 bias term b_i，仅用于 routing decision 不用于 gating value；每 step 末根据 expert load 动态 ±γ 调整</td><td>消除 auxiliary loss 对模型性能的损害；实现 batch-wise balancing（而非 sequence-wise），允许 expert 跨 domain 更好地 specialize</td><td><b>推理时的 domain shift 可能导致 load imbalance</b> — 论文承认了这个问题并用 redundant expert deployment 缓解，但没有量化 imbalance 的程度</td></tr>
 </table>
 <p>---</p>
 <h3>4. Scheduling & Resource Management</h3>
@@ -383,16 +399,16 @@ footer {
 </table>
 <p>#### 6b. Before-After Comparison Table</p>
 <table class="md-table"><tr><th>Optimization</th><th>Metric</th><th>Baseline Value</th><th>After Optimization</th><th>Improvement</th><th>Conditions</th></tr>
-<tr><td>DualPipe vs 1F1B</td><td>Pipeline Bubble</td><td>(PP-1)(F+B) = 15(F+B)</td><td>(PP/2-1)(F&B+B-3W) = 7(F&B+B-3W)</td><td>**~60%+ reduction** (paper claim)</td><td>PP=16, 20 micro-batches</td></tr>
-<tr><td>DualPipe vs ZB1P</td><td>Pipeline Bubble</td><td>(PP-1)(F+B-2W) = 15(F+B-2W)</td><td>(PP/2-1)(F&B+B-3W) = 7(F&B+B-3W)</td><td>**显著减少**（系数从 15 降到 7 + F&B < F+B）</td><td>PP=16</td></tr>
-<tr><td>DualPipe comm overlap</td><td>All-to-All visibility</td><td>完全暴露（1:1 compute:comm ratio）</td><td>**完全隐藏**</td><td>~2× effective throughput</td><td>Compute:comm ≈ 1:1</td></tr>
-<tr><td>FP8 vs BF16</td><td>Relative Loss Error</td><td>0% (BF16 baseline)</td><td>< 0.25%</td><td>**Negligible quality loss**</td><td>16B model on 1.33T tokens; 230B model on 0.9T tokens</td></tr>
-<tr><td>FP8 vs BF16</td><td>Compute Speed</td><td>1× (BF16)</td><td>**理论 2×** (实际未给出)</td><td>未量化</td><td>H800 FP8 Tensor Core</td></tr>
-<tr><td>Aux-loss-free vs Aux-loss</td><td>Validation Loss (1B MoE)</td><td>2.258</td><td>2.253</td><td>**-0.005 loss**</td><td>1B MoE model</td></tr>
-<tr><td>Aux-loss-free vs Aux-loss</td><td>Validation Loss (3B MoE)</td><td>2.085</td><td>2.080</td><td>**-0.005 loss**</td><td>3B MoE model</td></tr>
-<tr><td>MTP (D=1) vs Baseline</td><td>HumanEval (Large MoE)</td><td>44.5%</td><td>53.7%</td><td>**+9.2%**</td><td>228.7B MoE, 540B tokens</td></tr>
-<tr><td>MTP Speculative Decoding</td><td>TPS</td><td>1× baseline</td><td>**1.8× TPS**</td><td>+80% decoding speed</td><td>85-90% acceptance rate</td></tr>
-<tr><td>No TP vs with TP</td><td>TP Communication</td><td>TP comm overhead > 0</td><td>**0 (eliminated)**</td><td>~15-20% comm saving (estimated)</td><td>Memory optimization enables this</td></tr>
+<tr><td>DualPipe vs 1F1B</td><td>Pipeline Bubble</td><td>(PP-1)(F+B) = 15(F+B)</td><td>(PP/2-1)(F&B+B-3W) = 7(F&B+B-3W)</td><td><b>~60%+ reduction</b> (paper claim)</td><td>PP=16, 20 micro-batches</td></tr>
+<tr><td>DualPipe vs ZB1P</td><td>Pipeline Bubble</td><td>(PP-1)(F+B-2W) = 15(F+B-2W)</td><td>(PP/2-1)(F&B+B-3W) = 7(F&B+B-3W)</td><td><b>显著减少</b>（系数从 15 降到 7 + F&B < F+B）</td><td>PP=16</td></tr>
+<tr><td>DualPipe comm overlap</td><td>All-to-All visibility</td><td>完全暴露（1:1 compute:comm ratio）</td><td><b>完全隐藏</b></td><td>~2× effective throughput</td><td>Compute:comm ≈ 1:1</td></tr>
+<tr><td>FP8 vs BF16</td><td>Relative Loss Error</td><td>0% (BF16 baseline)</td><td>< 0.25%</td><td><b>Negligible quality loss</b></td><td>16B model on 1.33T tokens; 230B model on 0.9T tokens</td></tr>
+<tr><td>FP8 vs BF16</td><td>Compute Speed</td><td>1× (BF16)</td><td><b>理论 2×</b> (实际未给出)</td><td>未量化</td><td>H800 FP8 Tensor Core</td></tr>
+<tr><td>Aux-loss-free vs Aux-loss</td><td>Validation Loss (1B MoE)</td><td>2.258</td><td>2.253</td><td><b>-0.005 loss</b></td><td>1B MoE model</td></tr>
+<tr><td>Aux-loss-free vs Aux-loss</td><td>Validation Loss (3B MoE)</td><td>2.085</td><td>2.080</td><td><b>-0.005 loss</b></td><td>3B MoE model</td></tr>
+<tr><td>MTP (D=1) vs Baseline</td><td>HumanEval (Large MoE)</td><td>44.5%</td><td>53.7%</td><td><b>+9.2%</b></td><td>228.7B MoE, 540B tokens</td></tr>
+<tr><td>MTP Speculative Decoding</td><td>TPS</td><td>1× baseline</td><td><b>1.8× TPS</b></td><td>+80% decoding speed</td><td>85-90% acceptance rate</td></tr>
+<tr><td>No TP vs with TP</td><td>TP Communication</td><td>TP comm overhead > 0</td><td><b>0 (eliminated)</b></td><td>~15-20% comm saving (estimated)</td><td>Memory optimization enables this</td></tr>
 </table>
 <p>#### 6c. Bottleneck Shift Analysis</p>
 <p>1. <b>Before DualPipe</b>: 瓶颈是 <b>all-to-all 通信</b> — compute:comm ≈ 1:1，GPU 几乎一半时间在等通信</p>
@@ -429,25 +445,25 @@ footer {
 <p>---</p>
 <h3>8. Infrastructure Impact</h3>
 <table class="md-table"><tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>**Algorithm**</td><td>Auxiliary-loss-free load balancing (dynamic bias) — 可泛化到任意 MoE 模型，消除 balance loss 对模型质量的损害；MTP objective — 训练信号加密但推理时可丢弃或用于 speculative decoding</td></tr>
-<tr><td>**Kernel**</td><td>跨节点 all-to-all kernel with warp specialization + PTX — 为 IB+NVLink 异构拓扑定制的通信内核，dynamic SM allocation (20 SM/132)，NVLink 做 IB→GPU 的二级转发；FP8 GEMM with per-128 CUDA Core promotion — 绕过 H800 Tensor Core 累加精度限制</td></tr>
-<tr><td>**Framework**</td><td>DualPipe — 新的 pipeline parallelism paradigm，双向调度 + 细粒度 overlap，可推广到任意 compute:comm ≈ 1 的分布式训练场景；消除 TP 的内存优化策略 — 为大 MoE 模型提供了 TP-free 的可行路径</td></tr>
-<tr><td>**LLM**</td><td>671B MoE + MLA 验证了 MoE 的 scaling 路径：37B active params 达到 GPT-4o 级别性能，成本仅 $5.576M。MLA 的 KV cache 压缩(512 dim) 使推理显存极低。MTP 的 speculative decoding 带来 1.8× TPS</td></tr>
-<tr><td>**Agent**</td><td>间接影响 — DeepSeek-V3 的 code/math 能力（LiveCodeBench #1, MATH-500 90.2%）使其成为 agent 场景的强 backbone。SWE-Bench 42.0% 虽不及 Claude-3.5 但已是 open-source 最佳</td></tr>
-<tr><td>**Ops**</td><td>零 loss spike 零 rollback 的训练稳定性 — 如果可复现，将大幅降低大模型训练的运维成本。Redundant expert deployment 策略为 MoE serving 的 load balancing 提供了实践参考</td></tr>
+<tr><td><b>Algorithm</b></td><td>Auxiliary-loss-free load balancing (dynamic bias) — 可泛化到任意 MoE 模型，消除 balance loss 对模型质量的损害；MTP objective — 训练信号加密但推理时可丢弃或用于 speculative decoding</td></tr>
+<tr><td><b>Kernel</b></td><td>跨节点 all-to-all kernel with warp specialization + PTX — 为 IB+NVLink 异构拓扑定制的通信内核，dynamic SM allocation (20 SM/132)，NVLink 做 IB→GPU 的二级转发；FP8 GEMM with per-128 CUDA Core promotion — 绕过 H800 Tensor Core 累加精度限制</td></tr>
+<tr><td><b>Framework</b></td><td>DualPipe — 新的 pipeline parallelism paradigm，双向调度 + 细粒度 overlap，可推广到任意 compute:comm ≈ 1 的分布式训练场景；消除 TP 的内存优化策略 — 为大 MoE 模型提供了 TP-free 的可行路径</td></tr>
+<tr><td><b>LLM</b></td><td>671B MoE + MLA 验证了 MoE 的 scaling 路径：37B active params 达到 GPT-4o 级别性能，成本仅 $5.576M。MLA 的 KV cache 压缩(512 dim) 使推理显存极低。MTP 的 speculative decoding 带来 1.8× TPS</td></tr>
+<tr><td><b>Agent</b></td><td>间接影响 — DeepSeek-V3 的 code/math 能力（LiveCodeBench #1, MATH-500 90.2%）使其成为 agent 场景的强 backbone。SWE-Bench 42.0% 虽不及 Claude-3.5 但已是 open-source 最佳</td></tr>
+<tr><td><b>Ops</b></td><td>零 loss spike 零 rollback 的训练稳定性 — 如果可复现，将大幅降低大模型训练的运维成本。Redundant expert deployment 策略为 MoE serving 的 load balancing 提供了实践参考</td></tr>
 </table>
 <p>---</p>
 <h3>9. Comparison Matrix</h3>
 <table class="md-table"><tr><th>Feature</th><th>HAI-LLM + DualPipe</th><th>Megatron-LM</th><th>DeepSpeed</th><th>Chimera</th><th>ZeroBubble (ZB1P)</th></tr>
-<tr><td>**Communication Overlap**</td><td>✅ Full overlap (all-to-all + PP comm completely hidden)</td><td>⚠️ Partial (interleaved 1F1B can overlap some PP comm)</td><td>⚠️ Limited (ZeRO focuses on memory, not comm-compute overlap)</td><td>✅ Bidirectional pipeline, partial overlap</td><td>❌ No communication overlap (focuses only on bubble)</td></tr>
-<tr><td>**Pipeline Bubble**</td><td>(PP/2-1)(F&B+B-3W) — **最小**</td><td>(PP-1)(F+B) for 1F1B; smaller for interleaved</td><td>Depends on schedule, typically similar to 1F1B</td><td>~(PP/2)(F+B) — bidirectional but no fine-grained overlap</td><td>(PP-1)(F+B-2W) — 减少 W 部分 bubble</td></tr>
-<tr><td>**Parameter Memory**</td><td>2× (双向需两份参数)</td><td>1×</td><td>1× (ZeRO shards optimizer/gradient, not params in Stage 1)</td><td>2× (同 DualPipe)</td><td>1×</td></tr>
-<tr><td>**Activation Memory**</td><td>PP+1</td><td>PP (1F1B), varies for interleaved</td><td>Varies with ZeRO stage</td><td>PP</td><td>PP</td></tr>
-<tr><td>**EP Support**</td><td>✅ 原生 64-way EP，自定义 all-to-all kernel</td><td>✅ 支持但 kernel 非针对 IB+NVLink 异构优化</td><td>✅ 支持 MoE (DeepSpeed-MoE)</td><td>❌ 不针对 MoE 设计</td><td>❌ 不针对 MoE 设计</td></tr>
-<tr><td>**FP8 Training**</td><td>✅ 完整框架(tile/block quantization, E4M3 all, online quant, CUDA Core promotion)</td><td>⚠️ 通过 TransformerEngine 支持，但用 NVIDIA 默认策略(tensor-wise, delayed quant, E5M2 for Dgrad/Wgrad)</td><td>⚠️ 有 FP8 支持但非核心设计</td><td>❌ 无</td><td>❌ 无</td></tr>
-<tr><td>**Requires divisibility**</td><td>PP stages 和 micro-batches 被 2 整除</td><td>无特殊要求</td><td>无特殊要求</td><td>Micro-batches 被 PP stages 整除</td><td>无特殊要求</td></tr>
-<tr><td>**Hardware Coupling**</td><td>**高** — 深度绑定 H800 NVLink+IB 拓扑</td><td>中 — 通用 NCCL</td><td>低 — 通用</td><td>低 — 通用</td><td>低 — 通用</td></tr>
-<tr><td>**Open Source**</td><td>❌ 框架未开源(DualPipe 算法参考代码已开源)</td><td>✅ 完全开源</td><td>✅ 完全开源</td><td>✅ 论文+代码</td><td>✅ 论文+代码</td></tr>
+<tr><td><b>Communication Overlap</b></td><td>✅ Full overlap (all-to-all + PP comm completely hidden)</td><td>⚠️ Partial (interleaved 1F1B can overlap some PP comm)</td><td>⚠️ Limited (ZeRO focuses on memory, not comm-compute overlap)</td><td>✅ Bidirectional pipeline, partial overlap</td><td>❌ No communication overlap (focuses only on bubble)</td></tr>
+<tr><td><b>Pipeline Bubble</b></td><td>(PP/2-1)(F&B+B-3W) — <b>最小</b></td><td>(PP-1)(F+B) for 1F1B; smaller for interleaved</td><td>Depends on schedule, typically similar to 1F1B</td><td>~(PP/2)(F+B) — bidirectional but no fine-grained overlap</td><td>(PP-1)(F+B-2W) — 减少 W 部分 bubble</td></tr>
+<tr><td><b>Parameter Memory</b></td><td>2× (双向需两份参数)</td><td>1×</td><td>1× (ZeRO shards optimizer/gradient, not params in Stage 1)</td><td>2× (同 DualPipe)</td><td>1×</td></tr>
+<tr><td><b>Activation Memory</b></td><td>PP+1</td><td>PP (1F1B), varies for interleaved</td><td>Varies with ZeRO stage</td><td>PP</td><td>PP</td></tr>
+<tr><td><b>EP Support</b></td><td>✅ 原生 64-way EP，自定义 all-to-all kernel</td><td>✅ 支持但 kernel 非针对 IB+NVLink 异构优化</td><td>✅ 支持 MoE (DeepSpeed-MoE)</td><td>❌ 不针对 MoE 设计</td><td>❌ 不针对 MoE 设计</td></tr>
+<tr><td><b>FP8 Training</b></td><td>✅ 完整框架(tile/block quantization, E4M3 all, online quant, CUDA Core promotion)</td><td>⚠️ 通过 TransformerEngine 支持，但用 NVIDIA 默认策略(tensor-wise, delayed quant, E5M2 for Dgrad/Wgrad)</td><td>⚠️ 有 FP8 支持但非核心设计</td><td>❌ 无</td><td>❌ 无</td></tr>
+<tr><td><b>Requires divisibility</b></td><td>PP stages 和 micro-batches 被 2 整除</td><td>无特殊要求</td><td>无特殊要求</td><td>Micro-batches 被 PP stages 整除</td><td>无特殊要求</td></tr>
+<tr><td><b>Hardware Coupling</b></td><td><b>高</b> — 深度绑定 H800 NVLink+IB 拓扑</td><td>中 — 通用 NCCL</td><td>低 — 通用</td><td>低 — 通用</td><td>低 — 通用</td></tr>
+<tr><td><b>Open Source</b></td><td>❌ 框架未开源(DualPipe 算法参考代码已开源)</td><td>✅ 完全开源</td><td>✅ 完全开源</td><td>✅ 论文+代码</td><td>✅ 论文+代码</td></tr>
 </table>
 <p><b>批判性评论</b>: DualPipe 在 MoE training 的 comm overlap 上确实领先，但这种优势高度依赖于 compute:comm ≈ 1 的特定条件。对于 dense model（没有 all-to-all），DualPipe 的价值主要体现在 bubble 减少，此时它相对于 ZeroBubble 的优势需要以 2× 参数内存为代价。Megatron-LM 和 DeepSpeed 的通用性和社区支持远超 HAI-LLM。</p>
 <p>---</p>

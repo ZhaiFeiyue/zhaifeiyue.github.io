@@ -5,6 +5,18 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Optimizing Attention on GPUs by Exploiting GPU Architectural NUMA Effects</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {
+    delimiters: [
+      {left: '$$', right: '$$', display: true},
+      {left: '\\[', right: '\\]', display: true},
+      {left: '$', right: '$', display: false},
+      {left: '\\(', right: '\\)', display: false}
+    ],
+    throwOnError: false
+  });"></script>
 <style>
 
 :root {
@@ -120,6 +132,10 @@ footer {
 .md-table th {
   background: #f8fafc; font-weight: 700;
 }
+.content .katex-display {
+  overflow-x: auto; overflow-y: hidden;
+  padding: 4px 0; margin: 16px 0;
+}
 .back { display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }
 </style>
 </head>
@@ -164,7 +180,7 @@ footer {
 <tr><td>Naive Block-first</td><td>~65%</td><td>~1%</td><td>不推荐</td></tr>
 <tr><td>Swizzled Block-first</td><td>~76%</td><td>~10%</td><td>GQA (groups=XCDs)</td></tr>
 <tr><td>Naive Head-first</td><td>~90%</td><td>40-60%</td><td>短序列</td></tr>
-<tr><td>**Swizzled Head-first**</td><td>**100% (baseline)**</td><td>**90-97%**</td><td>**通用最优**</td></tr>
+<tr><td><b>Swizzled Head-first</b></td><td><b>100% (baseline)</b></td><td><b>90-97%</b></td><td><b>通用最优</b></td></tr>
 </table>
 <h3>核心技术壁垒</h3>
 <p><b>ACC (Attention Compute Cluster) 到 XCD 的 1:1 映射</b>。核心 insight 极其简单——"同一 head 的所有 blocks 放在同一 XCD"——但需要精确的 swizzle 逻辑来在 round-robin 硬件调度器之上实现这个映射。Figure 11 的 ~15 行 Triton 代码是全部实现。</p>
@@ -222,7 +238,7 @@ footer {
 <tr><td>XCDs</td><td>8</td></tr>
 <tr><td>CUs per XCD</td><td>38 (304 total)</td></tr>
 <tr><td>L1 Cache/CU</td><td>16 KB</td></tr>
-<tr><td>**L2 Cache/XCD**</td><td>**4 MB (32 MB total)**</td></tr>
+<tr><td><b>L2 Cache/XCD</b></td><td><b>4 MB (32 MB total)</b></td></tr>
 <tr><td>HBM3</td><td>192 GB, 5.3 TB/s</td></tr>
 </table>
 <p><b>Takeaway</b>: 每 XCD 仅 4MB L2。K/V 数据 (e.g. 128K×128×FP16=32MB per head) 远超 L2，tiled access 是唯一出路。</p>
@@ -275,7 +291,7 @@ footer {
 <table class="md-table"><tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
 <tr><td>Tiling / blocking</td><td>Yes (inherited from FA2)</td><td>BLOCK_M=128, BLOCK_N=64</td></tr>
 <tr><td>Software pipelining</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled K/V access 模式</td></tr>
-<tr><td>**Workgroup swizzling**</td><td>**Yes (core contribution)**</td><td>Swizzled Head-first: ~15行 Triton swizzle 逻辑重映射 WG ID</td></tr>
+<tr><td><b>Workgroup swizzling</b></td><td><b>Yes (core contribution)</b></td><td>Swizzled Head-first: ~15行 Triton swizzle 逻辑重映射 WG ID</td></tr>
 <tr><td>Vectorized memory access</td><td>Yes (inherited from FA2)</td><td>标准 Triton 向量化</td></tr>
 <tr><td>Shared memory / LDS</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled softmax</td></tr>
 <tr><td>Kernel fusion</td><td>N/A</td><td>不涉及 kernel fusion，纯调度优化</td></tr>
@@ -283,11 +299,11 @@ footer {
 <p><b>关键 insight</b>: 本文不修改 FA2 kernel 的计算逻辑，仅修改 <b>WG ID 到 (batch, head, block) 的映射函数</b>。这意味着它与任何 FA2 实现兼容，不引入额外 compute 或 memory overhead。</p>
 <h3>5. Performance Analysis</h3>
 <table class="md-table"><tr><th>Config</th><th>Speedup (vs Naive Block-first)</th><th>L2 Hit Rate</th></tr>
-<tr><td>MHA H=128, N=128K, B=1</td><td>**1.50×**</td><td>90-97% (vs ~1%)</td></tr>
+<tr><td>MHA H=128, N=128K, B=1</td><td><b>1.50×</b></td><td>90-97% (vs ~1%)</td></tr>
 <tr><td>MHA H=64, N=32K, B=4</td><td>1.30-1.40×</td><td>85-95% (vs ~5%)</td></tr>
 <tr><td>GQA H_Q=128 H_K=8, N=128K</td><td>1.10-1.15×</td><td>Similar to Swizzled Block-first</td></tr>
 <tr><td>DeepSeekV3 prefill, N=128K, B=8</td><td>~1.35× (vs Swizzled Block-first ~0.76)</td><td>-</td></tr>
-<tr><td>FA2 Backward, H=128, N=128K</td><td>**1.10×**</td><td>-</td></tr>
+<tr><td>FA2 Backward, H=128, N=128K</td><td><b>1.10×</b></td><td>-</td></tr>
 </table>
 <p><b>Scaling behavior</b>: 收益随 head 数和序列长度增加而增大。H<16 或 N<8K 时所有方法性能接近（K/V 小，L2 装得下）。</p>
 <h3>6. Numerical Considerations</h3>
@@ -295,7 +311,7 @@ footer {
 <h3>7. Portability</h3>
 <table class="md-table"><tr><th>Dimension</th><th>Assessment</th></tr>
 <tr><td>Cross-GPU within AMD</td><td>需调整 NUM_XCD 参数（MI350X XCD 数可能不同）</td></tr>
-<tr><td>Cross-vendor</td><td>**不适用于 NVIDIA Blackwell**（硬件 coherent，不暴露 NUMA），可能适用于 Rubin Ultra (4 die)</td></tr>
+<tr><td>Cross-vendor</td><td><b>不适用于 NVIDIA Blackwell</b>（硬件 coherent，不暴露 NUMA），可能适用于 Rubin Ultra (4 die)</td></tr>
 <tr><td>Integration</td><td>Triton 实现，~15 行改动，可直接 upstream</td></tr>
 <tr><td>Compiler dependency</td><td>ROCm + Triton</td></tr>
 </table>

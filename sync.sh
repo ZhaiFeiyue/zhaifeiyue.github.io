@@ -115,6 +115,19 @@ NAV_HTML = """<nav>
 
 FONTS = '<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">'
 
+KATEX_CDN = """<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body, {
+    delimiters: [
+      {left: '$$', right: '$$', display: true},
+      {left: '\\\\[', right: '\\\\]', display: true},
+      {left: '$', right: '$', display: false},
+      {left: '\\\\(', right: '\\\\)', display: false}
+    ],
+    throwOnError: false
+  });"></script>"""
+
 # ============================================================
 # INDEX PAGE
 # ============================================================
@@ -267,6 +280,31 @@ print(f"Wrote index.html ({total} papers)")
 # ============================================================
 # PER-PAPER PAGES
 # ============================================================
+def protect_math(text):
+    """Extract LaTeX math spans so markdown transforms don't corrupt them."""
+    store = []
+    def _stash(m):
+        store.append(m.group(0))
+        return f"\x00MATH{len(store)-1}\x00"
+    text = re.sub(r'\$\$[\s\S]+?\$\$', _stash, text)
+    text = re.sub(r'(?<!\$)\$(?!\$)(?!\s)(.+?)(?<!\s)\$(?!\$)', _stash, text)
+    text = re.sub(r'\\\[[\s\S]+?\\\]', _stash, text)
+    text = re.sub(r'\\\([\s\S]+?\\\)', _stash, text)
+    return text, store
+
+def restore_math(text, store):
+    """Re-insert stashed LaTeX math spans."""
+    def _restore(m):
+        return store[int(m.group(1))]
+    return re.sub(r'\x00MATH(\d+)\x00', _restore, text)
+
+def inline_fmt(text):
+    """Apply bold/code inline transforms while preserving LaTeX."""
+    text, store = protect_math(text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
+    return restore_math(text, store)
+
 def md_to_html(md_text, paper_id=""):
     """Convert markdown to HTML with base64-embedded images."""
     lines = md_text.split('\n')
@@ -299,10 +337,10 @@ def md_to_html(md_text, paper_id=""):
             if all(set(c) <= set('- :') for c in cells):
                 continue
             if not in_table:
-                out.append('<table class="md-table"><tr>' + ''.join(f'<th>{c}</th>' for c in cells) + '</tr>')
+                out.append('<table class="md-table"><tr>' + ''.join(f'<th>{inline_fmt(c)}</th>' for c in cells) + '</tr>')
                 in_table = True
             else:
-                out.append('<tr>' + ''.join(f'<td>{c}</td>' for c in cells) + '</tr>')
+                out.append('<tr>' + ''.join(f'<td>{inline_fmt(c)}</td>' for c in cells) + '</tr>')
             continue
 
         if stripped.startswith('!['):
@@ -317,35 +355,31 @@ def md_to_html(md_text, paper_id=""):
                 continue
 
         if stripped.startswith('> '):
-            out.append(f'<blockquote>{stripped[2:]}</blockquote>')
+            out.append(f'<blockquote>{inline_fmt(stripped[2:])}</blockquote>')
             continue
 
         if stripped.startswith('### '):
             if in_ul:
                 out.append('</ul>'); in_ul = False
-            out.append(f'<h3>{stripped[4:]}</h3>')
+            out.append(f'<h3>{inline_fmt(stripped[4:])}</h3>')
             continue
         if stripped.startswith('## '):
             if in_ul:
                 out.append('</ul>'); in_ul = False
             anchor = re.sub(r'[^a-z0-9]+', '-', stripped[3:].lower()).strip('-')
-            out.append(f'<h2 id="{anchor}">{stripped[3:]}</h2>')
+            out.append(f'<h2 id="{anchor}">{inline_fmt(stripped[3:])}</h2>')
             continue
 
         if stripped.startswith('- '):
             if not in_ul:
                 out.append('<ul>'); in_ul = True
-            content = stripped[2:]
-            content = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', content)
-            content = re.sub(r'`([^`]+)`', r'<code>\1</code>', content)
-            out.append(f'<li>{content}</li>')
+            out.append(f'<li>{inline_fmt(stripped[2:])}</li>')
             continue
         else:
             if in_ul:
                 out.append('</ul>'); in_ul = False
 
-        stripped = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', stripped)
-        stripped = re.sub(r'`([^`]+)`', r'<code>\1</code>', stripped)
+        stripped = inline_fmt(stripped)
 
         if stripped:
             out.append(f'<p>{stripped}</p>')
@@ -469,6 +503,7 @@ for p in papers:
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>{title}</title>
 {FONTS}
+{KATEX_CDN}
 <style>
 {SHARED_CSS}
 .paper-header {{
@@ -552,6 +587,10 @@ for p in papers:
 }}
 .md-table th {{
   background: #f8fafc; font-weight: 700;
+}}
+.content .katex-display {{
+  overflow-x: auto; overflow-y: hidden;
+  padding: 4px 0; margin: 16px 0;
 }}
 .back {{ display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }}
 </style>
