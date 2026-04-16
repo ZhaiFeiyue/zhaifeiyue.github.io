@@ -425,11 +425,13 @@ for p in papers:
                             break
 
                 if matched_file:
-                    data = img_to_base64(paper_id, matched_file)
-                    if data:
-                        label = matched_file.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
-                        result.append(f'![{label}]({matched_file})')
-                        used_images.add(matched_file)
+                    next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                    if not next_line.startswith('!['):
+                        data = img_to_base64(paper_id, matched_file)
+                        if data:
+                            label = matched_file.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
+                            result.append(f'![{label}]({matched_file})')
+                    used_images.add(matched_file)
 
         return '\n'.join(result)
 
