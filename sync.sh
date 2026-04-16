@@ -431,28 +431,6 @@ for p in papers:
                         result.append(f'![{label}]({matched_file})')
                         used_images.add(matched_file)
 
-        unused = [f for f in img_files if f not in used_images]
-        if unused:
-            kf_idx = None
-            for i, line in enumerate(result):
-                if re.match(r'^##\s+Key\s+Figures', line, re.IGNORECASE):
-                    kf_idx = i
-                    break
-
-            if kf_idx is not None:
-                insert_pos = kf_idx + 1
-                for uf in unused:
-                    data = img_to_base64(paper_id, uf)
-                    if data:
-                        label = uf.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
-                        result.insert(insert_pos, f'![{label}]({uf})')
-                        insert_pos += 1
-            else:
-                result.append('\n## Figures\n')
-                for uf in unused:
-                    label = uf.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
-                    result.append(f'![{label}]({uf})')
-
         return '\n'.join(result)
 
     summary_md = inject_images_inline(summary_md, pid)
