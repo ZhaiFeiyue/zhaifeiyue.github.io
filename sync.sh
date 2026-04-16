@@ -380,23 +380,86 @@ for p in papers:
         break
     summary_md = '\n'.join(summary_lines[skip:])
 
-    summary_html = sanitize_html(md_to_html(summary_md, paper_id=pid))
-    details_html = sanitize_html(md_to_html(details_md, paper_id=pid)) if details_md else ""
+    def inject_images_inline(md_text, paper_id):
+        """Insert base64 images inline next to their figure descriptions."""
+        img_paper_dir = os.path.join(IMG_DIR, paper_id)
+        if not os.path.isdir(img_paper_dir):
+            return md_text
 
-    img_gallery = ""
-    img_paper_dir = os.path.join(IMG_DIR, pid)
-    if os.path.isdir(img_paper_dir):
         img_files = sorted([f for f in os.listdir(img_paper_dir)
                            if f.lower().endswith(('.png','.jpg','.jpeg','.gif','.svg'))])
-        has_refs = '="data:image' in summary_html or '="data:image' in details_html
-        if img_files and not has_refs:
-            img_gallery = '<h2 id="figures">Figures</h2>\n<div style="display:grid;gap:16px">\n'
-            for imgf in img_files:
-                data = img_to_base64(pid, imgf)
-                if data:
-                    label = imgf.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ').title()
-                    img_gallery += f'<figure><img src="{data}" alt="{html.escape(label)}" style="max-width:100%;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08)"><figcaption>{html.escape(label)}</figcaption></figure>\n'
-            img_gallery += '</div>\n'
+        if not img_files:
+            return md_text
+
+        def num_from_filename(fn):
+            m = re.search(r'(\d+)', fn)
+            return m.group(1) if m else None
+
+        num_to_file = {}
+        for f in img_files:
+            n = num_from_filename(f)
+            if n:
+                if n not in num_to_file:
+                    num_to_file[n] = f
+                else:
+                    num_to_file[n + 'b'] = f
+
+        lines = md_text.split('\n')
+        result = []
+        used_images = set()
+
+        for i, line in enumerate(lines):
+            result.append(line)
+            fig_match = re.match(r'^###\s+(?:Figure|Fig\.?)\s+(\d+[a-z]?)', line, re.IGNORECASE)
+            if fig_match:
+                fig_num = fig_match.group(1)
+                matched_file = None
+                if fig_num in num_to_file:
+                    matched_file = num_to_file[fig_num]
+                else:
+                    base_num = re.match(r'(\d+)', fig_num).group(1) if re.match(r'(\d+)', fig_num) else None
+                    for fn in img_files:
+                        fn_num = num_from_filename(fn)
+                        if fn_num == base_num and fn not in used_images:
+                            matched_file = fn
+                            break
+
+                if matched_file:
+                    data = img_to_base64(paper_id, matched_file)
+                    if data:
+                        label = matched_file.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
+                        result.append(f'![{label}]({matched_file})')
+                        used_images.add(matched_file)
+
+        unused = [f for f in img_files if f not in used_images]
+        if unused:
+            kf_idx = None
+            for i, line in enumerate(result):
+                if re.match(r'^##\s+Key\s+Figures', line, re.IGNORECASE):
+                    kf_idx = i
+                    break
+
+            if kf_idx is not None:
+                insert_pos = kf_idx + 1
+                for uf in unused:
+                    data = img_to_base64(paper_id, uf)
+                    if data:
+                        label = uf.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
+                        result.insert(insert_pos, f'![{label}]({uf})')
+                        insert_pos += 1
+            else:
+                result.append('\n## Figures\n')
+                for uf in unused:
+                    label = uf.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
+                    result.append(f'![{label}]({uf})')
+
+        return '\n'.join(result)
+
+    summary_md = inject_images_inline(summary_md, pid)
+    details_md = inject_images_inline(details_md, pid) if details_md else details_md
+
+    summary_html = sanitize_html(md_to_html(summary_md, paper_id=pid))
+    details_html = sanitize_html(md_to_html(details_md, paper_id=pid)) if details_md else ""
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
@@ -511,7 +574,6 @@ for p in papers:
 <div class="w content">
   <span class="section-label">Summary</span>
   {summary_html}
-  {img_gallery}
 </div>
 {"<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>Details</span>" + details_html + "</div>" if details_html else ""}
 <footer>Built with paper-reader skill · <a href="/">Back to index</a></footer>
