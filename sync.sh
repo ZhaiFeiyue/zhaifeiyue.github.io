@@ -8,7 +8,7 @@ PAPERS_DIR="$SITE_DIR/papers"
 mkdir -p "$PAPERS_DIR"
 
 python3 - "$PAPER_DB" "$SITE_DIR" << 'PYEOF'
-import json, os, sys, re, html
+import json, os, sys, re, html, base64, mimetypes, shutil
 from pathlib import Path
 
 DB_DIR = sys.argv[1]
@@ -28,6 +28,48 @@ CAT_LABELS = {
     "algorithm": "Algorithm", "kernel": "Kernel", "framework": "Framework",
     "llm": "LLM", "agent": "Agent", "cluster": "Cluster"
 }
+
+IMG_DIR = os.path.join(DB_DIR, "images")
+
+def img_to_base64(paper_id, filename):
+    """Convert a local image to base64 data URI."""
+    filepath = os.path.join(IMG_DIR, paper_id, filename)
+    if not os.path.isfile(filepath):
+        return None
+    fsize = os.path.getsize(filepath)
+    if fsize > 2 * 1024 * 1024:
+        return None
+    mime, _ = mimetypes.guess_type(filepath)
+    if not mime:
+        mime = "image/png"
+    with open(filepath, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    return f"data:{mime};base64,{data}"
+
+def resolve_img_src(paper_id, src):
+    """Resolve an image markdown src to a base64 data URI."""
+    if src.startswith("data:"):
+        return src
+    fname = src.split("/")[-1]
+    patterns = [
+        os.path.join(IMG_DIR, paper_id, fname),
+        os.path.join(IMG_DIR, paper_id, src.replace("../images/" + paper_id + "/", "")),
+    ]
+    for p in patterns:
+        if os.path.isfile(p):
+            return img_to_base64(paper_id, os.path.basename(p))
+    if os.path.isdir(os.path.join(IMG_DIR, paper_id)):
+        for f in os.listdir(os.path.join(IMG_DIR, paper_id)):
+            if fname.lower() in f.lower() or f.lower() in fname.lower():
+                return img_to_base64(paper_id, f)
+    return None
+
+def sanitize_html(text):
+    """Remove any local filesystem paths from output."""
+    text = re.sub(r'/home/[^\s<>"\']+', '[path]', text)
+    text = re.sub(r'~/.cursor/[^\s<>"\']+', '[path]', text)
+    text = re.sub(r'/apps/[^\s<>"\']+', '[path]', text)
+    return text
 
 SHARED_CSS = """
 :root {
@@ -87,7 +129,7 @@ for p in papers:
     contrib = html.escape(p.get("core_contribution", "")[:120])
     date = p.get("date", "")
     depth = p.get("read_depth", "overview")
-    depth_badge = '<span style="color:#16a34a;font-weight:600;font-size:0.75rem">精读</span>' if depth == "deep" else '<span style="color:#d97706;font-weight:600;font-size:0.75rem">粗读</span>'
+    depth_badge = '<span style="color:#16a34a;font-weight:600;font-size:0.75rem">Details</span>' if depth == "deep" else '<span style="color:#d97706;font-weight:600;font-size:0.75rem">Summary</span>'
     paper_rows += f"""<a class="paper-row" href="papers/{pid}.html" data-cat="{p['category']}">
   <div class="pr-meta">
     <span class="cat-tag" style="background:{color}">{cat}</span>
@@ -104,7 +146,7 @@ index_html = f"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>AI Infra Paper Readings — Feiyue Zhai</title>
+<title>AI Infra Paper Readings</title>
 {FONTS}
 <style>
 {SHARED_CSS}
@@ -170,7 +212,7 @@ index_html = f"""<!DOCTYPE html>
 {NAV_HTML}
 <div class="hero">
   <h1>AI Infra Paper Readings</h1>
-  <p>AI 基础设施论文精读笔记</p>
+  <p>AI Infrastructure Paper Notes</p>
   <div class="stats">
     <div class="stat"><b>{total}</b>papers</div>
     {"".join(f'<div class="stat"><b style="color:{CAT_COLORS.get(c,"#6b7280")}">{n}</b>{CAT_LABELS.get(c,c)}</div>' for c, n in sorted(cat_counts.items(), key=lambda x:-x[1]))}
@@ -182,10 +224,10 @@ index_html = f"""<!DOCTYPE html>
   {"".join(f'<button class="filter-btn" data-filter="{c}" style="--fc:{CAT_COLORS.get(c,"#6b7280")}">{CAT_LABELS.get(c,c)} ({n})</button>' for c, n in sorted(cat_counts.items(), key=lambda x:-x[1]))}
 </div>
 <div id="paper-list">
-{paper_rows if paper_rows else '<div style="text-align:center;padding:40px;color:var(--mt)">还没有论文。</div>'}
+{paper_rows if paper_rows else '<div style="text-align:center;padding:40px;color:var(--mt)">No papers yet.</div>'}
 </div>
 </div>
-<footer>Built with paper-reader skill · Hosted on GitHub Pages</footer>
+<footer>Built with paper-reader skill</footer>
 <script>
 document.querySelectorAll('.filter-btn').forEach(btn => {{
   btn.addEventListener('click', () => {{
@@ -209,7 +251,7 @@ print(f"Wrote index.html ({total} papers)")
 # PER-PAPER PAGES
 # ============================================================
 def md_to_html(md_text, paper_id=""):
-    """Minimal markdown to HTML. paper_id used for image path rewriting."""
+    """Convert markdown to HTML with base64-embedded images."""
     lines = md_text.split('\n')
     out = []
     in_table = False
@@ -250,9 +292,11 @@ def md_to_html(md_text, paper_id=""):
             m = re.match(r'!\[([^\]]*)\]\(([^)]+)\)', stripped)
             if m:
                 alt, src = m.group(1), m.group(2)
-                if paper_id and '../images/' in src:
-                    src = src.replace('../images/', 'images/')
-                out.append(f'<figure><img src="{src}" alt="{html.escape(alt)}" style="max-width:100%;border-radius:8px"><figcaption>{html.escape(alt)}</figcaption></figure>')
+                data_uri = resolve_img_src(paper_id, src) if paper_id else None
+                if data_uri:
+                    out.append(f'<figure><img src="{data_uri}" alt="{html.escape(alt)}" style="max-width:100%;border-radius:8px"><figcaption>{html.escape(alt)}</figcaption></figure>')
+                else:
+                    out.append(f'<div style="background:#f1f5f9;padding:16px;border-radius:8px;text-align:center;color:var(--mt);margin:12px 0"><i>{html.escape(alt)}</i></div>')
                 continue
 
         if stripped.startswith('> '):
@@ -276,6 +320,7 @@ def md_to_html(md_text, paper_id=""):
                 out.append('<ul>'); in_ul = True
             content = stripped[2:]
             content = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', content)
+            content = re.sub(r'`([^`]+)`', r'<code>\1</code>', content)
             out.append(f'<li>{content}</li>')
             continue
         else:
@@ -312,23 +357,20 @@ for p in papers:
     with open(notes_path) as f:
         md = f.read()
 
-    # Split into 粗读 and 精读 at "## Deep Analysis"
     split_marker = "## Deep Analysis"
     if split_marker in md:
         idx = md.index(split_marker)
-        rough_md = md[:idx].strip()
-        # Remove leading --- separator if present
-        deep_md = md[idx:].strip()
-        if rough_md.endswith('---'):
-            rough_md = rough_md[:-3].strip()
+        summary_md = md[:idx].strip()
+        details_md = md[idx:].strip()
+        if summary_md.endswith('---'):
+            summary_md = summary_md[:-3].strip()
     else:
-        rough_md = md.strip()
-        deep_md = ""
+        summary_md = md.strip()
+        details_md = ""
 
-    # Skip the first H1 title line in rough_md (already in page header)
-    rough_lines = rough_md.split('\n')
+    summary_lines = summary_md.split('\n')
     skip = 0
-    for i, l in enumerate(rough_lines):
+    for i, l in enumerate(summary_lines):
         if l.startswith('# '):
             skip = i + 1
             continue
@@ -336,18 +378,25 @@ for p in papers:
             skip = i + 1
             continue
         break
-    rough_md = '\n'.join(rough_lines[skip:])
+    summary_md = '\n'.join(summary_lines[skip:])
 
-    rough_html = md_to_html(rough_md, paper_id=pid)
-    deep_html = md_to_html(deep_md, paper_id=pid) if deep_md else ""
+    summary_html = sanitize_html(md_to_html(summary_md, paper_id=pid))
+    details_html = sanitize_html(md_to_html(details_md, paper_id=pid)) if details_md else ""
 
-    img_src = os.path.join(DB_DIR, "images", pid)
-    img_dst = os.path.join(PAPERS_DIR, "images", pid)
-    if os.path.isdir(img_src):
-        os.makedirs(img_dst, exist_ok=True)
-        import shutil
-        for img_file in os.listdir(img_src):
-            shutil.copy2(os.path.join(img_src, img_file), os.path.join(img_dst, img_file))
+    img_gallery = ""
+    img_paper_dir = os.path.join(IMG_DIR, pid)
+    if os.path.isdir(img_paper_dir):
+        img_files = sorted([f for f in os.listdir(img_paper_dir)
+                           if f.lower().endswith(('.png','.jpg','.jpeg','.gif','.svg'))])
+        has_refs = '="data:image' in summary_html or '="data:image' in details_html
+        if img_files and not has_refs:
+            img_gallery = '<h2 id="figures">Figures</h2>\n<div style="display:grid;gap:16px">\n'
+            for imgf in img_files:
+                data = img_to_base64(pid, imgf)
+                if data:
+                    label = imgf.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ').title()
+                    img_gallery += f'<figure><img src="{data}" alt="{html.escape(label)}" style="max-width:100%;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08)"><figcaption>{html.escape(label)}</figcaption></figure>\n'
+            img_gallery += '</div>\n'
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
@@ -426,6 +475,10 @@ for p in papers:
 .content figure {{
   margin: 16px 0; text-align: center;
 }}
+.content figure img {{
+  max-width: 100%; border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}}
 .content figcaption {{
   font-size: 0.8rem; color: var(--mt); margin-top: 6px;
   font-style: italic;
@@ -456,13 +509,16 @@ for p in papers:
   <div class="tags">{tags_html}</div>
 </div>
 <div class="w content">
-  <span class="section-label">粗读 Overview</span>
-  {rough_html}
+  <span class="section-label">Summary</span>
+  {summary_html}
+  {img_gallery}
 </div>
-{"<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>精读 Deep Analysis</span>" + deep_html + "</div>" if deep_html else ""}
+{"<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>Details</span>" + details_html + "</div>" if details_html else ""}
 <footer>Built with paper-reader skill · <a href="/">Back to index</a></footer>
 </body>
 </html>"""
+
+    page = sanitize_html(page)
 
     out_path = os.path.join(PAPERS_DIR, f"{pid}.html")
     with open(out_path, "w") as f:
