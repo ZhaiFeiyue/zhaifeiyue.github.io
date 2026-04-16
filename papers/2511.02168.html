@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Eliminating Multi-GPU Performance Taxes: A Systems Approach to Efficient Distributed LLMs</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+
+:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+nav .logo { font-weight: 700; font-size: 1.05rem; }
+nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+nav a:hover { color: #fff; text-decoration: none; }
+.w { max-width: 960px; margin: 0 auto; padding: 0 24px 64px; }
+footer {
+  text-align: center; padding: 28px 24px; color: var(--mt);
+  font-size: 0.8rem; border-top: 1px solid var(--bd);
+  max-width: 960px; margin: 0 auto;
+}
+.cat-tag {
+  font-size: 0.7rem; font-weight: 700; padding: 2px 10px;
+  border-radius: 999px; color: #fff; display: inline-block;
+}
+
+.paper-header {
+  max-width: 960px; margin: 0 auto; padding: 40px 24px 24px;
+}
+.paper-header h1 {
+  font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em;
+  margin-bottom: 10px; line-height: 1.3;
+}
+.paper-meta {
+  font-size: 0.85rem; color: var(--mt); margin-bottom: 12px;
+}
+.paper-meta a { font-size: 0.85rem; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tag {
+  font-size: 0.72rem; padding: 2px 10px; border-radius: 999px;
+  background: #f1f5f9; color: var(--mt); font-weight: 600;
+}
+.section-divider {
+  max-width: 960px; margin: 32px auto; padding: 0 24px;
+}
+.section-divider hr {
+  border: none; border-top: 3px solid var(--accent); opacity: 0.3;
+}
+.section-label {
+  display: inline-block; background: var(--accent); color: #fff;
+  font-size: 0.82rem; font-weight: 700; padding: 4px 16px;
+  border-radius: 999px; margin-bottom: 16px;
+}
+.content {
+  font-family: 'Noto Serif SC', 'Lora', serif;
+  font-size: 0.95rem;
+}
+.content h2 {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1.2rem; font-weight: 700; margin: 32px 0 12px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--bd);
+}
+.content h3 {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1.05rem; font-weight: 700; margin: 24px 0 8px;
+}
+.content p { margin: 8px 0; }
+.content ul { margin: 8px 0 8px 20px; }
+.content li { margin: 4px 0; }
+.content blockquote {
+  border-left: 4px solid var(--accent); padding: 8px 16px;
+  margin: 12px 0; background: #f8fafc; border-radius: 0 8px 8px 0;
+  font-style: italic;
+}
+.content pre {
+  background: #1e293b; color: #e2e8f0; padding: 16px;
+  border-radius: 8px; overflow-x: auto; margin: 12px 0;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;
+  line-height: 1.6;
+}
+.content code {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.85em;
+  background: #f1f5f9; padding: 1px 5px; border-radius: 4px;
+}
+.content pre code {
+  background: none; padding: 0;
+}
+.content figure {
+  margin: 16px 0; text-align: center;
+}
+.content figcaption {
+  font-size: 0.8rem; color: var(--mt); margin-top: 6px;
+  font-style: italic;
+}
+.md-table {
+  width: 100%; border-collapse: collapse; margin: 12px 0;
+  font-size: 0.85rem;
+}
+.md-table th, .md-table td {
+  border: 1px solid var(--bd); padding: 8px 12px; text-align: left;
+}
+.md-table th {
+  background: #f8fafc; font-weight: 700;
+}
+.back { display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }
+</style>
+</head>
+<body>
+<nav>
+  <a class="logo" href="/">Feiyue Zhai</a>
+  <a href="/">Papers</a>
+  <a href="/float.html">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+<div class="paper-header">
+  <a class="back" href="/">← Back</a>
+  <h1>Eliminating Multi-GPU Performance Taxes: A Systems Approach to Efficient Distributed LLMs</h1>
+  <div class="paper-meta">
+    <span class="cat-tag" style="background:#0891b2">Cluster</span>
+    &nbsp; Octavian Alexandru Trifan, Karthik Sangaiah, Muhammad Awad, Muhammad Osama &nbsp;·&nbsp; 2025-11
+    &nbsp;·&nbsp; <a href='https://arxiv.org/abs/2511.02168' target='_blank'>arXiv ↗</a>
+  </div>
+  <div class="tags"><span class="tag">multi-GPU</span><span class="tag">performance-overhead</span><span class="tag">distributed-systems</span><span class="tag">communication</span><span class="tag">synchronization</span></div>
+</div>
+<div class="w content">
+  <span class="section-label">粗读 Overview</span>
+  <ul>
+<li><b>arXiv</b>: 2511.02168</li>
+<li><b>Authors</b>: Octavian Alexandru Trifan, Karthik Sangaiah, Muhammad Awad, Muhammad Osama, Sumanth Gudaparthi, Alexandru Nicolau, Alexander Veidenbaum, Ganesh Dasika</li>
+<li><b>Affiliations</b>: UC Irvine + AMD Research and Advanced Development</li>
+<li><b>Date</b>: 2025-11</li>
+<li><b>Category</b>: cluster</li>
+<li><b>Tags</b>: multi-GPU, performance-overhead, distributed-systems, communication, synchronization</li>
+</ul>
+<p>---</p>
+<h2 id="first-pass">粗读 (First Pass)</h2>
+<h3>Core Contribution</h3>
+<p>提出 "Three Taxes" 分析框架，识别 BSP (Bulk Synchronous Parallel) 编程模型在分布式 GPU 执行中的三大开销来源：Kernel Launch Overhead Tax、Bulk Synchronous Tax、Inter-Kernel Data Locality Tax。通过 Iris（AMD 的 Triton 通信库）将 computation 和 communication 融合到单个 kernel 中，在 All-Gather+GEMM 和 Flash Decode 上实现 10-20% 端到端延迟加速。</p>
+<h3>核心三问</h3>
+<p><b>Q1: 解决什么问题？</b></p>
+<p>分布式 LLM 执行中，传统 BSP 模型（"Compute-Wait-Collective-Wait-Compute"）导致严重的性能低效。GPU 空闲等待、kernel launch 开销累积、以及 kernel 间数据局部性丢失，这些都是 BSP 模型的固有代价。</p>
+<p><b>Q2: 怎么解决的？</b></p>
+<p>将 collective communication 逻辑直接融合进 compute kernel，用 tile-level 的 producer-consumer pipeline 替代全局 barrier。具体实现依赖 Iris 库提供的 <code>iris.load()</code> / <code>iris.store()</code> 原语，与 Triton 的 <code>tl.load()</code> / <code>tl.store()</code> 接口一致，降低编程复杂度。提出 Pull Model（consumer 主动拉取远程数据）和 Push Model（producer 推送数据+flag 同步）两种融合模式。</p>
+<p><b>Q3: 效果如何？</b></p>
+<ul>
+<li>All-Gather+GEMM：在 8x MI325X 上，小矩阵 Pull 更优，大矩阵 Push 更优；但中间尺寸(M=8~64)反而不如 RCCL+torch baseline</li>
+<li>Flash Decode：在 8x MI300X 上，渐进式优化最终实现 10-20% speedup vs RCCL baseline</li>
+<li>从 1 GPU 到 8 GPU 展现较好的 scaling 特性</li>
+</ul>
+<h3>逻辑故事还原</h3>
+<p>1. <b>问题识别</b>：BSP 模型是分布式 GPU 编程的事实标准，但引入三类性能税</p>
+<p>2. <b>分析框架</b>："Three Taxes" — Kernel Launch Tax, Bulk Synchronous Tax, Inter-Kernel Tax</p>
+<p>3. <b>解决方案</b>：用 Iris 库的 in-kernel communication primitive 实现 compute-communication fusion</p>
+<p>4. <b>两个验证</b>：</p>
+<ul>
+<li>All-Gather+GEMM（基础 building block）→ Pull 和 Push 两种模式</li>
+<li>Flash Decode（复杂推理 kernel）→ 渐进式优化（BSP → Independent AG → Fine-Grained Waits → Fused）</li>
+</ul>
+<p>5. <b>结论</b>：fine-grained fused patterns 可以系统性消除三种税，实现 10-20% 加速</p>
+<h3>Key Figures</h3>
+<table class="md-table"><tr><th>Figure</th><th>描述</th><th>关键信息</th></tr>
+<tr><td>Fig 2 (Taxes.png)</td><td>Three Taxes 示意图</td><td>核心分析框架：展示 BSP 模型的三种开销来源</td></tr>
+<tr><td>Fig 3 (AG_GEMM_Figure.png)</td><td>All-Gather+GEMM 双 GPU 示意</td><td>矩阵 A 按 K 维分片，先 All-Gather 再 GEMM</td></tr>
+<tr><td>Fig 4 (AG_GEMM_Pull.png)</td><td>Pull Model</td><td>Consumer-driven，GEMM kernel 直接 iris.load() 远程数据</td></tr>
+<tr><td>Fig 5 (AG_GEMM_Push.png)</td><td>Push Model</td><td>Producer-driven，独立 push kernel + flag 同步</td></tr>
+<tr><td>Fig 6 (FD_Figure_BSP.png)</td><td>Flash Decode BSP baseline</td><td>标准三阶段：Local Attention → All-Gather → Combine</td></tr>
+<tr><td>Fig 7 (FD_Figure_Fine_Grained_Wait.png)</td><td>Fine-Grained Waits</td><td>consumer 端 spin-wait 替代全局 barrier</td></tr>
+<tr><td>Fig 8 (FD_Figure_Fused.png)</td><td>Fused Kernels</td><td>完全消除独立 AG kernel，producer 直接 push</td></tr>
+<tr><td>Fig 9 (AG_GEMM_Speedup_2.png)</td><td>AG+GEMM speedup vs RCCL</td><td>小矩阵 Pull 优，大矩阵 Push 优；M=8~64 baseline 反而更快</td></tr>
+<tr><td>Fig 10 (FD_Plot_Speedup_2.png)</td><td>Flash Decode speedup vs RCCL</td><td>最终 fused kernel 10-20% speedup</td></tr>
+<tr><td>Fig 11 (GPU_Scaling_Plot_Speedup.png)</td><td>Flash Decode GPU scaling</td><td>1→8 GPU scaling 表现较好</td></tr>
+</table>
+<h3>Key Tables</h3>
+<p>本文没有正式表格，所有数据以图表形式呈现。</p>
+<h3>Key Details & Takeaway</h3>
+<ul>
+<li><b>硬件平台</b>：AG+GEMM 用 8x MI325X，Flash Decode 用 8x MI300X（192GB HBM3，Infinity Fabric 896GB/s per GPU）</li>
+<li><b>软件栈</b>：PyTorch 2.6.0 + ROCm 6.4.3 + RCCL 2.22.3 + Triton + Iris</li>
+<li><b>精度</b>：FP16</li>
+<li><b>Benchmark 设置</b>：500 iterations + 100 warmup，host-side timing with stream sync</li>
+<li><b>Pull vs Push trade-off</b>：Pull 无需额外 kernel launch 和同步 flag，适合小 workload；Push 的 store 效率优于 Pull 的 load，适合大 workload</li>
+<li><b>Iris vs Triton Distributed</b>：Iris 更 Pythonic，API 与 Triton 原生一致；Triton Distributed 嵌入 C-style API，需手动管理 tid</li>
+<li><b>核心 takeaway</b>：BSP 模型的性能代价不是根本性的，而是编程模型的 artifact；通过 fine-grained fusion 可以系统性消除</li>
+</ul>
+<h3>Summary</h3>
+<p>本文提出 "Three Taxes" 分析框架来解构 BSP 模型在多 GPU LLM workload 中的性能开销，并通过 Iris（AMD Triton 通信库）实现 compute-communication kernel fusion。在 All-Gather+GEMM 和 Flash Decode 两个 workload 上验证，最终在 Flash Decode 上达到 10-20% 端到端延迟加速。方法论清晰，渐进式优化策略便于理解每步贡献，但 speedup 幅度有限，且部分 workload 尺寸下反而不如 baseline。</p>
+<h3>Key Findings</h3>
+<p>1. BSP 模型的三种 tax（Kernel Launch, Bulk Sync, Inter-Kernel Data Locality）可以通过 compute-comm fusion 系统性消除</p>
+<p>2. Pull Model（consumer-driven）适合 small workload（M≤128），Push Model（producer-driven）适合 large workload（M≥128）</p>
+<p>3. Flash Decode fused kernel 在 8x MI300X 上达到 10-20% speedup vs RCCL baseline</p>
+<p>4. Fine-Grained Waits 单独贡献了大部分 speedup，Fused Kernel 进一步叠加 Kernel Launch Tax 的消除</p>
+<p>5. Iris 的 API 设计与 Triton 原生 <code>tl.load()</code>/<code>tl.store()</code> 对齐，编程改动小</p>
+<h3>Limitations</h3>
+<p>1. <b>Speedup 有限</b>：10-20% 的加速幅度在 distributed systems 论文中偏低，尤其考虑到需要完全重写 kernel</p>
+<p>2. <b>AG+GEMM 中间尺寸性能退化</b>：M=8~64 时 baseline 反而更快，作者承认是 GEMM tuning 问题但未解决</p>
+<p>3. <b>仅单节点实验</b>：所有实验在 single node 8 GPU 上完成，未验证跨节点（需经过 NIC/网络）场景</p>
+<p>4. <b>仅 AMD GPU</b>：依赖 Iris（AMD 专有），RCCL 作为 baseline，不清楚在 NVIDIA 平台是否有类似收益</p>
+<p>5. <b>Workload 覆盖有限</b>：仅验证 All-Gather+GEMM 和 Flash Decode，未涉及 training workload（All-Reduce, Reduce-Scatter 等）</p>
+<p>6. <b>Flash Decode batch=1</b>：仅测试 batch size 1，未验证更大 batch 下的表现（实际推理场景 batch 通常更大）</p>
+<p>7. <b>无 end-to-end model 级评估</b>：未在完整 LLM 推理 pipeline 中测量实际加速</p>
+<p>8. <b>缺乏绝对延迟数据</b>：所有图表仅展示 speedup ratio，未给出绝对延迟值，无法判断实际改进量级</p>
+<h3>Infrastructure Impact</h3>
+<ul>
+<li><b>编程模型演进</b>：从 BSP (opaque collectives) 向 fine-grained in-kernel communication 的转变是 distributed GPU 编程的重要趋势</li>
+<li><b>Iris 生态价值</b>：为 AMD GPU 生态提供了 Triton-native 的多 GPU 编程能力，降低 fused kernel 开发门槛</li>
+<li><b>Autotuning 机会</b>：compute + communication 参数统一到同一 kernel 后，可以用 Triton autotuner 联合优化（tile size, transfer granularity 等）</li>
+<li><b>对 RCCL/NCCL 的挑战</b>：证明了 opaque collective library 在 latency-sensitive 场景的局限性</li>
+</ul>
+</div>
+<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>精读 Deep Analysis</span><h2 id="deep-analysis-cluster">Deep Analysis (cluster)</h2>
+<h3>1. System Scope</h3>
+<p><b>定位</b>：单节点多 GPU 的 LLM inference 优化，focus 在 kernel-level compute-communication fusion。</p>
+<ul>
+<li>目标场景：tensor parallelism 下的 All-Gather+GEMM 和 Flash Decode</li>
+<li>不涉及：multi-node、training、pipeline parallelism、expert parallelism</li>
+<li>抽象层级：kernel level，比 framework level（如 vLLM）低，比 ISA level 高</li>
+<li>与 framework 的关系：提供 primitive building blocks，可被上层 framework 调用</li>
+</ul>
+<p><b>批判</b>：scope 非常窄，仅单节点 intra-node 通信。现实中 multi-GPU LLM 部署的主要瓶颈往往在 inter-node 通信（尤其 MoE 的 all-to-all），本文完全未触及。</p>
+<h3>2. Topology & Physical Architecture</h3>
+<p><b>实验平台</b>：</p>
+<ul>
+<li>All-Gather+GEMM：8x AMD MI325X</li>
+<li>Flash Decode：8x AMD MI300X（192GB HBM3 per GPU）</li>
+<li>互连：AMD Infinity Fabric，per-GPU aggregate bandwidth 896GB/s</li>
+</ul>
+<p><b>拓扑特征</b>：</p>
+<ul>
+<li>MI300X 内部是 XCD (chiplet) 架构，8 GPU fully connected via Infinity Fabric</li>
+<li>与 NVIDIA 的 NVLink/NVSwitch 对标</li>
+<li>通信通过 Infinity Fabric 的 XGMI link，支持 GPU-initiated remote memory access</li>
+</ul>
+<p><b>批判</b>：论文未详细讨论 topology 对 Pull/Push 性能的影响。在非 fully-connected topology（如 ring 或 tree）下，pull 模式可能面临更严重的 contention。同时 MI325X 和 MI300X 使用不同平台做不同实验，缺乏一致性。</p>
+<h3>3. Collective Communication</h3>
+<p><b>核心创新</b>：用 Iris 的 in-kernel primitives 替代 RCCL 的 opaque collectives。</p>
+<ul>
+<li><b>RCCL baseline</b>：host-side API call → opaque GPU kernel → global barrier → next kernel</li>
+<li><b>Iris approach</b>：`iris.load()` / `iris.store()` 作为 Triton kernel 内的通信原语</li>
+<li><b>Pull Model</b>：GEMM inner loop 中直接 `iris.load()` 远程 tile，隐式等待数据到达</li>
+<li><b>Push Model</b>：独立 push kernel 用 `iris.store()` 推送 + `RemoteAtomicInc` 设置 flag；compute kernel spin-wait on flag</li>
+<li><b>Flash Decode Fused</b>：producer kernel 计算完 partial attention 后立即 `iris.store()` 推送，consumer kernel spin-wait 消费</li>
+</ul>
+<p><b>与 Triton Distributed 对比</b>：</p>
+<ul>
+<li>Triton Distributed 基于 rocSHMEM/NVSHMEM，嵌入 C-style API，需手动管理 thread ID</li>
+<li>Iris 保持 Triton 原生编程风格，`iris.load()` 与 `tl.load()` 签名一致</li>
+</ul>
+<p><b>批判</b>：仅实现了 All-Gather 一种 collective。All-Reduce 和 Reduce-Scatter 的 fused 版本是否同样有效未验证。Pull/Push 的 trade-off 分析偏 empirical，缺少 analytical model。</p>
+<h3>4. Congestion & Traffic Engineering</h3>
+<p><b>本文未深入讨论 congestion management。</b></p>
+<ul>
+<li>Pull Model 的 remote load 可能导致 remote GPU 内存端口 contention</li>
+<li>Push Model 的 broadcast push 可能导致 Infinity Fabric link 拥塞</li>
+<li>Spin-wait 机制在高 contention 下可能浪费 GPU compute cycles</li>
+</ul>
+<p><b>批判</b>：这是本文的一个重要缺陷。在 8 GPU 场景下，每个 GPU 同时从 7 个远程 GPU pull 数据，或向 7 个远程 GPU push 数据，link congestion 的影响可能显著。论文未分析也未测量 fabric utilization。</p>
+<h3>5. Storage & I/O Architecture</h3>
+<p><b>本文不涉及 storage/I/O。</b></p>
+<p>所有数据假设已在 GPU HBM 中。KV cache 也预加载在 GPU 上。</p>
+<h3>6. Performance Analysis</h3>
+<p>#### Metrics</p>
+<ul>
+<li>唯一指标：end-to-end latency (ms)</li>
+<li>Speedup ratio vs RCCL baseline</li>
+<li>500 iterations + 100 warmup</li>
+</ul>
+<p>#### Bottleneck Analysis</p>
+<ul>
+<li><b>AG+GEMM</b>：</li>
+<li>小矩阵（M=1,2,4）：Kernel Launch Tax 主导 → Pull 最优（消除 launch overhead）</li>
+<li>中矩阵（M=8~64）：GEMM compute 主导 → baseline 的 torch.matmul 更优化</li>
+<li>大矩阵（M≥128）：communication 主导 → Push 的 store 效率优于 Pull 的 load</li>
+<li><b>Flash Decode</b>：</li>
+<li>Fine-Grained Waits 贡献主要 speedup（消除 consumer-side Bulk Sync Tax）</li>
+<li>Fused Kernel 额外消除 Kernel Launch Tax</li>
+<li>Global KV Length 越长，speedup 越稳定</li>
+</ul>
+<p>#### Comparison</p>
+<ul>
+<li>vs RCCL baseline：10-20% speedup on Flash Decode</li>
+<li>vs Triton Distributed：编程复杂度更低，但性能未直接比较</li>
+<li><b>缺失</b>：未与 NVIDIA NCCL + CUDA 版本比较，未与 ThunderKittens 等最新 kernel 框架比较</li>
+</ul>
+<p>#### 批判</p>
+<ul>
+<li>10-20% 的 speedup 在 kernel 优化领域算中等水平</li>
+<li>AG+GEMM 中间尺寸性能退化说明 GEMM kernel 本身优化不足</li>
+<li>仅 FP16，未测试 FP8 / BF16</li>
+<li>batch=1 不代表实际部署场景</li>
+</ul>
+<h3>7. Fault Tolerance</h3>
+<p><b>本文不涉及 fault tolerance。</b></p>
+<p>Fine-grained synchronization（spin-wait on flags）在 GPU hang 时可能导致 deadlock。论文未讨论任何容错机制。</p>
+<h3>8. Cost & Efficiency</h3>
+<p><b>未讨论成本。</b></p>
+<ul>
+<li>开发成本：fused kernel 需要重写，但 Iris API 降低了门槛</li>
+<li>运行时成本：spin-wait 浪费 compute cycles（相比 yield-based waiting）</li>
+<li>内存开销：Push Model 需要额外的 inbox buffer 和 flag array</li>
+</ul>
+<h3>9. Infrastructure Impact</h3>
+<p><b>短期影响</b>：</p>
+<ul>
+<li>为 AMD GPU 生态的 distributed inference 提供了优化路径</li>
+<li>Iris 开源（github.com/ROCm/iris）可能推动 AMD 在 inference 市场的竞争力</li>
+<li>"Three Taxes" 框架提供了分析 distributed kernel 性能的通用词汇</li>
+</ul>
+<p><b>中期影响</b>：</p>
+<ul>
+<li>Compute-communication fusion 可能成为下一代 collective library 的标准特性</li>
+<li>Autotuning 联合优化 compute + communication 参数是有价值的研究方向</li>
+<li>对 NCCL/RCCL 等 opaque collective 库的设计理念提出了根本性质疑</li>
+</ul>
+<p><b>长期影响有限</b>：</p>
+<ul>
+<li>10-20% 的 kernel-level 优化在 end-to-end 模型推理中可能被其他开销稀释</li>
+<li>随着 hardware 演进（更高 bandwidth interconnect），BSP tax 可能自然减小</li>
+<li>真正的 distributed LLM 挑战在 inter-node 和 fault tolerance，而非单节点 kernel fusion</li>
+</ul>
+<h3>10. Scalability & Future</h3>
+<p><b>Scaling 结果</b>：</p>
+<ul>
+<li>Flash Decode 1→8 GPU scaling 表现合理（非线性但持续改善）</li>
+<li>32K KV Length 时 scaling 效果差（workload 太小无法饱和多 GPU）</li>
+<li>较大 KV Length 时 scaling 更好</li>
+</ul>
+<p><b>Scalability 局限</b>：</p>
+<ul>
+<li>仅测试到 8 GPU（单节点），未验证 16/32/64+ GPU</li>
+<li>Pull Model 的 remote load 数量随 world size 线性增长，可能成为瓶颈</li>
+<li>Push Model 的 broadcast 流量随 world size 平方增长（每 GPU push to all others）</li>
+<li>Spin-wait 在大规模下可能导致严重的 compute cycle 浪费</li>
+</ul>
+<p><b>Future Work（论文提出）</b>：</p>
+<ul>
+<li>扩展到更多 collective（Reduce-Scatter, All-Reduce）</li>
+<li>覆盖 training workload</li>
+<li>统一 autotuning（compute + communication 参数）</li>
+<li>开发完整的分布式 LLM primitive 库</li>
+</ul>
+<p><b>我的评估</b>：</p>
+<ul>
+<li>方法论清晰，"Three Taxes" 是有价值的分析框架</li>
+<li>但 scope 太窄（单节点、两个 workload、FP16、batch=1）</li>
+<li>实际影响取决于 Iris 库的成熟度和 AMD 生态的采用率</li>
+<li>与 DeepSeek-V3 的 DualPipe 等 framework-level 优化相比，kernel-level fusion 的影响力有限</li>
+</ul>
+<p>---</p>
+<h2 id="images">Images</h2>
+<table class="md-table"><tr><th>File</th><th>Description</th></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/Taxes.png`</td><td>Three Taxes 分析框架</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/AG_GEMM_Figure.png`</td><td>All-Gather+GEMM 双 GPU 示意</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/AG_GEMM_Pull.png`</td><td>Pull Model 数据流</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/AG_GEMM_Push.png`</td><td>Push Model 数据流</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/FD_Figure_BSP.png`</td><td>Flash Decode BSP baseline</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/FD_Figure_Fine_Grained_Wait.png`</td><td>Flash Decode Fine-Grained Waits</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/FD_Figure_Fused.png`</td><td>Flash Decode Fused Kernels</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/AG_GEMM_Speedup_2.png`</td><td>AG+GEMM speedup vs RCCL</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/FD_Plot_Speedup_2.png`</td><td>Flash Decode speedup vs RCCL</td></tr>
+<tr><td>`~/.cursor/paper-db/images/2511.02168/GPU_Scaling_Plot_Speedup.png`</td><td>Flash Decode GPU scaling</td></tr>
+</table></div>
+<footer>Built with paper-reader skill · <a href="/">Back to index</a></footer>
+</body>
+</html>

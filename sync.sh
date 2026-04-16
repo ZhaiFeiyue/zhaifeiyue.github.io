@@ -208,8 +208,8 @@ print(f"Wrote index.html ({total} papers)")
 # ============================================================
 # PER-PAPER PAGES
 # ============================================================
-def md_to_html(md_text):
-    """Minimal markdown to HTML (headings, lists, bold, tables, images, blockquotes, code blocks)."""
+def md_to_html(md_text, paper_id=""):
+    """Minimal markdown to HTML. paper_id used for image path rewriting."""
     lines = md_text.split('\n')
     out = []
     in_table = False
@@ -250,6 +250,8 @@ def md_to_html(md_text):
             m = re.match(r'!\[([^\]]*)\]\(([^)]+)\)', stripped)
             if m:
                 alt, src = m.group(1), m.group(2)
+                if paper_id and '../images/' in src:
+                    src = src.replace('../images/', 'images/')
                 out.append(f'<figure><img src="{src}" alt="{html.escape(alt)}" style="max-width:100%;border-radius:8px"><figcaption>{html.escape(alt)}</figcaption></figure>')
                 continue
 
@@ -336,8 +338,16 @@ for p in papers:
         break
     rough_md = '\n'.join(rough_lines[skip:])
 
-    rough_html = md_to_html(rough_md)
-    deep_html = md_to_html(deep_md) if deep_md else ""
+    rough_html = md_to_html(rough_md, paper_id=pid)
+    deep_html = md_to_html(deep_md, paper_id=pid) if deep_md else ""
+
+    img_src = os.path.join(DB_DIR, "images", pid)
+    img_dst = os.path.join(PAPERS_DIR, "images", pid)
+    if os.path.isdir(img_src):
+        os.makedirs(img_dst, exist_ok=True)
+        import shutil
+        for img_file in os.listdir(img_src):
+            shutil.copy2(os.path.join(img_src, img_file), os.path.join(img_dst, img_file))
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
