@@ -18,7 +18,7 @@ PAPERS_DIR = os.path.join(SITE_DIR, "papers")
 with open(os.path.join(DB_DIR, "papers.json")) as f:
     db = json.load(f)
 
-papers = sorted(db["papers"], key=lambda p: p.get("date_read", ""), reverse=True)
+papers = sorted(db["papers"], key=lambda p: p.get("date", ""), reverse=True)
 
 CAT_COLORS = {
     "algorithm": "#16a34a", "kernel": "#ea580c", "framework": "#2563eb",
@@ -88,7 +88,7 @@ for p in papers:
     date = p.get("date", "")
     depth = p.get("read_depth", "overview")
     depth_badge = '<span style="color:#16a34a;font-weight:600;font-size:0.75rem">精读</span>' if depth == "deep" else '<span style="color:#d97706;font-weight:600;font-size:0.75rem">粗读</span>'
-    paper_rows += f"""<a class="paper-row" href="papers/{pid}.html">
+    paper_rows += f"""<a class="paper-row" href="papers/{pid}.html" data-cat="{p['category']}">
   <div class="pr-meta">
     <span class="cat-tag" style="background:{color}">{cat}</span>
     <span class="pr-date">{date}</span>
@@ -148,6 +148,22 @@ index_html = f"""<!DOCTYPE html>
 .pr-desc {{
   font-size: 0.85rem; color: var(--mt); line-height: 1.5;
 }}
+.filters {{
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;
+}}
+.filter-btn {{
+  font-size: 0.82rem; font-weight: 600; padding: 6px 16px;
+  border-radius: 999px; border: 2px solid var(--bd);
+  background: var(--sf); color: var(--mt); cursor: pointer;
+  transition: all .15s;
+}}
+.filter-btn:hover {{
+  border-color: var(--accent); color: var(--accent);
+}}
+.filter-btn.active {{
+  background: var(--accent); color: #fff; border-color: var(--accent);
+}}
+.paper-row.hidden {{ display: none; }}
 </style>
 </head>
 <body>
@@ -161,9 +177,27 @@ index_html = f"""<!DOCTYPE html>
   </div>
 </div>
 <div class="w">
+<div class="filters">
+  <button class="filter-btn active" data-filter="all">All ({total})</button>
+  {"".join(f'<button class="filter-btn" data-filter="{c}" style="--fc:{CAT_COLORS.get(c,"#6b7280")}">{CAT_LABELS.get(c,c)} ({n})</button>' for c, n in sorted(cat_counts.items(), key=lambda x:-x[1]))}
+</div>
+<div id="paper-list">
 {paper_rows if paper_rows else '<div style="text-align:center;padding:40px;color:var(--mt)">还没有论文。</div>'}
 </div>
+</div>
 <footer>Built with paper-reader skill · Hosted on GitHub Pages</footer>
+<script>
+document.querySelectorAll('.filter-btn').forEach(btn => {{
+  btn.addEventListener('click', () => {{
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const f = btn.dataset.filter;
+    document.querySelectorAll('.paper-row').forEach(row => {{
+      row.classList.toggle('hidden', f !== 'all' && row.dataset.cat !== f);
+    }});
+  }});
+}});
+</script>
 </body>
 </html>"""
 
