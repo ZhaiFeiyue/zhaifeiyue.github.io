@@ -165,7 +165,7 @@ footer {
 <p><b>Q1: 这篇论文试图解决什么核心痛点/问题？</b></p>
 <p>Attention 的时间复杂度随序列长度二次增长。SageAttention2 已经用 FP8 量化加速了 attention 中的矩阵乘法，但其使用的 <code>mma.f32.f8.f8.f32</code> 指令（FP32 累加器）仅比 FP16 快 2 倍。存在一个 4 倍加速的 FP16 累加器指令未被利用。</p>
 <p><b>Q2: 作者提出了什么新的"杀手锏"方法/架构？</b></p>
-<p>使用更快的 <code>mma.f16.f8.f8.f16</code> 指令（FP8 输入 + FP16 累加器）替代原来的 FP32 累加器指令。核心挑战是 FP16 的表示范围有限（±65504），直接使用会导致累加溢出。解决方案是<b>缩窄 P 和 V 的 FP8 量化范围</b>（Pr=224, Vr=4.5），使得 32 次乘加结果不超过 FP16 范围，并用 <b>Delayed FP32 Buffering</b>（两次 MMA 结果在 FP16 中累加后再转 FP32）减少类型转换开销。</p>
+<p>使用更快的 <code>mma.f16.f8.f8.f16</code> 指令（FP8 输入 + FP16 累加器）替代原来的 FP32 累加器指令。核心挑战是 FP16 的表示范围有限（±65504），直接使用会导致累加溢出。解决方案是<b>缩窄 P 和 V 的 FP8 量化范围</b>（$P_r = 224$, $V_r = 4.5$），使得 32 次乘加结果不超过 FP16 范围，并用 <b>Delayed FP32 Buffering</b>（两次 MMA 结果在 FP16 中累加后再转 FP32）减少类型转换开销。</p>
 <p><b>Q3: 最终效果/结论如何？</b></p>
 <p>SageAttention2++(4+8) 在 RTX4090 上相对 FlashAttention2 实现 <b>3.9 倍加速</b>，SageAttention2++(8+8) 实现 <b>3.0 倍加速</b>。在 Llama3.1、CogvideoX、HunyuanVideo、Wan、Flux、StableDiffusion3.5 等多种模型上端到端指标几乎无损。</p>
 <h3>逻辑故事还原</h3>
@@ -176,9 +176,9 @@ footer {
 <blockquote>👉 类比：这就像发现同一条高速公路有个限速更高的快车道。之前因为担心"翻车"（数值溢出）而走慢车道（FP32 累加器），现在通过"给货物减重"（缩窄量化范围），就能安全地走快车道（FP16 累加器）了。</blockquote>
 <p><b>拆解 (Deconstruction):</b></p>
 <p>1. <b>识别瓶颈</b>：PV Matmul 使用 <code>mma.f32.f8.f8.f32</code>，是 2x 加速；而 <code>mma.f16.f8.f8.f16</code> 能达到 4x 加速</p>
-<p>2. <b>解决溢出问题</b>：FP16 累加器范围为 ±65504。<code>mma.m16n8k32</code> 指令累加 32 个 p×v 乘积，因此需要 |32 × pv| ≤ 65504。将 P 的量化范围从 448 缩窄到 Pr=224，V 从 448 缩窄到 Vr=4.5，满足 Pr × Vr ≤ 2047</p>
-<p>3. <b>Delayed FP32 Buffering</b>：连续两次 MMA 的 FP16 结果先累加再转 FP32，减半类型转换开销。约束变为 Pr × Vr ≤ 1023.5</p>
-<p>4. <b>最优参数选择</b>：通过实验验证 (Pr=224, Vr=4.5) 能保持与 SageAttention2 相同的精度（cosine similarity 99.97%）</p>
+<p>2. <b>解决溢出问题</b>：FP16 累加器范围为 $\pm 65504$。<code>mma.m16n8k32</code> 指令累加 32 个 $p \times v$ 乘积，因此需要 $|32 \times pv| \leq 65504$。将 $P$ 的量化范围从 448 缩窄到 $P_r = 224$，$V$ 从 448 缩窄到 $V_r = 4.5$，满足 $P_r \times V_r \leq 2047$</p>
+<p>3. <b>Delayed FP32 Buffering</b>：连续两次 MMA 的 FP16 结果先累加再转 FP32，减半类型转换开销。约束变为 $P_r \times V_r \leq 1023.5$</p>
+<p>4. <b>最优参数选择</b>：通过实验验证 ($P_r = 224$, $V_r = 4.5$) 能保持与 SageAttention2 相同的精度（cosine similarity 99.97%）</p>
 <h3>核心图表</h3>
 <p>#### Figure 1: Speed comparison on RTX4090 (headdim=128)</p>
 <p>*[图片无法下载 — arXiv HTML 版本不可用]*</p>
@@ -193,7 +193,7 @@ footer {
 </table>
 <p><b>Takeaway</b>: FP8 Matmul 配合 FP16 累加器比 FP32 累加器快一倍，这是 SageAttention2++ 的核心硬件洞察。</p>
 <p>#### Table 2: Attention accuracy with different quantization ranges</p>
-<table class="md-table"><tr><th>Method</th><th>Pr</th><th>Vr</th><th>Cossim↑</th><th>L1↓</th></tr>
+<table class="md-table"><tr><th>Method</th><th>$P_r$</th><th>$V_r$</th><th>Cossim↑</th><th>$L_1$↓</th></tr>
 <tr><td>SageAttn2</td><td>448</td><td>448</td><td><b>99.97%</b></td><td>0.01862</td></tr>
 <tr><td>SageAttn2++</td><td>448</td><td>2.25</td><td><b>99.97%</b></td><td>0.01863</td></tr>
 <tr><td>SageAttn2++</td><td>224</td><td>4.5</td><td><b>99.97%</b></td><td><b>0.01862</b></td></tr>
@@ -212,13 +212,13 @@ footer {
 <p><b>Takeaway</b>: SageAttn2++(8+8) 在所有模型上端到端指标几乎与全精度一致，是安全的 plug-and-play 替代方案。</p>
 <h3>关键细节与启示</h3>
 <p><b>技术细节补充:</b></p>
-<p>1. 核心约束 <code>Pr × Vr ≤ 2047</code> 来自 MMA 指令的 K=32 累加维度和 FP16 的 65504 上限（65504/32=2047）。Delayed Buffering 将约束收紧为 ≤1023.5。</p>
+<p>1. 核心约束 <code>Pr × Vr ≤ 2047</code> 来自 MMA 指令的 $K = 32$ 累加维度和 FP16 的 65504 上限（$65504 / 32 = 2047$）。Delayed Buffering 将约束收紧为 $\leq 1023.5$。</p>
 <p>2. SageAttention2++ 沿用了 SageAttention2 的 Q/K smoothing 和 INT4/INT8 量化，仅修改 PV Matmul 的指令选择和量化范围，是一个非常 targeted 的优化。</p>
 <p><b>一句话总结:</b> SageAttention2++ 通过使用 FP16 累加器的 FP8 MMA 指令并缩窄量化范围来避免溢出，在不损失精度的情况下将 attention 加速从 2x 提升到 3.9x（相对 FlashAttention2）。</p>
 <h2 id="key-findings">Key Findings</h2>
 <ul>
 <li>FP8 Matmul with FP16 accumulator (<code>mma.f16.f8.f8.f16</code>) is 4x faster than FP16, vs 2x for FP32 accumulator — a 2x speedup opportunity for the PV matmul in attention</li>
-<li>Narrowing FP8 quantization ranges (Pr=224, Vr=4.5 vs original 448) maintains identical attention accuracy (cosine similarity 99.97%)</li>
+<li>Narrowing FP8 quantization ranges ($P_r = 224$, $V_r = 4.5$ vs original 448) maintains identical attention accuracy (cosine similarity 99.97%)</li>
 <li>Delayed FP32 Buffering (accumulating 2 MMA results in FP16 before FP32 conversion) halves type conversion overhead</li>
 <li>SageAttention2++(4+8) achieves 3.9x speedup over FlashAttention2 on RTX4090 at 32K sequence length</li>
 <li>End-to-end metrics on Llama3.1, CogvideoX, HunyuanVideo, Wan, Flux, SD3.5 show negligible degradation</li>
@@ -246,15 +246,15 @@ footer {
 <p><b>Computational primitive</b>: Attention mechanism, specifically the PV matrix multiplication (P×V) in the second half of attention computation.</p>
 <p><b>Input/output shapes and data types</b>:</p>
 <ul>
-<li>Input P (post-softmax): shape [batch, heads, seq_len_q, seq_len_kv], quantized to FP8 E4M3 with range narrowed to Pr=224</li>
-<li>Input V: shape [batch, heads, seq_len_kv, head_dim], quantized to FP8 E4M3 with per-channel granularity, range narrowed to Vr=4.5</li>
-<li>Q, K: INT4 or INT8 for the QK matmul (unchanged from SageAttention2)</li>
-<li>Output O: FP32 (accumulated), eventually FP16/BF16</li>
+<li>Input $P$ (post-softmax): shape [batch, heads, seq_len_q, seq_len_kv], quantized to FP8 E4M3 with range narrowed to $P_r = 224$</li>
+<li>Input $V$: shape [batch, heads, seq_len_kv, head_dim], quantized to FP8 E4M3 with per-channel granularity, range narrowed to $V_r = 4.5$</li>
+<li>$Q$, $K$: INT4 or INT8 for the $QK$ matmul (unchanged from SageAttention2)</li>
+<li>Output $O$: FP32 (accumulated), eventually FP16/BF16</li>
 </ul>
-<p><b>Theoretical arithmetic intensity</b>: For attention with seq_len N and head_dim d:</p>
+<p><b>Theoretical arithmetic intensity</b>: For attention with seq_len $N$ and head_dim $d$:</p>
 <ul>
-<li>QK^T: O(N²d) FLOPs, O(Nd) bytes → arithmetic intensity = O(N)</li>
-<li>PV: O(N²d) FLOPs, O(N²+Nd) bytes → for large N, compute-bound</li>
+<li>$QK^\top$: $O(N^2 d)$ FLOPs, $O(Nd)$ bytes → arithmetic intensity = $O(N)$</li>
+<li>$PV$: $O(N^2 d)$ FLOPs, $O(N^2 + Nd)$ bytes → for large $N$, compute-bound</li>
 <li>With FP8 quantization, the byte count per element halves → further improves arithmetic intensity</li>
 </ul>
 <p><b>Roofline position</b>: At long sequences (8K+), attention is compute-bound on the Matmul operations. Using FP8 inputs with 4x instruction throughput shifts the bottleneck further toward memory bandwidth for the quantize/dequantize overhead.</p>
