@@ -23,12 +23,12 @@ papers = sorted(db["papers"], key=lambda p: p.get("date", ""), reverse=True)
 CAT_COLORS = {
     "algorithm": "#16a34a", "kernel": "#ea580c", "framework": "#2563eb",
     "llm": "#9333ea", "agent": "#dc2626", "cluster": "#0891b2",
-    "hardware": "#b45309"
+    "hardware": "#b45309", "code": "#64748b"
 }
 CAT_LABELS = {
     "algorithm": "Algorithm", "kernel": "Kernel", "framework": "Framework",
     "llm": "LLM", "agent": "Agent", "cluster": "Cluster",
-    "hardware": "Hardware"
+    "hardware": "Hardware", "code": "Code"
 }
 
 IMG_DIR = os.path.join(DB_DIR, "images")
