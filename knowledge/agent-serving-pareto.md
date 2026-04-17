@@ -321,6 +321,20 @@ T_compute     = 2 × active_params × B / total_FLOPS             [随 batch 增
 TPOT = step_time_ideal / η_decode
 ```
 
+注意 KV-cache 带宽受 GQA head 数约束：
+
+```
+kv_effective_GPUs = min(numGPUs, n_kv_heads)
+T_kv_load = B × L_avg × kv_bytes_per_token / (kv_effective_GPUs × BW_per_GPU)
+```
+
+当 numGPUs > n_kv_heads（如 8 KV heads on 16 GPUs），KV-cache 无法进一步拆分，每张卡至少保留 1 个完整 head。此时 T_kv 不再随 GPU 数量缩减。
+
+加上 10% elementwise 开销（LayerNorm, RoPE, activation, residual add）：
+```
+T_memory = (T_weight_load + T_kv_load) × 1.10
+```
+
 其中 η_decode ≈ 0.40 是 decode 效率因子，补偿 roofline 模型未覆盖的实际开销：
 
 | 开销来源 | 典型值 (70B, TP=8) | 说明 |

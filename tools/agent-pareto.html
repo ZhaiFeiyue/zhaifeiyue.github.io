@@ -373,10 +373,10 @@ select {
 
 <script>
 const MODELS = {
-  '7B':   { modelSize: 7,    kvBPT: 131072, dtypeBytes: 2,   activeSize: null, label: 'Llama-7B' },
-  '70B':  { modelSize: 70,   kvBPT: 327680, dtypeBytes: 2,   activeSize: null, label: 'Llama-70B' },
-  '405B': { modelSize: 405,  kvBPT: 516096, dtypeBytes: 1,   activeSize: null, label: 'Llama-405B' },
-  'K25':  { modelSize: 1000, kvBPT: 524288, dtypeBytes: 0.5, activeSize: 32,   label: 'Kimi K2.5 1T MoE' },
+  '7B':   { modelSize: 7,    kvBPT: 131072, dtypeBytes: 2,   activeSize: null, kvHeads: 8,  label: 'Llama-7B' },
+  '70B':  { modelSize: 70,   kvBPT: 327680, dtypeBytes: 2,   activeSize: null, kvHeads: 8,  label: 'Llama-70B' },
+  '405B': { modelSize: 405,  kvBPT: 516096, dtypeBytes: 1,   activeSize: null, kvHeads: 8,  label: 'Llama-405B' },
+  'K25':  { modelSize: 1000, kvBPT: 524288, dtypeBytes: 0.5, activeSize: 32,   kvHeads: 8,  label: 'Kimi K2.5 1T MoE' },
 };
 
 const GPUS = {
@@ -405,7 +405,7 @@ function getHW() {
                 : g.fp16;
   const hw = {
     modelSize: m.modelSize, activeSize: m.activeSize,
-    dtypeBytes: m.dtypeBytes, kvBPT: m.kvBPT,
+    dtypeBytes: m.dtypeBytes, kvBPT: m.kvBPT, kvHeads: m.kvHeads,
     numGPUs: n, memBW: g.memBW, compute: compute,
     gpuMem: g.vram * n,
   };
@@ -448,13 +448,22 @@ function computeTTFT(prefillLen, hw) {
 
 function computeStepTime(B, Lavg, hw) {
   const active = hw.activeSize || hw.modelSize;
-  const totalBW = hw.numGPUs * hw.memBW;
   const totalFLOPS = hw.numGPUs * hw.compute * 1e12;
-  const activeGB = active * hw.dtypeBytes;
-  const Tweight = activeGB / totalBW * 1000;
-  const Tkv = B * Lavg * hw.kvBPT / (totalBW * 1e9) * 1000;
+
+  // Weights evenly split across GPUs via TP
+  const Tweight = active * hw.dtypeBytes / (hw.numGPUs * hw.memBW) * 1000;
+
+  // KV-cache: with GQA, TP can only split up to n_kv_heads GPUs.
+  // Beyond that, each GPU keeps at least 1 full head (no further split).
+  const kvEffGPUs = Math.min(hw.numGPUs, hw.kvHeads);
+  const Tkv = B * Lavg * hw.kvBPT / (kvEffGPUs * hw.memBW * 1e9) * 1000;
+
   const Tcompute = 2 * active * 1e9 * B / totalFLOPS * 1000;
-  return Math.max(Tweight + Tkv, Tcompute) / DECODE_EFF;
+
+  // 10% overhead for elementwise ops (LayerNorm, RoPE, activation, residual)
+  const Tmem = (Tweight + Tkv) * 1.10;
+
+  return Math.max(Tmem, Tcompute) / DECODE_EFF;
 }
 
 function generateStandardCurve(hw, ag) {
@@ -481,7 +490,8 @@ function generateAgentCurve(hw, ag, cacheHit) {
   const Zms = ag.Z * 1000;
 
   const memAvailGB = hw.gpuMem - hw.modelSize * hw.dtypeBytes;
-  const kvPerSessionGB = Lavg * hw.kvBPT / 1e9;
+  const kvReplicationFactor = hw.numGPUs / Math.min(hw.numGPUs, hw.kvHeads);
+  const kvPerSessionGB = Lavg * hw.kvBPT * kvReplicationFactor / 1e9;
   const Cmax = Math.floor(memAvailGB / kvPerSessionGB);
 
   const cValues = [];
@@ -549,7 +559,8 @@ function computeMetrics(hw, ag) {
 
   const rho = Rcache / (Rcache + Zms);
   const memAvailGB = hw.gpuMem - hw.modelSize * hw.dtypeBytes;
-  const kvPerSessionGB = Lavg * hw.kvBPT / 1e9;
+  const kvReplicationFactor = hw.numGPUs / Math.min(hw.numGPUs, hw.kvHeads);
+  const kvPerSessionGB = Lavg * hw.kvBPT * kvReplicationFactor / 1e9;
   const Cmax = Math.floor(memAvailGB / kvPerSessionGB);
 
   const turnTput = ag.C / (Rcache / 1000 + ag.Z);
