@@ -509,12 +509,14 @@ function computeStepTime(B, Lavg, hw) {
     // non-MoE (attention, shared experts, embeddings): TP-split across all GPUs
     const TnonMoe = hw.moe.nonMoeB * hw.dtypeBytes / (hw.numGPUs * bwPerGPU) * 1000;
 
-    // MoE experts: distributed across GPUs, only active experts load weights.
-    // active experts = min(B × topK, totalExperts)
-    // each expert is tiny (44M=22MB in FP4), loaded only if routed to.
-    const activeExperts = Math.min(B * hw.moe.topK, hw.moe.totalExperts);
-    const activePerGPU = activeExperts / hw.numGPUs;
-    const TmoE = activePerGPU * hw.moe.expertB * hw.dtypeBytes / bwPerGPU * 1000;
+    // MoE experts: per-layer activation × num MoE layers, distributed across GPUs.
+    // expertB is per-expert per-layer (e.g. 44M for K2.5). Per step, each of
+    // numMoeLayers layers activates min(B×topK, totalExperts) experts, loaded
+    // once per step from HBM. Uniformly distributed across GPUs.
+    const activePerLayer = Math.min(B * hw.moe.topK, hw.moe.totalExperts);
+    const activePerGPU = activePerLayer / hw.numGPUs;
+    const TmoE = activePerGPU * hw.moe.expertB * hw.moe.numMoeLayers
+               * hw.dtypeBytes / bwPerGPU * 1000;
 
     Tweight = TnonMoe + TmoE;
   } else {
