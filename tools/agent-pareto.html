@@ -372,11 +372,28 @@ select {
 </footer>
 
 <script>
+// Model configs derived from HuggingFace config.json:
+//   Llama: meta-llama/Llama-3.1-{8,70,405}B
+//   K2.5:  moonshotai/Kimi-K2.5 (DeepseekV3ForCausalLM architecture)
 const MODELS = {
-  '7B':   { modelSize: 7,    kvBPT: 131072, dtypeBytes: 2,   activeSize: null, kvHeads: 8,  label: 'Llama-7B' },
-  '70B':  { modelSize: 70,   kvBPT: 327680, dtypeBytes: 2,   activeSize: null, kvHeads: 8,  label: 'Llama-70B' },
-  '405B': { modelSize: 405,  kvBPT: 516096, dtypeBytes: 1,   activeSize: null, kvHeads: 8,  label: 'Llama-405B' },
-  'K25':  { modelSize: 1000, kvBPT: 92160,  dtypeBytes: 0.5, activeSize: 32,   kvHeads: 1,  label: 'Kimi K2.5 1T MoE (MLA)' },
+  '7B':   { modelSize: 7,    kvBPT: 131072, dtypeBytes: 2,   activeSize: null, kvHeads: 8,  moe: null, label: 'Llama-8B' },
+  '70B':  { modelSize: 70,   kvBPT: 327680, dtypeBytes: 2,   activeSize: null, kvHeads: 8,  moe: null, label: 'Llama-70B' },
+  '405B': { modelSize: 405,  kvBPT: 516096, dtypeBytes: 1,   activeSize: null, kvHeads: 8,  moe: null, label: 'Llama-405B' },
+  'K25':  {
+    modelSize: 1000,
+    kvBPT: 70272,        // MLA: (kv_lora_rank=512 + qk_rope_head_dim=64) × 2bytes × 61layers
+    dtypeBytes: 0.5,     // INT4 quantized (routed experts only, but approx all)
+    activeSize: 32,      // nonMoeB + topK×expertB×numMoeLayers ≈ 11.5+21.1=32.6B
+    kvHeads: 1,          // MLA: compressed c_KV is not head-splittable
+    moe: {
+      totalExperts: 384,   // n_routed_experts
+      topK: 8,             // num_experts_per_tok
+      numMoeLayers: 60,    // layers 1-60 are MoE (first_k_dense_replace=1)
+      nonMoeB: 11.5,       // attention(101M×61) + shared_expert(44M×60) + embed(2.3B)
+      expertB: 0.04404,    // per expert: 3 × hidden_size(7168) × moe_intermediate_size(2048) = 44.04M
+    },
+    label: 'Kimi K2.5 1T MoE (MLA)'
+  },
 };
 
 const GPUS = {
@@ -406,7 +423,7 @@ function getHW() {
   const hw = {
     modelSize: m.modelSize, activeSize: m.activeSize,
     dtypeBytes: m.dtypeBytes, kvBPT: m.kvBPT, kvHeads: m.kvHeads,
-    numGPUs: n, memBW: g.memBW, compute: compute,
+    moe: m.moe, numGPUs: n, memBW: g.memBW, compute: compute,
     gpuMem: g.vram * n,
   };
   const el = document.getElementById('hw-summary');
@@ -449,14 +466,31 @@ function computeTTFT(prefillLen, hw) {
 function computeStepTime(B, Lavg, hw) {
   const active = hw.activeSize || hw.modelSize;
   const totalFLOPS = hw.numGPUs * hw.compute * 1e12;
+  const bwPerGPU = hw.memBW; // GB/s per GPU
 
-  // Weights evenly split across GPUs via TP
-  const Tweight = active * hw.dtypeBytes / (hw.numGPUs * hw.memBW) * 1000;
+  let Tweight;
+  if (hw.moe) {
+    // MoE: split into non-MoE + MoE expert weight loading
+    // non-MoE (attention, shared experts, embeddings): TP-split across all GPUs
+    const TnonMoe = hw.moe.nonMoeB * hw.dtypeBytes / (hw.numGPUs * bwPerGPU) * 1000;
+
+    // MoE experts: distributed across GPUs, only active experts load weights.
+    // active experts = min(B × topK, totalExperts)
+    // each expert is tiny (44M=22MB in FP4), loaded only if routed to.
+    const activeExperts = Math.min(B * hw.moe.topK, hw.moe.totalExperts);
+    const activePerGPU = activeExperts / hw.numGPUs;
+    const TmoE = activePerGPU * hw.moe.expertB * hw.dtypeBytes / bwPerGPU * 1000;
+
+    Tweight = TnonMoe + TmoE;
+  } else {
+    // Dense model: all weights TP-split across GPUs
+    Tweight = active * hw.dtypeBytes / (hw.numGPUs * bwPerGPU) * 1000;
+  }
 
   // KV-cache: with GQA, TP can only split up to n_kv_heads GPUs.
-  // Beyond that, each GPU keeps at least 1 full head (no further split).
+  // With MLA (kvHeads=1), c_KV is not head-splittable — each GPU reads full c_KV.
   const kvEffGPUs = Math.min(hw.numGPUs, hw.kvHeads);
-  const Tkv = B * Lavg * hw.kvBPT / (kvEffGPUs * hw.memBW * 1e9) * 1000;
+  const Tkv = B * Lavg * hw.kvBPT / (kvEffGPUs * bwPerGPU * 1e9) * 1000;
 
   const Tcompute = 2 * active * 1e9 * B / totalFLOPS * 1000;
 
