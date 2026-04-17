@@ -271,6 +271,12 @@ select {
       <input type="range" id="s-Z" min="0" max="300" value="20">
 
       <div class="control-row">
+        <label>Over-commit α</label>
+        <span class="val" id="v-alpha">1.00</span>
+      </div>
+      <input type="range" id="s-alpha" min="0" max="100" value="100">
+
+      <div class="control-row">
         <label>Tool Result Tokens (ΔL)</label>
         <span class="val" id="v-dL">2000</span>
       </div>
@@ -416,10 +422,10 @@ const GPUS = {
 };
 
 const SCENARIOS = {
-  code:     { N: 8,  Z: 0.5, dL: 500,  OSL: 128,  L0: 16000, cache: 95 },
-  research: { N: 15, Z: 5.0, dL: 3000, OSL: 64,   L0: 24000, cache: 70 },
-  chat:     { N: 8,  Z: 15,  dL: 200,  OSL: 256,  L0: 8000,  cache: 98 },
-  deep:     { N: 20, Z: 1.0, dL: 4000, OSL: 4096, L0: 32000, cache: 85 },
+  code:     { N: 8,  Z: 0.5, alpha: 100, dL: 500,  OSL: 128,  L0: 16000, cache: 95 },
+  research: { N: 15, Z: 5.0, alpha: 100, dL: 3000, OSL: 64,   L0: 24000, cache: 70 },
+  chat:     { N: 8,  Z: 15,  alpha: 100, dL: 200,  OSL: 256,  L0: 8000,  cache: 98 },
+  deep:     { N: 20, Z: 1.0, alpha: 100, dL: 4000, OSL: 4096, L0: 32000, cache: 85 },
 };
 
 let viewMode = 'turn';
@@ -458,6 +464,7 @@ function getAgent() {
   return {
     N:     +document.getElementById('s-N').value,
     Z:     +document.getElementById('s-Z').value / 10,
+    alpha: +document.getElementById('s-alpha').value / 100,
     dL:    +document.getElementById('s-dL').value,
     OSL:   +document.getElementById('s-OSL').value,
     L0:    +document.getElementById('s-L0').value,
@@ -558,17 +565,14 @@ function computeSession(Bmax, hw, ag, cacheHit) {
 function generateAgentCurve(hw, ag, cacheHit) {
   const Bmax = computeBmax(hw, ag);
   const pts = [];
+  const Zms = ag.Z * 1000;
   for (let j = 1; j <= ag.N; j++) {
     const t = computeTurnTime(Bmax, j, hw, ag, cacheHit);
     const speed = ag.OSL / (t.R / 1000);                                 // tok/s/turn/agent
-    const tputPerGPU = Bmax * ag.OSL / (t.R / 1000) / hw.numGPUs;        // tok/s/GPU
-    if (viewMode === 'turn') {
-      pts.push({ x: speed, y: tputPerGPU, turn: j, R: t.R, L: t.Lj, Bmax });
-    } else {
-      // Per-task view: throughput = tasks/min, x = avg task speed
-      // Single point per turn doesn't make sense for task view; show same data.
-      pts.push({ x: speed, y: tputPerGPU, turn: j, R: t.R, L: t.Lj, Bmax });
-    }
+    // GPU active ratio at this turn: α=1 → always saturated, α=0 → R/(R+Z)
+    const rho_j = ag.alpha + (1 - ag.alpha) * (t.R / (t.R + Zms));
+    const tputPerGPU = rho_j * Bmax * ag.OSL / (t.R / 1000) / hw.numGPUs;
+    pts.push({ x: speed, y: tputPerGPU, turn: j, R: t.R, L: t.Lj, Bmax, rho: rho_j });
   }
   return pts;
 }
@@ -583,10 +587,15 @@ function computeMetrics(hw, ag) {
   const sCache   = computeSession(Bmax, hw, ag, ag.cache);
   const sNoCache = computeSession(Bmax, hw, ag, 0);
 
-  // Derive C (sessions the system can support): C = Bmax × (R + Z) / R
-  // All Bmax slots are active ρ = R/(R+Z) of the time.
-  const C_derived = Math.ceil(Bmax * (sCache.R_avg + Zms) / sCache.R_avg);
-  const rho = sCache.R_avg / (sCache.R_avg + Zms);
+  // Derive C with over-commit factor α:
+  //   α=1: C = Bmax × (1 + Z/R) — perfect over-commit, Bmax always saturated
+  //   α=0: C = Bmax           — no over-commit, sessions idle during Z
+  //   0<α<1: partial over-commit (scheduler imperfection)
+  const C_derived = Math.ceil(Bmax * (1 + ag.alpha * Zms / sCache.R_avg));
+  // Effective GPU active ratio depends on how much over-commit actually works:
+  //   α=1 → ρ_eff = 1 (always busy)
+  //   α=0 → ρ_eff = R/(R+Z) (active only during R)
+  const rho = ag.alpha + (1 - ag.alpha) * (sCache.R_avg / (sCache.R_avg + Zms));
 
   // Pick turn of interest based on selector
   const pick = (s) => turnSel === 'first' ? s.R_first
@@ -599,8 +608,9 @@ function computeMetrics(hw, ag) {
   const tCache   = computeTurnTime(Bmax, jSel, hw, ag, ag.cache);
   const tNoCache = computeTurnTime(Bmax, jSel, hw, ag, 0);
 
-  // System throughput: Bmax sessions × OSL tokens per R_avg
-  const tokenTput = Bmax * ag.OSL / (sCache.R_avg / 1000) / hw.numGPUs;
+  // System throughput: Bmax active slots produce OSL tokens per R_avg,
+  // scaled by ρ (fraction of time the scheduler actually has B_max slots busy).
+  const tokenTput = rho * Bmax * ag.OSL / (sCache.R_avg / 1000) / hw.numGPUs;
   // Task time per session = Σ R(j) + N × Z
   const sessionTimeMs = sCache.totalR + ag.N * Zms;
   const taskTimeSec = sessionTimeMs / 1000;
@@ -768,6 +778,7 @@ function syncSliderDisplay() {
   const ag = getAgent();
   document.getElementById('v-N').textContent = ag.N;
   document.getElementById('v-Z').textContent = ag.Z.toFixed(1);
+  document.getElementById('v-alpha').textContent = ag.alpha.toFixed(2);
   document.getElementById('v-dL').textContent = ag.dL;
   document.getElementById('v-L0').textContent = (ag.L0 / 1000).toFixed(0) + 'K';
   document.getElementById('v-cache').textContent = Math.round(ag.cache * 100) + '%';
@@ -778,6 +789,7 @@ function applyScenario(name) {
   if (!s) return;
   document.getElementById('s-N').value = s.N;
   document.getElementById('s-Z').value = s.Z * 10;
+  document.getElementById('s-alpha').value = s.alpha;
   document.getElementById('s-dL').value = s.dL;
   document.getElementById('s-OSL').value = s.OSL;
   document.getElementById('s-L0').value = s.L0;
