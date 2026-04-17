@@ -259,18 +259,6 @@ select {
       <div class="card-title">Agent Workload</div>
 
       <div class="control-row">
-        <label>Concurrent Sessions (C)</label>
-        <span class="val" id="v-C">32</span>
-      </div>
-      <input type="range" id="s-C" min="1" max="512" value="32">
-
-      <div class="control-row">
-        <label>Max Active Batch (B_max)</label>
-        <span class="val" id="v-Bmax">128</span>
-      </div>
-      <input type="range" id="s-Bmax" min="8" max="512" value="128" step="8">
-
-      <div class="control-row">
         <label>Turns per Session (N)</label>
         <span class="val" id="v-N">10</span>
       </div>
@@ -428,10 +416,10 @@ const GPUS = {
 };
 
 const SCENARIOS = {
-  code:     { C: 32,  Bmax: 128, N: 8,  Z: 0.5, dL: 500,  OSL: 128,  L0: 16000, cache: 95 },
-  research: { C: 16,  Bmax: 128, N: 15, Z: 5.0, dL: 3000, OSL: 64,   L0: 24000, cache: 70 },
-  chat:     { C: 64,  Bmax: 128, N: 8,  Z: 15,  dL: 200,  OSL: 256,  L0: 8000,  cache: 98 },
-  deep:     { C: 8,   Bmax: 128, N: 20, Z: 1.0, dL: 4000, OSL: 4096, L0: 32000, cache: 85 },
+  code:     { N: 8,  Z: 0.5, dL: 500,  OSL: 128,  L0: 16000, cache: 95 },
+  research: { N: 15, Z: 5.0, dL: 3000, OSL: 64,   L0: 24000, cache: 70 },
+  chat:     { N: 8,  Z: 15,  dL: 200,  OSL: 256,  L0: 8000,  cache: 98 },
+  deep:     { N: 20, Z: 1.0, dL: 4000, OSL: 4096, L0: 32000, cache: 85 },
 };
 
 let viewMode = 'turn';
@@ -468,8 +456,6 @@ function makeHW(suffix) {
 
 function getAgent() {
   return {
-    C:     +document.getElementById('s-C').value,
-    Bmax:  +document.getElementById('s-Bmax').value,
     N:     +document.getElementById('s-N').value,
     Z:     +document.getElementById('s-Z').value / 10,
     dL:    +document.getElementById('s-dL').value,
@@ -477,6 +463,15 @@ function getAgent() {
     L0:    +document.getElementById('s-L0').value,
     cache: +document.getElementById('s-cache').value / 100,
   };
+}
+
+// B_max is derived from hardware + workload (bounded by KV-cache memory).
+function computeBmax(hw, ag) {
+  const memAvailGB = hw.gpuMem - hw.modelSize * hw.dtypeBytes;
+  const Lavg = ag.L0 + (ag.N / 2) * (ag.OSL + ag.dL);
+  const kvRep = hw.numGPUs / Math.min(hw.numGPUs, hw.kvHeads);
+  const kvPerSessionGB = Lavg * hw.kvBPT * kvRep / 1e9;
+  return Math.max(1, Math.floor(memAvailGB / kvPerSessionGB));
 }
 
 // Efficiency factors account for real-world overheads not in the roofline model:
@@ -533,88 +528,46 @@ function computeStepTime(B, Lavg, hw) {
   return Math.max(Tmem, Tcompute) / DECODE_EFF;
 }
 
-// Compute per-turn timing at turn j with max active batch B_max.
-// Model: C sessions split into waves of size min(C, B_max). Each wave runs
-// prefill + decode serially. Per-agent turn time = num_waves × T_wave.
-function computeTurnTime(C, j, hw, ag, cacheHit) {
-  const Bwave = Math.min(C, ag.Bmax);
-  const numWaves = Math.ceil(C / ag.Bmax);
+// Per-turn timing: batch of Bmax sessions process turn j together.
+function computeTurnTime(Bmax, j, hw, ag, cacheHit) {
   const Lj = ag.L0 + (j - 1) * (ag.OSL + ag.dL);
   const prefillLen = cacheHit * ag.dL + (1 - cacheHit) * Lj;
-  const Tprefill = computePrefillTime(Bwave, prefillLen, hw);  // single wave prefill
-  const Tstep = computeStepTime(Bwave, Lj, hw);                 // single wave decode step
+  const Tprefill = computePrefillTime(Bmax, prefillLen, hw);
+  const Tstep = computeStepTime(Bmax, Lj, hw);
   const Tdecode = Tstep * ag.OSL;
-  const Twave = Tprefill + Tdecode;                             // one wave turn time
-  const R = numWaves * Twave;                                    // total time for all C to complete turn j
-  return { R, Tprefill, Tdecode, Lj, prefillLen, Bwave, numWaves, Twave };
+  const R = Tprefill + Tdecode;
+  return { R, Tprefill, Tdecode, Lj, prefillLen };
 }
 
-// Aggregate a session (N turns) into total inference time and useful tokens.
-function computeSession(C, hw, ag, cacheHit) {
-  let totalR = 0, totalPrefillTok = 0, totalDecodeTok = 0;
-  let R_first = 0, R_last = 0, Bwave = 0, numWaves = 0;
+// Aggregate N turns (prefill+decode) for a Bmax batch.
+function computeSession(Bmax, hw, ag, cacheHit) {
+  let totalR = 0;
+  let R_first = 0, R_last = 0;
   for (let j = 1; j <= ag.N; j++) {
-    const t = computeTurnTime(C, j, hw, ag, cacheHit);
+    const t = computeTurnTime(Bmax, j, hw, ag, cacheHit);
     totalR += t.R;
-    totalPrefillTok += C * t.prefillLen;
-    totalDecodeTok  += C * ag.OSL;
     if (j === 1) R_first = t.R;
     if (j === ag.N) R_last = t.R;
-    Bwave = t.Bwave;
-    numWaves = t.numWaves;
   }
   const R_avg = totalR / ag.N;
-  return { totalR, R_avg, R_first, R_last, totalPrefillTok, totalDecodeTok, Bwave, numWaves };
+  return { totalR, R_avg, R_first, R_last };
 }
 
+// Pareto curve = trajectory over session turns j=1..N.
+// Each point: (per-agent speed at turn j, system throughput at turn j).
 function generateAgentCurve(hw, ag, cacheHit) {
+  const Bmax = computeBmax(hw, ag);
   const pts = [];
-  const Zms = ag.Z * 1000;
-
-  const Lavg = ag.L0 + (ag.N / 2) * (ag.OSL + ag.dL);
-  const memAvailGB = hw.gpuMem - hw.modelSize * hw.dtypeBytes;
-  const kvReplicationFactor = hw.numGPUs / Math.min(hw.numGPUs, hw.kvHeads);
-  const kvPerSessionGB = Lavg * hw.kvBPT * kvReplicationFactor / 1e9;
-  const Cmax = Math.max(1, Math.floor(memAvailGB / kvPerSessionGB));
-
-  const cValues = [];
-  for (let c = 1; c <= Math.min(ag.C * 4, 512); c = c < 8 ? c + 1 : Math.ceil(c * 1.25)) {
-    cValues.push(Math.min(c, Cmax));
-  }
-  if (!cValues.includes(ag.C) && ag.C <= Cmax) {
-    cValues.push(ag.C);
-    cValues.sort((a, b) => a - b);
-  }
-  const seen = new Set();
-
-  for (const C of cValues) {
-    if (seen.has(C)) continue;
-    seen.add(C);
-
-    const s = computeSession(C, hw, ag, cacheHit);
-
-    // Pick which turn to display based on turnSel
-    let R;
-    if (turnSel === 'first')      R = s.R_first;
-    else if (turnSel === 'last')  R = s.R_last;
-    else                           R = s.R_avg;   // avg across all N turns
-
-    // Per-turn speed: output tokens per second per agent
-    const speed = ag.OSL / (R / 1000);
-
-    // System throughput over the full session:
-    //   total output tokens = C × N × OSL
-    //   total time = Σ R(j) + N × Z   (pause between turns)
-    const sessionTimeMs = s.totalR + ag.N * Zms;
-    const outputTputPerGPU = (C * ag.N * ag.OSL) / (sessionTimeMs / 1000) / hw.numGPUs;
-
+  for (let j = 1; j <= ag.N; j++) {
+    const t = computeTurnTime(Bmax, j, hw, ag, cacheHit);
+    const speed = ag.OSL / (t.R / 1000);                                 // tok/s/turn/agent
+    const tputPerGPU = Bmax * ag.OSL / (t.R / 1000) / hw.numGPUs;        // tok/s/GPU
     if (viewMode === 'turn') {
-      pts.push({ x: speed, y: outputTputPerGPU, C, R, Ravg: s.R_avg, Rfirst: s.R_first, Rlast: s.R_last });
+      pts.push({ x: speed, y: tputPerGPU, turn: j, R: t.R, L: t.Lj, Bmax });
     } else {
-      const taskTimeSec = sessionTimeMs / 1000;
-      const tasksPerMin = C / taskTimeSec * 60;
-      const taskSpeed = ag.N * ag.OSL / taskTimeSec;
-      pts.push({ x: taskSpeed, y: tasksPerMin, C, R, Ravg: s.R_avg });
+      // Per-task view: throughput = tasks/min, x = avg task speed
+      // Single point per turn doesn't make sense for task view; show same data.
+      pts.push({ x: speed, y: tputPerGPU, turn: j, R: t.R, L: t.Lj, Bmax });
     }
   }
   return pts;
@@ -625,15 +578,15 @@ function computeMetrics(hw, ag) {
   const Lfinal = ag.L0 + (ag.N - 1) * (ag.OSL + ag.dL);
   const Zms = ag.Z * 1000;
 
-  const memAvailGB = hw.gpuMem - hw.modelSize * hw.dtypeBytes;
-  const kvReplicationFactor = hw.numGPUs / Math.min(hw.numGPUs, hw.kvHeads);
-  const kvPerSessionGB = Lavg * hw.kvBPT * kvReplicationFactor / 1e9;
-  const Cmax = Math.max(1, Math.floor(memAvailGB / kvPerSessionGB));
-  const Ceff = Math.min(ag.C, Cmax);
+  const Bmax = computeBmax(hw, ag);
 
-  // Run both cache and no-cache sessions at current C setting
-  const sCache   = computeSession(Ceff, hw, ag, ag.cache);
-  const sNoCache = computeSession(Ceff, hw, ag, 0);
+  const sCache   = computeSession(Bmax, hw, ag, ag.cache);
+  const sNoCache = computeSession(Bmax, hw, ag, 0);
+
+  // Derive C (sessions the system can support): C = Bmax × (R + Z) / R
+  // All Bmax slots are active ρ = R/(R+Z) of the time.
+  const C_derived = Math.ceil(Bmax * (sCache.R_avg + Zms) / sCache.R_avg);
+  const rho = sCache.R_avg / (sCache.R_avg + Zms);
 
   // Pick turn of interest based on selector
   const pick = (s) => turnSel === 'first' ? s.R_first
@@ -642,25 +595,27 @@ function computeMetrics(hw, ag) {
   const Rcache    = pick(sCache);
   const Rnocache  = pick(sNoCache);
 
-  // Break down R at selected turn: get prefill and decode separately
   const jSel = turnSel === 'first' ? 1 : turnSel === 'last' ? ag.N : Math.ceil(ag.N/2);
-  const tCache   = computeTurnTime(Ceff, jSel, hw, ag, ag.cache);
-  const tNoCache = computeTurnTime(Ceff, jSel, hw, ag, 0);
+  const tCache   = computeTurnTime(Bmax, jSel, hw, ag, ag.cache);
+  const tNoCache = computeTurnTime(Bmax, jSel, hw, ag, 0);
 
-  // Session-level aggregates (over all N turns, with Z pauses)
+  // System throughput: Bmax sessions × OSL tokens per R_avg
+  const tokenTput = Bmax * ag.OSL / (sCache.R_avg / 1000) / hw.numGPUs;
+  // Task time per session = Σ R(j) + N × Z
   const sessionTimeMs = sCache.totalR + ag.N * Zms;
   const taskTimeSec = sessionTimeMs / 1000;
-  const tokenTput = (Ceff * ag.N * ag.OSL) / taskTimeSec / hw.numGPUs;
-  const taskTput = Ceff / taskTimeSec * 60;
-  const rho = sCache.totalR / sessionTimeMs;
+  const taskTput = C_derived / taskTimeSec * 60;
 
   const cacheBenefit = Rnocache / Rcache;
   const Lctx = (turnSel === 'first') ? ag.L0
-              : (turnSel === 'last') ? Lfinal : (ag.L0 + (ag.N/2)*(ag.OSL+ag.dL));
+              : (turnSel === 'last') ? Lfinal : Lavg;
+
+  const memAvailGB = hw.gpuMem - hw.modelSize * hw.dtypeBytes;
+  const kvRep = hw.numGPUs / Math.min(hw.numGPUs, hw.kvHeads);
+  const kvPerSessionGB = Lavg * hw.kvBPT * kvRep / 1e9;
 
   return {
-    Cmax, Ceff, Lctx, Lavg, Lfinal, rho,
-    Bwave: sCache.Bwave, numWaves: sCache.numWaves,
+    Bmax, C: C_derived, Lctx, Lavg, Lfinal, rho,
     ttftCache: tCache.Tprefill, ttftNoCache: tNoCache.Tprefill,
     tpot: tCache.Tdecode / ag.OSL,
     Rcache, Rnocache, tokenTput, taskTime: taskTimeSec, taskTput,
@@ -671,19 +626,18 @@ function computeMetrics(hw, ag) {
 function updateMetricsPanel(mA, mB) {
   const p = document.getElementById('metrics-panel');
   const f = (v, d = 1) => v.toFixed(d);
-  const ag = getAgent();
   p.innerHTML = `
     <div style="display:grid;grid-template-columns:auto 1fr 1fr;gap:2px 8px;font-size:0.78rem">
       <span style="color:var(--mt)"></span><span style="color:var(--blue);text-align:right;font-weight:600">HW-A</span><span style="color:var(--amber);text-align:right;font-weight:600">HW-B</span>
+      <span style="color:var(--mt)">B_max (active)</span><span style="color:var(--blue);text-align:right;font-weight:600">${mA.Bmax}</span><span style="color:var(--amber);text-align:right;font-weight:600">${mB.Bmax}</span>
+      <span style="color:var(--mt)">C (derived)</span><span style="color:var(--blue);text-align:right;font-weight:600">${mA.C}</span><span style="color:var(--amber);text-align:right;font-weight:600">${mB.C}</span>
       <span style="color:var(--mt)">Context</span><span style="text-align:right">${(mA.Lctx/1000).toFixed(1)}K</span><span style="text-align:right">${(mA.Lavg/1000).toFixed(0)}K..${(mA.Lfinal/1000).toFixed(0)}K</span>
-      <span style="color:var(--mt)">C_eff</span><span style="color:var(--blue);text-align:right">${mA.Ceff}</span><span style="color:var(--amber);text-align:right">${mB.Ceff}</span>
-      <span style="color:var(--mt)">B_wave × waves</span><span style="text-align:right">${mA.Bwave}×${mA.numWaves}</span><span style="text-align:right">${mB.Bwave}×${mB.numWaves}</span>
       <span style="color:var(--mt)">ρ (active)</span><span style="text-align:right">${f(mA.rho*100)}%</span><span style="text-align:right">${f(mB.rho*100)}%</span>
       <span style="color:var(--mt)">Prefill (cache)</span><span style="text-align:right">${f(mA.ttftCache)} ms</span><span style="text-align:right">${f(mB.ttftCache)} ms</span>
       <span style="color:var(--mt)">Prefill (no-cache)</span><span style="text-align:right">${f(mA.ttftNoCache)} ms</span><span style="text-align:right">${f(mB.ttftNoCache)} ms</span>
       <span style="color:var(--mt)">TPOT</span><span style="text-align:right">${f(mA.tpot)} ms</span><span style="text-align:right">${f(mB.tpot)} ms</span>
       <span style="color:var(--mt)">Cache ×</span><span style="text-align:right">${f(mA.cacheBenefit)}×</span><span style="text-align:right">${f(mB.cacheBenefit)}×</span>
-      <span style="color:var(--mt)">C_max</span><span style="text-align:right;${mA.Cmax<ag.C?'color:var(--rose)':''}">${mA.Cmax}</span><span style="text-align:right;${mB.Cmax<ag.C?'color:var(--rose)':''}">${mB.Cmax}</span>
+      <span style="color:var(--mt)">KV/session</span><span style="text-align:right">${f(mA.kvPerSessionGB,2)} GB</span><span style="text-align:right">${f(mB.kvPerSessionGB,2)} GB</span>
     </div>`;
 }
 
@@ -780,17 +734,10 @@ function buildChart() {
             label(ctx) {
               const p = ctx.raw;
               const lines = [];
-              if (viewMode === 'turn') {
-                lines.push(`Speed: ${p.x.toFixed(1)} tok/s/turn/agent`);
-                lines.push(`Latency: ${p.R?.toFixed(0)} ms`);
-                lines.push(`Throughput: ${p.y.toFixed(1)} tok/s/GPU`);
-              } else {
-                lines.push(`Speed: ${p.x.toFixed(1)} tok/s/task`);
-                lines.push(`Latency: ${p.R?.toFixed(0)} ms/turn`);
-                lines.push(`Tasks/min: ${p.y.toFixed(2)}`);
-              }
-              if (p.C !== undefined) lines.push(`Sessions: ${p.C}`);
-              if (p.Ravg !== undefined) lines.push(`R: first ${p.Rfirst?.toFixed(0)} / avg ${p.Ravg?.toFixed(0)} / last ${p.Rlast?.toFixed(0)} ms`);
+              lines.push(`Turn ${p.turn} (L=${(p.L/1000).toFixed(1)}K)`);
+              lines.push(`Speed: ${p.x.toFixed(1)} tok/s/turn/agent`);
+              lines.push(`Throughput: ${p.y.toFixed(1)} tok/s/GPU`);
+              lines.push(`R: ${p.R?.toFixed(0)} ms (B_max=${p.Bmax})`);
               return lines;
             }
           }
@@ -819,8 +766,6 @@ function buildChart() {
 
 function syncSliderDisplay() {
   const ag = getAgent();
-  document.getElementById('v-C').textContent = ag.C;
-  document.getElementById('v-Bmax').textContent = ag.Bmax;
   document.getElementById('v-N').textContent = ag.N;
   document.getElementById('v-Z').textContent = ag.Z.toFixed(1);
   document.getElementById('v-dL').textContent = ag.dL;
@@ -831,8 +776,6 @@ function syncSliderDisplay() {
 function applyScenario(name) {
   const s = SCENARIOS[name];
   if (!s) return;
-  document.getElementById('s-C').value = s.C;
-  document.getElementById('s-Bmax').value = s.Bmax;
   document.getElementById('s-N').value = s.N;
   document.getElementById('s-Z').value = s.Z * 10;
   document.getElementById('s-dL').value = s.dL;
@@ -843,7 +786,7 @@ function applyScenario(name) {
   buildChart();
 }
 
-document.querySelectorAll('input[type=range], #sel-model, #sel-gpu-a, #sel-ngpu-a, #sel-gpu-b, #sel-ngpu-b, #s-OSL, #s-Bmax').forEach(el => {
+document.querySelectorAll('input[type=range], #sel-model, #sel-gpu-a, #sel-ngpu-a, #sel-gpu-b, #sel-ngpu-b, #s-OSL').forEach(el => {
   el.addEventListener('input', () => { syncSliderDisplay(); buildChart(); });
   el.addEventListener('change', () => { syncSliderDisplay(); buildChart(); });
 });
