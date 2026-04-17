@@ -176,8 +176,8 @@ select {
   border-radius: 50%; margin-right: 5px; vertical-align: middle;
 }
 .legend-inline .l-std::before { background: var(--blue); }
-.legend-inline .l-cache::before { background: var(--green); }
-.legend-inline .l-nocache::before { background: var(--rose); }
+.legend-inline .l-cache::before { background: var(--blue); border: 2px dashed var(--blue); background: transparent; }
+.legend-inline .l-nocache::before { background: var(--amber); }
 
 @media (max-width: 900px) {
   .dashboard { flex-direction: column; }
@@ -223,24 +223,36 @@ select {
       </select>
     </div>
     <div class="card">
-      <div class="card-title">Hardware</div>
-      <div style="display:flex;gap:8px">
-        <select id="sel-gpu" style="flex:2">
-          <option value="H200">H200 SXM (141GB)</option>
-          <option value="B200">B200 (192GB)</option>
-          <option value="MI355">MI355X (288GB)</option>
-          <option value="H100">H100 SXM (80GB)</option>
+      <div class="card-title" style="color:var(--blue)">Hardware A</div>
+      <div style="display:flex;gap:6px">
+        <select id="sel-gpu-a" style="flex:2">
+          <option value="H200">H200 SXM</option>
+          <option value="B200">B200</option>
+          <option value="MI355">MI355X</option>
+          <option value="H100">H100 SXM</option>
         </select>
-        <select id="sel-ngpu" style="flex:1">
-          <option value="1">1 GPU</option>
-          <option value="2">2 GPU</option>
-          <option value="4">4 GPU</option>
-          <option value="8" selected>8 GPU</option>
-          <option value="16">16 GPU</option>
-          <option value="32">32 GPU</option>
+        <select id="sel-ngpu-a" style="flex:1">
+          <option value="1">1</option><option value="2">2</option><option value="4">4</option>
+          <option value="8" selected>8</option><option value="16">16</option><option value="32">32</option>
         </select>
       </div>
-      <div id="hw-summary" style="font-size:0.75rem;color:var(--mt);margin-top:6px;font-family:'JetBrains Mono',monospace"></div>
+      <div id="hw-summary-a" style="font-size:0.7rem;color:var(--mt);margin-top:4px;font-family:'JetBrains Mono',monospace"></div>
+    </div>
+    <div class="card">
+      <div class="card-title" style="color:var(--amber)">Hardware B</div>
+      <div style="display:flex;gap:6px">
+        <select id="sel-gpu-b" style="flex:2">
+          <option value="H200">H200 SXM</option>
+          <option value="B200" selected>B200</option>
+          <option value="MI355">MI355X</option>
+          <option value="H100">H100 SXM</option>
+        </select>
+        <select id="sel-ngpu-b" style="flex:1">
+          <option value="1">1</option><option value="2">2</option><option value="4">4</option>
+          <option value="8" selected>8</option><option value="16">16</option><option value="32">32</option>
+        </select>
+      </div>
+      <div id="hw-summary-b" style="font-size:0.7rem;color:var(--mt);margin-top:4px;font-family:'JetBrains Mono',monospace"></div>
     </div>
 
     <div class="card">
@@ -320,9 +332,10 @@ select {
         <button class="chart-tab" data-turn="last">Last Turn</button>
       </div>
       <div class="legend-inline">
-        <span class="l-std">Standard Serving (sweep B)</span>
-        <span class="l-cache">Agent + Prefix Cache</span>
-        <span class="l-nocache">Agent − No Cache</span>
+        <span class="l-std">HW-A cache (solid)</span>
+        <span class="l-cache">HW-A no cache (dashed)</span>
+        <span class="l-nocache">HW-B cache (solid)</span>
+        <span style="color:var(--mt)"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--amber);margin-right:5px;vertical-align:middle"></span>HW-B no cache (dashed)</span>
       </div>
     </div>
     <div class="chart-wrap">
@@ -425,10 +438,10 @@ function getTurnContext(ag, which) {
   return ag.L0 + (ag.N / 2) * (ag.OSL + ag.dL); // avg (midpoint)
 }
 
-function getHW() {
+function makeHW(suffix) {
   const m = MODELS[document.getElementById('sel-model').value];
-  const g = GPUS[document.getElementById('sel-gpu').value];
-  const n = +document.getElementById('sel-ngpu').value;
+  const g = GPUS[document.getElementById('sel-gpu-' + suffix).value];
+  const n = +document.getElementById('sel-ngpu-' + suffix).value;
   const compute = (m.dtypeBytes <= 0.5 && g.fp4 > 0) ? g.fp4
                 : (m.dtypeBytes <= 1   && g.fp8 > 0) ? g.fp8
                 : g.fp16;
@@ -437,13 +450,12 @@ function getHW() {
     dtypeBytes: m.dtypeBytes, kvBPT: m.kvBPT, kvHeads: m.kvHeads,
     moe: m.moe, numGPUs: n, memBW: g.memBW, compute: compute,
     gpuMem: g.vram * n,
+    label: `${n}×${g.label}`,
   };
-  const el = document.getElementById('hw-summary');
+  const el = document.getElementById('hw-summary-' + suffix);
   if (el) {
-    const wGB = (m.activeSize || m.modelSize) * m.dtypeBytes;
-    const totMem = g.vram * n;
     const modelMem = m.modelSize * m.dtypeBytes;
-    el.textContent = `${compute} TFLOPS/GPU · ${g.memBW} GB/s/GPU · ${totMem} GB total · model ${modelMem.toFixed(0)} GB`;
+    el.textContent = `${compute} TFLOPS/GPU · ${g.memBW} GB/s · ${g.vram*n} GB · model ${modelMem.toFixed(0)} GB`;
   }
   return hw;
 }
@@ -510,22 +522,6 @@ function computeStepTime(B, Lavg, hw) {
   const Tmem = (Tweight + Tkv) * 1.10;
 
   return Math.max(Tmem, Tcompute) / DECODE_EFF;
-}
-
-function generateStandardCurve(hw, ag) {
-  const pts = [];
-  const batchSizes = [];
-  for (let b = 1; b <= 256; b = b < 8 ? b + 1 : Math.ceil(b * 1.35)) batchSizes.push(b);
-
-  for (const B of batchSizes) {
-    const ttft = computeTTFT(ag.L0, hw);
-    const tpot = computeStepTime(B, ag.L0, hw);
-    const R = ttft + tpot * ag.OSL;
-    const throughput = B * ag.OSL / R * 1000 / hw.numGPUs;
-    const speed = ag.OSL / (R / 1000);
-    pts.push({ x: speed, y: throughput, B, R });
-  }
-  return pts;
 }
 
 function generateAgentCurve(hw, ag, cacheHit) {
@@ -628,88 +624,84 @@ function computeMetrics(hw, ag) {
            cacheBenefit, kvPerSessionGB, memAvailGB, turnLabel };
 }
 
-function updateMetricsPanel(m) {
+function updateMetricsPanel(mA, mB) {
   const p = document.getElementById('metrics-panel');
   const f = (v, d = 1) => v.toFixed(d);
+  const ag = getAgent();
   p.innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px">
-      <span style="color:var(--mt)">Context (sel)</span><span style="color:var(--amber);text-align:right">${(m.Lctx/1000).toFixed(1)}K tok</span>
-      <span style="color:var(--mt)">Context Range</span><span style="text-align:right">${(m.Lavg > 0 ? (m.Lavg/1000).toFixed(0) : '?')}K..${(m.Lfinal/1000).toFixed(0)}K</span>
-      <span style="color:var(--mt)">B_eff</span><span style="color:var(--green);text-align:right">${f(m.Beff)}</span>
-      <span style="color:var(--mt)">Active Ratio ρ</span><span style="text-align:right">${f(m.rho*100)}%</span>
-      <span style="color:var(--mt)">TTFT (cache)</span><span style="color:var(--green);text-align:right">${f(m.ttftCache)} ms</span>
-      <span style="color:var(--mt)">TTFT (no cache)</span><span style="color:var(--rose);text-align:right">${f(m.ttftNoCache)} ms</span>
-      <span style="color:var(--mt)">TPOT</span><span style="text-align:right">${f(m.tpot)} ms</span>
-      <span style="color:var(--mt)">Cache Speedup</span><span style="color:var(--green);text-align:right">${f(m.cacheBenefit)}×</span>
-      <span style="color:var(--mt)">Max Sessions</span><span style="text-align:right;${m.Cmax < getAgent().C ? 'color:var(--rose)' : ''}">${m.Cmax}</span>
-      <span style="color:var(--mt)">KV / Session</span><span style="text-align:right">${f(m.kvPerSessionGB, 2)} GB</span>
+    <div style="display:grid;grid-template-columns:auto 1fr 1fr;gap:2px 8px;font-size:0.78rem">
+      <span style="color:var(--mt)"></span><span style="color:var(--blue);text-align:right;font-weight:600">HW-A</span><span style="color:var(--amber);text-align:right;font-weight:600">HW-B</span>
+      <span style="color:var(--mt)">Context</span><span style="text-align:right" colspan="2">${(mA.Lctx/1000).toFixed(1)}K (${(mA.Lavg/1000).toFixed(0)}K..${(mA.Lfinal/1000).toFixed(0)}K)</span><span></span>
+      <span style="color:var(--mt)">B_eff</span><span style="color:var(--blue);text-align:right">${f(mA.Beff)}</span><span style="color:var(--amber);text-align:right">${f(mB.Beff)}</span>
+      <span style="color:var(--mt)">ρ</span><span style="text-align:right">${f(mA.rho*100)}%</span><span style="text-align:right">${f(mB.rho*100)}%</span>
+      <span style="color:var(--mt)">TTFT (cache)</span><span style="text-align:right">${f(mA.ttftCache)} ms</span><span style="text-align:right">${f(mB.ttftCache)} ms</span>
+      <span style="color:var(--mt)">TPOT</span><span style="text-align:right">${f(mA.tpot)} ms</span><span style="text-align:right">${f(mB.tpot)} ms</span>
+      <span style="color:var(--mt)">Cache ×</span><span style="text-align:right">${f(mA.cacheBenefit)}×</span><span style="text-align:right">${f(mB.cacheBenefit)}×</span>
+      <span style="color:var(--mt)">C_max</span><span style="text-align:right;${mA.Cmax<ag.C?'color:var(--rose)':''}">${mA.Cmax}</span><span style="text-align:right;${mB.Cmax<ag.C?'color:var(--rose)':''}">${mB.Cmax}</span>
     </div>`;
 }
 
-function updateBottomMetrics(m) {
+function updateBottomMetrics(mA, mB) {
   const el = document.getElementById('bottom-metrics');
-  const items = [
-    { v: m.Rcache.toFixed(0) + ' ms', l: 'Per-Turn Latency (cache)' },
-    { v: m.tokenTput.toFixed(1), l: 'Tokens/s/GPU' },
-    { v: m.taskTime.toFixed(1) + ' s', l: 'Task Completion Time' },
-    { v: m.taskTput.toFixed(2), l: 'Tasks/min' },
-    { v: (m.rho * 100).toFixed(0) + '%', l: 'GPU Active Ratio' },
-    { v: m.Cmax, l: 'Max Sessions (KV mem)' },
+  const pairs = [
+    { la: 'HW-A Latency', a: mA.Rcache.toFixed(0)+'ms', b: mB.Rcache.toFixed(0)+'ms', lb: 'HW-B Latency' },
+    { la: 'HW-A tok/s/GPU', a: mA.tokenTput.toFixed(1), b: mB.tokenTput.toFixed(1), lb: 'HW-B tok/s/GPU' },
+    { la: 'HW-A Task Time', a: mA.taskTime.toFixed(1)+'s', b: mB.taskTime.toFixed(1)+'s', lb: 'HW-B Task Time' },
   ];
-  el.innerHTML = items.map(i =>
-    `<div class="metric"><div class="mv">${i.v}</div><div class="ml">${i.l}</div></div>`
+  el.innerHTML = pairs.map(p =>
+    `<div class="metric"><div class="mv" style="color:var(--blue)">${p.a}</div><div class="ml">${p.la}</div></div>` +
+    `<div class="metric"><div class="mv" style="color:var(--amber)">${p.b}</div><div class="ml">${p.lb}</div></div>`
   ).join('');
 }
 
 function buildChart() {
-  const hw = getHW();
+  const hwA = makeHW('a');
+  const hwB = makeHW('b');
   const ag = getAgent();
-  const m = computeMetrics(hw, ag);
-  updateMetricsPanel(m);
-  updateBottomMetrics(m);
+  const mA = computeMetrics(hwA, ag);
+  const mB = computeMetrics(hwB, ag);
+  updateMetricsPanel(mA, mB);
+  updateBottomMetrics(mA, mB);
 
-  let stdData, cacheData, nocacheData;
+  const cacheA = generateAgentCurve(hwA, ag, ag.cache);
+  const nocacheA = generateAgentCurve(hwA, ag, 0);
+  const cacheB = generateAgentCurve(hwB, ag, ag.cache);
+  const nocacheB = generateAgentCurve(hwB, ag, 0);
+
   let xLabel, yLabel;
-
   if (viewMode === 'turn') {
-    stdData = generateStandardCurve(hw, ag);
-    cacheData = generateAgentCurve(hw, ag, ag.cache);
-    nocacheData = generateAgentCurve(hw, ag, 0);
     xLabel = 'Per-Agent Speed (tokens/s/turn/agent)';
     yLabel = 'Output Tokens / s / GPU';
   } else {
-    stdData = generateStandardCurve(hw, ag).map(p => {
-      const Ttask = ag.N * p.R / 1000;
-      return {
-        x: ag.N * ag.OSL / Ttask,
-        y: p.B * ag.OSL / p.R * 1000 / hw.numGPUs / ag.N * 60,
-        B: p.B, R: p.R
-      };
-    });
-    cacheData = generateAgentCurve(hw, ag, ag.cache);
-    nocacheData = generateAgentCurve(hw, ag, 0);
     xLabel = 'Per-Agent Speed (tokens/s/task/agent)';
     yLabel = 'Tasks / min';
   }
 
+  const colA = '#3b82f6', colB = '#f59e0b';
   const datasets = [
     {
-      label: 'Standard Serving',
-      data: stdData, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.15)',
-      pointBackgroundColor: '#3b82f6', pointRadius: 4, pointHoverRadius: 6,
-      showLine: true, borderWidth: 2, tension: 0.3, fill: false, order: 3,
+      label: hwA.label + ' + cache',
+      data: cacheA, borderColor: colA, backgroundColor: 'rgba(59,130,246,0.12)',
+      pointBackgroundColor: colA, pointRadius: 4, pointHoverRadius: 6,
+      showLine: true, borderWidth: 2.5, tension: 0.3, fill: false, order: 4,
     },
     {
-      label: 'Agent + Prefix Cache',
-      data: cacheData, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.15)',
-      pointBackgroundColor: '#10b981', pointRadius: 4, pointHoverRadius: 6,
-      showLine: true, borderWidth: 2, tension: 0.3, fill: false, order: 2,
+      label: hwA.label + ' no cache',
+      data: nocacheA, borderColor: colA, backgroundColor: 'transparent',
+      pointBackgroundColor: colA, pointRadius: 3, pointHoverRadius: 5,
+      showLine: true, borderWidth: 1.5, borderDash: [6, 4], tension: 0.3, fill: false, order: 3,
     },
     {
-      label: 'Agent − No Cache',
-      data: nocacheData, borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,0.15)',
-      pointBackgroundColor: '#f43f5e', pointRadius: 4, pointHoverRadius: 6,
-      showLine: true, borderWidth: 2, tension: 0.3, fill: false, order: 1,
+      label: hwB.label + ' + cache',
+      data: cacheB, borderColor: colB, backgroundColor: 'rgba(245,158,11,0.12)',
+      pointBackgroundColor: colB, pointRadius: 4, pointHoverRadius: 6,
+      showLine: true, borderWidth: 2.5, tension: 0.3, fill: false, order: 2,
+    },
+    {
+      label: hwB.label + ' no cache',
+      data: nocacheB, borderColor: colB, backgroundColor: 'transparent',
+      pointBackgroundColor: colB, pointRadius: 3, pointHoverRadius: 5,
+      showLine: true, borderWidth: 1.5, borderDash: [6, 4], tension: 0.3, fill: false, order: 1,
     },
   ];
 
@@ -729,12 +721,16 @@ function buildChart() {
       responsive: true, maintainAspectRatio: true, aspectRatio: 2.2,
       interaction: { mode: 'nearest', intersect: false },
       plugins: {
-        legend: { display: false },
+        legend: {
+          display: true, position: 'top',
+          labels: { color: '#94a3b8', font: { size: 11, family: 'IBM Plex Sans' }, boxWidth: 20, padding: 12 }
+        },
         tooltip: {
           backgroundColor: '#1e293b', titleColor: '#e2e8f0', bodyColor: '#94a3b8',
           borderColor: '#475569', borderWidth: 1, cornerRadius: 8,
           padding: 10,
           callbacks: {
+            title(items) { return items[0]?.dataset?.label || ''; },
             label(ctx) {
               const p = ctx.raw;
               const lines = [];
@@ -747,7 +743,6 @@ function buildChart() {
                 lines.push(`Latency: ${p.R?.toFixed(0)} ms/turn`);
                 lines.push(`Tasks/min: ${p.y.toFixed(2)}`);
               }
-              if (p.B !== undefined) lines.push(`Batch: ${p.B}`);
               if (p.C !== undefined) lines.push(`Sessions: ${p.C} (B_eff≈${p.Beff?.toFixed(1)})`);
               return lines;
             }
@@ -799,7 +794,7 @@ function applyScenario(name) {
   buildChart();
 }
 
-document.querySelectorAll('input[type=range], #sel-model, #sel-gpu, #sel-ngpu, #s-OSL').forEach(el => {
+document.querySelectorAll('input[type=range], #sel-model, #sel-gpu-a, #sel-ngpu-a, #sel-gpu-b, #sel-ngpu-b, #s-OSL').forEach(el => {
   el.addEventListener('input', () => { syncSliderDisplay(); buildChart(); });
   el.addEventListener('change', () => { syncSliderDisplay(); buildChart(); });
 });
