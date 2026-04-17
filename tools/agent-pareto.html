@@ -213,14 +213,33 @@ select {
     </div>
 
     <div class="card">
-      <div class="card-title">Hardware &amp; Model</div>
-      <select id="preset">
-        <option value="7B-1H">Llama-7B / 1×H100</option>
-        <option value="70B-8H" selected>Llama-70B / 8×H100</option>
-        <option value="405B-16H">Llama-405B / 16×H100</option>
-        <option value="70B-8H200">Llama-70B / 8×H200</option>
-        <option value="K25-8H200">Kimi-K2.5 1T MoE FP4 / 8×H200</option>
+      <div class="card-title">Model</div>
+      <select id="sel-model">
+        <option value="7B">Llama-7B (FP16)</option>
+        <option value="70B" selected>Llama-70B (FP16)</option>
+        <option value="405B">Llama-405B (FP8)</option>
+        <option value="K25">Kimi K2.5 1T MoE (FP4)</option>
       </select>
+    </div>
+    <div class="card">
+      <div class="card-title">Hardware</div>
+      <div style="display:flex;gap:8px">
+        <select id="sel-gpu" style="flex:2">
+          <option value="H200">H200 SXM (141GB)</option>
+          <option value="B200">B200 (192GB)</option>
+          <option value="MI355">MI355X (288GB)</option>
+          <option value="H100">H100 SXM (80GB)</option>
+        </select>
+        <select id="sel-ngpu" style="flex:1">
+          <option value="1">1 GPU</option>
+          <option value="2">2 GPU</option>
+          <option value="4">4 GPU</option>
+          <option value="8" selected>8 GPU</option>
+          <option value="16">16 GPU</option>
+          <option value="32">32 GPU</option>
+        </select>
+      </div>
+      <div id="hw-summary" style="font-size:0.75rem;color:var(--mt);margin-top:6px;font-family:'JetBrains Mono',monospace"></div>
     </div>
 
     <div class="card">
@@ -341,12 +360,18 @@ select {
 </footer>
 
 <script>
-const HW_PRESETS = {
-  '7B-1H':      { modelSize: 7,    numGPUs: 1,  memBW: 3350, compute: 989,  dtypeBytes: 2,   kvBPT: 131072, gpuMem: 80   },
-  '70B-8H':     { modelSize: 70,   numGPUs: 8,  memBW: 3350, compute: 989,  dtypeBytes: 2,   kvBPT: 327680, gpuMem: 640  },
-  '405B-16H':   { modelSize: 405,  numGPUs: 16, memBW: 3350, compute: 989,  dtypeBytes: 1,   kvBPT: 516096, gpuMem: 1280 },
-  '70B-8H200':  { modelSize: 70,   numGPUs: 8,  memBW: 4800, compute: 989,  dtypeBytes: 2,   kvBPT: 327680, gpuMem: 1152 },
-  'K25-8H200':  { modelSize: 1000, numGPUs: 8,  memBW: 4800, compute: 989,  dtypeBytes: 0.5, kvBPT: 524288, gpuMem: 1152, activeSize: 32 },
+const MODELS = {
+  '7B':   { modelSize: 7,    kvBPT: 131072, dtypeBytes: 2,   activeSize: null, label: 'Llama-7B' },
+  '70B':  { modelSize: 70,   kvBPT: 327680, dtypeBytes: 2,   activeSize: null, label: 'Llama-70B' },
+  '405B': { modelSize: 405,  kvBPT: 516096, dtypeBytes: 1,   activeSize: null, label: 'Llama-405B' },
+  'K25':  { modelSize: 1000, kvBPT: 524288, dtypeBytes: 0.5, activeSize: 32,   label: 'Kimi K2.5 1T MoE' },
+};
+
+const GPUS = {
+  'H100':  { memBW: 3350, fp16: 989,  fp8: 1979, fp4: 0,     vram: 80,  label: 'H100 SXM' },
+  'H200':  { memBW: 4800, fp16: 989,  fp8: 1979, fp4: 0,     vram: 141, label: 'H200 SXM' },
+  'B200':  { memBW: 8000, fp16: 2250, fp8: 4500, fp4: 9000,  vram: 192, label: 'B200' },
+  'MI355': { memBW: 8000, fp16: 2500, fp8: 5000, fp4: 10000, vram: 288, label: 'MI355X' },
 };
 
 const SCENARIOS = {
@@ -359,7 +384,28 @@ const SCENARIOS = {
 let viewMode = 'turn';
 let chart = null;
 
-function getHW() { return HW_PRESETS[document.getElementById('preset').value]; }
+function getHW() {
+  const m = MODELS[document.getElementById('sel-model').value];
+  const g = GPUS[document.getElementById('sel-gpu').value];
+  const n = +document.getElementById('sel-ngpu').value;
+  const compute = (m.dtypeBytes <= 0.5 && g.fp4 > 0) ? g.fp4
+                : (m.dtypeBytes <= 1   && g.fp8 > 0) ? g.fp8
+                : g.fp16;
+  const hw = {
+    modelSize: m.modelSize, activeSize: m.activeSize,
+    dtypeBytes: m.dtypeBytes, kvBPT: m.kvBPT,
+    numGPUs: n, memBW: g.memBW, compute: compute,
+    gpuMem: g.vram * n,
+  };
+  const el = document.getElementById('hw-summary');
+  if (el) {
+    const wGB = (m.activeSize || m.modelSize) * m.dtypeBytes;
+    const totMem = g.vram * n;
+    const modelMem = m.modelSize * m.dtypeBytes;
+    el.textContent = `${compute} TFLOPS/GPU · ${g.memBW} GB/s/GPU · ${totMem} GB total · model ${modelMem.toFixed(0)} GB`;
+  }
+  return hw;
+}
 
 function getAgent() {
   return {
@@ -667,8 +713,9 @@ function applyScenario(name) {
   buildChart();
 }
 
-document.querySelectorAll('input[type=range], select').forEach(el => {
+document.querySelectorAll('input[type=range], #sel-model, #sel-gpu, #sel-ngpu').forEach(el => {
   el.addEventListener('input', () => { syncSliderDisplay(); buildChart(); });
+  el.addEventListener('change', () => { syncSliderDisplay(); buildChart(); });
 });
 
 document.querySelectorAll('.scenario-btn').forEach(btn => {
