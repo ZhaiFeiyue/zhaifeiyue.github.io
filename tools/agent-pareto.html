@@ -431,11 +431,19 @@ function getAgent() {
   };
 }
 
+// Efficiency factors account for real-world overheads not in the roofline model:
+// - TP all-reduce communication (~4-6ms for 80-layer model on 8 GPUs)
+// - Kernel launch overhead (hundreds of kernels per decode step)
+// - Non-matmul ops (LayerNorm, RoPE, activation, residual)
+// - Scheduling and memory management overhead
+const DECODE_EFF = 0.40;   // decode is memory-bound, heavily affected by TP comm
+const PREFILL_EFF = 0.65;  // prefill is compute-bound, larger kernels amortize overhead
+
 function computeTTFT(prefillLen, hw) {
   const active = hw.activeSize || hw.modelSize;
   const flops = 2 * active * 1e9 * prefillLen;
   const totalFLOPS = hw.numGPUs * hw.compute * 1e12;
-  return flops / totalFLOPS * 1000;
+  return flops / totalFLOPS * 1000 / PREFILL_EFF;
 }
 
 function computeStepTime(B, Lavg, hw) {
@@ -446,7 +454,7 @@ function computeStepTime(B, Lavg, hw) {
   const Tweight = activeGB / totalBW * 1000;
   const Tkv = B * Lavg * hw.kvBPT / (totalBW * 1e9) * 1000;
   const Tcompute = 2 * active * 1e9 * B / totalFLOPS * 1000;
-  return Math.max(Tweight + Tkv, Tcompute);
+  return Math.max(Tweight + Tkv, Tcompute) / DECODE_EFF;
 }
 
 function generateStandardCurve(hw, ag) {
