@@ -535,29 +535,36 @@ function computeStepTime(B, Lavg, hw) {
   return Math.max(Tmem, Tcompute) / DECODE_EFF;
 }
 
-// Per-turn timing: batch of Bmax sessions process turn j together.
-function computeTurnTime(Bmax, j, hw, ag, cacheHit) {
+// Per-turn timing: batch of B sessions process turn j together.
+// Returns both TPOT (steady-state decode rate) and R (total turn time w/ prefill).
+function computeTurnTime(B, j, hw, ag, cacheHit) {
   const Lj = ag.L0 + (j - 1) * (ag.OSL + ag.dL);
   const prefillLen = cacheHit * ag.dL + (1 - cacheHit) * Lj;
-  const Tprefill = computePrefillTime(Bmax, prefillLen, hw);
-  const Tstep = computeStepTime(Bmax, Lj, hw);
-  const Tdecode = Tstep * ag.OSL;
+  const Tprefill = computePrefillTime(B, prefillLen, hw);
+  const Tpot = computeStepTime(B, Lj, hw);   // per-token decode step time (ms)
+  const Tdecode = Tpot * ag.OSL;
   const R = Tprefill + Tdecode;
-  return { R, Tprefill, Tdecode, Lj, prefillLen };
+  return { R, Tprefill, Tdecode, Tpot, Lj, prefillLen };
 }
 
-// Aggregate N turns (prefill+decode) for a Bmax batch.
-function computeSession(Bmax, hw, ag, cacheHit) {
-  let totalR = 0;
-  let R_first = 0, R_last = 0;
+// Aggregate N turns for a batch of B sessions. Collect avg/first/last TPOT + R.
+function computeSession(B, hw, ag, cacheHit) {
+  let totalR = 0, totalTpot = 0, totalTprefill = 0;
+  let R_first = 0, R_last = 0, Tpot_first = 0, Tpot_last = 0;
+  let Tprefill_first = 0, Tprefill_last = 0;
   for (let j = 1; j <= ag.N; j++) {
-    const t = computeTurnTime(Bmax, j, hw, ag, cacheHit);
+    const t = computeTurnTime(B, j, hw, ag, cacheHit);
     totalR += t.R;
-    if (j === 1) R_first = t.R;
-    if (j === ag.N) R_last = t.R;
+    totalTpot += t.Tpot;
+    totalTprefill += t.Tprefill;
+    if (j === 1) { R_first = t.R; Tpot_first = t.Tpot; Tprefill_first = t.Tprefill; }
+    if (j === ag.N) { R_last = t.R; Tpot_last = t.Tpot; Tprefill_last = t.Tprefill; }
   }
-  const R_avg = totalR / ag.N;
-  return { totalR, R_avg, R_first, R_last };
+  return {
+    totalR, R_avg: totalR / ag.N, R_first, R_last,
+    Tpot_avg: totalTpot / ag.N, Tpot_first, Tpot_last,
+    Tprefill_avg: totalTprefill / ag.N, Tprefill_first, Tprefill_last,
+  };
 }
 
 // Pareto curve: sweep active batch size B from 1 to B_max_limit.
@@ -576,17 +583,27 @@ function generateAgentCurve(hw, ag, cacheHit) {
   if (Bvalues[Bvalues.length - 1] !== BmaxLimit) Bvalues.push(BmaxLimit);
 
   for (const B of Bvalues) {
-    // Full session with batch B: compute avg R across all N turns
     const s = computeSession(B, hw, ag, cacheHit);
-    // Pick R based on turnSel
-    const R = turnSel === 'first' ? s.R_first
-            : turnSel === 'last'  ? s.R_last
-            : s.R_avg;
-    const speed = ag.OSL / (R / 1000);
-    const rho = ag.alpha + (1 - ag.alpha) * R / (R + Zms);
-    const tputPerGPU = rho * B * ag.OSL / (R / 1000) / hw.numGPUs;
+    // Pick TPOT and R based on turnSel
+    const Tpot = turnSel === 'first' ? s.Tpot_first
+               : turnSel === 'last'  ? s.Tpot_last
+               : s.Tpot_avg;
+    const R    = turnSel === 'first' ? s.R_first
+               : turnSel === 'last'  ? s.R_last
+               : s.R_avg;
+
+    // X-axis: pure decode rate per agent = 1000 / TPOT
+    const speed = 1000 / Tpot;
+    // Effective ρ accounts for (a) α over-commit and (b) prefill overhead.
+    // Per turn, GPU spends T_prefill in prefill (not decoding), T_decode in decode.
+    // With α=1 scheduling: ρ = Tdecode/R (prefill steals time). With α=0: also factor Z.
+    const decodeFraction = (R > 0) ? (R - (turnSel === 'first' ? s.Tprefill_first : turnSel === 'last' ? s.Tprefill_last : s.Tprefill_avg)) / R : 1;
+    const rhoScheduler = ag.alpha + (1 - ag.alpha) * R / (R + Zms);
+    const rho = rhoScheduler * decodeFraction;
+    // Y-axis: system decode throughput = ρ × B × (1000/TPOT) / G
+    const tputPerGPU = rho * B * speed / hw.numGPUs;
     const C = Math.ceil(B * (1 + ag.alpha * Zms / R));
-    pts.push({ x: speed, y: tputPerGPU, B, C, R, BmaxLimit, atMax: (B === BmaxLimit) });
+    pts.push({ x: speed, y: tputPerGPU, B, C, R, Tpot, BmaxLimit, atMax: (B === BmaxLimit) });
   }
   return pts;
 }
@@ -641,7 +658,7 @@ function computeMetrics(hw, ag) {
   return {
     Bmax, C: C_derived, Lctx, Lavg, Lfinal, rho,
     ttftCache: tCache.Tprefill, ttftNoCache: tNoCache.Tprefill,
-    tpot: tCache.Tdecode / ag.OSL,
+    tpot: tCache.Tpot,
     Rcache, Rnocache, tokenTput, taskTime: taskTimeSec, taskTput,
     cacheBenefit, kvPerSessionGB, memAvailGB,
   };
@@ -762,10 +779,9 @@ function buildChart() {
               const p = ctx.raw;
               const lines = [];
               lines.push(`Active batch B = ${p.B}${p.atMax ? ' (= B_max)' : ''}`);
-              lines.push(`Speed: ${p.x.toFixed(1)} tok/s/turn/agent`);
-              lines.push(`Throughput: ${p.y.toFixed(1)} tok/s/GPU`);
-              lines.push(`Concurrent sessions C = ${p.C}`);
-              lines.push(`R = ${p.R?.toFixed(0)} ms`);
+              lines.push(`Decode speed: ${p.x.toFixed(1)} tok/s/agent (TPOT=${p.Tpot?.toFixed(1)}ms)`);
+              lines.push(`System tput: ${p.y.toFixed(1)} tok/s/GPU`);
+              lines.push(`Concurrent C = ${p.C}, R = ${p.R?.toFixed(0)} ms`);
               return lines;
             }
           }
