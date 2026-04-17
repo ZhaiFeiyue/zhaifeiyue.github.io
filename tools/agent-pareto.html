@@ -397,7 +397,8 @@ function generateStandardCurve(hw, ag) {
     const tpot = computeStepTime(B, ag.L0, hw);
     const R = ttft + tpot * ag.OSL;
     const throughput = B * ag.OSL / R * 1000 / hw.numGPUs;
-    pts.push({ x: R, y: throughput, B });
+    const speed = ag.OSL / (R / 1000);
+    pts.push({ x: speed, y: throughput, B, R });
   }
   return pts;
 }
@@ -443,12 +444,14 @@ function generateAgentCurve(hw, ag, cacheHit) {
     const turnThroughput = C / (R / 1000 + ag.Z);
     const tokenThroughput = turnThroughput * ag.OSL / hw.numGPUs;
 
+    const speed = ag.OSL / (R / 1000);
     if (viewMode === 'turn') {
-      pts.push({ x: R, y: tokenThroughput, C, Beff });
+      pts.push({ x: speed, y: tokenThroughput, C, Beff, R });
     } else {
       const Ttask = ag.N * (R / 1000 + ag.Z);
       const taskTput = turnThroughput / ag.N * 60;
-      pts.push({ x: Ttask, y: taskTput, C, Beff });
+      const taskSpeed = ag.N * ag.OSL / Ttask;
+      pts.push({ x: taskSpeed, y: taskTput, C, Beff, R });
     }
   }
   return pts;
@@ -539,17 +542,20 @@ function buildChart() {
     stdData = generateStandardCurve(hw, ag);
     cacheData = generateAgentCurve(hw, ag, ag.cache);
     nocacheData = generateAgentCurve(hw, ag, 0);
-    xLabel = 'Per-Turn Latency (ms)';
+    xLabel = 'Per-Turn Speed (tokens/s/turn)';
     yLabel = 'Output Tokens / s / GPU';
   } else {
-    stdData = generateStandardCurve(hw, ag).map(p => ({
-      x: ag.N * p.x / 1000,
-      y: p.B * ag.OSL / p.x * 1000 / hw.numGPUs / ag.N * 60,
-      B: p.B
-    }));
+    stdData = generateStandardCurve(hw, ag).map(p => {
+      const Ttask = ag.N * p.R / 1000;
+      return {
+        x: ag.N * ag.OSL / Ttask,
+        y: p.B * ag.OSL / p.R * 1000 / hw.numGPUs / ag.N * 60,
+        B: p.B, R: p.R
+      };
+    });
     cacheData = generateAgentCurve(hw, ag, ag.cache);
     nocacheData = generateAgentCurve(hw, ag, 0);
-    xLabel = 'Task Completion Time (s)';
+    xLabel = 'Per-Task Speed (tokens/s/task)';
     yLabel = 'Tasks / min';
   }
 
@@ -600,10 +606,12 @@ function buildChart() {
               const p = ctx.raw;
               const lines = [];
               if (viewMode === 'turn') {
-                lines.push(`Latency: ${p.x.toFixed(0)} ms`);
+                lines.push(`Speed: ${p.x.toFixed(1)} tok/s/turn`);
+                lines.push(`Latency: ${p.R?.toFixed(0)} ms`);
                 lines.push(`Throughput: ${p.y.toFixed(1)} tok/s/GPU`);
               } else {
-                lines.push(`Task Time: ${p.x.toFixed(1)} s`);
+                lines.push(`Speed: ${p.x.toFixed(1)} tok/s/task`);
+                lines.push(`Latency: ${p.R?.toFixed(0)} ms/turn`);
                 lines.push(`Tasks/min: ${p.y.toFixed(2)}`);
               }
               if (p.B !== undefined) lines.push(`Batch: ${p.B}`);
