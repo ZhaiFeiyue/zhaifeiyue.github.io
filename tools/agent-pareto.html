@@ -262,7 +262,13 @@ select {
         <label>Concurrent Sessions (C)</label>
         <span class="val" id="v-C">32</span>
       </div>
-      <input type="range" id="s-C" min="1" max="256" value="32">
+      <input type="range" id="s-C" min="1" max="512" value="32">
+
+      <div class="control-row">
+        <label>Max Active Batch (B_max)</label>
+        <span class="val" id="v-Bmax">128</span>
+      </div>
+      <input type="range" id="s-Bmax" min="8" max="512" value="128" step="8">
 
       <div class="control-row">
         <label>Turns per Session (N)</label>
@@ -422,10 +428,10 @@ const GPUS = {
 };
 
 const SCENARIOS = {
-  code:     { C: 32,  N: 8,  Z: 0.5, dL: 500,  OSL: 128,  L0: 16000, cache: 95 },
-  research: { C: 16,  N: 15, Z: 5.0, dL: 3000, OSL: 64,   L0: 24000, cache: 70 },
-  chat:     { C: 64,  N: 8,  Z: 15,  dL: 200,  OSL: 256,  L0: 8000,  cache: 98 },
-  deep:     { C: 8,   N: 20, Z: 1.0, dL: 4000, OSL: 4096, L0: 32000, cache: 85 },
+  code:     { C: 32,  Bmax: 128, N: 8,  Z: 0.5, dL: 500,  OSL: 128,  L0: 16000, cache: 95 },
+  research: { C: 16,  Bmax: 128, N: 15, Z: 5.0, dL: 3000, OSL: 64,   L0: 24000, cache: 70 },
+  chat:     { C: 64,  Bmax: 128, N: 8,  Z: 15,  dL: 200,  OSL: 256,  L0: 8000,  cache: 98 },
+  deep:     { C: 8,   Bmax: 128, N: 20, Z: 1.0, dL: 4000, OSL: 4096, L0: 32000, cache: 85 },
 };
 
 let viewMode = 'turn';
@@ -463,6 +469,7 @@ function makeHW(suffix) {
 function getAgent() {
   return {
     C:     +document.getElementById('s-C').value,
+    Bmax:  +document.getElementById('s-Bmax').value,
     N:     +document.getElementById('s-N').value,
     Z:     +document.getElementById('s-Z').value / 10,
     dL:    +document.getElementById('s-dL').value,
@@ -526,22 +533,26 @@ function computeStepTime(B, Lavg, hw) {
   return Math.max(Tmem, Tcompute) / DECODE_EFF;
 }
 
-// Compute per-turn timing R(j) for a batch of C sessions at turn j.
-// Model: all C sessions first prefill together (compute-bound), then decode OSL tokens together.
+// Compute per-turn timing at turn j with max active batch B_max.
+// Model: C sessions split into waves of size min(C, B_max). Each wave runs
+// prefill + decode serially. Per-agent turn time = num_waves × T_wave.
 function computeTurnTime(C, j, hw, ag, cacheHit) {
-  const Lj = ag.L0 + (j - 1) * (ag.OSL + ag.dL);           // context entering turn j
+  const Bwave = Math.min(C, ag.Bmax);
+  const numWaves = Math.ceil(C / ag.Bmax);
+  const Lj = ag.L0 + (j - 1) * (ag.OSL + ag.dL);
   const prefillLen = cacheHit * ag.dL + (1 - cacheHit) * Lj;
-  const Tprefill = computePrefillTime(C, prefillLen, hw);  // batch prefill
-  const Tstep = computeStepTime(C, Lj, hw);                 // per-token decode step (batch=C)
+  const Tprefill = computePrefillTime(Bwave, prefillLen, hw);  // single wave prefill
+  const Tstep = computeStepTime(Bwave, Lj, hw);                 // single wave decode step
   const Tdecode = Tstep * ag.OSL;
-  const R = Tprefill + Tdecode;
-  return { R, Tprefill, Tdecode, Lj, prefillLen };
+  const Twave = Tprefill + Tdecode;                             // one wave turn time
+  const R = numWaves * Twave;                                    // total time for all C to complete turn j
+  return { R, Tprefill, Tdecode, Lj, prefillLen, Bwave, numWaves, Twave };
 }
 
 // Aggregate a session (N turns) into total inference time and useful tokens.
 function computeSession(C, hw, ag, cacheHit) {
   let totalR = 0, totalPrefillTok = 0, totalDecodeTok = 0;
-  let R_first = 0, R_last = 0;
+  let R_first = 0, R_last = 0, Bwave = 0, numWaves = 0;
   for (let j = 1; j <= ag.N; j++) {
     const t = computeTurnTime(C, j, hw, ag, cacheHit);
     totalR += t.R;
@@ -549,9 +560,11 @@ function computeSession(C, hw, ag, cacheHit) {
     totalDecodeTok  += C * ag.OSL;
     if (j === 1) R_first = t.R;
     if (j === ag.N) R_last = t.R;
+    Bwave = t.Bwave;
+    numWaves = t.numWaves;
   }
   const R_avg = totalR / ag.N;
-  return { totalR, R_avg, R_first, R_last, totalPrefillTok, totalDecodeTok };
+  return { totalR, R_avg, R_first, R_last, totalPrefillTok, totalDecodeTok, Bwave, numWaves };
 }
 
 function generateAgentCurve(hw, ag, cacheHit) {
@@ -647,6 +660,7 @@ function computeMetrics(hw, ag) {
 
   return {
     Cmax, Ceff, Lctx, Lavg, Lfinal, rho,
+    Bwave: sCache.Bwave, numWaves: sCache.numWaves,
     ttftCache: tCache.Tprefill, ttftNoCache: tNoCache.Tprefill,
     tpot: tCache.Tdecode / ag.OSL,
     Rcache, Rnocache, tokenTput, taskTime: taskTimeSec, taskTput,
@@ -663,6 +677,7 @@ function updateMetricsPanel(mA, mB) {
       <span style="color:var(--mt)"></span><span style="color:var(--blue);text-align:right;font-weight:600">HW-A</span><span style="color:var(--amber);text-align:right;font-weight:600">HW-B</span>
       <span style="color:var(--mt)">Context</span><span style="text-align:right">${(mA.Lctx/1000).toFixed(1)}K</span><span style="text-align:right">${(mA.Lavg/1000).toFixed(0)}K..${(mA.Lfinal/1000).toFixed(0)}K</span>
       <span style="color:var(--mt)">C_eff</span><span style="color:var(--blue);text-align:right">${mA.Ceff}</span><span style="color:var(--amber);text-align:right">${mB.Ceff}</span>
+      <span style="color:var(--mt)">B_wave × waves</span><span style="text-align:right">${mA.Bwave}×${mA.numWaves}</span><span style="text-align:right">${mB.Bwave}×${mB.numWaves}</span>
       <span style="color:var(--mt)">ρ (active)</span><span style="text-align:right">${f(mA.rho*100)}%</span><span style="text-align:right">${f(mB.rho*100)}%</span>
       <span style="color:var(--mt)">Prefill (cache)</span><span style="text-align:right">${f(mA.ttftCache)} ms</span><span style="text-align:right">${f(mB.ttftCache)} ms</span>
       <span style="color:var(--mt)">Prefill (no-cache)</span><span style="text-align:right">${f(mA.ttftNoCache)} ms</span><span style="text-align:right">${f(mB.ttftNoCache)} ms</span>
@@ -805,6 +820,7 @@ function buildChart() {
 function syncSliderDisplay() {
   const ag = getAgent();
   document.getElementById('v-C').textContent = ag.C;
+  document.getElementById('v-Bmax').textContent = ag.Bmax;
   document.getElementById('v-N').textContent = ag.N;
   document.getElementById('v-Z').textContent = ag.Z.toFixed(1);
   document.getElementById('v-dL').textContent = ag.dL;
@@ -816,6 +832,7 @@ function applyScenario(name) {
   const s = SCENARIOS[name];
   if (!s) return;
   document.getElementById('s-C').value = s.C;
+  document.getElementById('s-Bmax').value = s.Bmax;
   document.getElementById('s-N').value = s.N;
   document.getElementById('s-Z').value = s.Z * 10;
   document.getElementById('s-dL').value = s.dL;
@@ -826,7 +843,7 @@ function applyScenario(name) {
   buildChart();
 }
 
-document.querySelectorAll('input[type=range], #sel-model, #sel-gpu-a, #sel-ngpu-a, #sel-gpu-b, #sel-ngpu-b, #s-OSL').forEach(el => {
+document.querySelectorAll('input[type=range], #sel-model, #sel-gpu-a, #sel-ngpu-a, #sel-gpu-b, #sel-ngpu-b, #s-OSL, #s-Bmax').forEach(el => {
   el.addEventListener('input', () => { syncSliderDisplay(); buildChart(); });
   el.addEventListener('change', () => { syncSliderDisplay(); buildChart(); });
 });
