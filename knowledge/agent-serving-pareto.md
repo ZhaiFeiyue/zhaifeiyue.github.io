@@ -351,33 +351,188 @@ T_memory = (T_weight_load + T_kv_load) × 1.10
 
 ### Step 7: 完整的 Agent Pareto 方程组
 
-**1) Turn-level throughput-latency（封闭排队）**：
+#### 符号定义
+
+**系统参数**：
+
+| 符号 | 单位 | 定义 |
+|------|------|------|
+| G | 个 | GPU 数量 |
+| BW | GB/s | 单卡 HBM 带宽 |
+| F | TFLOPS | 单卡算力（按模型精度选 FP16/FP8/FP4） |
+| M_gpu | GB | 单卡显存 |
+
+**模型参数**：
+
+| 符号 | 单位 | 定义 | 示例 (Llama-70B) | 示例 (K2.5) |
+|------|------|------|-----------------|-------------|
+| P_total | B | 模型总参数量 | 70 | 1000 |
+| P_active | B | 每 token 激活参数量 | 70 | 32 |
+| d | bytes | 每参数字节数 | 2 (FP16) | 0.5 (FP4) |
+| n_kv | 个 | KV head 数（GQA）或 1（MLA） | 8 | 1 |
+| κ | bytes | 每 token KV-cache 大小（所有层） | 327,680 | 70,272 |
+| η_d | — | decode 效率因子 | 0.40 | 0.40 |
+| η_p | — | prefill 效率因子 | 0.65 | 0.65 |
+
+**MoE 专用参数**（dense 模型无此项）：
+
+| 符号 | 单位 | 定义 | 示例 (K2.5) |
+|------|------|------|-------------|
+| E | 个 | routed expert 总数 | 384 |
+| K | 个 | 每 token 激活 expert 数 (topK) | 8 |
+| P_expert | B | 单个 expert 参数量 | 0.04404 |
+| P_nonmoe | B | 非 MoE 参数（attention + shared + embed） | 11.5 |
+
+**Agent 工作负载参数**：
+
+| 符号 | 单位 | 定义 |
+|------|------|------|
+| C | 个 | 并发 session 数 |
+| N | 轮 | 每 session 轮数 |
+| Z | ms | 轮间暂停时间（工具执行） |
+| L₀ | tokens | 初始 prompt 长度（system prompt） |
+| ΔL | tokens | 每轮新增 tokens（工具返回结果） |
+| OSL | tokens | 每轮输出 tokens |
+| h | — | prefix cache 命中率 (0~1) |
+
+**派生量**：
+
+| 符号 | 单位 | 定义 | 公式 |
+|------|------|------|------|
+| L(j) | tokens | 第 j 轮的 context 长度 | L₀ + (j-1) × (OSL + ΔL) |
+| B_eff | 个 | 稳态有效 batch size | C × ρ |
+| ρ | — | GPU 活跃比 | R / (R + Z) |
+| C_max | 个 | KV 内存限制的最大并发 | ⌊M_avail / M_kv_session⌋ |
+
+---
+
+#### 方程组
+
+**方程 1: Per-turn latency R(j)**
+
+第 j 轮的端到端推理延迟 = TTFT + decode 时间：
+
 ```
-X_turn = C_eff / (R_avg + Z_avg)
+R(j) = TTFT(j) + TPOT(j) × OSL
 ```
 
-**2) Per-turn latency（随 turn 编号 j 变化）**：
+**方程 2: TTFT — prefill 时间（compute-bound）**
+
+Prefill 处理输入 tokens，计算量由 active params 和输入长度决定：
+
 ```
-R(j) = T_prefill(j) + TPOT(B_eff) × OSL + T_queue(X, C)
+L_prefill(j) = h × ΔL + (1 - h) × L(j)       # cache 命中时只处理增量
+
+TTFT(j) = 2 × P_active × L_prefill(j) / (G × F × 10¹²) × 10³ / η_p     [ms]
 ```
 
-**3) Prefill 时间（取决于 cache 命中）**：
+- 因子 2: 每个参数在 matmul 中贡献 2 FLOPs (multiply + accumulate)
+- η_p ≈ 0.65: prefill 效率（compute-bound，大 kernel 摊薄 overhead）
+
+**方程 3: TPOT — decode step 时间（memory-bound）**
+
+每个 decode step 需要加载权重 + KV-cache，产生 B_eff 个 token：
+
 ```
-T_prefill(j) = h(Z) · T_incr(ΔL_j, B_eff) + (1 - h(Z)) · T_full(L_j, B_eff)
+TPOT(j) = max(T_mem(j), T_compute) / η_d      [ms]
+T_mem(j) = (T_weight + T_kv(j)) × 1.10        # ×1.10 = 10% elementwise 开销
 ```
 
-**4) KV-cache 内存约束**：
+- η_d ≈ 0.40: decode 效率（TP 通信、kernel launch、scheduling overhead）
+- ×1.10: LayerNorm, RoPE, activation, residual add 等 elementwise 算子
+
+**方程 3a: T_weight — 模型权重加载时间**
+
+Dense 模型（Llama）：权重 TP-split 到 G 张卡：
 ```
-C_eff = min(C, ⌊M_avail / M̄_kv(j)⌋)
+T_weight = P_active × d / (G × BW) × 10³     [ms]
 ```
 
-其中 M̄_kv(j) = kv_bytes_per_token × L̄(j)，L̄(j) 是所有活跃 session 的平均 context 长度。
+MoE 模型（K2.5）：拆分为 non-MoE + batch-dependent expert loading：
+```
+T_nonmoe = P_nonmoe × d / (G × BW) × 10³     [ms]    # TP-split
+E_active = min(B_eff × K, E)                           # 活跃 expert 数（batch-dependent）
+E_per_gpu = E_active / G                                # 每卡加载的 expert 数
+T_moe = E_per_gpu × P_expert × d / BW × 10³   [ms]    # 每卡串行加载
+T_weight = T_nonmoe + T_moe
+```
 
-**5) Task-level 映射**：
+关键：小 batch 时 E_active ≪ E（如 B=1, K=8 → 只加载 8/384 = 2% expert），weight loading 很快。大 batch 时所有 expert 都活跃。
+
+**方程 3b: T_kv — KV-cache 加载时间**
+
+每个 decode step 读取 batch 中所有 request 的全部 KV-cache 用于 attention：
 ```
-T_task = Σ_{j=1}^{N} [R(j) + Z(j)]
-X_task = X_turn / N̄
+G_kv = min(G, n_kv)                                  # KV 有效 GPU 数
+T_kv(j) = B_eff × L(j) × κ / (G_kv × BW × 10⁹) × 10³    [ms]
 ```
+
+- GQA (n_kv=8): KV 最多拆到 8 张卡
+- MLA (n_kv=1): c_KV 不可拆，每卡读完整压缩向量
+
+**方程 3c: T_compute — 计算时间**
+
+```
+T_compute = 2 × P_active × B_eff / (G × F × 10¹²) × 10³  [ms]
+```
+
+Decode 通常 memory-bound（T_mem ≫ T_compute），但超大 batch 时可能翻转为 compute-bound。
+
+**方程 4: 封闭排队稳态（Little's Law）**
+
+Agent session 循环：推理 R → 暂停 Z → 推理 R → ...
+```
+ρ = R / (R + Z)                        # GPU 活跃比
+B_eff = C_eff × ρ                      # 稳态有效 batch
+X_turn = C_eff / (R/10³ + Z/10³)       # turn 吞吐 [turns/s]
+```
+
+B_eff 与 R 互相依赖（R 取决于 B_eff 通过 TPOT，B_eff 取决于 R 通过 ρ），需迭代求解：
+```
+初始: B_eff = 1
+重复:
+    TPOT = computeStepTime(B_eff, L(j))
+    R = TTFT + TPOT × OSL
+    ρ = R / (R + Z)
+    B_eff_new = C_eff × ρ
+    若 |B_eff_new - B_eff| < ε 则收敛
+    B_eff ← 0.6 × B_eff + 0.4 × B_eff_new      # damped update
+```
+
+**方程 5: KV-cache 内存约束**
+
+KV-cache 内存限制最大并发 session 数：
+```
+M_model = P_total × d                                  # 模型权重显存 [GB]
+M_avail = G × M_gpu - M_model                          # 可用于 KV 的总显存 [GB]
+r_kv = G / min(G, n_kv)                                # KV 复制因子（GPU > kvHeads 时 >1）
+M_kv_session = L̄ × κ × r_kv / 10⁹                     # 每 session KV 占用 [GB]
+C_max = ⌊M_avail / M_kv_session⌋
+C_eff = min(C, C_max)
+```
+
+L̄ 使用 session 平均 context 长度。当 G > n_kv 时，KV 需复制到多卡，r_kv > 1，C_max 降低。
+
+**方程 6: Task-level 映射**
+
+从 turn-level 聚合到 task-level：
+```
+T_task = Σ_{j=1}^{N} [R(j)/10³ + Z/10³]    [s]
+X_task = X_turn / N                          [tasks/s]
+```
+
+**方程 7: 标准 Serving → Agent Serving 映射**
+
+已有标准 Pareto 数据时的快速估算：
+```
+X_agent ≈ X_serving(L_prefill_eff, OSL, B_eff) / N × ρ
+```
+
+| 因子 | 说明 |
+|------|------|
+| / N | 每个 task 包含 N 轮 |
+| × ρ | GPU 只有 ρ 比例时间在工作（其余在等工具） |
+| L_prefill_eff | 有效 prefill 长度（取决于 cache 命中率和轮次） |
 
 ### Step 8: 数值推演 —— 三种 Agent 场景对比
 
