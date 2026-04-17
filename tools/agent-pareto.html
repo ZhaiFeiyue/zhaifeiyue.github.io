@@ -538,15 +538,20 @@ function computeStepTime(B, Lavg, hw) {
 }
 
 // Per-turn timing: batch of B sessions process turn j together.
-// Returns both TPOT (steady-state decode rate) and R (total turn time w/ prefill).
+// KV-cache grows during decode (L → L + OSL), so TPOT increases token-by-token.
+// Use midpoint context (L_start + OSL/2) for the average TPOT across the turn.
 function computeTurnTime(B, j, hw, ag, cacheHit) {
-  const Lj = ag.L0 + (j - 1) * (ag.OSL + ag.dL);
-  const prefillLen = cacheHit * ag.dL + (1 - cacheHit) * Lj;
+  const Lstart = ag.L0 + (j - 1) * (ag.OSL + ag.dL);   // context at start of turn j
+  const prefillLen = cacheHit * ag.dL + (1 - cacheHit) * Lstart;
   const Tprefill = computePrefillTime(B, prefillLen, hw);
-  const Tpot = computeStepTime(B, Lj, hw);   // per-token decode step time (ms)
+
+  // Decode time: integrate TPOT as context grows. Use midpoint approximation:
+  // average T_kv contribution over decode = T_kv(L_start + OSL/2).
+  const Lmid = Lstart + ag.OSL / 2;
+  const Tpot = computeStepTime(B, Lmid, hw);   // avg per-token decode step time (ms)
   const Tdecode = Tpot * ag.OSL;
   const R = Tprefill + Tdecode;
-  return { R, Tprefill, Tdecode, Tpot, Lj, prefillLen };
+  return { R, Tprefill, Tdecode, Tpot, Lj: Lstart, prefillLen };
 }
 
 // Aggregate N turns for a batch of B sessions. Collect avg/first/last TPOT + R.
