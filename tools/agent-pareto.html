@@ -560,19 +560,33 @@ function computeSession(Bmax, hw, ag, cacheHit) {
   return { totalR, R_avg, R_first, R_last };
 }
 
-// Pareto curve = trajectory over session turns j=1..N.
-// Each point: (per-agent speed at turn j, system throughput at turn j).
+// Pareto curve: sweep active batch size B from 1 to B_max_limit.
+// Each point represents one full session (N turns) running with batch=B.
+// Left side (large B): high system throughput, low per-agent speed.
+// Right side (small B): low throughput, high per-agent speed.
 function generateAgentCurve(hw, ag, cacheHit) {
-  const Bmax = computeBmax(hw, ag);
+  const BmaxLimit = computeBmax(hw, ag);
   const pts = [];
   const Zms = ag.Z * 1000;
-  for (let j = 1; j <= ag.N; j++) {
-    const t = computeTurnTime(Bmax, j, hw, ag, cacheHit);
-    const speed = ag.OSL / (t.R / 1000);                                 // tok/s/turn/agent
-    // GPU active ratio at this turn: α=1 → always saturated, α=0 → R/(R+Z)
-    const rho_j = ag.alpha + (1 - ag.alpha) * (t.R / (t.R + Zms));
-    const tputPerGPU = rho_j * Bmax * ag.OSL / (t.R / 1000) / hw.numGPUs;
-    pts.push({ x: speed, y: tputPerGPU, turn: j, R: t.R, L: t.Lj, Bmax, rho: rho_j });
+
+  const Bvalues = [];
+  for (let b = 1; b <= BmaxLimit; b = b < 8 ? b + 1 : Math.ceil(b * 1.25)) {
+    Bvalues.push(b);
+  }
+  if (Bvalues[Bvalues.length - 1] !== BmaxLimit) Bvalues.push(BmaxLimit);
+
+  for (const B of Bvalues) {
+    // Full session with batch B: compute avg R across all N turns
+    const s = computeSession(B, hw, ag, cacheHit);
+    // Pick R based on turnSel
+    const R = turnSel === 'first' ? s.R_first
+            : turnSel === 'last'  ? s.R_last
+            : s.R_avg;
+    const speed = ag.OSL / (R / 1000);
+    const rho = ag.alpha + (1 - ag.alpha) * R / (R + Zms);
+    const tputPerGPU = rho * B * ag.OSL / (R / 1000) / hw.numGPUs;
+    const C = Math.ceil(B * (1 + ag.alpha * Zms / R));
+    pts.push({ x: speed, y: tputPerGPU, B, C, R, BmaxLimit, atMax: (B === BmaxLimit) });
   }
   return pts;
 }
@@ -688,29 +702,32 @@ function buildChart() {
   }
 
   const colA = '#3b82f6', colB = '#f59e0b';
+  // Enlarge the point at B = B_max to highlight the physical limit
+  const pointRadius = (ctx) => ctx.raw?.atMax ? 7 : 3;
+  const pointStyle = (ctx) => ctx.raw?.atMax ? 'rectRot' : 'circle';
   const datasets = [
     {
       label: hwA.label + ' + cache',
       data: cacheA, borderColor: colA, backgroundColor: 'rgba(59,130,246,0.12)',
-      pointBackgroundColor: colA, pointRadius: 4, pointHoverRadius: 6,
+      pointBackgroundColor: colA, pointRadius, pointStyle, pointHoverRadius: 7,
       showLine: true, borderWidth: 2.5, tension: 0.3, fill: false, order: 4,
     },
     {
       label: hwA.label + ' no cache',
       data: nocacheA, borderColor: colA, backgroundColor: 'transparent',
-      pointBackgroundColor: colA, pointRadius: 3, pointHoverRadius: 5,
+      pointBackgroundColor: colA, pointRadius, pointStyle, pointHoverRadius: 6,
       showLine: true, borderWidth: 1.5, borderDash: [6, 4], tension: 0.3, fill: false, order: 3,
     },
     {
       label: hwB.label + ' + cache',
       data: cacheB, borderColor: colB, backgroundColor: 'rgba(245,158,11,0.12)',
-      pointBackgroundColor: colB, pointRadius: 4, pointHoverRadius: 6,
+      pointBackgroundColor: colB, pointRadius, pointStyle, pointHoverRadius: 7,
       showLine: true, borderWidth: 2.5, tension: 0.3, fill: false, order: 2,
     },
     {
       label: hwB.label + ' no cache',
       data: nocacheB, borderColor: colB, backgroundColor: 'transparent',
-      pointBackgroundColor: colB, pointRadius: 3, pointHoverRadius: 5,
+      pointBackgroundColor: colB, pointRadius, pointStyle, pointHoverRadius: 6,
       showLine: true, borderWidth: 1.5, borderDash: [6, 4], tension: 0.3, fill: false, order: 1,
     },
   ];
@@ -744,10 +761,11 @@ function buildChart() {
             label(ctx) {
               const p = ctx.raw;
               const lines = [];
-              lines.push(`Turn ${p.turn} (L=${(p.L/1000).toFixed(1)}K)`);
+              lines.push(`Active batch B = ${p.B}${p.atMax ? ' (= B_max)' : ''}`);
               lines.push(`Speed: ${p.x.toFixed(1)} tok/s/turn/agent`);
               lines.push(`Throughput: ${p.y.toFixed(1)} tok/s/GPU`);
-              lines.push(`R: ${p.R?.toFixed(0)} ms (B_max=${p.Bmax})`);
+              lines.push(`Concurrent sessions C = ${p.C}`);
+              lines.push(`R = ${p.R?.toFixed(0)} ms`);
               return lines;
             }
           }
