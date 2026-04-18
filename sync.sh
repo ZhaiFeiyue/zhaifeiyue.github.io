@@ -280,39 +280,93 @@ print(f"Wrote index.html ({total} papers)")
 # ============================================================
 # PER-PAPER PAGES
 # ============================================================
-def extract_drawio(md_text):
-    """Replace {{drawio:filename}} markers with placeholders; return stored embed HTML.
-    The drawio file must live in <SITE_DIR>/assets/<filename>. Its XML is inlined
-    into a .mxgraph div consumed by viewer-static.min.js at page load time, giving
-    an interactive, multi-page, zoomable, clickable embed."""
+DRAWIO_BOOTSTRAP_JS = """<script>
+(function () {
+  document.querySelectorAll('.mxgraph.mxg-lazy').forEach(function (el) {
+    var src = document.getElementById(el.dataset.xmlSource);
+    if (!src) return;
+    var cfg = {
+      highlight: '#0000ff',
+      nav: true,
+      resize: true,
+      toolbar: 'zoom layers tags lightbox pages',
+      edit: '_blank',
+      xml: src.textContent.trim(),
+      page: parseInt(el.dataset.page || '0', 10)
+    };
+    el.setAttribute('data-mxgraph', JSON.stringify(cfg));
+    el.classList.remove('mxg-lazy');
+  });
+})();
+</script>
+<script type="text/javascript" src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>"""
+
+
+def extract_drawio(md_text, state):
+    """Replace `{{drawio:file#page=N&height=500}}` markers with HTML embed blocks.
+
+    - state dict tracks which drawio files have already been inlined on the current
+      paper page. First occurrence inlines the full XML inside a hidden text
+      container; subsequent occurrences just reference it. This avoids blowing
+      up page size when a multi-page drawio is embedded in many sections.
+    - Each embed honours #page=N (0-indexed default page) and #height=Npx
+      (minimum initial height, default 500px).
+    """
     blocks = []
+
     def _embed(m):
-        rel_path = m.group(1).strip()
+        raw = m.group(1).strip()
+        opts = {}
+        if '#' in raw:
+            rel_path, rest = raw.split('#', 1)
+            for pair in rest.split('&'):
+                if '=' in pair:
+                    k, v = pair.split('=', 1)
+                    opts[k.strip()] = v.strip()
+        else:
+            rel_path = raw
+        rel_path = rel_path.strip()
         drawio_path = os.path.join(SITE_DIR, "assets", rel_path)
         if not os.path.isfile(drawio_path):
             return f"<!-- missing drawio: {rel_path} -->"
-        with open(drawio_path, encoding="utf-8") as fh:
-            xml = fh.read()
-        config = {
-            "highlight": "#0000ff",
-            "nav": True,
-            "resize": True,
-            "toolbar": "zoom layers tags lightbox pages",
-            "edit": "_blank",
-            "xml": xml,
-        }
-        config_attr = html.escape(json.dumps(config, ensure_ascii=False), quote=True)
+
+        try:
+            page_num = int(opts.get('page', 0))
+        except ValueError:
+            page_num = 0
+        height = opts.get('height', '500').strip()
+        if height.isdigit():
+            height = height + 'px'
+
+        source_id = 'drawio-xml-' + re.sub(r'[^a-zA-Z0-9]+', '-', rel_path).strip('-')
+        source_html = ''
+        if rel_path not in state:
+            state[rel_path] = source_id
+            with open(drawio_path, encoding='utf-8') as fh:
+                xml = fh.read()
+            source_html = (
+                f'<div id="{source_id}" class="drawio-xml-source" '
+                f'style="display:none !important;" aria-hidden="true">'
+                f'{html.escape(xml)}'
+                f'</div>'
+            )
+
         embed_html = (
-            '<div class="drawio-embed" style="margin:20px 0;">'
-            f'<div class="mxgraph" style="max-width:100%;border:1px solid #ddd;border-radius:8px;background:#fff;min-height:500px;" data-mxgraph="{config_attr}"></div>'
+            source_html
+            + '<div class="drawio-embed" style="margin:20px 0;">'
+            f'<div class="mxgraph mxg-lazy" data-xml-source="{source_id}" '
+            f'data-page="{page_num}" '
+            f'style="max-width:100%;border:1px solid #ddd;border-radius:8px;'
+            f'background:#fff;min-height:{height};"></div>'
             '<p style="font-size:0.8rem;color:#6b7280;text-align:center;margin-top:8px;">'
-            '💡 滚轮缩放 · 拖动平移 · 顶部页签切换不同模块 · 右上角工具栏可在 diagrams.net 打开编辑'
-            f' · <a href="/assets/{rel_path}" download>下载 .drawio</a>'
+            f'💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · '
+            f'<a href="/assets/{rel_path}" download>下载 .drawio</a>'
             '</p>'
             '</div>'
         )
         blocks.append(embed_html)
         return f"\x01DRAWIO{len(blocks)-1}\x01"
+
     md_text = re.sub(r'\{\{drawio:([^}]+)\}\}', _embed, md_text)
     return md_text, blocks
 
@@ -534,14 +588,15 @@ for p in papers:
     summary_md = inject_images_inline(summary_md, pid)
     details_md = inject_images_inline(details_md, pid) if details_md else details_md
 
-    summary_md, summary_drawio = extract_drawio(summary_md)
-    details_md, details_drawio = extract_drawio(details_md) if details_md else (details_md, [])
+    drawio_state = {}
+    summary_md, summary_drawio = extract_drawio(summary_md, drawio_state)
+    details_md, details_drawio = extract_drawio(details_md, drawio_state) if details_md else (details_md, [])
 
     summary_html = restore_drawio(sanitize_html(md_to_html(summary_md, paper_id=pid)), summary_drawio)
     details_html = restore_drawio(sanitize_html(md_to_html(details_md, paper_id=pid)), details_drawio) if details_md else ""
 
     has_drawio = bool(summary_drawio or details_drawio)
-    drawio_script = '<script type="text/javascript" src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>' if has_drawio else ""
+    drawio_script = DRAWIO_BOOTSTRAP_JS if has_drawio else ""
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
