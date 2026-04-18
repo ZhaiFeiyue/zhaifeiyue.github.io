@@ -280,6 +280,51 @@ print(f"Wrote index.html ({total} papers)")
 # ============================================================
 # PER-PAPER PAGES
 # ============================================================
+def extract_drawio(md_text):
+    """Replace {{drawio:filename}} markers with placeholders; return stored embed HTML.
+    The drawio file must live in <SITE_DIR>/assets/<filename>. Its XML is inlined
+    into a .mxgraph div consumed by viewer-static.min.js at page load time, giving
+    an interactive, multi-page, zoomable, clickable embed."""
+    blocks = []
+    def _embed(m):
+        rel_path = m.group(1).strip()
+        drawio_path = os.path.join(SITE_DIR, "assets", rel_path)
+        if not os.path.isfile(drawio_path):
+            return f"<!-- missing drawio: {rel_path} -->"
+        with open(drawio_path, encoding="utf-8") as fh:
+            xml = fh.read()
+        config = {
+            "highlight": "#0000ff",
+            "nav": True,
+            "resize": True,
+            "toolbar": "zoom layers tags lightbox pages",
+            "edit": "_blank",
+            "xml": xml,
+        }
+        config_attr = html.escape(json.dumps(config, ensure_ascii=False), quote=True)
+        embed_html = (
+            '<div class="drawio-embed" style="margin:20px 0;">'
+            f'<div class="mxgraph" style="max-width:100%;border:1px solid #ddd;border-radius:8px;background:#fff;min-height:500px;" data-mxgraph="{config_attr}"></div>'
+            '<p style="font-size:0.8rem;color:#6b7280;text-align:center;margin-top:8px;">'
+            '💡 滚轮缩放 · 拖动平移 · 顶部页签切换不同模块 · 右上角工具栏可在 diagrams.net 打开编辑'
+            f' · <a href="/assets/{rel_path}" download>下载 .drawio</a>'
+            '</p>'
+            '</div>'
+        )
+        blocks.append(embed_html)
+        return f"\x01DRAWIO{len(blocks)-1}\x01"
+    md_text = re.sub(r'\{\{drawio:([^}]+)\}\}', _embed, md_text)
+    return md_text, blocks
+
+
+def restore_drawio(html_text, blocks):
+    """Replace DRAWIO placeholders with raw embed HTML (strip wrapping <p>)."""
+    for i, block in enumerate(blocks):
+        html_text = html_text.replace(f"<p>\x01DRAWIO{i}\x01</p>", block)
+        html_text = html_text.replace(f"\x01DRAWIO{i}\x01", block)
+    return html_text
+
+
 def protect_math(text):
     """Extract LaTeX math spans so markdown transforms don't corrupt them."""
     store = []
@@ -489,8 +534,14 @@ for p in papers:
     summary_md = inject_images_inline(summary_md, pid)
     details_md = inject_images_inline(details_md, pid) if details_md else details_md
 
-    summary_html = sanitize_html(md_to_html(summary_md, paper_id=pid))
-    details_html = sanitize_html(md_to_html(details_md, paper_id=pid)) if details_md else ""
+    summary_md, summary_drawio = extract_drawio(summary_md)
+    details_md, details_drawio = extract_drawio(details_md) if details_md else (details_md, [])
+
+    summary_html = restore_drawio(sanitize_html(md_to_html(summary_md, paper_id=pid)), summary_drawio)
+    details_html = restore_drawio(sanitize_html(md_to_html(details_md, paper_id=pid)), details_drawio) if details_md else ""
+
+    has_drawio = bool(summary_drawio or details_drawio)
+    drawio_script = '<script type="text/javascript" src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>' if has_drawio else ""
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
@@ -613,6 +664,7 @@ for p in papers:
 </div>
 {"<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>Details</span>" + details_html + "</div>" if details_html else ""}
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
+{drawio_script}
 </body>
 </html>"""
 
