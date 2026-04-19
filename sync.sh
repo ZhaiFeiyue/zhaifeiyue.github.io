@@ -591,20 +591,11 @@ for p in papers:
     with open(notes_path) as f:
         md = f.read()
 
-    split_marker = "## Deep Analysis"
-    if split_marker in md:
-        idx = md.index(split_marker)
-        summary_md = md[:idx].strip()
-        details_md = md[idx:].strip()
-        if summary_md.endswith('---'):
-            summary_md = summary_md[:-3].strip()
-    else:
-        summary_md = md.strip()
-        details_md = ""
-
-    summary_lines = summary_md.split('\n')
+    # Strip the leading `# title` + `> meta` block — it's redundant with
+    # the page hero (rendered separately above).
+    body_lines = md.split('\n')
     skip = 0
-    for i, l in enumerate(summary_lines):
+    for i, l in enumerate(body_lines):
         if l.startswith('# '):
             skip = i + 1
             continue
@@ -612,7 +603,10 @@ for p in papers:
             skip = i + 1
             continue
         break
-    summary_md = '\n'.join(summary_lines[skip:])
+    body_md = '\n'.join(body_lines[skip:]).strip()
+    # Drop a leading `---` separator if present after the meta block
+    if body_md.startswith('---'):
+        body_md = body_md[3:].lstrip()
 
     def _dedup_cross_section_figures(summary_html, details_html):
         """Replace 2nd+ occurrence of an identical base64 image with a
@@ -706,25 +700,72 @@ for p in papers:
 
         return '\n'.join(result)
 
-    summary_md = inject_images_inline(summary_md, pid)
-    details_md = inject_images_inline(details_md, pid) if details_md else details_md
+    body_md = inject_images_inline(body_md, pid)
 
     drawio_state = {}
-    summary_md, summary_drawio = extract_drawio(summary_md, drawio_state)
-    details_md, details_drawio = extract_drawio(details_md, drawio_state) if details_md else (details_md, [])
+    body_md, body_drawio = extract_drawio(body_md, drawio_state)
 
-    summary_html = restore_drawio(sanitize_html(md_to_html(summary_md, paper_id=pid)), summary_drawio)
-    details_html = restore_drawio(sanitize_html(md_to_html(details_md, paper_id=pid)), details_drawio) if details_md else ""
+    body_html = restore_drawio(sanitize_html(md_to_html(body_md, paper_id=pid)), body_drawio)
 
-    # Cross-section image dedup: notes commonly reference the same figure
-    # in `## Key Figures` AND inside `## Deep Analysis`. Render the binary
-    # only ONCE per paper; subsequent <figure><img> blocks become a slim
-    # "↑ Figure N (see above)" pointer that preserves the surrounding text.
-    summary_html, details_html = _dedup_cross_section_figures(
-        summary_html, details_html)
+    # Same-paper dedup: notes commonly reference the same figure in
+    # `## Key Figures` AND inside `## Deep Analysis`. Render the binary
+    # only ONCE; subsequent <figure><img> blocks become a slim
+    # "↑ Figure N (see above)" pointer that preserves the prose anchor.
+    body_html, _ = _dedup_cross_section_figures(body_html, "")
 
-    has_drawio = bool(summary_drawio or details_drawio)
+    has_drawio = bool(body_drawio)
     drawio_script = DRAWIO_BOOTSTRAP_JS if has_drawio else ""
+
+    # ---- TL;DR computation (≤300 chars, plain text, no markdown) ----
+    def _build_tldr(paper_entry, body_markdown):
+        """Compose a plain-text TL;DR ≤300 chars.
+
+        Priority sources:
+        1. papers.json `core_contribution` (curated 1-sentence summary).
+        2. First substantial paragraph of papers.json `summary`.
+        3. First substantial paragraph after the leading meta block in notes.
+        Truncates at sentence boundary when possible.
+        """
+        def _strip_md(s):
+            s = re.sub(r'\$[^$\n]+\$', lambda m: m.group(0).strip('$'), s)
+            s = re.sub(r'\\\$', '$', s)
+            s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+            s = re.sub(r'\*(.+?)\*', r'\1', s)
+            s = re.sub(r'`([^`]+)`', r'\1', s)
+            s = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', s)
+            s = re.sub(r'\s+', ' ', s).strip()
+            return s
+
+        parts = []
+        contrib = (paper_entry.get('core_contribution') or '').strip()
+        if contrib:
+            parts.append(_strip_md(contrib))
+        summary_field = (paper_entry.get('summary') or '').strip()
+        if summary_field:
+            first_para = summary_field.split('\n\n', 1)[0]
+            parts.append(_strip_md(first_para))
+        if not parts:
+            for line in body_markdown.split('\n'):
+                s = line.strip()
+                if not s or s.startswith(('#', '!', '|', '>', '-', '*', '`')):
+                    continue
+                parts.append(_strip_md(s))
+                if sum(len(p) for p in parts) > 200:
+                    break
+
+        text = ' '.join(parts)
+        if len(text) <= 300:
+            return text
+        # Try to truncate at sentence boundary near the limit (≤300 chars)
+        cut = text[:300]
+        for sep in ['。', '！', '？', '. ', '! ', '? ']:
+            idx = cut.rfind(sep)
+            if idx >= 150:
+                return cut[:idx + len(sep)].rstrip()
+        # No sentence boundary: hard cut at 299 chars + '…' = exactly 300 chars
+        return text[:299].rstrip() + '…'
+
+    tldr_text = _build_tldr(p, body_md)
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
@@ -756,16 +797,18 @@ for p in papers:
   font-size: 0.72rem; padding: 2px 10px; border-radius: 999px;
   background: #f1f5f9; color: var(--mt); font-weight: 600;
 }}
-.section-divider {{
-  max-width: 960px; margin: 32px auto; padding: 0 24px;
+.tldr {{
+  max-width: 960px; margin: 24px auto 32px; padding: 18px 24px;
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  font-family: 'Noto Serif SC', 'Lora', serif;
+  font-size: 0.95rem; line-height: 1.6; color: #1e293b;
 }}
-.section-divider hr {{
-  border: none; border-top: 3px solid var(--accent); opacity: 0.3;
-}}
-.section-label {{
-  display: inline-block; background: var(--accent); color: #fff;
-  font-size: 0.82rem; font-weight: 700; padding: 4px 16px;
-  border-radius: 999px; margin-bottom: 16px;
+.tldr .tldr-label {{
+  display: inline-block; font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+  color: var(--accent); margin-bottom: 6px; text-transform: uppercase;
 }}
 .content {{
   font-family: 'Noto Serif SC', 'Lora', serif;
@@ -853,11 +896,13 @@ for p in papers:
   </div>
   <div class="tags">{tags_html}</div>
 </div>
-<div class="w content">
-  <span class="section-label">Summary</span>
-  {summary_html}
+<div class="tldr">
+  <div class="tldr-label">TL;DR</div>
+  <div>{html.escape(tldr_text)}</div>
 </div>
-{"<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>Details</span>" + details_html + "</div>" if details_html else ""}
+<div class="w content">
+{body_html}
+</div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
 {drawio_script}
 </body>

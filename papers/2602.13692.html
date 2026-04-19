@@ -66,16 +66,18 @@ footer {
   font-size: 0.72rem; padding: 2px 10px; border-radius: 999px;
   background: #f1f5f9; color: var(--mt); font-weight: 600;
 }
-.section-divider {
-  max-width: 960px; margin: 32px auto; padding: 0 24px;
+.tldr {
+  max-width: 960px; margin: 24px auto 32px; padding: 18px 24px;
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  font-family: 'Noto Serif SC', 'Lora', serif;
+  font-size: 0.95rem; line-height: 1.6; color: #1e293b;
 }
-.section-divider hr {
-  border: none; border-top: 3px solid var(--accent); opacity: 0.3;
-}
-.section-label {
-  display: inline-block; background: var(--accent); color: #fff;
-  font-size: 0.82rem; font-weight: 700; padding: 4px 16px;
-  border-radius: 999px; margin-bottom: 16px;
+.tldr .tldr-label {
+  display: inline-block; font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
+  color: var(--accent); margin-bottom: 6px; text-transform: uppercase;
 }
 .content {
   font-family: 'Noto Serif SC', 'Lora', serif;
@@ -169,9 +171,12 @@ footer {
   </div>
   <div class="tags"><span class="tag">agentic-inference</span><span class="tag">kv-cache-scheduling</span><span class="tag">program-abstraction</span><span class="tag">rl-rollout</span><span class="tag">tool-orchestration</span><span class="tag">agent-serving</span></div>
 </div>
+<div class="tldr">
+  <div class="tldr-label">TL;DR</div>
+  <div>Introduces the Agentic Program as a first-class scheduling unit persisting across LLM calls and tool executions, plus a program-aware scheduler (global waiting queue, state-aware pause/restore, provably optimal exponential time-decay caching function) and lifecycle-aware tool resource manager, deli…</div>
+</div>
 <div class="w content">
-  <span class="section-label">Summary</span>
-  <h2 id="core-contribution">Core Contribution</h2>
+<h2 id="core-contribution">Core Contribution</h2>
 <p>ThunderAgent introduces an <b>agentic program</b> as a first-class scheduling unit that persists across multiple LLM calls and tool executions, enabling a program-aware scheduler (global waiting queue, state-aware pause/restore with a provably optimal exponential time-decay caching function) and a lifecycle-aware tool resource manager to eliminate KV-cache thrashing, cross-node memory imbalance, and tool-environment leakage in multi-turn agent serving and RL rollout.</p>
 <h2 id="summary">Summary</h2>
 <p>现代 Agent 工作流（coding agents、SWE-Agent、OpenHands、ToolOrchestra）由多轮 LLM 调用和外部工具执行交错组成。主流部署方式是把一个 LLM 推理引擎（vLLM / SGLang）松耦合地拼到一个通用工具编排器（Kubernetes）上。两个组件各自以 <b>per-request</b> 粒度调度，对整个 workflow 的拓扑、未来 reuse、工具生命周期<b>毫无知觉</b>。作者在 8×H100 上用 GLM-4.6 + SWE-Bench Lite 跑实测，发现这种组合方式在高并发下会发生三类系统性失败：(1) <b>KV-cache thrashing</b>——工具执行期间旧请求的 KV 被激进驱逐，工具返回后必须重跑整个历史 prefill，端到端延迟放大最高 7.14×；(2) <b>跨节点内存不均衡</b>——vLLM KV-aware router 把同一 workflow 的所有请求钉到同一节点，由于 agent 上下文快速不可预测地增长，出现某些节点爆满、另一些节点空闲，90 分钟 rollout 中峰值内存差达 51%；(3) <b>工具生命周期无感</b>——完成的 workflow 留下的 Docker sandbox / 端口占用不会被回收，磁盘线性上涨直至系统崩溃；同时每个新 workflow 必须等环境 ready 才能开始推理。</p>
@@ -230,8 +235,8 @@ footer {
 <li><b>Agent</b>: <b>重要</b>。为 agent 框架（SWE-Agent / OpenHands / ToolOrchestra）提供 throughput-optimal 的 runtime；显式建模了 agent 的双态（Reasoning / Acting）——今后 agent 框架设计会更明确地上暴露这两个状态给 runtime。</li>
 <li><b>Code</b>: 开源仓库（见 <code>https://github.com/HaoKang-Timmy/ThunderAgent</code> / arXiv 摘要同时提到 <code>Agentic-Kinetics/ThunderAgent</code>）——值得深入阅读 <code>program_abstraction</code>、<code>global_waiting_queue</code>、<code>time_decay</code> 三个关键模块的实现。</li>
 </ul>
-</div>
-<div class='section-divider'><hr></div><div class='w content'><span class='section-label'>Details</span><h2 id="deep-analysis-framework">Deep Analysis (framework)</h2>
+<p>---</p>
+<h2 id="deep-analysis-framework">Deep Analysis (framework)</h2>
 <h3>Inherited Phase 2 Deepening</h3>
 <p>#### 时代定位 (Era Positioning)</p>
 <p>2026 年的 LLM 推理系统栈中，<b>chatbot serving 的 low-hanging fruits</b> 已被 paged attention、continuous batching、chunked prefill、PD 分离、MoE EP、speculative decoding 等技术采摘干净。vLLM/SGLang/TRT-LLM 三巨头的性能差距缩小到 <20%。此时真正的瓶颈从<b>单请求效率</b>转向<b>multi-turn agent workload 的调度语义</b>——当一个 workflow 会在 LLM 与外部工具间往返 10–50 次、上下文从 2k 增长到 100k 时，过去所有"per-request 视角"的优化都失效。ThunderAgent 代表了推理系统进入 <b>program-aware</b> 深水区的第一批工作之一（与 2026 年前后的 MegaFlow、Sutradhara、Continuum 并列），其核心主张是：<b>workflow 不能是 runtime 的无名气一等公民</b>。</p>
@@ -434,7 +439,8 @@ Baseline: thrashing-bound (KV 驱逐风暴)
 <li>ThunderAgent 与 <b>sparse KV</b>（ShadowKV / Pensieve）能否组合？program-aware + sub-program KV 裁剪的协同空间？</li>
 <li>当 DP 扩展到<b>数百节点</b>时，global waiting queue 的中心化调度器是否会成为新瓶颈？</li>
 <li>多租户多模型场景下，program 的 routing 在模型维度如何处理？</li>
-</ul></div>
+</ul>
+</div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
 
 </body>
