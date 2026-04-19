@@ -807,56 +807,16 @@ for p in papers:
     has_mermaid = bool(re.search(r'<div class="mermaid">', body_html))
     mermaid_script = MERMAID_BOOTSTRAP_JS if has_mermaid else ""
 
-    # ---- TL;DR computation (≤300 chars, plain text, no markdown) ----
-    def _build_tldr(paper_entry, body_markdown):
-        """Compose a plain-text TL;DR ≤300 chars.
-
-        Priority sources:
-        1. papers.json `core_contribution` (curated 1-sentence summary).
-        2. First substantial paragraph of papers.json `summary`.
-        3. First substantial paragraph after the leading meta block in notes.
-        Truncates at sentence boundary when possible.
-        """
-        def _strip_md(s):
-            s = re.sub(r'\$[^$\n]+\$', lambda m: m.group(0).strip('$'), s)
-            s = re.sub(r'\\\$', '$', s)
-            s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
-            s = re.sub(r'\*(.+?)\*', r'\1', s)
-            s = re.sub(r'`([^`]+)`', r'\1', s)
-            s = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', s)
-            s = re.sub(r'\s+', ' ', s).strip()
-            return s
-
-        parts = []
-        contrib = (paper_entry.get('core_contribution') or '').strip()
-        if contrib:
-            parts.append(_strip_md(contrib))
-        summary_field = (paper_entry.get('summary') or '').strip()
-        if summary_field:
-            first_para = summary_field.split('\n\n', 1)[0]
-            parts.append(_strip_md(first_para))
-        if not parts:
-            for line in body_markdown.split('\n'):
-                s = line.strip()
-                if not s or s.startswith(('#', '!', '|', '>', '-', '*', '`')):
-                    continue
-                parts.append(_strip_md(s))
-                if sum(len(p) for p in parts) > 200:
-                    break
-
-        text = ' '.join(parts)
-        if len(text) <= 300:
-            return text
-        # Try to truncate at sentence boundary near the limit (≤300 chars)
-        cut = text[:300]
-        for sep in ['。', '！', '？', '. ', '! ', '? ']:
-            idx = cut.rfind(sep)
-            if idx >= 150:
-                return cut[:idx + len(sep)].rstrip()
-        # No sentence boundary: hard cut at 299 chars + '…' = exactly 300 chars
-        return text[:299].rstrip() + '…'
-
-    tldr_text = _build_tldr(p, body_md)
+    # ---- TL;DR — LLM-authored content, NEVER script-derived ----
+    # Architectural rule: scripts handle format; LLM owns all user-visible
+    # prose. We READ from papers.json fields the LLM wrote, never compose
+    # / truncate / summarise.
+    #
+    # Priority:
+    #   1. papers.json `tldr` field (added during v2 migration; LLM-written)
+    #   2. fallback: full `core_contribution` (already an LLM 1-sentence
+    #      summary per skill guidance — use as-is, no truncation)
+    tldr_text = (p.get('tldr') or p.get('core_contribution') or '').strip()
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
