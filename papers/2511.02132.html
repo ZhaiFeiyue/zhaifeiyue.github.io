@@ -136,15 +136,46 @@ footer {
 .content .fig-ref-note {
   font-size: 0.75rem; opacity: 0.7;
 }
+.table-wrap {
+  margin: 16px 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--bd);
+  background: #fff;
+}
 .md-table {
-  width: 100%; border-collapse: collapse; margin: 12px 0;
-  font-size: 0.85rem;
+  width: 100%; border-collapse: collapse;
+  font-size: 0.85rem; min-width: 100%;
 }
 .md-table th, .md-table td {
-  border: 1px solid var(--bd); padding: 8px 12px; text-align: left;
+  border-bottom: 1px solid #f1f5f9;
+  padding: 8px 14px;
+  white-space: nowrap;
 }
 .md-table th {
-  background: #f8fafc; font-weight: 700;
+  background: #f8fafc; font-weight: 700; color: #475569;
+  position: sticky; top: 0; z-index: 1;
+  border-bottom: 2px solid var(--bd);
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.md-table tbody tr:nth-child(even) td {
+  background: #fafbfc;
+}
+.md-table tbody tr:hover td {
+  background: #eff6ff;
+}
+.md-table td b, .md-table td strong {
+  color: var(--accent); font-weight: 700;
+}
+.mermaid {
+  margin: 20px 0; padding: 16px;
+  background: #fff; border: 1px solid var(--bd);
+  border-radius: 8px; text-align: center;
+  overflow-x: auto;
+}
+.mermaid svg {
+  max-width: 100%; height: auto;
 }
 .content .katex-display {
   overflow-x: auto; overflow-y: hidden;
@@ -194,12 +225,14 @@ footer {
 <p>→ Head-first 迭代顺序对了（先完成一个 head 的所有 blocks 再到下一个 head），但 round-robin XCD 分配仍将同一 head 的 blocks 打散到所有 XCD。在短序列时尚可（K/V 小，各 XCD 的 L2 都装得下），但长序列（128K）时 K/V 超出单 XCD L2，打散导致命中率从 90% 跌至 <b>40-60%</b>（Figure 13）。</p>
 <p><b>为何 NVIDIA Blackwell 不需要这个优化？</b></p>
 <p>→ Blackwell 在硬件层面维持了两个 die 之间的 full cache coherency（Figure 1b），对软件隐藏了 NUMA 效应。而 MI300X 显式暴露了 NUMA 特性，<b>需要软件层面的 NUMA-aware 调度</b>。这是一个重要的 AMD vs NVIDIA 架构差异：NVIDIA 选择硬件兜底，AMD 选择给程序员更多控制。</p>
-<table class="md-table"><tr><th>Mapping Strategy</th><th>MHA H=128 128K Perf</th><th>L2 Hit Rate</th><th>适用场景</th></tr>
-<tr><td>Naive Block-first</td><td>~65%</td><td>~1%</td><td>不推荐</td></tr>
-<tr><td>Swizzled Block-first</td><td>~76%</td><td>~10%</td><td>GQA (groups=XCDs)</td></tr>
-<tr><td>Naive Head-first</td><td>~90%</td><td>40-60%</td><td>短序列</td></tr>
-<tr><td><b>Swizzled Head-first</b></td><td><b>100% (baseline)</b></td><td><b>90-97%</b></td><td><b>通用最优</b></td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Mapping Strategy</th><th style="text-align:left">MHA H=128 128K Perf</th><th style="text-align:left">L2 Hit Rate</th><th style="text-align:left">适用场景</th></tr></thead><tbody>
+<tr><td style="text-align:left">Naive Block-first</td><td style="text-align:left">~65%</td><td style="text-align:left">~1%</td><td style="text-align:left">不推荐</td></tr>
+<tr><td style="text-align:left">Swizzled Block-first</td><td style="text-align:left">~76%</td><td style="text-align:left">~10%</td><td style="text-align:left">GQA (groups=XCDs)</td></tr>
+<tr><td style="text-align:left">Naive Head-first</td><td style="text-align:left">~90%</td><td style="text-align:left">40-60%</td><td style="text-align:left">短序列</td></tr>
+<tr><td style="text-align:left"><b>Swizzled Head-first</b></td><td style="text-align:left"><b>100% (baseline)</b></td><td style="text-align:left"><b>90-97%</b></td><td style="text-align:left"><b>通用最优</b></td></tr>
+</tbody>
+</table></div>
 <h3>核心技术壁垒</h3>
 <p><b>ACC (Attention Compute Cluster) 到 XCD 的 1:1 映射</b>。核心 insight 极其简单——"同一 head 的所有 blocks 放在同一 XCD"——但需要精确的 swizzle 逻辑来在 round-robin 硬件调度器之上实现这个映射。Figure 11 的 ~15 行 Triton 代码是全部实现。</p>
 <p>真正的壁垒不在代码，而在 <b>对 MI300X 内存层次结构的深度理解</b>：(1) L2 cache 是 per-XCD 私有的 4MB；(2) 硬件 WG 调度器使用 chunked round-robin（chunk=1）；(3) 这个调度策略是 driver-level、跨代 GPU 可能变化的；(4) 因此 swizzle 必须做成 kernel-level 的 mutable 逻辑而非依赖固定的硬件行为。</p>
@@ -252,21 +285,25 @@ footer {
 <p><b>Detailed description</b>: Figure 12 以 Swizzled Head-first 为 baseline (1.0) 归一化。Block-first 在 H≥64 + seqlen≥32K 时降到 0.64-0.70。Figure 13 的 L2 cache hit rate 揭示了原因：Block-first 在极端配置下 cache 完全失效 (~1%)，而 Swizzled Head-first 始终维持 90%+ 命中率。</p>
 <h2 id="key-tables">Key Tables</h2>
 <h3>Table 1: MI300X Architecture</h3>
-<table class="md-table"><tr><th>Component</th><th>Specification</th></tr>
-<tr><td>XCDs</td><td>8</td></tr>
-<tr><td>CUs per XCD</td><td>38 (304 total)</td></tr>
-<tr><td>L1 Cache/CU</td><td>16 KB</td></tr>
-<tr><td><b>L2 Cache/XCD</b></td><td><b>4 MB (32 MB total)</b></td></tr>
-<tr><td>HBM3</td><td>192 GB, 5.3 TB/s</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Component</th><th style="text-align:left">Specification</th></tr></thead><tbody>
+<tr><td style="text-align:left">XCDs</td><td style="text-align:left">8</td></tr>
+<tr><td style="text-align:left">CUs per XCD</td><td style="text-align:left">38 (304 total)</td></tr>
+<tr><td style="text-align:left">L1 Cache/CU</td><td style="text-align:left">16 KB</td></tr>
+<tr><td style="text-align:left"><b>L2 Cache/XCD</b></td><td style="text-align:left"><b>4 MB (32 MB total)</b></td></tr>
+<tr><td style="text-align:left">HBM3</td><td style="text-align:left">192 GB, 5.3 TB/s</td></tr>
+</tbody>
+</table></div>
 <p><b>Takeaway</b>: 每 XCD 仅 4MB L2。K/V 数据 (e.g. 128K×128×FP16=32MB per head) 远超 L2，tiled access 是唯一出路。</p>
 <h3>Table 3: Evaluated Model Configurations</h3>
-<table class="md-table"><tr><th>Model</th><th>Attn Type</th><th>H_Q</th><th>H_K</th><th>D_HEAD</th></tr>
-<tr><td>Llama-3 8B</td><td>GQA</td><td>32</td><td>8</td><td>128</td></tr>
-<tr><td>Llama-3 70B</td><td>GQA</td><td>64</td><td>8</td><td>128</td></tr>
-<tr><td>Llama-3 405B</td><td>GQA</td><td>128</td><td>8</td><td>128</td></tr>
-<tr><td>DeepSeek-V3</td><td>MHA</td><td>128</td><td>128</td><td>56</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Model</th><th style="text-align:left">Attn Type</th><th style="text-align:right">H_Q</th><th style="text-align:right">H_K</th><th style="text-align:right">D_HEAD</th></tr></thead><tbody>
+<tr><td style="text-align:left">Llama-3 8B</td><td style="text-align:left">GQA</td><td style="text-align:right">32</td><td style="text-align:right">8</td><td style="text-align:right">128</td></tr>
+<tr><td style="text-align:left">Llama-3 70B</td><td style="text-align:left">GQA</td><td style="text-align:right">64</td><td style="text-align:right">8</td><td style="text-align:right">128</td></tr>
+<tr><td style="text-align:left">Llama-3 405B</td><td style="text-align:left">GQA</td><td style="text-align:right">128</td><td style="text-align:right">8</td><td style="text-align:right">128</td></tr>
+<tr><td style="text-align:left">DeepSeek-V3</td><td style="text-align:left">MHA</td><td style="text-align:right">128</td><td style="text-align:right">128</td><td style="text-align:right">56</td></tr>
+</tbody>
+</table></div>
 <p><b>Takeaway</b>: DeepSeek-V3 (MHA H=128) 是 Swizzled Head-first 收益最大的场景。</p>
 <h2 id="limitations">Limitations</h2>
 <ul>
@@ -306,33 +343,39 @@ footer {
 <p>见上方约束推导——覆盖了 4 种 mapping 策略的 feasibility matrix 和 NVIDIA vs AMD 架构差异分析。</p>
 <p><b>核心 constraint</b>: MI300X 的 L2 是 per-XCD 私有且不 coherent across XCDs → 任何跨 XCD 的数据共享必须通过 HBM 重新加载。这迫使 kernel 设计者将数据共享的 workgroups 物理放在同一 XCD。</p>
 <h3>4. Optimization Techniques</h3>
-<table class="md-table"><tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
-<tr><td>Tiling / blocking</td><td>Yes (inherited from FA2)</td><td>BLOCK_M=128, BLOCK_N=64</td></tr>
-<tr><td>Software pipelining</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled K/V access 模式</td></tr>
-<tr><td><b>Workgroup swizzling</b></td><td><b>Yes (core contribution)</b></td><td>Swizzled Head-first: ~15行 Triton swizzle 逻辑重映射 WG ID</td></tr>
-<tr><td>Vectorized memory access</td><td>Yes (inherited from FA2)</td><td>标准 Triton 向量化</td></tr>
-<tr><td>Shared memory / LDS</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled softmax</td></tr>
-<tr><td>Kernel fusion</td><td>N/A</td><td>不涉及 kernel fusion，纯调度优化</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Technique</th><th style="text-align:left">Applied?</th><th style="text-align:left">Details</th></tr></thead><tbody>
+<tr><td style="text-align:left">Tiling / blocking</td><td style="text-align:left">Yes (inherited from FA2)</td><td style="text-align:left">BLOCK_M=128, BLOCK_N=64</td></tr>
+<tr><td style="text-align:left">Software pipelining</td><td style="text-align:left">Yes (inherited from FA2)</td><td style="text-align:left">FA2 的 tiled K/V access 模式</td></tr>
+<tr><td style="text-align:left"><b>Workgroup swizzling</b></td><td style="text-align:left"><b>Yes (core contribution)</b></td><td style="text-align:left">Swizzled Head-first: ~15行 Triton swizzle 逻辑重映射 WG ID</td></tr>
+<tr><td style="text-align:left">Vectorized memory access</td><td style="text-align:left">Yes (inherited from FA2)</td><td style="text-align:left">标准 Triton 向量化</td></tr>
+<tr><td style="text-align:left">Shared memory / LDS</td><td style="text-align:left">Yes (inherited from FA2)</td><td style="text-align:left">FA2 的 tiled softmax</td></tr>
+<tr><td style="text-align:left">Kernel fusion</td><td style="text-align:left">N/A</td><td style="text-align:left">不涉及 kernel fusion，纯调度优化</td></tr>
+</tbody>
+</table></div>
 <p><b>关键 insight</b>: 本文不修改 FA2 kernel 的计算逻辑，仅修改 <b>WG ID 到 (batch, head, block) 的映射函数</b>。这意味着它与任何 FA2 实现兼容，不引入额外 compute 或 memory overhead。</p>
 <h3>5. Performance Analysis</h3>
-<table class="md-table"><tr><th>Config</th><th>Speedup (vs Naive Block-first)</th><th>L2 Hit Rate</th></tr>
-<tr><td>MHA H=128, N=128K, B=1</td><td><b>1.50×</b></td><td>90-97% (vs ~1%)</td></tr>
-<tr><td>MHA H=64, N=32K, B=4</td><td>1.30-1.40×</td><td>85-95% (vs ~5%)</td></tr>
-<tr><td>GQA H_Q=128 H_K=8, N=128K</td><td>1.10-1.15×</td><td>Similar to Swizzled Block-first</td></tr>
-<tr><td>DeepSeekV3 prefill, N=128K, B=8</td><td>~1.35× (vs Swizzled Block-first ~0.76)</td><td>-</td></tr>
-<tr><td>FA2 Backward, H=128, N=128K</td><td><b>1.10×</b></td><td>-</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Config</th><th style="text-align:left">Speedup (vs Naive Block-first)</th><th style="text-align:left">L2 Hit Rate</th></tr></thead><tbody>
+<tr><td style="text-align:left">MHA H=128, N=128K, B=1</td><td style="text-align:left"><b>1.50×</b></td><td style="text-align:left">90-97% (vs ~1%)</td></tr>
+<tr><td style="text-align:left">MHA H=64, N=32K, B=4</td><td style="text-align:left">1.30-1.40×</td><td style="text-align:left">85-95% (vs ~5%)</td></tr>
+<tr><td style="text-align:left">GQA H_Q=128 H_K=8, N=128K</td><td style="text-align:left">1.10-1.15×</td><td style="text-align:left">Similar to Swizzled Block-first</td></tr>
+<tr><td style="text-align:left">DeepSeekV3 prefill, N=128K, B=8</td><td style="text-align:left">~1.35× (vs Swizzled Block-first ~0.76)</td><td style="text-align:left">-</td></tr>
+<tr><td style="text-align:left">FA2 Backward, H=128, N=128K</td><td style="text-align:left"><b>1.10×</b></td><td style="text-align:left">-</td></tr>
+</tbody>
+</table></div>
 <p><b>Scaling behavior</b>: 收益随 head 数和序列长度增加而增大。H<16 或 N<8K 时所有方法性能接近（K/V 小，L2 装得下）。</p>
 <h3>6. Numerical Considerations</h3>
 <p>N/A — 本文是纯调度优化，不修改数值计算。与 FA2 完全数值等价。</p>
 <h3>7. Portability</h3>
-<table class="md-table"><tr><th>Dimension</th><th>Assessment</th></tr>
-<tr><td>Cross-GPU within AMD</td><td>需调整 NUM_XCD 参数（MI350X XCD 数可能不同）</td></tr>
-<tr><td>Cross-vendor</td><td><b>不适用于 NVIDIA Blackwell</b>（硬件 coherent，不暴露 NUMA），可能适用于 Rubin Ultra (4 die)</td></tr>
-<tr><td>Integration</td><td>Triton 实现，~15 行改动，可直接 upstream</td></tr>
-<tr><td>Compiler dependency</td><td>ROCm + Triton</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Dimension</th><th style="text-align:left">Assessment</th></tr></thead><tbody>
+<tr><td style="text-align:left">Cross-GPU within AMD</td><td style="text-align:left">需调整 NUM_XCD 参数（MI350X XCD 数可能不同）</td></tr>
+<tr><td style="text-align:left">Cross-vendor</td><td style="text-align:left"><b>不适用于 NVIDIA Blackwell</b>（硬件 coherent，不暴露 NUMA），可能适用于 Rubin Ultra (4 die)</td></tr>
+<tr><td style="text-align:left">Integration</td><td style="text-align:left">Triton 实现，~15 行改动，可直接 upstream</td></tr>
+<tr><td style="text-align:left">Compiler dependency</td><td style="text-align:left">ROCm + Triton</td></tr>
+</tbody>
+</table></div>
 <h3>8. Deployment Context</h3>
 <ul>
 <li><b>Inference prefill</b>: 收益最大——compute-bound, 长序列, 高 head 数</li>
@@ -378,14 +421,17 @@ batch_offset = (wid // (blocks_per_head * NUM_Q_HEADS)) % BATCH
 <li>无额外 bank conflict 或 coalescing 问题（纯调度优化，不改数据布局）</li>
 </ul>
 <h3>11. Infrastructure Impact</h3>
-<table class="md-table"><tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>"ACC-to-XCD mapping" 原则可泛化到任何 chiplet GPU 上的 tiled kernel</td></tr>
-<tr><td>Framework</td><td>MI300X 上 vLLM/SGLang 的 prefill attention 可直接加速；AITER 可 upstream</td></tr>
-<tr><td>LLM</td><td>MHA 高 head 数模型（DeepSeek-V3）收益最大；GQA 模型收益取决于 KV groups vs XCD 数</td></tr>
-<tr><td>Agent</td><td>Prefill 加速 → TTFT 降低 → 改善交互延迟</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Layer</th><th style="text-align:left">Impact</th></tr></thead><tbody>
+<tr><td style="text-align:left">Algorithm</td><td style="text-align:left">"ACC-to-XCD mapping" 原则可泛化到任何 chiplet GPU 上的 tiled kernel</td></tr>
+<tr><td style="text-align:left">Framework</td><td style="text-align:left">MI300X 上 vLLM/SGLang 的 prefill attention 可直接加速；AITER 可 upstream</td></tr>
+<tr><td style="text-align:left">LLM</td><td style="text-align:left">MHA 高 head 数模型（DeepSeek-V3）收益最大；GQA 模型收益取决于 KV groups vs XCD 数</td></tr>
+<tr><td style="text-align:left">Agent</td><td style="text-align:left">Prefill 加速 → TTFT 降低 → 改善交互延迟</td></tr>
+</tbody>
+</table></div>
 </div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
+
 
 </body>
 </html>

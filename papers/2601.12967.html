@@ -136,15 +136,46 @@ footer {
 .content .fig-ref-note {
   font-size: 0.75rem; opacity: 0.7;
 }
+.table-wrap {
+  margin: 16px 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--bd);
+  background: #fff;
+}
 .md-table {
-  width: 100%; border-collapse: collapse; margin: 12px 0;
-  font-size: 0.85rem;
+  width: 100%; border-collapse: collapse;
+  font-size: 0.85rem; min-width: 100%;
 }
 .md-table th, .md-table td {
-  border: 1px solid var(--bd); padding: 8px 12px; text-align: left;
+  border-bottom: 1px solid #f1f5f9;
+  padding: 8px 14px;
+  white-space: nowrap;
 }
 .md-table th {
-  background: #f8fafc; font-weight: 700;
+  background: #f8fafc; font-weight: 700; color: #475569;
+  position: sticky; top: 0; z-index: 1;
+  border-bottom: 2px solid var(--bd);
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.md-table tbody tr:nth-child(even) td {
+  background: #fafbfc;
+}
+.md-table tbody tr:hover td {
+  background: #eff6ff;
+}
+.md-table td b, .md-table td strong {
+  color: var(--accent); font-weight: 700;
+}
+.mermaid {
+  margin: 20px 0; padding: 16px;
+  background: #fff; border: 1px solid var(--bd);
+  border-radius: 8px; text-align: center;
+  overflow-x: auto;
+}
+.mermaid svg {
+  max-width: 100%; height: auto;
 }
 .content .katex-display {
   overflow-x: auto; overflow-y: hidden;
@@ -223,13 +254,15 @@ footer {
 <p>2. <b>无法提前分发 tool</b>：engine 的 decode 输出只有完全结束后才到达 orchestrator</p>
 <p>3. <b>无法智能驱逐</b>：engine 不知道哪些 KV block 即将被同一 agentic 请求的下一个 iteration 复用</p>
 <p>#### 约束推导：替代方案为何失败？</p>
-<table class="md-table"><tr><th>替代方案</th><th>为何不可行</th></tr>
-<tr><td>静态 DAG 编排 (Parrot, Murakkab)</td><td>Tool-based agentic 应用的 DAG 结构事先未知，工具调用取决于 LLM 实时推理结果</td></tr>
-<tr><td>非透视调度 (Autellix)</td><td>仅优化吞吐量，不解决 intra-request 的 tool 延迟问题</td></tr>
-<tr><td>预测 tool 执行时间 (Continuum)</td><td>tool 执行时间变异系数超过 100%（如 web search），使预测变得不切实际</td></tr>
-<tr><td>Partial tool execution (Conveyor)</td><td>生产环境中多数 tool 无法在参数不完整时执行</td></tr>
-<tr><td>纯 KV cache 共享 (KVFlow, DroidSpeak)</td><td>未考虑 tool 调用对延迟的显著贡献（30-80% FTR），仅优化 cache 层面</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">替代方案</th><th style="text-align:left">为何不可行</th></tr></thead><tbody>
+<tr><td style="text-align:left">静态 DAG 编排 (Parrot, Murakkab)</td><td style="text-align:left">Tool-based agentic 应用的 DAG 结构事先未知，工具调用取决于 LLM 实时推理结果</td></tr>
+<tr><td style="text-align:left">非透视调度 (Autellix)</td><td style="text-align:left">仅优化吞吐量，不解决 intra-request 的 tool 延迟问题</td></tr>
+<tr><td style="text-align:left">预测 tool 执行时间 (Continuum)</td><td style="text-align:left">tool 执行时间变异系数超过 100%（如 web search），使预测变得不切实际</td></tr>
+<tr><td style="text-align:left">Partial tool execution (Conveyor)</td><td style="text-align:left">生产环境中多数 tool 无法在参数不完整时执行</td></tr>
+<tr><td style="text-align:left">纯 KV cache 共享 (KVFlow, DroidSpeak)</td><td style="text-align:left">未考虑 tool 调用对延迟的显著贡献（30-80% FTR），仅优化 cache 层面</td></tr>
+</tbody>
+</table></div>
 <p>#### 破局：Aha Moment</p>
 <p>关键洞察是 <b>prompt 的 tool-independent 部分占 50-80%</b>——system instructions、conversation history、templates 不依赖 tool 输出。这意味着 orchestrator 可以在 tool 执行期间就开始下一轮的 prefill 计算，只要 engine 提供 partial prefill + extend 的接口。第二个洞察是 <b>LLM 生成 tool call 是流式 JSON</b>，一个完整的 tool call object（到 <code>}</code> 闭合时）就可以立即分发，无需等待整个 JSON array。</p>
 <p>#### 核心技术壁垒</p>
@@ -299,20 +332,24 @@ footer {
 <p><b>展示内容</b>：(a) Baseline 串行执行 (b) Prompt splitting 实现 prefill-tool overlap (c) Streaming tool dispatch 实现 decode-tool overlap。三步递进展示完整优化方案。</p>
 <p><b>重要性</b>：论文的核心设计图，展示了三种优化如何逐步叠加消除串行瓶颈。</p>
 <p>#### Table 1: Co-design API</p>
-<table class="md-table"><tr><th>API Call</th><th>Purpose</th><th>Enables Optimization</th></tr>
-<tr><td><code>submit_partial_prefill()</code></td><td>提交 tool-independent prompt 片段</td><td>并行执行：engine 在 tool 执行期间开始 prefill</td></tr>
-<tr><td><code>extend_prefill()</code></td><td>追加 tool 输出到已 pin 的 partial prefill 上下文</td><td>并行执行：tool 结果到达后无需重新计算前缀</td></tr>
-<tr><td><code>register_streaming_callback()</code></td><td>逐 token 接收 partial decode 输出</td><td>Streaming dispatch：orchestrator 在 decode 进行时就解析并分发 tool</td></tr>
-<tr><td><code>tag_kv_blocks()</code></td><td>给 cached KV blocks 打语义标签</td><td>Cache 管理：启用 workload-aware 驱逐策略</td></tr>
-<tr><td><code>set_reuse_priority()</code></td><td>设置 KV block 优先级用于 pinning</td><td>Cache 管理：防止即将被复用的上下文被驱逐</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">API Call</th><th style="text-align:left">Purpose</th><th style="text-align:left">Enables Optimization</th></tr></thead><tbody>
+<tr><td style="text-align:left"><code>submit_partial_prefill()</code></td><td style="text-align:left">提交 tool-independent prompt 片段</td><td style="text-align:left">并行执行：engine 在 tool 执行期间开始 prefill</td></tr>
+<tr><td style="text-align:left"><code>extend_prefill()</code></td><td style="text-align:left">追加 tool 输出到已 pin 的 partial prefill 上下文</td><td style="text-align:left">并行执行：tool 结果到达后无需重新计算前缀</td></tr>
+<tr><td style="text-align:left"><code>register_streaming_callback()</code></td><td style="text-align:left">逐 token 接收 partial decode 输出</td><td style="text-align:left">Streaming dispatch：orchestrator 在 decode 进行时就解析并分发 tool</td></tr>
+<tr><td style="text-align:left"><code>tag_kv_blocks()</code></td><td style="text-align:left">给 cached KV blocks 打语义标签</td><td style="text-align:left">Cache 管理：启用 workload-aware 驱逐策略</td></tr>
+<tr><td style="text-align:left"><code>set_reuse_priority()</code></td><td style="text-align:left">设置 KV block 优先级用于 pinning</td><td style="text-align:left">Cache 管理：防止即将被复用的上下文被驱逐</td></tr>
+</tbody>
+</table></div>
 <p><b>关键要点</b>：5 个 API 构成了 orchestrator-engine 之间的"薄接口层"，最小化侵入性的同时实现三大优化。</p>
 <p>#### Table 2: Ablation 结果</p>
-<table class="md-table"><tr><th>Technique</th><th>FTR (s)</th><th>E2E (s)</th><th>FTR %</th><th>E2E %</th></tr>
-<tr><td>KV (baseline)</td><td>51.5</td><td>84.2</td><td>-</td><td>-</td></tr>
-<tr><td>KV + PS</td><td>47.6</td><td>80.38</td><td><b>7.57%</b></td><td>4.54%</td></tr>
-<tr><td><b>KV + PS + DS</b></td><td><b>45.44</b></td><td><b>77.99</b></td><td><b>11.77%</b></td><td><b>7.37%</b></td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Technique</th><th style="text-align:right">FTR (s)</th><th style="text-align:right">E2E (s)</th><th style="text-align:left">FTR %</th><th style="text-align:left">E2E %</th></tr></thead><tbody>
+<tr><td style="text-align:left">KV (baseline)</td><td style="text-align:right">51.5</td><td style="text-align:right">84.2</td><td style="text-align:left">-</td><td style="text-align:left">-</td></tr>
+<tr><td style="text-align:left">KV + PS</td><td style="text-align:right">47.6</td><td style="text-align:right">80.38</td><td style="text-align:left"><b>7.57%</b></td><td style="text-align:left">4.54%</td></tr>
+<tr><td style="text-align:left"><b>KV + PS + DS</b></td><td style="text-align:right"><b>45.44</b></td><td style="text-align:right"><b>77.99</b></td><td style="text-align:left"><b>11.77%</b></td><td style="text-align:left"><b>7.37%</b></td></tr>
+</tbody>
+</table></div>
 <p><b>关键要点</b>：Prompt Splitting 是主要贡献者（7.57% FTR），Streaming Dispatch 额外贡献 4.2%。E2E 改进小于 FTR（final iteration 的 decode 无法被加速）。</p>
 <p>---</p>
 <h3>2d. 技术细节补充与一句话总结</h3>
@@ -353,14 +390,16 @@ footer {
 <p><b>Primary Category</b>: framework</p>
 <p><b>Secondary Tags</b>: agent, kv-cache, scheduling, serving, latency-optimization</p>
 <p><b>Infrastructure Impact</b>:</p>
-<table class="md-table"><tr><th>Category</th><th>Impact</th></tr>
-<tr><td>algorithm</td><td>N/A — 不涉及算法层面创新</td></tr>
-<tr><td>kernel</td><td>无需自定义 kernel；所有优化在 scheduler 和 orchestrator 层面</td></tr>
-<tr><td>llm</td><td>模型无关设计，适用于任何 tool-calling LLM（已验证 Qwen3-14B、Gemma-12B）</td></tr>
-<tr><td>agent</td><td><b>高影响</b> — 直接优化 agentic workload 的 FTR 延迟，为 LangChain/AutoGen 等框架提供 co-design 接口范式</td></tr>
-<tr><td>cluster</td><td>单 GPU 评估，未涉及分布式场景；co-design API 概念可扩展到多节点</td></tr>
-<tr><td>hardware</td><td>仅在 A100 上评估，设计不绑定特定硬件</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Category</th><th style="text-align:left">Impact</th></tr></thead><tbody>
+<tr><td style="text-align:left">algorithm</td><td style="text-align:left">N/A — 不涉及算法层面创新</td></tr>
+<tr><td style="text-align:left">kernel</td><td style="text-align:left">无需自定义 kernel；所有优化在 scheduler 和 orchestrator 层面</td></tr>
+<tr><td style="text-align:left">llm</td><td style="text-align:left">模型无关设计，适用于任何 tool-calling LLM（已验证 Qwen3-14B、Gemma-12B）</td></tr>
+<tr><td style="text-align:left">agent</td><td style="text-align:left"><b>高影响</b> — 直接优化 agentic workload 的 FTR 延迟，为 LangChain/AutoGen 等框架提供 co-design 接口范式</td></tr>
+<tr><td style="text-align:left">cluster</td><td style="text-align:left">单 GPU 评估，未涉及分布式场景；co-design API 概念可扩展到多节点</td></tr>
+<tr><td style="text-align:left">hardware</td><td style="text-align:left">仅在 A100 上评估，设计不绑定特定硬件</td></tr>
+</tbody>
+</table></div>
 <p>---</p>
 <h2 id="phase-5-deep-read-framework">Phase 5: Deep Read — Framework 深度分析</h2>
 <h3>1. System Scope</h3>
@@ -387,28 +426,32 @@ footer {
    ↓ tool-independent prompt slice            ↓ KV cache extension        ↓ final response / next tool calls
    ↓ CPU                                     ↓ GPU HBM                   ↓ GPU → CPU → User
 </code></pre>
-<table class="md-table"><tr><th>Stage</th><th>Input → Output</th><th>Location</th><th>Latency</th><th>Data format & size</th></tr>
-<tr><td>Prompt Construction</td><td>user query + history → token IDs</td><td>CPU</td><td>~0ms</td><td>List[int], ~20K tokens median</td></tr>
-<tr><td>Prefill (partial)</td><td>tool-independent tokens → KV cache</td><td>GPU HBM</td><td>variable</td><td>[layers, heads, seq, dim]</td></tr>
-<tr><td>Decode</td><td>KV cache → tool call JSON tokens</td><td>GPU HBM</td><td>variable, ~5x fewer tokens for intermediate</td><td>JSON string</td></tr>
-<tr><td>Tool Execution</td><td>tool call spec → tool result</td><td>External API/CPU</td><td>ms-seconds, CV > 100%</td><td>string/structured data</td></tr>
-<tr><td>Extend Prefill</td><td>tool output tokens → KV cache extension</td><td>GPU HBM</td><td>variable</td><td>appended KV blocks</td></tr>
-<tr><td>Final Decode</td><td>KV cache → response tokens</td><td>GPU HBM</td><td>variable, ~5x more tokens</td><td>text stream</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Stage</th><th style="text-align:left">Input → Output</th><th style="text-align:left">Location</th><th style="text-align:left">Latency</th><th style="text-align:left">Data format & size</th></tr></thead><tbody>
+<tr><td style="text-align:left">Prompt Construction</td><td style="text-align:left">user query + history → token IDs</td><td style="text-align:left">CPU</td><td style="text-align:left">~0ms</td><td style="text-align:left">List[int], ~20K tokens median</td></tr>
+<tr><td style="text-align:left">Prefill (partial)</td><td style="text-align:left">tool-independent tokens → KV cache</td><td style="text-align:left">GPU HBM</td><td style="text-align:left">variable</td><td style="text-align:left">[layers, heads, seq, dim]</td></tr>
+<tr><td style="text-align:left">Decode</td><td style="text-align:left">KV cache → tool call JSON tokens</td><td style="text-align:left">GPU HBM</td><td style="text-align:left">variable, ~5x fewer tokens for intermediate</td><td style="text-align:left">JSON string</td></tr>
+<tr><td style="text-align:left">Tool Execution</td><td style="text-align:left">tool call spec → tool result</td><td style="text-align:left">External API/CPU</td><td style="text-align:left">ms-seconds, CV > 100%</td><td style="text-align:left">string/structured data</td></tr>
+<tr><td style="text-align:left">Extend Prefill</td><td style="text-align:left">tool output tokens → KV cache extension</td><td style="text-align:left">GPU HBM</td><td style="text-align:left">variable</td><td style="text-align:left">appended KV blocks</td></tr>
+<tr><td style="text-align:left">Final Decode</td><td style="text-align:left">KV cache → response tokens</td><td style="text-align:left">GPU HBM</td><td style="text-align:left">variable, ~5x more tokens</td><td style="text-align:left">text stream</td></tr>
+</tbody>
+</table></div>
 <p>#### 2b. Data Movement Hotspots</p>
 <p>1. <b>KV Cache in HBM</b>: 每次 iteration 的 ~20K token prompt 产生大量 KV cache；多个并发 agentic 请求的 KV cache 竞争 HBM 容量，是 thrashing 的根源。频率：每次 LLM 调用，阻塞式。</p>
 <p>2. <b>Orchestrator ↔ Engine 通信</b>: token-level streaming callback 需要 CPU-GPU 间的频繁小数据传输。频率：每个 decode token，可与计算重叠。</p>
 <p>3. <b>Tool Network I/O</b>: 外部 API 调用的网络延迟是不可压缩的瓶颈，变异系数 > 100%。频率：每次 tool 调用。</p>
 <h3>3. Design Space & Constraint Analysis</h3>
 <p>#### 3a. Alternative Approaches</p>
-<table class="md-table"><tr><th>替代方案</th><th>可行性</th><th>原因</th></tr>
-<tr><td>静态 DAG 优化 (Parrot/Murakkab)</td><td>❌ 不可行</td><td>Tool-based agent 的执行图是动态的，取决于 LLM 实时推理</td></tr>
-<tr><td>Tool 延迟预测 + 调度 (Continuum)</td><td>❌ 不实用</td><td>Tool 延迟 CV > 100%，无法可靠预测</td></tr>
-<tr><td>Tool partial execution (Conveyor)</td><td>❌ 受限</td><td>大多数生产 tool 需要完整参数才能执行</td></tr>
-<tr><td>纯 orchestrator 优化（不修改 engine）</td><td>⚠️ 部分可行</td><td>可实现 streaming dispatch，但无法实现 partial prefill 和 cache 管理</td></tr>
-<tr><td>纯 engine 优化（不修改 orchestrator）</td><td>⚠️ 部分可行</td><td>可改进 cache 策略，但缺乏 prompt structure 信息</td></tr>
-<tr><td><b>Orchestrator-Engine Co-design</b></td><td>✅ 可行</td><td>最小化接口暴露同时实现三大优化</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">替代方案</th><th style="text-align:left">可行性</th><th style="text-align:left">原因</th></tr></thead><tbody>
+<tr><td style="text-align:left">静态 DAG 优化 (Parrot/Murakkab)</td><td style="text-align:left">❌ 不可行</td><td style="text-align:left">Tool-based agent 的执行图是动态的，取决于 LLM 实时推理</td></tr>
+<tr><td style="text-align:left">Tool 延迟预测 + 调度 (Continuum)</td><td style="text-align:left">❌ 不实用</td><td style="text-align:left">Tool 延迟 CV > 100%，无法可靠预测</td></tr>
+<tr><td style="text-align:left">Tool partial execution (Conveyor)</td><td style="text-align:left">❌ 受限</td><td style="text-align:left">大多数生产 tool 需要完整参数才能执行</td></tr>
+<tr><td style="text-align:left">纯 orchestrator 优化（不修改 engine）</td><td style="text-align:left">⚠️ 部分可行</td><td style="text-align:left">可实现 streaming dispatch，但无法实现 partial prefill 和 cache 管理</td></tr>
+<tr><td style="text-align:left">纯 engine 优化（不修改 orchestrator）</td><td style="text-align:left">⚠️ 部分可行</td><td style="text-align:left">可改进 cache 策略，但缺乏 prompt structure 信息</td></tr>
+<tr><td style="text-align:left"><b>Orchestrator-Engine Co-design</b></td><td style="text-align:left">✅ 可行</td><td style="text-align:left">最小化接口暴露同时实现三大优化</td></tr>
+</tbody>
+</table></div>
 <p>#### 3b. Constraint Derivation</p>
 <ul>
 <li><b>静态 DAG 不可行证明</b>：iteration $i$ 的 decode 输出决定 iteration $i+1$ 的 tool 调用和 prompt 结构。即 $\text{DAG}_{i+1} = f(\text{decode}_i)$，不可预知。</li>
@@ -416,12 +459,14 @@ footer {
 <li><b>Partial execution 不可行证明</b>：如 web search tool，参数 <code>{"query": "..."}</code> 中 query 必须完整才能执行。无法用半个 query 开始搜索。</li>
 </ul>
 <p>#### 3c. Assumption Audit</p>
-<table class="md-table"><tr><th>假设</th><th>成立条件</th><th>可能失效场景</th></tr>
-<tr><td>50-80% prompt 是 tool-independent</td><td>Orchestrator 使用固定 template（system prompt + user query + tool output 拼接）</td><td>如果 orchestrator 根据 tool 结果动态重写 system prompt</td></tr>
-<tr><td>Tool call 输出为结构化 JSON</td><td>LLM 按要求格式输出</td><td>LLM hallucinate 非 JSON 输出、或使用 function calling 以外的格式</td></tr>
-<tr><td>Tool 延迟与 LLM 延迟比例稳定</td><td>模拟环境</td><td>真实生产环境中 tool 延迟受外部因素影响，与 LLM 无关</td></tr>
-<tr><td>单 GPU 足以处理 workload</td><td>模型 ≤14B 参数</td><td>更大模型需要多 GPU TP/PP，co-design API 需扩展</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">假设</th><th style="text-align:left">成立条件</th><th style="text-align:left">可能失效场景</th></tr></thead><tbody>
+<tr><td style="text-align:left">50-80% prompt 是 tool-independent</td><td style="text-align:left">Orchestrator 使用固定 template（system prompt + user query + tool output 拼接）</td><td style="text-align:left">如果 orchestrator 根据 tool 结果动态重写 system prompt</td></tr>
+<tr><td style="text-align:left">Tool call 输出为结构化 JSON</td><td style="text-align:left">LLM 按要求格式输出</td><td style="text-align:left">LLM hallucinate 非 JSON 输出、或使用 function calling 以外的格式</td></tr>
+<tr><td style="text-align:left">Tool 延迟与 LLM 延迟比例稳定</td><td style="text-align:left">模拟环境</td><td style="text-align:left">真实生产环境中 tool 延迟受外部因素影响，与 LLM 无关</td></tr>
+<tr><td style="text-align:left">单 GPU 足以处理 workload</td><td style="text-align:left">模型 ≤14B 参数</td><td style="text-align:left">更大模型需要多 GPU TP/PP，co-design API 需扩展</td></tr>
+</tbody>
+</table></div>
 <p>#### 3d. Core Technical Barrier</p>
 <p><b>Partial prefill 的状态管理</b>是核心技术壁垒。当 <code>submit_partial_prefill()</code> 提交后，engine 必须：</p>
 <p>1. 在 continuous batching 循环中维护一个"半完成"请求状态（既不是 running 也不是 waiting）</p>
@@ -436,13 +481,15 @@ footer {
 <li><b>绑定 PD colocation</b>：evaluation 使用 PD colocation（prefill 和 decode 在同一 GPU）。在 disaggregated P-D serving（如 DistServe/Splitwise）架构下，partial prefill 的 KV cache 需要跨 GPU 传输，延迟特征完全不同。</li>
 </ul>
 <h3>4. Key Innovations</h3>
-<table class="md-table"><tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost/Tradeoff</th></tr>
-<tr><td>Prompt Splitting</td><td>将 prompt 分为 tool-independent/dependent 两部分，提前 prefill 前者</td><td>7.57% FTR 改进</td><td>需要 orchestrator 暴露 prompt structure，增加耦合</td></tr>
-<tr><td>Streaming Tool Dispatch</td><td>Token-level callback + streaming JSON parser，decode 过程中增量分发 tool</td><td>4.2% 额外 FTR 改进</td><td>Per-token callback 开销；JSON parser 需维护</td></tr>
-<tr><td>Semantic KV Tagging</td><td>5 种语义标签 + 优先级驱逐</td><td>消除级联 thrashing</td><td>标签需要 orchestrator 提供，增加 API 复杂度</td></tr>
-<tr><td>Request-Aware Scheduling</td><td>按 agentic 请求到达时间排优先级</td><td>减少 in-flight 请求的等待时间</td><td>可能增加新请求的排队延迟</td></tr>
-<tr><td>5-API Co-design Interface</td><td>Thin API layer between orchestrator and engine</td><td>最小化侵入性的跨层优化</td><td>增加 orchestrator-engine 耦合</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Innovation</th><th style="text-align:left">Mechanism</th><th style="text-align:left">Benefit</th><th style="text-align:left">Cost/Tradeoff</th></tr></thead><tbody>
+<tr><td style="text-align:left">Prompt Splitting</td><td style="text-align:left">将 prompt 分为 tool-independent/dependent 两部分，提前 prefill 前者</td><td style="text-align:left">7.57% FTR 改进</td><td style="text-align:left">需要 orchestrator 暴露 prompt structure，增加耦合</td></tr>
+<tr><td style="text-align:left">Streaming Tool Dispatch</td><td style="text-align:left">Token-level callback + streaming JSON parser，decode 过程中增量分发 tool</td><td style="text-align:left">4.2% 额外 FTR 改进</td><td style="text-align:left">Per-token callback 开销；JSON parser 需维护</td></tr>
+<tr><td style="text-align:left">Semantic KV Tagging</td><td style="text-align:left">5 种语义标签 + 优先级驱逐</td><td style="text-align:left">消除级联 thrashing</td><td style="text-align:left">标签需要 orchestrator 提供，增加 API 复杂度</td></tr>
+<tr><td style="text-align:left">Request-Aware Scheduling</td><td style="text-align:left">按 agentic 请求到达时间排优先级</td><td style="text-align:left">减少 in-flight 请求的等待时间</td><td style="text-align:left">可能增加新请求的排队延迟</td></tr>
+<tr><td style="text-align:left">5-API Co-design Interface</td><td style="text-align:left">Thin API layer between orchestrator and engine</td><td style="text-align:left">最小化侵入性的跨层优化</td><td style="text-align:left">增加 orchestrator-engine 耦合</td></tr>
+</tbody>
+</table></div>
 <h3>5. Scheduling & Resource Management</h3>
 <ul>
 <li><b>Batch formation</b>: Continuous batching (inherited from vLLM), chunked prefill with chunk size 256</li>
@@ -452,31 +499,37 @@ footer {
 <li><b>Priority scheduling</b>: 按 agentic 请求到达时间排序，earlier = higher priority</li>
 </ul>
 <h3>6. Target Scenarios</h3>
-<table class="md-table"><tr><th>Scenario</th><th>Workload Pattern</th><th>SLO/Goal</th><th>Why existing systems fail</th></tr>
-<tr><td>Enterprise AI Assistant (M365 Copilot)</td><td>Multi-tool, 2-7 iterations, 20K token context</td><td>FTR < 数秒</td><td>Sequential orchestration + KV thrashing</td></tr>
-<tr><td>Tool-heavy workload</td><td>High tool fanout (median 2, max 20) per iteration</td><td>Min FTR</td><td>Tool latency dominates, no overlap</td></tr>
-<tr><td>Iteration-heavy workload</td><td>Deep iteration chains (7+), lower fanout</td><td>Min e2e</td><td>Sequential pipeline bottleneck</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Scenario</th><th style="text-align:left">Workload Pattern</th><th style="text-align:left">SLO/Goal</th><th style="text-align:left">Why existing systems fail</th></tr></thead><tbody>
+<tr><td style="text-align:left">Enterprise AI Assistant (M365 Copilot)</td><td style="text-align:left">Multi-tool, 2-7 iterations, 20K token context</td><td style="text-align:left">FTR < 数秒</td><td style="text-align:left">Sequential orchestration + KV thrashing</td></tr>
+<tr><td style="text-align:left">Tool-heavy workload</td><td style="text-align:left">High tool fanout (median 2, max 20) per iteration</td><td style="text-align:left">Min FTR</td><td style="text-align:left">Tool latency dominates, no overlap</td></tr>
+<tr><td style="text-align:left">Iteration-heavy workload</td><td style="text-align:left">Deep iteration chains (7+), lower fanout</td><td style="text-align:left">Min e2e</td><td style="text-align:left">Sequential pipeline bottleneck</td></tr>
+</tbody>
+</table></div>
 <p><b>Primary bottleneck</b>: Scheduling-bound (sequential orchestration + KV thrashing) > Memory-bound (KV cache pressure) > Compute-bound (prefill compute)</p>
 <h3>7. Performance Evaluation</h3>
 <p>#### 7a. Metrics</p>
-<table class="md-table"><tr><th>Metric</th><th>Definition</th><th>Unit</th><th>Direction</th></tr>
-<tr><td>FTR</td><td>从用户请求到 final response 第一个 token 的时间</td><td>seconds</td><td>Lower</td></tr>
-<tr><td>E2E</td><td>从用户请求到完整 response 生成的时间</td><td>seconds</td><td>Lower</td></tr>
-<tr><td>Median/P99 FTR</td><td>FTR 的分位数</td><td>seconds</td><td>Lower</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Metric</th><th style="text-align:left">Definition</th><th style="text-align:left">Unit</th><th style="text-align:left">Direction</th></tr></thead><tbody>
+<tr><td style="text-align:left">FTR</td><td style="text-align:left">从用户请求到 final response 第一个 token 的时间</td><td style="text-align:left">seconds</td><td style="text-align:left">Lower</td></tr>
+<tr><td style="text-align:left">E2E</td><td style="text-align:left">从用户请求到完整 response 生成的时间</td><td style="text-align:left">seconds</td><td style="text-align:left">Lower</td></tr>
+<tr><td style="text-align:left">Median/P99 FTR</td><td style="text-align:left">FTR 的分位数</td><td style="text-align:left">seconds</td><td style="text-align:left">Lower</td></tr>
+</tbody>
+</table></div>
 <p>#### 7b. Before-After Comparison</p>
-<table class="md-table"><tr><th>Optimization</th><th>Metric</th><th>Baseline</th><th>After</th><th>Improvement</th><th>Conditions</th></tr>
-<tr><td>Full Sutradhara</td><td>Median FTR</td><td>51.5s</td><td>~43.3s</td><td><b>15.83%</b></td><td>Qwen3-14B, A100-80G, tool-heavy trace</td></tr>
-<tr><td>Full Sutradhara</td><td>P99 FTR</td><td>-</td><td>-</td><td><b>12.3%</b></td><td>Same</td></tr>
-<tr><td>Full Sutradhara</td><td>Median E2E</td><td>84.2s</td><td>~73.8s</td><td><b>~10%</b></td><td>Same</td></tr>
-<tr><td>KV + PS</td><td>Median FTR</td><td>51.5s</td><td>47.6s</td><td>7.57%</td><td>Same</td></tr>
-<tr><td>KV + PS + DS</td><td>Median FTR</td><td>51.5s</td><td>45.44s</td><td>11.77%</td><td>Same</td></tr>
-<tr><td>Gemma-12B</td><td>Median FTR</td><td>-</td><td>-</td><td>10.74%</td><td>Tool-heavy trace</td></tr>
-<tr><td>Gemma-12B</td><td>Median E2E</td><td>-</td><td>-</td><td>6.39%</td><td>Tool-heavy trace</td></tr>
-<tr><td>Iteration-heavy</td><td>Tail FTR</td><td>-</td><td>-</td><td>4%</td><td>Qwen3-14B</td></tr>
-<tr><td>Iteration-heavy</td><td>E2E</td><td>-</td><td>-</td><td>8%</td><td>Qwen3-14B</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Optimization</th><th style="text-align:left">Metric</th><th style="text-align:left">Baseline</th><th style="text-align:left">After</th><th style="text-align:left">Improvement</th><th style="text-align:left">Conditions</th></tr></thead><tbody>
+<tr><td style="text-align:left">Full Sutradhara</td><td style="text-align:left">Median FTR</td><td style="text-align:left">51.5s</td><td style="text-align:left">~43.3s</td><td style="text-align:left"><b>15.83%</b></td><td style="text-align:left">Qwen3-14B, A100-80G, tool-heavy trace</td></tr>
+<tr><td style="text-align:left">Full Sutradhara</td><td style="text-align:left">P99 FTR</td><td style="text-align:left">-</td><td style="text-align:left">-</td><td style="text-align:left"><b>12.3%</b></td><td style="text-align:left">Same</td></tr>
+<tr><td style="text-align:left">Full Sutradhara</td><td style="text-align:left">Median E2E</td><td style="text-align:left">84.2s</td><td style="text-align:left">~73.8s</td><td style="text-align:left"><b>~10%</b></td><td style="text-align:left">Same</td></tr>
+<tr><td style="text-align:left">KV + PS</td><td style="text-align:left">Median FTR</td><td style="text-align:left">51.5s</td><td style="text-align:left">47.6s</td><td style="text-align:left">7.57%</td><td style="text-align:left">Same</td></tr>
+<tr><td style="text-align:left">KV + PS + DS</td><td style="text-align:left">Median FTR</td><td style="text-align:left">51.5s</td><td style="text-align:left">45.44s</td><td style="text-align:left">11.77%</td><td style="text-align:left">Same</td></tr>
+<tr><td style="text-align:left">Gemma-12B</td><td style="text-align:left">Median FTR</td><td style="text-align:left">-</td><td style="text-align:left">-</td><td style="text-align:left">10.74%</td><td style="text-align:left">Tool-heavy trace</td></tr>
+<tr><td style="text-align:left">Gemma-12B</td><td style="text-align:left">Median E2E</td><td style="text-align:left">-</td><td style="text-align:left">-</td><td style="text-align:left">6.39%</td><td style="text-align:left">Tool-heavy trace</td></tr>
+<tr><td style="text-align:left">Iteration-heavy</td><td style="text-align:left">Tail FTR</td><td style="text-align:left">-</td><td style="text-align:left">-</td><td style="text-align:left">4%</td><td style="text-align:left">Qwen3-14B</td></tr>
+<tr><td style="text-align:left">Iteration-heavy</td><td style="text-align:left">E2E</td><td style="text-align:left">-</td><td style="text-align:left">-</td><td style="text-align:left">8%</td><td style="text-align:left">Qwen3-14B</td></tr>
+</tbody>
+</table></div>
 <p>#### 7c. Bottleneck Shift Analysis</p>
 <pre><code>
 Before: scheduling-bound (sequential orchestration, tool wait blocking next prefill)
@@ -501,26 +554,30 @@ Before: scheduling-bound (sequential orchestration, tool wait blocking next pref
 <li><b>Configuration complexity</b>: 中等——需要配置 prompt split point、KV tag policy、scheduling priority</li>
 </ul>
 <h3>9. Infrastructure Impact</h3>
-<table class="md-table"><tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>不直接影响算法，但 prompt splitting 概念可扩展到 speculative decoding 场景</td></tr>
-<tr><td>Kernel</td><td>不需要自定义 kernel，所有优化在 Python scheduler 层</td></tr>
-<tr><td>LLM</td><td>模型无关，但 tool calling 格式（JSON）需要模型支持</td></tr>
-<tr><td>Agent</td><td><b>核心影响层</b>：为 agentic framework 提供 co-design 接口范式</td></tr>
-<tr><td>Ops</td><td>提供 semantic metadata tagging，有潜力扩展为 observability/monitoring 信号</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Layer</th><th style="text-align:left">Impact</th></tr></thead><tbody>
+<tr><td style="text-align:left">Algorithm</td><td style="text-align:left">不直接影响算法，但 prompt splitting 概念可扩展到 speculative decoding 场景</td></tr>
+<tr><td style="text-align:left">Kernel</td><td style="text-align:left">不需要自定义 kernel，所有优化在 Python scheduler 层</td></tr>
+<tr><td style="text-align:left">LLM</td><td style="text-align:left">模型无关，但 tool calling 格式（JSON）需要模型支持</td></tr>
+<tr><td style="text-align:left">Agent</td><td style="text-align:left"><b>核心影响层</b>：为 agentic framework 提供 co-design 接口范式</td></tr>
+<tr><td style="text-align:left">Ops</td><td style="text-align:left">提供 semantic metadata tagging，有潜力扩展为 observability/monitoring 信号</td></tr>
+</tbody>
+</table></div>
 <h3>10. Comparison Matrix</h3>
-<table class="md-table"><tr><th>Feature</th><th>Sutradhara</th><th>vLLM</th><th>SGLang</th><th>Autellix</th><th>Conveyor</th></tr>
-<tr><td>Continuous batching</td><td>✅ (inherited)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><td>PagedAttention</td><td>✅ (inherited)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><td>Prefix caching</td><td>✅ (enhanced)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><td>Agentic workload awareness</td><td>✅</td><td>❌</td><td>❌</td><td>partial</td><td>partial</td></tr>
-<tr><td>Prefill-tool overlap</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>Streaming tool dispatch</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>Semantic KV eviction</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>Orchestrator co-design</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>partial</td></tr>
-<tr><td>Dynamic DAG support</td><td>✅</td><td>N/A</td><td>N/A</td><td>❌ (static DAG)</td><td>N/A</td></tr>
-<tr><td>Multi-GPU</td><td>❌ (untested)</td><td>✅</td><td>✅</td><td>✅</td><td>❓</td></tr>
-</table>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Feature</th><th style="text-align:left">Sutradhara</th><th style="text-align:left">vLLM</th><th style="text-align:left">SGLang</th><th style="text-align:left">Autellix</th><th style="text-align:left">Conveyor</th></tr></thead><tbody>
+<tr><td style="text-align:left">Continuous batching</td><td style="text-align:left">✅ (inherited)</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td></tr>
+<tr><td style="text-align:left">PagedAttention</td><td style="text-align:left">✅ (inherited)</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td></tr>
+<tr><td style="text-align:left">Prefix caching</td><td style="text-align:left">✅ (enhanced)</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td></tr>
+<tr><td style="text-align:left">Agentic workload awareness</td><td style="text-align:left">✅</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">partial</td><td style="text-align:left">partial</td></tr>
+<tr><td style="text-align:left">Prefill-tool overlap</td><td style="text-align:left">✅</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td></tr>
+<tr><td style="text-align:left">Streaming tool dispatch</td><td style="text-align:left">✅</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td></tr>
+<tr><td style="text-align:left">Semantic KV eviction</td><td style="text-align:left">✅</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td></tr>
+<tr><td style="text-align:left">Orchestrator co-design</td><td style="text-align:left">✅</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">partial</td></tr>
+<tr><td style="text-align:left">Dynamic DAG support</td><td style="text-align:left">✅</td><td style="text-align:left">N/A</td><td style="text-align:left">N/A</td><td style="text-align:left">❌ (static DAG)</td><td style="text-align:left">N/A</td></tr>
+<tr><td style="text-align:left">Multi-GPU</td><td style="text-align:left">❌ (untested)</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">✅</td><td style="text-align:left">❓</td></tr>
+</tbody>
+</table></div>
 <h3>11. Adoption, Maturity & Ecosystem Influence</h3>
 <ul>
 <li><b>Open source</b>: 论文未提及代码开源计划</li>
@@ -534,6 +591,7 @@ Before: scheduling-bound (sequential orchestration, tool wait blocking next pref
 </ul>
 </div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
+
 
 </body>
 </html>

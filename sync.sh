@@ -308,6 +308,29 @@ print(f"Wrote index.html ({total} papers)")
 # ============================================================
 # PER-PAPER PAGES
 # ============================================================
+MERMAID_BOOTSTRAP_JS = """<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    fontFamily: "'IBM Plex Sans', 'Noto Sans SC', sans-serif",
+    fontSize: '14px',
+    primaryColor: '#eff6ff',
+    primaryTextColor: '#1e293b',
+    primaryBorderColor: '#2563eb',
+    lineColor: '#475569',
+    secondaryColor: '#fef3c7',
+    tertiaryColor: '#f0fdf4',
+    background: '#ffffff'
+  },
+  flowchart: { htmlLabels: true, curve: 'basis' },
+  sequence: { actorMargin: 50, messageFontSize: 13 },
+  securityLevel: 'loose'
+});
+mermaid.run({ querySelector: '.mermaid' });
+</script>"""
+
 DRAWIO_BOOTSTRAP_JS = """<script>
 (function () {
   document.querySelectorAll('.mxgraph.mxg-lazy').forEach(function (el) {
@@ -493,37 +516,101 @@ def md_to_html(md_text, paper_id=""):
     lines = md_text.split('\n')
     out = []
     in_table = False
+    table_aligns = []          # per-column: 'left' / 'right' / 'center'
+    table_pending_rows = []    # buffered until separator row decides alignments
     in_code = False
+    in_mermaid = False
     in_ul = False
+
+    def _flush_table():
+        """Render the complete buffered table — including auto-detected
+        column alignments — and reset state. Called at end-of-table OR
+        end-of-document.
+        """
+        nonlocal in_table, table_aligns, table_pending_rows
+        if not in_table:
+            return
+        rows = table_pending_rows
+        if rows:
+            header = rows[0]
+            n = len(header)
+            aligns = (table_aligns + ['left'] * n)[:n]
+            # Heuristic: detect numeric columns from first 5 data rows
+            for ci in range(n):
+                vals = []
+                for r in rows[1:6]:
+                    if ci < len(r):
+                        cell = re.sub(r'<[^>]+>', '', r[ci]).strip().replace(',', '')
+                        vals.append(cell)
+                numeric = sum(1 for v in vals if re.fullmatch(r'-?\d+(\.\d+)?%?\*?', v or 'X'))
+                if vals and numeric == len(vals) and aligns[ci] == 'left':
+                    aligns[ci] = 'right'
+            # Render header
+            ths = ''.join(f'<th style="text-align:{aligns[i]}">{header[i]}</th>'
+                          for i in range(n))
+            out.append(f'<thead><tr>{ths}</tr></thead><tbody>')
+            for row in rows[1:]:
+                cells = (row + [''] * n)[:n]
+                tds = ''.join(f'<td style="text-align:{aligns[i]}">{cells[i]}</td>'
+                              for i in range(n))
+                out.append(f'<tr>{tds}</tr>')
+            out.append('</tbody>')
+        out.append('</table></div>')
+        in_table = False
+        table_aligns = []
+        table_pending_rows = []
 
     for line in lines:
         stripped = line.strip()
 
+        # Code/diagram fences: special-case mermaid
         if stripped.startswith('```'):
-            if in_code:
-                out.append('</code></pre>')
-                in_code = False
+            lang = stripped[3:].strip().lower()
+            if in_code or in_mermaid:
+                if in_mermaid:
+                    out.append('</div>')
+                    in_mermaid = False
+                else:
+                    out.append('</code></pre>')
+                    in_code = False
             else:
-                out.append('<pre><code>')
-                in_code = True
+                if lang == 'mermaid':
+                    out.append('<div class="mermaid">')
+                    in_mermaid = True
+                else:
+                    out.append('<pre><code>')
+                    in_code = True
+            continue
+        if in_mermaid:
+            # Mermaid needs raw text content, no escape for &/</> needed —
+            # mermaid.js parses the textContent directly.
+            out.append(line)
             continue
         if in_code:
             out.append(html.escape(line))
             continue
 
         if in_table and not stripped.startswith('|'):
-            out.append('</table>')
-            in_table = False
+            _flush_table()
 
         if stripped.startswith('|') and '|' in stripped[1:]:
             cells = [c.strip() for c in stripped.split('|')[1:-1]]
-            if all(set(c) <= set('- :') for c in cells):
+            # Separator row: `:---:` / `:---` / `---:` / `---`
+            if all(re.fullmatch(r':?-+:?', c) for c in cells if c):
+                table_aligns = []
+                for c in cells:
+                    if c.startswith(':') and c.endswith(':'):
+                        table_aligns.append('center')
+                    elif c.endswith(':'):
+                        table_aligns.append('right')
+                    else:
+                        table_aligns.append('left')
                 continue
+            rendered = [inline_fmt(c) for c in cells]
             if not in_table:
-                out.append('<table class="md-table"><tr>' + ''.join(f'<th>{inline_fmt(c)}</th>' for c in cells) + '</tr>')
+                out.append('<div class="table-wrap"><table class="md-table">')
                 in_table = True
-            else:
-                out.append('<tr>' + ''.join(f'<td>{inline_fmt(c)}</td>' for c in cells) + '</tr>')
+            table_pending_rows.append(rendered)
             continue
 
         if stripped.startswith('!['):
@@ -568,8 +655,9 @@ def md_to_html(md_text, paper_id=""):
             out.append(f'<p>{stripped}</p>')
 
     if in_ul: out.append('</ul>')
-    if in_table: out.append('</table>')
+    if in_table: _flush_table()
     if in_code: out.append('</code></pre>')
+    if in_mermaid: out.append('</div>')
     return '\n'.join(out)
 
 
@@ -715,6 +803,9 @@ for p in papers:
 
     has_drawio = bool(body_drawio)
     drawio_script = DRAWIO_BOOTSTRAP_JS if has_drawio else ""
+
+    has_mermaid = bool(re.search(r'<div class="mermaid">', body_html))
+    mermaid_script = MERMAID_BOOTSTRAP_JS if has_mermaid else ""
 
     # ---- TL;DR computation (≤300 chars, plain text, no markdown) ----
     def _build_tldr(paper_entry, body_markdown):
@@ -867,15 +958,46 @@ for p in papers:
 .content .fig-ref-note {{
   font-size: 0.75rem; opacity: 0.7;
 }}
+.table-wrap {{
+  margin: 16px 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--bd);
+  background: #fff;
+}}
 .md-table {{
-  width: 100%; border-collapse: collapse; margin: 12px 0;
-  font-size: 0.85rem;
+  width: 100%; border-collapse: collapse;
+  font-size: 0.85rem; min-width: 100%;
 }}
 .md-table th, .md-table td {{
-  border: 1px solid var(--bd); padding: 8px 12px; text-align: left;
+  border-bottom: 1px solid #f1f5f9;
+  padding: 8px 14px;
+  white-space: nowrap;
 }}
 .md-table th {{
-  background: #f8fafc; font-weight: 700;
+  background: #f8fafc; font-weight: 700; color: #475569;
+  position: sticky; top: 0; z-index: 1;
+  border-bottom: 2px solid var(--bd);
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
+}}
+.md-table tbody tr:nth-child(even) td {{
+  background: #fafbfc;
+}}
+.md-table tbody tr:hover td {{
+  background: #eff6ff;
+}}
+.md-table td b, .md-table td strong {{
+  color: var(--accent); font-weight: 700;
+}}
+.mermaid {{
+  margin: 20px 0; padding: 16px;
+  background: #fff; border: 1px solid var(--bd);
+  border-radius: 8px; text-align: center;
+  overflow-x: auto;
+}}
+.mermaid svg {{
+  max-width: 100%; height: auto;
 }}
 .content .katex-display {{
   overflow-x: auto; overflow-y: hidden;
@@ -905,6 +1027,7 @@ for p in papers:
 </div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
 {drawio_script}
+{mermaid_script}
 </body>
 </html>"""
 
