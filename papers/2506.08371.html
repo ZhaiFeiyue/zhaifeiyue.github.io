@@ -279,6 +279,7 @@ footer {
 <nav>
   <a class="logo" href="/">Feiyue Zhai</a>
   <a href="/">Papers</a>
+  <a href="/knowledge/">Knowledge</a>
   <a href="/knowledge-graph.html">Graph</a>
   <a href="/float.html">Tools</a>
   <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
@@ -385,13 +386,14 @@ footer {
 </table></div>
 <p><b>Takeaway</b>: 现实任务上提升幅度 +0.89 远小于合成 KV-retrieval 任务的 +7。这暗示 LongBench 的难度分布更宽（多 hop 推理、跨域），单纯解决"排序失误"只能解决其中一部分；SegR 在真实多文档 QA 上彻底崩盘 (12.18) 也说明 prompt-rearrangement 不可靠。</p>
 <h2 id="limitations">Limitations</h2>
+<p>每条 limitation 显式标注它攻击 Deep Analysis §0.5 论证链的哪一步 (per-critique chain anchor 强制规则, SKILL.md Phase 2b):</p>
 <ul>
-<li><b>不能扩展模型 attention window</b>: PCD 治标不治本，对于训练时根本没见过的超长序列依然无能为力；不能替代 long-context training。</li>
-<li><b>短文本几乎无收益</b>: 在原生 8K 模型的 8K 段 KV-retrieval 反而 -1.4%；在 LongBench MFQA-en 也 -1.16，提示 PCD 在 model-native context 内部启用是 risky 的。</li>
-<li><b>依赖 RoPE 频率分工假设</b>: 对于 ALiBi、KERPLE、NoPE 或新型 hybrid (Mamba+Attn) 模型，"低频负责 global"的前提失效，方法可能不适用。</li>
-<li><b>双 forward 推理开销</b>: 每 token 需要两次 attention 计算（standard + local-aware），实际部署时延接近 2x；除非 KV cache 复用 query/key projection 仅重算 RoPE 部分（论文未给出工程实现细节）。</li>
-<li><b>超参 $\beta$ 与任务相关</b>: variance 3.1% 在 ablation 里就比其他超参高 2x；不同任务（KV retrieval vs 真实 QA）最佳 $\beta$ 不一定一致，需要 per-domain 调参。</li>
-<li><b>缺失 baseline</b>: 没有与 YaRN/NTK-aware/LongRoPE 等长上下文 RoPE scaling 方法对比；也没和 self-extend / chunked attention 等 training-free 长程方法做横向。</li>
+<li><b>不能扩展模型 attention window</b> [攻击 step 1 premise — 边界条件]: PCD 治标不治本, 当 ctx 超出训练 window 后 gold token 可能整体掉出 top-K, "排序失败"假设退化为"召回失败", 对比解码翻不出来; 不能替代 long-context training。</li>
+<li><b>短文本几乎无收益, 甚至 regression</b> [攻击 step 5 conclusion]: 在原生 8K 模型的 8K 段 KV-retrieval 反而 -1.4%, LongBench MFQA-en 也 -1.16; 提示 PCD 在 model-native context 内部启用是 risky 的, 与"模型/任务无关全面领先"的论述存在 caveat。</li>
+<li><b>依赖 RoPE 频率分工假设</b> [攻击 step 3 premise — load-bearing]: 对于 ALiBi、KERPLE、NoPE 或新型 hybrid (Mamba+Attn) 模型, "低频负责 global"的前提失效, 方法可能不适用; 但生态校验下短期主流模型 (Llama / Qwen / Mistral / DeepSeek) 全 RoPE-based, medium-beta 风险, 1-2 年安全。</li>
+<li><b>双 forward 推理开销</b> [攻击 step 5 conclusion 的部署经济性]: 每 token 需要两次 attention 计算 (standard + local-aware), 实际部署时延接近 2x; 除非 KV cache 复用 query/key projection 仅重算 RoPE 部分 (论文未给出工程实现细节, 也未在 §4 报告 throughput overhead)。</li>
+<li><b>超参 $\beta$ 与任务相关 + 三参数缺一退化</b> [攻击 step 4 premise — 工程参数脆弱性]: $\beta$ variance 3.1% 在 ablation 里就比其他超参高 2x; top-$\gamma$ + frequency ratio + transition function 三个工程参数缺一个 PCD 就退化到 base, 跨模型迁移需要重新搜参, 鲁棒性脆弱。</li>
+<li><b>缺失 baseline</b> [攻击 step 5 conclusion + step 2 premise]: 没有与 YaRN/NTK-aware/LongRoPE 等长上下文 RoPE scaling 方法对比; 也没和 self-extend / chunked attention 等 training-free 长程方法做横向; step 2 论证"已有方案三类皆不行"在覆盖度上有漏。</li>
 </ul>
 <h2 id="infrastructure-impact">Infrastructure Impact</h2>
 <ul>
@@ -418,17 +420,48 @@ footer {
 </tbody>
 </table></div>
 <p><b>核心技术壁垒（必须明确指出）</b>: PCD 的核心壁垒不在于"对比解码"这个高层 idea (DoLa 早就提出过)，而在于<b>"如何构造一个 long-aware vs local-aware 的对比对而不破坏 base capability"</b>。具体到工程：(1) <b>过渡函数 $T(x)=2-\exp(\alpha x)$ 的设计</b> —— 必须从高频到低频"逐步"加大扰动，硬切会破坏中间频率的语义；(2) <b>frequency ratio $B/B'=10^4$ 的精确选取</b> —— 太大 (1e-1) 局部信号失真，太小 (1e-6) 与原始无差异；(3) <b>top-$\gamma$ 限制 contrast 仅在 top 候选上做</b> —— 否则会把全词表低概率噪声放大。<b>这三个工程细节缺一个，PCD 就退化到与 base 无明显差异</b>。</p>
-<p><b>质疑假设</b>:</p>
+<p><b>质疑假设</b> (每条标注被攻击的论证链 step, 见下文 §0.5):</p>
 <ul>
-<li>假设 1: "RoPE 高频负责 local，低频负责 global" —— 这是 RoFormer/LongRoPE 系列工作普遍接受的，但<b>对 MoE、cross-attention、混合架构 (Mamba+Attn) 是否成立未被独立验证</b>。</li>
-<li>假设 2: "Gold token 始终在 top-K 内" —— Fig 3a 仅在 KV retrieval 任务上验证，对于 multi-hop reasoning (Musique) 真的成立吗？论文未对每类任务单独画 rank 分布。</li>
-<li>假设 3: "long-aware 和 local-aware logits 的差能稳定地等价于 long-range 信号" —— 这个 contrastive 框架在数学上是 first-order Taylor 展开 (Lemma A.4 证明)，<b>对模型 weights 做了线性近似</b>；当模型参数远离训练分布（OOD context）时近似可能失效。</li>
+<li>假设 1 [攻击 step 3 premise — load-bearing]: "RoPE 高频负责 local, 低频负责 global" —— 这是 RoFormer/LongRoPE 系列工作普遍接受的, 但<b>对 MoE、cross-attention、混合架构 (Mamba+Attn) 是否成立未被独立验证</b>。论文仅以经验性"扰动高频会崩"间接论证, 没有 frequency-ablation per-band 实验。</li>
+<li>假设 2 [攻击 step 1 premise — load-bearing]: "Gold token 始终在 top-K 内" —— Fig 3a 仅在 KV retrieval 任务上验证, 对于 multi-hop reasoning (Musique) 真的成立吗? 论文未对每类任务单独画 rank 分布; 若 Musique 上 gold token 已掉出 top-8, PCD 的"翻几位"逻辑直接失效, 也能解释 LongBench Avg 仅 +0.89 的弱提升。</li>
+<li>假设 3 [攻击 step 4 premise — load-bearing]: "long-aware 和 local-aware logits 的差能稳定地等价于 long-range 信号" —— 这个 contrastive 框架在数学上是 first-order Taylor 展开 (Lemma A.4 证明), <b>对模型 weights 做了线性近似</b>; 当模型参数远离训练分布 (OOD context, 如超出 native window 之外) 时近似可能失效, 这正解释了 Llama-3-8B-1048K 在 RULER VT 8K/16K 反而稍弱 (66.77/71.19 vs base 67.15/72.78) 的现象。</li>
 </ul>
-<p><b>设计绑定批判</b>:</p>
+<p><b>设计绑定批判</b> (每条标注被攻击的论证链 step, 见下文 §0.5):</p>
 <ul>
-<li><b>强绑定 RoPE</b>: 整个方法 build on top of RoPE 的频率分解；ALiBi/KERPLE/NoPE 模型不能直接套用。</li>
-<li><b>强绑定 contrastive form $\tilde L=(1+\beta)L-\beta L^*$</b>: 这是 single-source contrast，无法扩展到 RAG 场景（不同来源的 logit 形态差异太大）。论文 Limitations 里也承认 "hybrid contrastive decoding between different series of models ... remains underexplored"。</li>
-<li><b>绑定 batch=1 推理</b>: 双 forward 在同一 batch 内的 KV cache 不能共享（因为 RoPE base 不同），实际服务化时 throughput 会大致减半（除非 custom kernel 支持双 base）。</li>
+<li><b>强绑定 RoPE</b> [攻击 step 3 premise — load-bearing]: 整个方法 build on top of RoPE 的频率分解; ALiBi/KERPLE/NoPE 模型不能直接套用。这一条若 RoPE 不再主流则 PCD 论点崩塌; 但生态校验: Llama / Qwen / Mistral / DeepSeek 全 RoPE-based, ALiBi 已边缘化, 1-2 年窗口安全。</li>
+<li><b>强绑定 contrastive form $\tilde L=(1+\beta)L-\beta L^*$</b> [攻击 step 4 premise]: 这是 single-source contrast, 无法扩展到 RAG 场景 (不同来源的 logit 形态差异太大)。论文 Limitations 自己承认 "hybrid contrastive decoding between different series of models ... remains underexplored"。</li>
+<li><b>绑定 batch=1 推理 / 双 forward</b> [攻击 step 5 conclusion 的部署经济性]: 双 forward 在同一 batch 内 KV cache 不能共享 (RoPE base 不同), 实际服务化时 throughput 大致减半 (除非 custom kernel 支持双 base); 论文未在 §4 报告 throughput overhead, 这是 PCD 从"算法可行"到"生产可用"之间未被论文承认的 gap。</li>
+</ul>
+<h3>0.5 Argument Chain Reconstruction (论证链重构) — 批判前的对内梳理</h3>
+<p>在写下面的方法剖析、质疑假设、设计绑定批判与 Limitations 之前, 必须先把作者的论证链拆成 explicit 步骤, 这样后续每条质疑都能精确锚定到 step k, 而不是攻击我自己脑补的简化版 (PrfaaS 2604.15039 同款规则, SKILL.md Phase 2b 强制要求)。</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:right">Step</th><th style="text-align:left">Premise (引用)</th><th style="text-align:left">Conclusion</th><th style="text-align:left">Load-bearing?</th></tr></thead><tbody>
+<tr><td style="text-align:right">1</td><td style="text-align:left">长上下文 LLM 在 16K+ 后 gold token 后验排名退化 (Posterior Salience Attenuation, PSA): 1K 上下文 rank=2, 26K 上下文 rank 退到 3-6 (Fig 3a, Llama-3-8B-1048K); Fig 5 logits scatter 同时显示 gold logit 绝对值从 19.3 跌到 13.4</td><td style="text-align:left">长 ctx 性能跌<b>不是</b>召回失败, 而是排序失败 — 答案 token 一直在 top-8 内</td><td style="text-align:left"><b>load-bearing</b>, 是 PCD 整套论点的存活基石; 若 PSA 实际是 recall failure, "对比解码翻几位"的整个治疗逻辑直接失效</td></tr>
+<tr><td style="text-align:right">2</td><td style="text-align:left">已有解决方案三类: (a) 训练侧 (LongRoPE / YaRN / ProLong) 数据贵; (b) prompt 侧 (Segment Reranking / Rephrasing) 破坏语义且 prompt-sensitive; (c) 推理侧 (MsPoE / DoLa) 改架构或层间对比, 不针对位置</td><td style="text-align:left">没有 training-free + 即插即用 + 专门针对"位置敏感的 salience attenuation"的方法</td><td style="text-align:left"><b>load-bearing</b>, 论证 motivation; 若任一已有方案就够用, PCD 没必要存在</td></tr>
+<tr><td style="text-align:right">3</td><td style="text-align:left">RoPE 频率分工假设: 高频负责 local 建模, 低频负责 global 建模; 只能扰动低频, 直接扰动高频会 model collapse (§A.6 经验观察)</td><td style="text-align:left">通过过渡函数 $T(x)=2-\exp(\alpha x)$ 把 over-rotation 从高频逐步推向低频, 得到 "long-aware vs local-aware" 的对比对</td><td style="text-align:left"><b>load-bearing</b>, 方法论核心; 频率分工假设崩则"哪一段该扰动"无解</td></tr>
+<tr><td style="text-align:right">4</td><td style="text-align:left">PCD 公式 $\tilde{L}=(1+\beta)L-\beta L^*$, 仅对 top-$\gamma$ 候选做对比; Theorem A.5 (基于 Lemma A.4 first-order Taylor 展开) 证明 contrastive score 衰减率压到 $(\ln B'/\ln B)^{2/d}<1$</td><td style="text-align:left">PCD 在长程信号上<b>显著慢于</b>原始 RoPE attention decay; 数值仿真 Fig 3b 验证 contrastive 曲线全程 11-13 几乎不衰减</td><td style="text-align:left"><b>load-bearing</b>, 理论保证; 若线性近似在 OOD context 失效或三个工程参数 ($\beta$ / $B/B'$ / $T(x)$ / top-$\gamma$) 缺一即退化</td></tr>
+<tr><td style="text-align:right">5</td><td style="text-align:left">Llama-3-8B-262K 上 PCD 把 InfiniteBench KV-Retrieval 8K 段 72→79 (+7%); RULER VT 8K F1 71.21→77.92 (+6.71); LongBench Avg 25.98→26.87 (+0.89)</td><td style="text-align:left">PCD 在 training-free baseline 中全面领先, 且模型/任务无关</td><td style="text-align:left">decorative — 实验验证; 即使移除某个数据集结论, step 1-4 的论证基础仍站得住</td></tr>
+</tbody>
+</table></div>
+<p><b>预先封堵的反对</b> (论文/作者/合理推断已经回应):</p>
+<ul>
+<li>"为什么不用 NTK-aware 直接调大 base?" → step 3 已证: 要么需要 fine-tuning 才稳定, 要么短文本性能下降; 只有 contrastive 形式能"短文本几乎无副作用 + 长文本显著提升"</li>
+<li>"为什么不用 DoLa (layer-contrast)?" → step 2 已说: DoLa 是治 hallucination 不针对位置, 层间差异方向与 long-context 信号不对齐</li>
+<li>"为什么不用 Segment Reranking?" → step 2 + LongBench Avg 12.18 (vs base 25.98) 直接证否 — 真实长文档 QA 上崩盘</li>
+</ul>
+<p><b>真正可攻击的位置</b> (后续 §3c/§3e/Limitations/Open Questions 必须锚定到这些 step, 不要攻击别处):</p>
+<ul>
+<li>step 1 premise: "gold token 始终在 top-K 内"仅在 KV-retrieval 任务上验证 (Fig 3a), 对 multi-hop reasoning (Musique) / 真实长文档 QA 是否成立未独立 plot</li>
+<li>step 3 premise: "RoPE 高频→local, 低频→global"对 MoE / cross-attention / 混合架构 (Mamba+Attn) 是否成立未被独立验证, 仅经验性说"扰动高频会崩"</li>
+<li>step 4 premise: contrastive form 是 first-order Taylor 展开 (Lemma A.4), 对模型 weights 做线性近似, OOD context 时近似可能失效</li>
+<li>step 4 premise: top-$\gamma$ + frequency ratio + transition function 三个工程参数缺一个 PCD 就退化 — 这是核心壁垒, 但反过来也意味着鲁棒性脆弱, 跨模型迁移需要重新搜超参</li>
+<li>step 5 conclusion: 在 8K-native 模型的 8K 段反而 -1.4% (回归), 短文本场景下 PCD 是 risky 的; LongBench MFQA-en 也 -1.16</li>
+<li>step 5 conclusion: 双 forward 推理开销使 throughput 减半, 部署成本未在论文报告</li>
+</ul>
+<p><b>不应攻击的位置</b> (打了也是稻草人, Term/Plausibility gate 已否决):</p>
+<ul>
+<li>❌ "PSA 不存在" — Fig 5 logits scatter (gold 红点 19.3→13.4) + Fig 3a rank distribution 已直接证明; 这是<b>测量出来的现象</b>, 不是假设</li>
+<li>❌ "RoPE-based 模型不主流" — Llama / Qwen / Mistral / DeepSeek 主流模型全部 RoPE-based, ALiBi/KERPLE 已被生态边缘化, "若 RoPE 被替代"是 hallucinated risk</li>
 </ul>
 <h3>1. Model Architecture & Design</h3>
 <h4>1a. PCD 不修改模型结构 — 只在解码层接入</h4>
@@ -757,11 +790,14 @@ def transition_blend(B, B_prime, alpha, d):
 <li><b>Hybrid PE 适配</b>: 把 PCD 推广到 ALiBi、KERPLE、NoPE，验证"低频扰动"是否仍然成立</li>
 <li><b>RAG 场景对比</b>: 论文 Limitations 提到"hybrid contrastive decoding between different models in RAG remains underexplored" —— 这是直接的下一篇</li>
 </ul>
-<p><b>遗留 open questions</b>:</p>
+<p><b>遗留 open questions</b> (每条标注被锚定的论证链 step, 见 §0.5):</p>
 <ul>
-<li>在 1M+ context 模型上 PCD 是否还有效？（论文最长测到 16K-26K 段）</li>
-<li>PCD 与 long-context training (LongRoPE / ProLong) 的收益是否可叠加？</li>
-<li>如果用 amateur model + PCD 双重对比，是否可以在解码空间提供更强的 long-range 信号？</li>
+<li>[step 5 conclusion] 在 1M+ context 模型上 PCD 是否还有效? 论文最长测到 16K-26K 段, Llama-3-8B-1048K 在 RULER VT 8K/16K 反而轻微回归 (66.77/71.19 vs base 67.15/72.78), 暗示 OOD context 下 step 4 的 first-order Taylor 近似可能失效。</li>
+<li>[step 4 premise] PCD 与 long-context training (LongRoPE / ProLong) 的收益是否可叠加? 即 base 模型先经过训练侧 RoPE scaling, 再叠 PCD 解码, 是否还能继续提升, 还是 contrastive 信号被训练侧吸收掉?</li>
+<li>[step 3 premise] 频率分工假设是否在 MoE / Mamba+Attn 混合架构上成立? 需要 per-band frequency ablation 验证, 而不是只有"扰高频会崩"这类粗粒度经验。</li>
+<li>[step 1 premise] PSA 现象在 multi-hop reasoning (Musique / 2WikiMQA / HotpotQA) 任务上的 rank 分布是否仍然集中在 top-8? 若不成立, 解释 LongBench Avg 仅 +0.89 的弱提升, 也可能催生"任务自适应"的 PCD 变体。</li>
+<li>[范围外] 如果用 amateur model + PCD 双重对比 (DoLa + PCD + CD 三向融合), 是否可以在解码空间提供更强的 long-range 信号? 这是论文之外的下一篇方向, 不构成对本文论证链的攻击。</li>
+<li>[范围外, 部署侧] 是否存在一个 fused kernel 让 standard 与 local-aware 两次 forward 共享 K projection 仅重算 RoPE rotation, 把 throughput overhead 从 2x 压到 ~1.2x? 若可行可直接化解 step 5 conclusion 的部署经济性 limitation。</li>
 </ul>
 </div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>

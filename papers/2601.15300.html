@@ -279,6 +279,7 @@ footer {
 <nav>
   <a class="logo" href="/">Feiyue Zhai</a>
   <a href="/">Papers</a>
+  <a href="/knowledge/">Knowledge</a>
   <a href="/knowledge-graph.html">Graph</a>
   <a href="/float.html">Tools</a>
   <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
@@ -354,12 +355,14 @@ footer {
 </table></div>
 <p><b>Takeaway</b>: 论文给出的 cliff 是 *RoPE-standard 模型* 的特性；ALiBi/PI/YaRN 类模型的临界点会显著靠后，这是一个重要的范围限定，<b>不应把 "40 % 法则" 推广到所有 LLM</b>。</p>
 <h2 id="limitations">Limitations</h2>
+<p>每条 limitation 显式标注它攻击 §0 论证链的哪一步 (per-critique chain anchor 强制规则):</p>
 <ul>
-<li><b>单模型单任务</b>：只测了 Qwen2.5-7B、只测 reading comprehension。3B/32B、Llama/Mistral、summarization/code/reasoning 等是否也在 ~43 % 出现同样 cliff，论文未验证。</li>
-<li><b>机制分析停留在概念层</b>：信息瓶颈 η(L) 与 attention concentration C(A,L) 的具体数值都没有真正测量，只是定义了公式；只有 RoPE 通过 θ → P → L_RoPE 给出可比较的数。</li>
-<li><b>样本量在 transition 区偏小</b>：1 000 样本均匀分布到 5 %–95 % 的 9 个 bin，每个 bin 只有约 100 个样本，cliff 区 (40–50 %) 真正落在那里的样本不到 100 个，σ 偏大（0.089）。</li>
-<li><b>Method 独立性问题</b>：5 个 detector 中有 4 个共享 3-stage filter，σ_methods = 1.2 % 部分是 "同源算法的一致性"，并不是真正的 cross-method validation。</li>
-<li><b>任务度量过窄</b>：以 F1 作为唯一智能度量；F1 在 NarrativeQA 这种长篇生成任务上本身噪声大，与 NIAH/RULER/LongBench 等更细粒度长上下文 benchmark 不可直接比较。</li>
+<li><b>[攻击 step 5/6 conclusion · 范围未验证] 单模型单任务</b>：只测了 Qwen2.5-7B、只测 reading comprehension。3B/32B、Llama/Mistral、summarization/code/reasoning 等是否也在 ~43 % 出现同样 cliff，论文未验证；Table 4 关于 ALiBi 70-80% / interpolated RoPE 60-70% 都是 conjecture, 没有实测背书。</li>
+<li><b>[攻击 step 6 premise · 框架空置] 机制分析停留在概念层</b>：信息瓶颈 η(L) 与 attention concentration C(A,L) 的具体数值都没有真正测量，只是定义了公式（Definition 4/5）；只有 RoPE 通过 θ → P → L_RoPE 给出可比较的数, 等于三瓶颈框架里只有一条腿是真量化的。</li>
+<li><b>[攻击 step 5 premise · 样本不足] 样本量在 transition 区偏小</b>：1 000 样本均匀分布到 5 %–95 % 的 9 个 bin，每个 bin 只有约 100 个样本，cliff 区 (40–50 %) 真正落在那里的样本不到 100 个，σ 偏大（0.089）, σ_methods=1.2% 的"高一致性"在这一段统计意义被削弱。</li>
+<li><b>[攻击 step 4 premise · 论文 §G.5.7 自承] Method 独立性问题</b>：5 个 detector 中有 4 个共享 3-stage filter (M1/M2/M4/M5)，真正算法独立的只有 M3 (Binned)；σ_methods = 1.2 % 部分是 "同源算法的一致性"，并不是真正的 cross-method validation, 论文 §G.5.7 自己也承认了这点。</li>
+<li><b>[攻击 step 5 conclusion · cliff vs slope] 任务度量过窄 + cliff 形状自证</b>：以 F1 作为唯一智能度量；F1 在 NarrativeQA 这种长篇生成任务上本身噪声大，与 NIAH/RULER/LongBench 等更细粒度长上下文 benchmark 不可直接比较；同时 Definition 3 的 D > 30% 阈值是任意定的 (论文 §A 解释为"prior literature 13.9%-85% 的中位数"), 换 25% / 50% 结论会变。</li>
+<li><b>[攻击 step 6 premise · implementation 误读] θ_RoPE 表述歧义</b>：paper §5.3 写的 "θ_RoPE ≈ 1e-4" 实际是 low-frequency dim 的角速度 ($\theta_{base}^{-126/128}$), 不是 Qwen2.5 的 base θ (<code>rope_theta = 1000000</code>); P ≈ 62832 tokens 的反推数字方向正确但容易让读者误以为 θ_base = 1e-4, 这是一个 mild 的 implementation 误读。</li>
 </ul>
 <h2 id="infrastructure-impact">Infrastructure Impact</h2>
 <ul>
@@ -372,6 +375,38 @@ footer {
 </ul>
 <p>---</p>
 <h2 id="deep-analysis-llm">Deep Analysis (llm)</h2>
+<h3>0. Argument Chain Reconstruction (论证链重构)</h3>
+<p>在做 §10 假设审计 / 设计绑定批判 之前先把作者的论证链拆成 explicit 步骤, 这样质疑和绑定批判才能精确锚定到 step k, 而不是攻击我自己脑补的简化版:</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:right">Step</th><th style="text-align:left">Premise (引用)</th><th style="text-align:left">Conclusion</th><th style="text-align:left">Load-bearing?</th></tr></thead><tbody>
+<tr><td style="text-align:right">1</td><td style="text-align:left">LLM 标称 context length 已涨到 128K-1M, 但实际可用区间到底有多长?</td><td style="text-align:left">需要客观评测方法</td><td style="text-align:left">load-bearing 但是已知动机</td></tr>
+<tr><td style="text-align:right">2</td><td style="text-align:left">Prior 评测 (Liu 2023, Du 2025) 用 truncation/padding 把 prompt 截到固定长度 → 长度本身的影响和"信息丢失/补零异常"的影响混在一起</td><td style="text-align:left">已有方法学有混淆变量, 不能给出干净的 length 因果</td><td style="text-align:left"><b>load-bearing</b>, 论证 motivation</td></tr>
+<tr><td style="text-align:right">3</td><td style="text-align:left">提出 Natural Length Distribution Analysis: 让每个样本以原生 token 长度评测, 不做任何 truncation/padding; 用混合数据集 (500 SQuAD ratio 5-10% + 500 NarrativeQA ratio 20-95%) 覆盖 5-95% 全 ratio 区间</td><td style="text-align:left">这是首个能干净测出 length 维度纯效应的协议</td><td style="text-align:left"><b>load-bearing</b>, 方法论核心</td></tr>
+<tr><td style="text-align:right">4</td><td style="text-align:left">5 个独立 detector (Gradient / Second-Derivative / Binned / Percentile / Sliding-Window) + Definition 3 的 cliff 判定 (D > 30% AND I_post < 0.5·I_pre); 在 (r, F1) 散点图上做峰值检测 + 持续下降验证, 取中位数</td><td style="text-align:left">多 method cross-validation 给出置信度 (high/medium/low)</td><td style="text-align:left"><b>load-bearing 但有缺陷</b> — §G.5.7 自承 4/5 method 共享 3-stage filter, 真正独立的只有 M3 (Binned)</td></tr>
+<tr><td style="text-align:right">5</td><td style="text-align:left">Qwen2.5-7B 实测 Lc ≈ 43.2% (≈55K tokens), F1 从 0.556 跌到 0.302 (-45.5%), σ_methods=1.2%, p<0.001, Cohen's d=8.2</td><td style="text-align:left">"Cliff-like degradation" 在 Qwen2.5-7B 上是客观存在的, 临界点 ≈ 40% 标称长度</td><td style="text-align:left"><b>load-bearing 但部分可质疑</b> — 见下文 step 5 attack</td></tr>
+<tr><td style="text-align:right">6</td><td style="text-align:left">三瓶颈 unified framework: $L_c = \min\{L_{RoPE}, L_{attn}, L_{info}\}$. RoPE 单独预测 49% (P=2π/θ_low ≈ 62832 tokens, α≈0.4-0.5), 实测 43.2%, 差 6 pp</td><td style="text-align:left">Attention dispersion / 信息瓶颈是更紧的约束, 比 RoPE aliasing 更早触发</td><td style="text-align:left"><b>load-bearing 但缺实测</b> — Definition 4/5 都没有真实测量 attention C(A,L) 或 mutual information η(L), 都是定性框架</td></tr>
+</tbody>
+</table></div>
+<p><b>论证链已经被论文自身预先封堵的常见反对</b>:</p>
+<ul>
+<li>"为何不用 truncation 控制变量?" → step 2 直接证否, truncation 引入 σ=3.2% (vs natural σ=1.2%)</li>
+<li>"1 个 detector 够不够?" → step 4 用 5 个 cross-validation, 但这是部分有效的预防 (4/5 共享 filter)</li>
+</ul>
+<p><b>真正可攻击的位置</b> (论文自承的 + 笔者额外质疑, 后续 §10 / Open Questions 必须锚定到这些 step):</p>
+<ul>
+<li><b>step 4 premise</b>: 4/5 detector 共享 3-stage filter, σ_methods=1.2% 部分是"同源算法的一致性", 不是真正的 cross-method validation (论文 §G.5.7 已承认)</li>
+<li><b>step 5 conclusion</b>: cliff vs slope 之争 — Figure 1 看到的更像是"gradual decline + 局部 dip", 不是阶跃式 cliff; detector 的 rise-in-range filter 等于"预先假设了 cliff 形状", 自我强化</li>
+<li><b>step 5 premise</b>: Definition 3 的 30% drop 阈值是任意定的, 换 25% 或 50% 结论会变</li>
+<li><b>step 5 premise</b>: 1000 样本均匀分布到 9 bin, cliff 区 (40-50%) 真正样本不到 100, σ 偏大 (0.089)</li>
+<li><b>step 6 premise</b>: Definition 4 (information bottleneck) 和 Definition 5 (attention dispersion) 都没真测; 唯一真实 prediction 来自 RoPE</li>
+<li><b>step 5/6 conclusion</b>: 单模型 (Qwen2.5-7B) 单任务 (reading comprehension), Llama-3.1 / Qwen3 / Mistral 等不同 PE 模型未验证 (Table 4 给的 ALiBi 70-80% / interpolated RoPE 60-70% 都是 conjecture)</li>
+<li><b>step 6 premise</b>: paper §5.3 写的 "θ_RoPE ≈ 1e-4" 实际是 low-frequency dim 角速度, 不是 Qwen2.5 的 base θ (rope_theta=1000000, 这是个 mild implementation 误读)</li>
+</ul>
+<p><b>不应攻击的位置</b> (脑补稻草人):</p>
+<ul>
+<li>❌ "LLM 标称 length ≠ 实际可用" — step 1 是公认动机, NIH/RULER 已大量验证</li>
+<li>❌ "RoPE 决定 L_RoPE" — step 6 数学推导基本正确, 只是 attention/info 是更紧约束</li>
+</ul>
 <h3>1. Architecture & Cross-Reference (Paper × Implementation)</h3>
 <h4>1a. 论文不研究新架构 —— 测的是 *Qwen2.5-7B-Instruct 原生模型*</h4>
 <ul>
@@ -627,32 +662,61 @@ footer {
 </ul>
 <p><b>Cross-validation</b>: σ_rc < 0.05 ⇒ "high"；< 0.10 ⇒ "medium"；否则 "low"。本文报告 σ_rc = 0.012，所以 "high"。</p>
 <h3>10. 假设审计与设计绑定</h3>
-<h4>假设 1：F1 是 long-context intelligence 的合法度量</h4>
+<p>每条 assumption / binding 必须 (a) 锚定到 §0 论证链的 step k, (b) 标注 load-bearing 还是 decorative, (c) 必要时通过 Term gate (论文术语 vs 通俗) 与 Plausibility gate (近 12 月 ≥2 个 production 案例) 双门。</p>
+<h4>假设 1：F1 是 long-context intelligence 的合法度量 [攻击 step 5 premise · load-bearing]</h4>
 <ul>
 <li>F1 衡量 token-level overlap，对 NarrativeQA 这种长篇 abstractive QA 噪声大；同样长度下不同问题的难度差异远大于"长度引起"的差异；论文用 1 000 样本的均值或许平滑掉了，但单个 cliff bin 只有 ~100 样本，σ = 0.089。</li>
 <li>替代度量（exact match、ROUGE、LLM-as-judge）会给出不同的 cliff 形状；论文未做 sensitivity 检验。</li>
+<li><b>Term gate</b>: 论文里的 "intelligence" = NarrativeQA F1, 跟通俗 "long-context intelligence" (推理/工具调用/代码) 不是同一回事; 严格说应叫 "long-context QA-F1 cliff"。</li>
+<li><b>评估</b>: ⚠️ load-bearing — 如果 F1 不是合法 proxy, step 5 conclusion 直接退化为"Qwen2.5-7B 在 NarrativeQA 这一个 task 上 F1 出现 dip", 不能 generalise 到 intelligence。</li>
 </ul>
-<h4>假设 2：natural length 真的代表 "context length 的纯效应"</h4>
+<h4>假设 2：natural length 真的代表 "context length 的纯效应" [攻击 step 3 premise · load-bearing]</h4>
 <ul>
 <li>NarrativeQA 长样本天然涉及 *更长叙事 + 更复杂 question type*；F1 跌可能是因为 *任务本身变难*，不仅是 *长度本身*。truncation 反而能控制变量。论文用 "no truncation" 证明 cliff 真实，但 cliff 的归因在 "length only" 还是 "length + task complexity" 是不可分的。</li>
+<li><b>Term gate</b>: 论文 "natural length" = 不动原文 token 长度, 跟通俗 "controlled length" (固定其他变量只变 length) 是相反方向; 这是论文的方法学创新点, 但也带来归因混淆。</li>
+<li><b>评估</b>: ⚠️ load-bearing — 如果"length only"和"task complexity"在 natural length 协议下不可分, step 3 的 conclusion ("首个能干净测出 length 维度纯效应的协议") 就被反讽: 论文恰好用"丢掉 truncation"的代价换来了"重新引入 task confound"。</li>
 </ul>
-<h4>假设 3：θ = 30 % 是合理的 cliff 边界</h4>
+<h4>假设 3：θ = 30 % 是合理的 cliff 边界 [攻击 step 5 premise · 部分 load-bearing]</h4>
 <ul>
 <li>Definition 3 定义 abruptness 为 D > θ = 30 %，这个数字 *没有理论依据*。论文 §A 解释 30 % 的来源是 "prior literature reports degradation 13.9 %–85 %, 我们取中位数附近"。换成 25 % 会得到 "几乎所有 LLM 都有 cliff"，换成 50 % 可能得到 "Qwen2.5-7B 也没有 cliff"。</li>
+<li><b>Term gate</b>: 论文 "cliff" = D > 30% AND I_post < 0.5·I_pre, 跟通俗"cliff (悬崖式断崖下降)" 不严格等价 — 通俗语境一般指 "几个 token 内 90%+ drop", 论文的定义在一个 ~10% ratio 窗口内的 30% drop 也算。</li>
+<li><b>评估</b>: ⚠️ load-bearing 但可救 — 即便阈值任意, 如果论文同时给 sensitivity sweep (θ ∈ {20%, 30%, 40%, 50%} 都报告 Lc) 就能化解; 论文没做。</li>
 </ul>
 <h4>设计绑定</h4>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Binding</th><th style="text-align:left">攻击 §0 哪一步</th><th style="text-align:left">Load-bearing?</th><th style="text-align:left">Term gate</th><th style="text-align:left">Plausibility gate (近 12 月 ≥2 production)</th><th style="text-align:left">Beta</th></tr></thead><tbody>
+<tr><td style="text-align:left"><b>B1</b>: 强制绑定 RoPE-based 模型</td><td style="text-align:left"><b>step 6 premise</b></td><td style="text-align:left"><b>load-bearing</b> (Theorem 1 的 $L_c = \min\{L_{RoPE},...\}$ 要求 RoPE; 对 ALiBi/PI 公式不成立)</td><td style="text-align:left">论文"RoPE" = standard RoPE, ≠ interpolated/YaRN/NTK-aware (Table 4 已分行列出)</td><td style="text-align:left">✅ Qwen2.5 / Llama-3.1 / DeepSeek-V3 / Mistral / Gemma-2 全部 RoPE-base, 但 Llama-3.1 用 NTK-aware → 公式严格只 cover Qwen2.5 / Mistral 这一支</td><td style="text-align:left">medium</td></tr>
+<tr><td style="text-align:left"><b>B2</b>: 强制绑定 reading comprehension 任务 + F1</td><td style="text-align:left"><b>step 5 premise</b></td><td style="text-align:left">load-bearing (换任务/换 metric 后所有 threshold 数字都会变, cliff 的存在性也可能变)</td><td style="text-align:left">论文 "intelligence" = NarrativeQA QA-F1, ≠ NIH/RULER 多 task 综合</td><td style="text-align:left">✅ NarrativeQA 是公开 benchmark, 但 NIH/RULER/LongBench 才是当前 long-context 主流; 论文等于在 niche benchmark 上下结论</td><td style="text-align:left">medium</td></tr>
+<tr><td style="text-align:left"><b>B3</b>: 强制绑定 mixed dataset 设计 (SQuAD ratio 5-10% + NarrativeQA ratio 20-95%)</td><td style="text-align:left"><b>step 3 premise</b></td><td style="text-align:left"><b>load-bearing</b> (作者 §G 自承 Stage 1 SQuAD-only / Stage 3 NarrativeQA-only 都失败, 必须 mix 才覆盖 5-95%)</td><td style="text-align:left">论文 "mixed dataset" = 两个互补 length distribution 的 task-similar 数据集, ≠ 通俗"多任务混合"</td><td style="text-align:left">⚠️ 复现要求 length distribution 互补, 但客户场景的真实负载往往是单一 distribution; 0 production case 用 5-95% 均匀分布做评测</td><td style="text-align:left">high</td></tr>
+<tr><td style="text-align:left"><b>B4</b>: 强制绑定 5-method detector 中"4/5 共享 3-stage filter"的设计</td><td style="text-align:left"><b>step 4 premise</b></td><td style="text-align:left">decorative (即便去掉 cross-validation, 单 M3 (Binned) 仍能给出 Lc; 但 σ_methods 这个置信度数字会失效)</td><td style="text-align:left">论文 "cross-validation" = 5 个独立 detector 取中位数, ≠ 标准统计 cross-validation (k-fold)</td><td style="text-align:left">n/a — 这是论文 algorithm 内部选择, 不是生态依赖</td><td style="text-align:left">n/a</td></tr>
+</tbody>
+</table></div>
+<p><b>B1 真正的失效路径</b> (按 step 6 锚定 + Ecosystem Reality Check):</p>
 <ul>
-<li><b>强制绑定 RoPE-based 模型</b>：Theorem 1 的 $L_c = \min\{L_{RoPE},...\}$ 要求 RoPE，对 ALiBi/PI 模型公式不成立。</li>
-<li><b>强制绑定 reading comprehension 任务 + F1</b>：换任务/换 metric 后所有 threshold 数字都会变。</li>
-<li><b>强制绑定 mixed dataset 设计</b>：协议要求 *length 分布互补* 的两个数据集；如果只有一个数据集（例如客户场景特定），detector 大概率失败。</li>
+<li>1-2 年窗口风险: 主流模型从 standard RoPE 转向 interpolated/YaRN-scaled RoPE (Llama-3.1 已经走了, DeepSeek-V3 / Qwen3 也在)。这种情况下论文的"40% 法则"会被推到 60-70% (Table 4 conjecture), 但 Table 4 的具体数字本身没有实测。</li>
+<li>替代 PE (ALiBi / NoPE): ALiBi 仅 BLOOM/MPT 用, 已基本退出主流; NoPE 是研究阶段 (RoPE-NoPE 混合); plausibility low。</li>
 </ul>
-<p>如果上述任何一个绑定不成立（非 RoPE / 非 RC / 单数据集），整套方法都需要重新设计。</p>
+<p><b>结论</b>: B1 在 standard-RoPE 模型上是干净 binding, 但生态上 standard-RoPE 正在被 interpolated/YaRN 替代; 论文应被读作 "standard-RoPE Qwen2.5-7B 的 cliff", 不是"所有 LLM 的 cliff"。</p>
+<p>如果上述任何一个 load-bearing binding 不成立（非 standard-RoPE / 非 RC / 单数据集），整套方法都需要重新设计。decorative binding (B4) 失效只影响置信度数字, 不影响 Lc 估计的存在性。</p>
 <p>---</p>
 <h2 id="zhaifeiyue-github-io">对 zhaifeiyue.github.io 知识库的连接</h2>
 <ul>
 <li><b>2502.01563</b> (*Massive Values in Self-Attention*)：从 attention pattern 角度解释 long-context 行为；本文 §5.2 attention dispersion 假说与之直接相关，但本文未实测 attention weights，是一个明显的 follow-up 缺口。</li>
 <li><b>2503.20215 / 2509.17765</b> (*Qwen2.5-Omni / Qwen3-Omni*)：被测对象的同族模型，Qwen3-Omni 的 audio/video stream 长 context 也会受同类型 cliff 影响，本文方法可直接 transfer 评测。</li>
 <li><b>2510.26692</b> (*Kimi Linear Attention*)：linear attention 不依赖 RoPE，理论上没有本文的 L_RoPE 上限，是验证三瓶颈框架的好对比对象。</li>
+</ul>
+<p>---</p>
+<h2 id="open-questions">Open Questions</h2>
+<p>每条 open question 标注它对应论证链的哪一步:</p>
+<ul>
+<li><b>[step 4 premise · 论文 §G.5.7 自承]</b> 真正算法独立的 detector 只有 M3 (Binned); 如果再加 1-2 个结构差异更大的 detector (e.g. change-point detection / Bayesian online change detection / piecewise-linear regression), σ_methods 还会保持在 1.2% 吗? 还是会扩散到 5%+, 暴露"高一致性是同源算法假象"?</li>
+<li><b>[step 5 conclusion · cliff vs slope]</b> 把 Definition 3 的 abruptness 阈值从 30% 换到 {20%, 25%, 40%, 50%} 各跑一遍, Lc 与 cliff 存在性对 θ 的敏感曲线长什么样? 如果 Lc 平滑漂移而非"在某 θ 突然消失", 那"cliff"就更接近"slope + 局部 dip" 的描述。</li>
+<li><b>[step 5 premise · 样本不足]</b> 把 cliff 区 (40-50%) 的样本量从 ~100 加到 ≥1000 (针对性扩 NarrativeQA), σ 能从 0.089 降到多少? 降下来后 cliff 是否仍然显著, 还是被 noise 吞掉?</li>
+<li><b>[step 5/6 conclusion · 跨模型未验证]</b> Llama-3.1-8B (NTK-aware RoPE), Qwen3-8B, Mistral-7B (standard RoPE), DeepSeek-V3 等是否也在 ~40% 出现 cliff? Table 4 给的 ALiBi 70-80% / interpolated RoPE 60-70% 是 conjecture 还是可实测?</li>
+<li><b>[step 6 premise · 框架空置]</b> 真正测一下 attention concentration $C(A,L)$ (hook attention weights) 与 mutual information $\eta(L)$ (probing classifier 估计), 这两个量是否在 L = 0.4·T_max 附近真的出现拐点? 如果不出现, 三瓶颈框架就只剩 RoPE 一条腿。</li>
+<li><b>[step 3 premise · 任务归因]</b> 控制 question complexity 不变 (e.g. NarrativeQA 同一组问题对不同长度的同一 narrative), 长度本身的 F1 跌幅是多少? 这能把"length only"和"length + task complexity"的归因分开。</li>
+<li><b>[范围外 · 工程化必答]</b> "把实际 prompt 控制在 < 40% advertised context" 这条经验法则在 agent 系统里怎么落地? agent 多轮 + 工具返回 + 文档拼接的 context 增长曲线和经验法则的触发逻辑没有现成 API, 需要 vLLM/SGLang 在 scheduler 层面提供 "context budget = 40% advertised" 的软上限钩子。</li>
+<li><b>[范围外 · 产业影响]</b> 模型卡里的 "max context" 字段是否应该改成"max stable context @ Δ < 30% degradation"? 本文给出方法学但没有给一个 industry-wide 的 benchmark 配套, 需要后续工作把 Lc 评测做成像 MMLU 一样的标配。</li>
 </ul>
 </div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>

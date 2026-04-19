@@ -172,6 +172,7 @@ footer {
 NAV_HTML = """<nav>
   <a class="logo" href="/">Feiyue Zhai</a>
   <a href="/">Papers</a>
+  <a href="/knowledge/">Knowledge</a>
   <a href="/knowledge-graph.html">Graph</a>
   <a href="/float.html">Tools</a>
   <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
