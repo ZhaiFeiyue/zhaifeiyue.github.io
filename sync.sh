@@ -868,16 +868,20 @@ def md_to_html(md_text, paper_id=""):
             out.append(f'<blockquote>{inline_fmt(stripped[2:])}</blockquote>')
             continue
 
-        if stripped.startswith('### '):
+        # Headings: support # through ###### (markdown spec).
+        # Order matters — match longer prefixes first so '#### ' isn't
+        # mis-classified as '### '.
+        h_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+        if h_match:
             if in_ul:
                 out.append('</ul>'); in_ul = False
-            out.append(f'<h3>{inline_fmt(stripped[4:])}</h3>')
-            continue
-        if stripped.startswith('## '):
-            if in_ul:
-                out.append('</ul>'); in_ul = False
-            anchor = re.sub(r'[^a-z0-9]+', '-', stripped[3:].lower()).strip('-')
-            out.append(f'<h2 id="{anchor}">{inline_fmt(stripped[3:])}</h2>')
+            level = len(h_match.group(1))
+            text_part = h_match.group(2)
+            if level == 2:
+                anchor = re.sub(r'[^a-z0-9]+', '-', text_part.lower()).strip('-')
+                out.append(f'<h2 id="{anchor}">{inline_fmt(text_part)}</h2>')
+            else:
+                out.append(f'<h{level}>{inline_fmt(text_part)}</h{level}>')
             continue
 
         if stripped.startswith('- '):

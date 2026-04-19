@@ -392,7 +392,7 @@ footer {
 <li><b>Workload</b>: memory-based agent inference。包括 multi-turn dialog、long-CoT、tool-calling、persona-driven generation。LLM 本身不是本论文关注点，跑 vLLM + Llama / GPT-5 API 就行。</li>
 </ul>
 <h3>2. Architecture & Data Flow</h3>
-<p>#### 2a. End-to-End Data Flow</p>
+<h4>2a. End-to-End Data Flow</h4>
 <pre><code>
 [User request]
   → [Agent controller]
@@ -424,12 +424,12 @@ footer {
 <tr><td style="text-align:left">Async cluster migration</td><td style="text-align:left">CPU buffer → new GPU cluster</td><td style="text-align:left">PCIe</td><td style="text-align:left">hidden</td><td style="text-align:left">GB/s order</td></tr>
 </tbody>
 </table></div>
-<p>#### 2b. Data Movement Hotspots</p>
+<h4>2b. Data Movement Hotspots</h4>
 <p>1. <b>CPU-GPU cluster migration</b>（on buffer full）：每 128 条 insert 触发一次 async copy，整个 cluster（几百-几千条 × 1024-d × 4B ≈ MB 量级）过 PCIe。通过 async allocate + overlap with serving 隐藏。</p>
 <p>2. <b>每次 search 的 query embedding 传 GPU</b>（1024 × 4B = 4KB）：量小但频次高，kernel launch 开销主导（这也是为什么 cluster <256 时不如 CPU）。</p>
 <p>3. <b>Cluster split on GPU</b>：K-means 时需要把 cluster 所有向量留在 GPU（假设已在），避免 CPU → GPU 再搬；论文指出 "split 的 cluster 通常正好是 hotspot 已经缓存在 GPU 上的" —— 这是 locality 赋予的隐性收益。</p>
 <h3>3. Design Space & Constraint Analysis</h3>
-<p>#### 3a. Alternative Approaches</p>
+<h4>3a. Alternative Approaches</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">#</th><th style="text-align:left">Alternative</th><th style="text-align:left">Feasible?</th><th style="text-align:left">Reason</th></tr></thead><tbody>
 <tr><td style="text-align:left">A</td><td style="text-align:left">Static IVF + periodic rebuild</td><td style="text-align:left">❌</td><td style="text-align:left">每次 rebuild 停服务，不 fit online serving</td></tr>
@@ -442,7 +442,7 @@ footer {
 <tr><td style="text-align:left">H</td><td style="text-align:left"><b>Pancake 的 L0/L1/L2 + hybrid graph + async GPU-CPU</b></td><td style="text-align:left">✅</td><td style="text-align:left"><b>survives all constraints</b></td></tr>
 </tbody>
 </table></div>
-<p>#### 3b. Constraint Derivation（extends Phase 2）</p>
+<h4>3b. Constraint Derivation（extends Phase 2）</h4>
 <p><b>为何不可单 IVF + in-place insert？</b></p>
 <ul>
 <li>高维欧氏空间的 <b>shell 效应</b>（Beyer 1999）：大量点集中在 hypersphere 表面附近，点到 centroid 的距离分布方差很小，细微语义差别转成大距离差。所以即使两个向量 cosine 相似度 0.9，插入时它们计算出的 nearest centroid 可能不同，分散到几十个 cluster。</li>
@@ -473,7 +473,7 @@ footer {
 <li>Fig 8a 给出 cluster <256 时 CPU 比 GPU 快。Binsert 设置为"CPU 搜 Binsert 条的时间 = GPU 搜一个 cluster 的时间"——保证 search 时 CPU buffer 部分的计算被 GPU 的 cluster 计算完全 cover，不拖慢端到端。</li>
 <li>若 Binsert>128：CPU 部分成为瓶颈；<128：async migration 频次过高，transfer 成本回升。</li>
 </ul>
-<p>#### 3c. Assumption Audit</p>
+<h4>3c. Assumption Audit</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">假设</th><th style="text-align:left">依据</th><th style="text-align:left">何时可能失效</th></tr></thead><tbody>
 <tr><td style="text-align:left">Agent 访问存在 intra-agent + step-wise locality</td><td style="text-align:left">Fig 4b, Fig 5a 的 similarity 分布</td><td style="text-align:left">随机探索 agent（纯 search, 无 step structure）；topic 频繁漂移的 dialog</td></tr>
@@ -484,7 +484,7 @@ footer {
 </tbody>
 </table></div>
 <p>笔者<b>对 FSM 能"online 识别 step-wise pattern"这一点持谨慎态度</b>——论文的 sim 公式只是"prefix alignment × δ/(1+|c-v|)" 的加权求和，不是真正的序列学习，面对长 chain-of-thought 或嵌套 sub-task 可能退化成不如简单 LRU cache。</p>
-<p>#### 3d. Core Technical Barrier</p>
+<h4>3d. Core Technical Barrier</h4>
 <blockquote><b>最核心的壁垒是：per-cluster CPU insertion buffer + async GPU cluster migration 的实现正确性 + overlap 技术。</b></blockquote>
 <p>这不是高层 idea（高层 idea 是"CPU 负责 dynamic，GPU 负责 hot static"），而是下面这个工程细节链条：</p>
 <p>1. buffer 要 lock-free（insert 和 search 并发）</p>
@@ -492,7 +492,7 @@ footer {
 <p>3. CPU 搜 buffer + GPU 搜 cluster 的结果 merge 要 deterministic（避免 top-k 在"已迁移一半"的 window 里漂移）</p>
 <p>4. 旧 GPU cluster 释放的时刻要所有 in-flight search 都完成——需要一个 reference counting 或 epoch-based reclamation</p>
 <p>这一整套是 systems-engineering 级别的工程壁垒，做"idea 级别复现"容易，做到"真正不掉 recall 不掉 throughput"要几个月。类似 vLLM PagedAttention 的 copy-on-write 也是这一类壁垒。</p>
-<p>#### 3e. Design Binding Critique</p>
+<h4>3e. Design Binding Critique</h4>
 <p>Pancake 强制绑定了几件事：</p>
 <ul>
 <li><b>GPU-CPU 异构平台</b>：纯 CPU 或纯 GPU 服务器用不上 §4.4。</li>
@@ -533,9 +533,9 @@ footer {
 </table></div>
 <p>主要瓶颈从 memory-bound（KV cache + vector DB 抢 HBM）+ compute-bound（ANN 向量算力）复合 → 经 Pancake 后 memory-op 下降到 3.2%，<b>瓶颈重新转回 LLM 本身（TTFT/TPOT 主导）</b>。</p>
 <h3>7. Performance Evaluation</h3>
-<p>#### 7a. Before-After</p>
+<h4>7a. Before-After</h4>
 <p>（见上面 "Key Tables"）</p>
-<p>#### 7b. Bottleneck Shift</p>
+<h4>7b. Bottleneck Shift</h4>
 <pre><code>
 Before: memory-op 占 &gt;82% E2E → Pancake cache → GPU cache + hybrid graph → after: LLM compute 主导, memory-op 3.2%
 </code></pre>
@@ -545,7 +545,7 @@ Before: memory-op 占 &gt;82% E2E → Pancake cache → GPU cache + hybrid graph
 <p>3. GPU onload fixes compute</p>
 <p>4. insertion buffer fixes dynamic-update 的 GPU friendliness</p>
 <p>剩余瓶颈：<b>LLM inference 本身</b>（TTFT/TPOT）——Pancake 已经把 memory-op 打到 3.2%，再压空间小；可以 attack 的方向是把 memory search 和 LLM decode overlap（speculative memory retrieval）。</p>
-<p>#### 7c. Baselines & Fairness</p>
+<h4>7c. Baselines & Fairness</h4>
 <ul>
 <li>Agent-side baselines（A-Mem / Mem-GPT / LangChain / LlamaIndex）都是现成 Python lib，和 Pancake 共享 vLLM backend，<b>公平</b>。</li>
 <li>Vector DB baselines（Quake / SPFresh / DiskANN）用 Pancake 生成的 trace feed，<b>公平</b>但给 Pancake "主场"——trace 本身就是 agent access pattern，对 Pancake 的 FSM 更友好。</li>

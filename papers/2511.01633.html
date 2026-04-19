@@ -421,7 +421,7 @@ footer {
 <li><b>适用边界</b>: 当图检索结果可抽象为 "vertex-centric chunk" 时收益最大；pure-text RAG / tool-calling agent / 非结构化 web 检索不直接适用。</li>
 </ul>
 <h3>2. Architecture & Data Flow</h3>
-<p>#### 2a. End-to-End Data Flow</p>
+<h4>2a. End-to-End Data Flow</h4>
 <pre><code>
 [NL Query q]
    → [Classify (C-Agent)]        ──(deterministic?)──► yes ──► [A-Agent code-gen] ──► [Retriever.exec()] ──► answer
@@ -448,12 +448,12 @@ footer {
 <tr><td style="text-align:left">notebook append</td><td style="text-align:left">vertex chunk → notebook</td><td style="text-align:left">CPU</td><td style="text-align:left">~0</td><td style="text-align:left">tokens</td></tr>
 </tbody>
 </table></div>
-<p>#### 2b. Data Movement Hotspots</p>
+<h4>2b. Data Movement Hotspots</h4>
 <p>1. <b>每轮 R-Agent prefill 读 notebook</b>——这是单 query 内最重的 KV 生成点；vertex-centric reuse 直接命中 P-II，使其主要只做 incremental KV。</p>
 <p>2. <b>RetrieveNode 的 embedding 搜索</b>——GPU FAISS 访存密集，单次 0.1–5s；pipelined execution + text→nodeID LRU cache 把它隐藏或消除。</p>
 <p>3. <b>高并发下的 KV eviction 抖动</b>——vLLM LRU 在 concurrent queries 下把马上要复用的 notebook 块驱逐，priority eviction 把它锁在 P-II 里。</p>
 <h3>3. Design Space & Constraint Analysis</h3>
-<p>#### 3a. Alternative Approaches</p>
+<h4>3a. Alternative Approaches</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Alt</th><th style="text-align:left">Approach</th><th style="text-align:left">可行？</th><th style="text-align:left">理由</th></tr></thead><tbody>
 <tr><td style="text-align:left">A1</td><td style="text-align:left">更长 context + 更深 CoT</td><td style="text-align:left">✗</td><td style="text-align:left">lost-in-the-middle（Fig.2）；token 线性暴涨但准确率下降</td></tr>
@@ -465,23 +465,23 @@ footer {
 <tr><td style="text-align:left"><b>A7 (GLM)</b></td><td style="text-align:left">Multi-agent + Graph-CoT-aware KV/pipeline co-design</td><td style="text-align:left">✓</td><td style="text-align:left">上层减 token/步数，下层收获稳定 prefix + 可预测 retrieval 调度</td></tr>
 </tbody>
 </table></div>
-<p>#### 3b. Constraint Derivation</p>
+<h4>3b. Constraint Derivation</h4>
 <ul>
 <li><b>为何不可只做"更长 context"？</b> lost-in-the-middle 是模型级行为，实测 step 从 3→9 GPTScore 0.42→0.17，这是 context 利用率衰减，无法用窗口大小补救。</li>
 <li><b>为何不可只做"更好 LRU"？</b> LRU 由"最近访问"决定，但 Graph-CoT 场景下最新访问的 A-Agent 代码段恰好是最不重要的（one-shot），语义信号与时间信号反向，任何基于时间的策略都次优，必须引入 <b>语义优先级</b>（P-I/II/III/IV）。</li>
 <li><b>为何不可只做"更好 retriever"？</b> retriever 占比 0.2–23%，就算砍一半也只省 10%；主导是 LLM inference 的 k1 轮重复 prefill，必须在 agent 层压缩 k1 → k2+1。</li>
 <li><b>为何不可仅靠 multi-agent 而不改 serving？</b> 三个 agent 的 prefix 可缓存性是 co-design 的关键杠杆；若 serving 层不感知这种结构，多 agent 增加的调度开销可能抵消上层收益。</li>
 </ul>
-<p>#### 3c. Assumption Audit</p>
+<h4>3c. Assumption Audit</h4>
 <ul>
 <li><b>A1: "RetrieveNode() 几乎总是 A-Agent 代码段首行"</b> —— 论文观察性陈述，未做分布统计；若 LLM 生成的代码把条件判断放前面，pipeline 触发点会后移，overlap 收益下降。<b>笔者不完全确定该假设在更大 backbone / 更自由 coding style 下的稳定性</b>。</li>
 <li><b>A2: "C-Agent 二分类可靠"</b> —— 论文未报告 C-Agent 的 FP/FN；若 deterministic 误分为 non-deterministic，回退到 R-Agent 循环不会出错但会损失性能；反向错误会直接降准确率。</li>
 <li><b>A3: "vertex chunk 在多 query 间有足够重叠"</b> —— 依赖图访问有幂律性（热门节点被反复查）。在长尾查询多的图上（如 Legal 大图），chunk 复用率可能显著下降，Fig.11 Legal 域 GLM 还剩 5.9s 延迟也佐证这点。</li>
 <li><b>A4: "notebook 只追加不压缩"</b> —— 论文假设 notebook 可以一直增长；极长多跳下 P-II 段会膨胀，P-II 自身需要 LRU 裁剪策略，当前文未充分讨论。</li>
 </ul>
-<p>#### 3d. Core Technical Barrier</p>
+<h4>3d. Core Technical Barrier</h4>
 <p><b>核心壁垒</b>: 不是 "四级优先级" 本身（概念简单），而是 <b>把 agent 语义边界精确映射到 KV-cache block 边界</b> 的工程实现。具体地：需要让 vLLM paged attention 的 block 分配器感知"当前这段 token 属于哪个 agent 的哪一级优先级"，在 block allocate/free/evict 三个点上都挂上 priority tag；这要求改 vLLM 的 scheduler 与 block manager 两层（论文点名"modifications to vLLM v0.8.5"），但没公开这份 patch——这是复现最难的部分。配合 pipelined execution 需要让 A-Agent 的输出 <b>流式</b>地暴露给 scheduler 以触发异步 retrieval，这条 streaming hook 也是 vLLM 非标准 API。</p>
-<p>#### 3e. Design Binding Critique</p>
+<h4>3e. Design Binding Critique</h4>
 <ul>
 <li><b>绑定 vLLM</b>：priority eviction 与 streaming hook 深度耦合 vLLM v0.8.5；迁移到 SGLang 的 RadixAttention 前缀树需要重写（SGLang 已有 cache-aware scheduling 但粒度不同）。</li>
 <li><b>绑定 Graph-RAG 接口</b>：C/R/A agent 的 prompt 都假定能调用 {RetrieveNode, NodeInfo, NodeFeature, NodeDegree, neighbourCheck} 这套原语；换 graph store（如 Neo4j/TigerGraph）需要重写 Python snippet 的 API 层。</li>
@@ -517,7 +517,7 @@ footer {
 </table></div>
 <p>主瓶颈：GLM 解决了 <b>"LLM inference 主导的端到端延迟"</b> 与 <b>"concurrent queries 下 KV eviction 抖动"</b>；剩余瓶颈在大图上回到 <b>retrieval-bound</b>（Legal 域）。</p>
 <h3>7. Performance Evaluation & Before-After</h3>
-<p>#### 7a. Metrics</p>
+<h4>7a. Metrics</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Metric</th><th style="text-align:left">Definition</th><th style="text-align:left">Unit</th><th style="text-align:left">Dir</th></tr></thead><tbody>
 <tr><td style="text-align:left">R-L (ROUGE-L)</td><td style="text-align:left">n-gram overlap w/ gold</td><td style="text-align:left">[0,1]</td><td style="text-align:left">↑</td></tr>
@@ -528,7 +528,7 @@ footer {
 <tr><td style="text-align:left">Cache hit rate</td><td style="text-align:left">reused KV / total prefill tokens</td><td style="text-align:left">%</td><td style="text-align:left">↑</td></tr>
 </tbody>
 </table></div>
-<p>#### 7b. Before-After</p>
+<h4>7b. Before-After</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Optimization</th><th style="text-align:left">Metric</th><th style="text-align:left">Baseline</th><th style="text-align:left">After</th><th style="text-align:left">Improv</th><th style="text-align:left">Conditions</th></tr></thead><tbody>
 <tr><td style="text-align:left">Multi-agent + code-gen</td><td style="text-align:left">Cost / query</td><td style="text-align:left">\$1.7–\$3.6</td><td style="text-align:left">\$0.1–\$0.2</td><td style="text-align:left">~20×</td><td style="text-align:left">Qwen3-235B-A22B, GRBench</td></tr>
@@ -542,7 +542,7 @@ footer {
 <tr><td style="text-align:left">All combined</td><td style="text-align:left">throughput</td><td style="text-align:left">0.6–2.2 QPS</td><td style="text-align:left">6.8–9.1 QPS</td><td style="text-align:left">3.2–15.1×</td><td style="text-align:left">end-to-end</td></tr>
 </tbody>
 </table></div>
-<p>#### 7c. Bottleneck Shift</p>
+<h4>7c. Bottleneck Shift</h4>
 <pre><code>
 Start: lost-in-the-middle + token cost (algorithm-bound)
   → + multi-agent: 转到 scheduling/serving-bound
@@ -550,7 +550,7 @@ Start: lost-in-the-middle + token cost (algorithm-bound)
   → + priority eviction: 转到 retrieval tail-bound
   → + pipelined execution: 转到 backbone LLM capacity-bound (论文自承的&quot;accuracy ceiling&quot;)
 </code></pre>
-<p>#### 7d. Baselines & Fairness</p>
+<h4>7d. Baselines & Fairness</h4>
 <ul>
 <li>Baselines: Base LLM / Text RAG / Graph RAG / Graph-CoT 都用同 Qwen3-235B-A22B 同硬件（8×A800）；workload 相同 GRBench。</li>
 <li><b>可能的不公平</b>：GLM 加入了 "vertex chunk" 这一检索单元改动，其实是同时改了 retriever 和 serving，baseline Graph-CoT 未享受 chunk 化 retriever。严格消融应给 Graph-CoT 也配 vertex chunk 后再比，论文 Fig.15 部分做了但非主表。</li>
