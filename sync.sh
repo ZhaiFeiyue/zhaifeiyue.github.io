@@ -468,6 +468,28 @@ def compact_drawio_xml(drawio_path, max_row_gap=20):
         return ('container=1' in s or 'swimlane' in s
                 or s.startswith('group') or 'group;' in s)
 
+    # ---- font-size scaling pass ----
+    # LLM-authored drawios commonly use fontSize=9-12pt, which renders very
+    # small once the diagram is scaled to fit a 1000px-wide page (CSS
+    # aspect-ratio + width:100%). Scale every fontSize by FONT_SCALE,
+    # enforce a floor, and inject a default for cells with no fontSize set.
+    FONT_SCALE = 1.5
+    FONT_MIN = 13
+    FONT_DEFAULT = 14   # drawio's untouched default is 12
+    for c in root.iter('mxCell'):
+        s = c.get('style') or ''
+        if not s and not c.get('value'):
+            continue
+        m = re.search(r'(fontSize=)(\d+)', s)
+        if m:
+            new_size = max(int(int(m.group(2)) * FONT_SCALE), FONT_MIN)
+            s = s[:m.start(2)] + str(new_size) + s[m.end(2):]
+            c.set('style', s)
+        elif c.get('value'):
+            # No explicit fontSize → inject default
+            sep = ';' if (s and not s.endswith(';')) else ''
+            c.set('style', f'{s}{sep}fontSize={FONT_DEFAULT};')
+
     for page in root.findall('.//diagram'):
         # 1. Collect inner-cell intervals; track containers separately so
         #    we can shrink them after.
