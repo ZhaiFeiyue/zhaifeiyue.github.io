@@ -402,13 +402,14 @@ footer {
 </table></div>
 <p><b>Takeaway</b>: (1) PrfaaS-PD vs 同构 = 54% 吞吐 + 50% mean TTFT + 64% P90 TTFT 改善; (2) Naive heterogeneous 仅得 16% 提升, 远不及 PrfaaS 的 54%——证明"调度即架构"的论点; (3) Naive 配置中 Θ_pd-d=6.25 远大于 Θ_prfaas=2.45 表明 decode 端严重过剩——即 80% decode 算力在等 prefill 喂数据。</p>
 <h2 id="limitations">Limitations</h2>
+<p>每条 limitation 显式标注它攻击 §3.0 论证链的哪一步 (per-critique chain anchor 强制规则):</p>
 <ul>
-<li><b>Case study only</b>：所有 54%/32%/64% 数字都来自同一个内部 1T 模型 + 同一份 log-normal 分布工作负载, 没有 ShareGPT/Loogle/agentic workload 的 OSS 复现; 别家做出的数字可能差很多。</li>
-<li><b>Prefix cache 命中率被建模忽略</b>：throughput model (§3.4) 用的是 $L_{\text{avg}}$（"实际 offloaded 的平均未命中长度"）, 没有显式建模 cache hit 与 routing 的耦合 ─ 实测 cache 命中率会反过来影响最优 t 与 N_p/N_d, 论文只在 dual-timescale 的 short-term 段提了一句"jointly considers cache affinity and bandwidth"。</li>
-<li><b>Egress 突发 / 长尾未量化</b>：13 Gbps 是平均值, 但 burst 模式下突破 100 Gbps 链路天花板的概率和退化曲线没给; 论文只提了"层级 prefill pipelining + multi-conn TCP + congestion monitoring"作为缓解但没给曲线。</li>
-<li><b>故障与 SLA</b>：跨 DC 链路抖动/中断如何 fallback 到本地 PD 仅 1 句话带过; transfer-cache 卡在中间链路时是否阻塞 PD-D 没分析。</li>
-<li><b>Hybrid stack 路线的依赖</b>：注意 dense MHA 早已被 GQA/MQA/MLA 替代, "dense 回归"并非真问题——论文里 dense baseline (MiniMax-M2.5/Qwen3-235B) 本身已是 GQA。PrfaaS 真正绑定的是"hybrid stack 把 KV 在 GQA/MLA 之上再压一个数量级"。若该路线被更激进方案 (native sparse attention 突破 / 模型级 2-bit KV 量化 / Mamba/RWKV 全替代 transformer) 取代, PrfaaS 的"刚好够用"窗口可能再次错位。</li>
-<li><b>跨 DC 传输 cost ≠ 0</b>：方案"占了 13% 100Gbps 带宽" 听起来很轻, 但跨 DC 链路通常按 95th-percentile 计费; 在 burst 下 95th 可以远高于 mean, 真实 OPEX 没被算进 1.54× 的"throughput per dollar"。</li>
+<li><b>Case study only</b> [攻击 step 5 conclusion]：所有 54%/32%/64% 数字都来自同一个内部 1T 模型 + 同一份 log-normal 分布工作负载, 没有 ShareGPT/Loogle/agentic workload 的 OSS 复现; case-study 不能 generalise。</li>
+<li><b>Prefix cache 命中率被建模忽略</b> [攻击 step 4 premise]：throughput model (§3.4) 用 $L_{\text{avg}}$ 抽象掉了 cache hit 与 routing 的耦合; 实测 cache 命中率会反过来影响最优 t 与 N_p/N_d, 论文只在 dual-timescale 的 short-term 段提了一句"jointly considers cache affinity and bandwidth"。</li>
+<li><b>Egress 突发 / 长尾未量化</b> [攻击 step 4 premise A3 + step 5 conclusion]：13 Gbps 是平均值, 但 burst 模式下突破 100 Gbps 链路天花板的概率和退化曲线没给; 缓解机制 (层级 pipelining + multi-conn TCP + congestion monitoring) 列了但没给曲线。</li>
+<li><b>故障与 SLA</b> [攻击 step 4 premise A3]：跨 DC 链路抖动/中断如何 fallback 到本地 PD 仅 1 句话带过; transfer-cache 卡在中间链路时是否阻塞 PD-D 没分析。</li>
+<li><b>Hybrid stack 路线依赖</b> [攻击 step 3 premise = §3.e B1, 已通过 Term gate + Plausibility gate 双门]：注意不是"dense 回归"——论文 dense baseline 本身是 GQA, dense MHA 自 Llama-3 后从生产消失 (Term gate 否决了 MHA-regression 这个稻草人)。真正风险是 hybrid stack 路线被更激进方案 (native sparse attention 突破 / 模型级 2-bit KV 量化 / Mamba/RWKV 全替代) 取代; 当前所有替代均 0 production case, 1-2 年窗口安全, medium-beta。</li>
+<li><b>跨 DC OPEX 真实成本</b> [攻击 step 5 conclusion 的经济性论证]：跨 DC 链路通常按 95th-percentile 计费; burst 下 95th 可远高于 mean 13 Gbps, "throughput per dollar" 的 1.54× 数字未把 95th 计费纳入, 真实经济性边界比论文宣称的窄。</li>
 </ul>
 <h2 id="infrastructure-impact">Infrastructure Impact</h2>
 <ul>
@@ -440,68 +441,68 @@ footer {
         &lt;mxCell id=&quot;0&quot; /&gt;
         &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot; /&gt;
 
-        &lt;mxCell id=&quot;title&quot; value=&quot;PrfaaS = decouple PD across datacenters: hybrid attention shrinks KV → cross-DC Ethernet becomes feasible&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;title&quot; value=&quot;PrfaaS = decouple PD across datacenters: hybrid attention shrinks KV → cross-DC Ethernet becomes feasible&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;rounded=0;whiteSpace=wrap;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;20.0&quot; width=&quot;1620&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;lq_box&quot; value=&quot;Status Quo: Single tightly-coupled RDMA datacenter (PD must share fabric)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=18;fontStyle=1;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lq_box&quot; value=&quot;Status Quo: Single tightly-coupled RDMA datacenter (PD must share fabric)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=17;fontStyle=1;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;80.0&quot; width=&quot;700&quot; height=&quot;520.0&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lq_pre&quot; value=&quot;Prefill (compute-dense)&amp;#10;e.g. H200 / Rubin CPX&amp;#10;Generates KVCache → emits 60 Gbps/inst at 32K (dense)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lq_pre&quot; value=&quot;Prefill (compute-dense)&amp;#10;e.g. H200 / Rubin CPX&amp;#10;Generates KVCache → emits 60 Gbps/inst at 32K (dense)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;90.0&quot; width=&quot;280&quot; height=&quot;120&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lq_dec&quot; value=&quot;Decode (BW-dense)&amp;#10;e.g. H20 / LPU&amp;#10;HBM-bandwidth bound, low compute use&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lq_dec&quot; value=&quot;Decode (BW-dense)&amp;#10;e.g. H20 / LPU&amp;#10;HBM-bandwidth bound, low compute use&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;420&quot; y=&quot;90.0&quot; width=&quot;280&quot; height=&quot;120&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lq_arrow&quot; value=&quot;KVCache transfer&amp;#10;needs RDMA-class&amp;#10;(IB / NVLink / 800Gbps)&quot; style=&quot;endArrow=classic;html=1;strokeWidth=4;strokeColor=#d62728;fontSize=16;fontStyle=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;lq_pre&quot; target=&quot;lq_dec&quot;&gt;
+        &lt;mxCell id=&quot;lq_arrow&quot; value=&quot;KVCache transfer&amp;#10;needs RDMA-class&amp;#10;(IB / NVLink / 800Gbps)&quot; style=&quot;endArrow=classic;html=1;strokeWidth=4;strokeColor=#d62728;fontSize=16;fontStyle=1;rounded=0;whiteSpace=wrap&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;lq_pre&quot; target=&quot;lq_dec&quot;&gt;
           &lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lq_kv&quot; value=&quot;KV Store (cluster-local, RDMA fabric)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lq_kv&quot; value=&quot;KV Store (cluster-local, RDMA fabric)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;260.0&quot; width=&quot;620&quot; height=&quot;60&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lq_pain&quot; value=&quot;Pain points:&amp;#10;• Heterogeneous chips MUST co-locate behind same RDMA island&amp;#10;• Prefill:Decode hardware ratio fixed once deployed&amp;#10;• Dense KV at 32K = 3.8 Tbps for 512×H200 cluster — locks deployment to single DC&amp;#10;• Cannot reassign chip-types as traffic shifts (specialised hw)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lq_pain&quot; value=&quot;Pain points:&amp;#10;• Heterogeneous chips MUST co-locate behind same RDMA island&amp;#10;• Prefill:Decode hardware ratio fixed once deployed&amp;#10;• Dense KV at 32K = 3.8 Tbps for 512×H200 cluster — locks deployment to single DC&amp;#10;• Cannot reassign chip-types as traffic shifts (specialised hw)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;360.0&quot; width=&quot;620&quot; height=&quot;200&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;rq_box&quot; value=&quot;PrfaaS-PD: prefill cluster + decode cluster decoupled across DCs (commodity Ethernet)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#e6f5e6;strokeColor=#2e7d32;fontSize=18;fontStyle=1;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_box&quot; value=&quot;PrfaaS-PD: prefill cluster + decode cluster decoupled across DCs (commodity Ethernet)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#e6f5e6;strokeColor=#2e7d32;fontSize=18;fontStyle=1;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;780&quot; y=&quot;80.0&quot; width=&quot;880&quot; height=&quot;520.0&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_pre&quot; value=&quot;Standalone PrfaaS Cluster&amp;#10;(compute-dense, e.g. 32×H200)&amp;#10;handles long uncached prefill (l &amp;gt; t)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_pre&quot; value=&quot;Standalone PrfaaS Cluster&amp;#10;(compute-dense, e.g. 32×H200)&amp;#10;handles long uncached prefill (l &amp;gt; t)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;820&quot; y=&quot;80.0&quot; width=&quot;280&quot; height=&quot;120&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_pd&quot; value=&quot;Local PD Cluster&amp;#10;(64×H20, RDMA inside)&amp;#10;short prefill + decode; PD ratio adjustable&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_pd&quot; value=&quot;Local PD Cluster&amp;#10;(64×H20, RDMA inside)&amp;#10;short prefill + decode; PD ratio adjustable&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;1340&quot; y=&quot;80.0&quot; width=&quot;280&quot; height=&quot;120&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_eth&quot; value=&quot;Cross-DC Ethernet&amp;#10;~100 Gbps VPC peering&amp;#10;hybrid KV @ 13 Gbps avg (13% util)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=16;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_eth&quot; value=&quot;Cross-DC Ethernet&amp;#10;~100 Gbps VPC peering&amp;#10;hybrid KV @ 13 Gbps avg (13% util)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;fontStyle=1;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;1140&quot; y=&quot;100.0&quot; width=&quot;160&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_e1&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#2e7d32;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;rq_pre&quot; target=&quot;rq_eth&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;rq_e2&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#2e7d32;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;rq_eth&quot; target=&quot;rq_pd&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;rq_e1&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#2e7d32;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;rq_pre&quot; target=&quot;rq_eth&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;rq_e2&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#2e7d32;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;rq_eth&quot; target=&quot;rq_pd&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_router&quot; value=&quot;Request Router&amp;#10;length-based: l &amp;gt; t → PrfaaS, else local PD-P&amp;#10;cache-aware + bandwidth-aware (dual-timescale)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=16;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_router&quot; value=&quot;Request Router&amp;#10;length-based: l &amp;gt; t → PrfaaS, else local PD-P&amp;#10;cache-aware + bandwidth-aware (dual-timescale)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=16;fontStyle=1;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;980&quot; y=&quot;240.0&quot; width=&quot;500&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_kv&quot; value=&quot;Hybrid Prefix Cache Pool&amp;#10;(linear-attn states: request-level, full-attn KV: block-level, unified backing pool)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#28a745;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_kv&quot; value=&quot;Hybrid Prefix Cache Pool&amp;#10;(linear-attn states: request-level, full-attn KV: block-level, unified backing pool)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#28a745;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;820&quot; y=&quot;350.0&quot; width=&quot;800&quot; height=&quot;60&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_global&quot; value=&quot;Global KVCache Manager — tracks block locations across all clusters; computes per-cluster prefix-match per request&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_global&quot; value=&quot;Global KVCache Manager — tracks block locations across all clusters; computes per-cluster prefix-match per request&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;820&quot; y=&quot;430.0&quot; width=&quot;800&quot; height=&quot;50&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;rq_win&quot; value=&quot;Why feasible NOW?&amp;#10;• Hybrid attention (KDA / SWA / linear) ↓ KV by 13× (32K MiMo) up to 36× (Ring-2.5-1T)&amp;#10;• Per-instance Φ_kv drops from ~60 Gbps → ~3-5 Gbps&amp;#10;• Selective offloading (l &amp;gt; t) keeps cross-DC traffic small&amp;#10;• Result: 54% throughput vs homogeneous PD at equal hardware count&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#2e7d32;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rq_win&quot; value=&quot;Why feasible NOW?&amp;#10;• Hybrid attention (KDA / SWA / linear) ↓ KV by 13× (32K MiMo) up to 36× (Ring-2.5-1T)&amp;#10;• Per-instance Φ_kv drops from ~60 Gbps → ~3-5 Gbps&amp;#10;• Selective offloading (l &amp;gt; t) keeps cross-DC traffic small&amp;#10;• Result: 54% throughput vs homogeneous PD at equal hardware count&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#2e7d32;fontSize=16;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;820&quot; y=&quot;500.0&quot; width=&quot;800&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
@@ -516,87 +517,87 @@ footer {
         &lt;mxCell id=&quot;0&quot; /&gt;
         &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot; /&gt;
 
-        &lt;mxCell id=&quot;title&quot; value=&quot;PrfaaS-PD architecture = 3 subsystems × 2 cluster types — compute + network + storage&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;title&quot; value=&quot;PrfaaS-PD architecture = 3 subsystems × 2 cluster types — compute + network + storage&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;rounded=0;whiteSpace=wrap;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;20.0&quot; width=&quot;1500&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;user&quot; value=&quot;User Requests&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;user&quot; value=&quot;User Requests&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;80.0&quot; width=&quot;180&quot; height=&quot;50&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;router&quot; value=&quot;Request Router&amp;#10;(global scheduler)&amp;#10;routes by: incremental length l, prefix cache locations,&amp;#10;cross-cluster bandwidth utilization&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=16;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;router&quot; value=&quot;Request Router&amp;#10;(global scheduler)&amp;#10;routes by: incremental length l, prefix cache locations,&amp;#10;cross-cluster bandwidth utilization&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;fontStyle=1;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;600&quot; y=&quot;60.0&quot; width=&quot;420&quot; height=&quot;100&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;er1&quot; style=&quot;endArrow=classic;html=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;user&quot; target=&quot;router&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;er1&quot; style=&quot;endArrow=classic;html=1;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;user&quot; target=&quot;router&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;rowL_compute&quot; value=&quot;Compute Subsystem&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;rotation=-90;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rowL_compute&quot; value=&quot;Compute Subsystem&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=15;fontStyle=1;rotation=-90;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;20&quot; y=&quot;230.0&quot; width=&quot;160&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;rowL_net&quot; value=&quot;Network Subsystem&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;rotation=-90;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rowL_net&quot; value=&quot;Network Subsystem&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=15;fontStyle=1;rotation=-90;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;20&quot; y=&quot;390.0&quot; width=&quot;160&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;rowL_stor&quot; value=&quot;Storage Subsystem&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;fontStyle=1;rotation=-90;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;rowL_stor&quot; value=&quot;Storage Subsystem&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=15;fontStyle=1;rotation=-90;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;20&quot; y=&quot;555.0&quot; width=&quot;160&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;prfaas_box&quot; value=&quot;PrfaaS Cluster (Long Request, l &amp;gt; t)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=18;fontStyle=1;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;prfaas_box&quot; value=&quot;PrfaaS Cluster (Long Request, l &amp;gt; t)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=18;fontStyle=1;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;200&quot; y=&quot;200.0&quot; width=&quot;540&quot; height=&quot;485.0&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;prfaas_compute&quot; value=&quot;Prefill Nodes (homogeneous, compute-dense)&amp;#10;e.g. 32× H200 (4 instances × 8 GPU)&amp;#10;Effective throughput = min(compute, egress BW)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;prfaas_compute&quot; value=&quot;Prefill Nodes (homogeneous, compute-dense)&amp;#10;e.g. 32× H200 (4 instances × 8 GPU)&amp;#10;Effective throughput = min(compute, egress BW)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;220&quot; y=&quot;190.0&quot; width=&quot;500&quot; height=&quot;100&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;prfaas_net&quot; value=&quot;Intra-cluster RDMA (TP / EP collectives)&amp;#10;800 Gbps per node, latency-sensitive&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#82b366;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;prfaas_net&quot; value=&quot;Intra-cluster RDMA (TP / EP collectives)&amp;#10;800 Gbps per node, latency-sensitive&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#82b366;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;220&quot; y=&quot;350.0&quot; width=&quot;500&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;prfaas_stor&quot; value=&quot;Hybrid Prefix Cache Pool (intra-cluster only, prefix-cache blocks)&amp;#10;+ Transfer-cache blocks (egress staging, discarded after PD-D ack)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#28a745;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;prfaas_stor&quot; value=&quot;Hybrid Prefix Cache Pool (intra-cluster only, prefix-cache blocks)&amp;#10;+ Transfer-cache blocks (egress staging, discarded after PD-D ack)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#28a745;fontSize=13;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;220&quot; y=&quot;515.0&quot; width=&quot;500&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;pd_box&quot; value=&quot;Local PD Cluster (Short Request l ≤ t + ALL Decode)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=18;fontStyle=1;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_box&quot; value=&quot;Local PD Cluster (Short Request l ≤ t + ALL Decode)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=18;fontStyle=1;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;900&quot; y=&quot;200.0&quot; width=&quot;640&quot; height=&quot;485.0&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;pd_p&quot; value=&quot;PD-P (prefill) Nodes (N_p)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_p&quot; value=&quot;PD-P (prefill) Nodes (N_p)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;920&quot; y=&quot;190.0&quot; width=&quot;280&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;pd_d&quot; value=&quot;PD-D (decode) Nodes (N_d)&amp;#10;sole consumer of KVCache from both PrfaaS &amp;amp; PD-P&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_d&quot; value=&quot;PD-D (decode) Nodes (N_d)&amp;#10;sole consumer of KVCache from both PrfaaS &amp;amp; PD-P&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=13;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;1230&quot; y=&quot;190.0&quot; width=&quot;280&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;pd_ratio&quot; value=&quot;N_p / N_d adjustable on the fly (long-term scheduler reassigns nodes between roles)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#d6b656;dashed=1;fontSize=15;fontStyle=2;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_ratio&quot; value=&quot;N_p / N_d adjustable on the fly (long-term scheduler reassigns nodes between roles)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#d6b656;dashed=1;fontSize=13;fontStyle=2;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;920&quot; y=&quot;290.0&quot; width=&quot;600&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;pd_net&quot; value=&quot;Intra-cluster RDMA (PD KV transfer + collectives)&amp;#10;800 Gbps per node&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#82b366;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_net&quot; value=&quot;Intra-cluster RDMA (PD KV transfer + collectives)&amp;#10;800 Gbps per node&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#82b366;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;920&quot; y=&quot;350.0&quot; width=&quot;600&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;pd_stor&quot; value=&quot;Hybrid Prefix Cache Pool (decode-side reuse)&amp;#10;+ Receives transfer-cache blocks from PrfaaS via Ethernet&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#28a745;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_stor&quot; value=&quot;Hybrid Prefix Cache Pool (decode-side reuse)&amp;#10;+ Receives transfer-cache blocks from PrfaaS via Ethernet&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#28a745;fontSize=16;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;920&quot; y=&quot;515.0&quot; width=&quot;600&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;eth&quot; value=&quot;Cross-DC Ethernet (commodity, ~100 Gbps VPC)&amp;#10;multi-connection TCP + congestion monitoring + layer-wise prefill pipelining&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=16;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;eth&quot; value=&quot;Cross-DC Ethernet (commodity, ~100 Gbps VPC)&amp;#10;multi-connection TCP + congestion monitoring + layer-wise prefill pipelining&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;fontStyle=1;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;740&quot; y=&quot;365.0&quot; width=&quot;180&quot; height=&quot;120&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;eth_l&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;startArrow=classic;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;prfaas_net&quot; target=&quot;eth&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;eth_r&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;startArrow=classic;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;eth&quot; target=&quot;pd_net&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;eth_l&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;startArrow=classic;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;prfaas_net&quot; target=&quot;eth&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;eth_r&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;startArrow=classic;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;eth&quot; target=&quot;pd_net&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;gkm&quot; value=&quot;Global KVCache Manager — tracks (block_id → cluster, node, slot) for prefix matching across PrfaaS + all PD clusters; triggers cache rebalancing on hotspots&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=16;fontStyle=1;align=center;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;gkm&quot; value=&quot;Global KVCache Manager — tracks (block_id → cluster, node, slot) for prefix matching across PrfaaS + all PD clusters; triggers cache rebalancing on hotspots&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=15;fontStyle=1;align=center;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;200&quot; y=&quot;625.0&quot; width=&quot;1340&quot; height=&quot;60&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;route_long&quot; value=&quot;l &amp;gt; t (long uncached prefill)&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;strokeColor=#1e88e5;fontSize=15;fontStyle=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;router&quot; target=&quot;prfaas_compute&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;route_short&quot; value=&quot;l ≤ t (short prefill)&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;strokeColor=#fb8c00;fontSize=15;fontStyle=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;router&quot; target=&quot;pd_p&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;route_long&quot; value=&quot;l &amp;gt; t (long uncached prefill)&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;strokeColor=#1e88e5;fontSize=15;fontStyle=1;rounded=0;whiteSpace=wrap&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;router&quot; target=&quot;prfaas_compute&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;route_short&quot; value=&quot;l ≤ t (short prefill)&quot; style=&quot;endArrow=classic;html=1;strokeWidth=2;strokeColor=#fb8c00;fontSize=15;fontStyle=1;rounded=0;whiteSpace=wrap&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;router&quot; target=&quot;pd_p&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
       &lt;/root&gt;
     &lt;/mxGraphModel&gt;
@@ -609,49 +610,49 @@ footer {
         &lt;mxCell id=&quot;0&quot; /&gt;
         &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot; /&gt;
 
-        &lt;mxCell id=&quot;title&quot; value=&quot;Hybrid Prefix Cache Pool — heterogeneous KV (linear req-state vs full-attn block) sharing one block pool, two block roles (prefix vs transfer)&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;title&quot; value=&quot;Hybrid Prefix Cache Pool — heterogeneous KV (linear req-state vs full-attn block) sharing one block pool, two block roles (prefix vs transfer)&quot; style=&quot;text;align=left;fontSize=17;fontStyle=1;rounded=0;whiteSpace=wrap;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;20.0&quot; width=&quot;1400&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;grp_lin&quot; value=&quot;KVCache Group A — Linear-attention layers&amp;#10;(KDA / SWA / Lightning / GDN)&amp;#10;• Recurrent state, fixed size&amp;#10;• REQUEST-LEVEL granularity&amp;#10;• Reusable only on EXACT length match&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;grp_lin&quot; value=&quot;KVCache Group A — Linear-attention layers&amp;#10;(KDA / SWA / Lightning / GDN)&amp;#10;• Recurrent state, fixed size&amp;#10;• REQUEST-LEVEL granularity&amp;#10;• Reusable only on EXACT length match&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;80.0&quot; width=&quot;450&quot; height=&quot;160&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;grp_full&quot; value=&quot;KVCache Group B — Full-attention layers&amp;#10;(MLA / GQA, the &amp;quot;1&amp;quot; in 3:1 / 5:1 / 7:1 hybrid stacks)&amp;#10;• Linear in seq-length, paged blocks&amp;#10;• BLOCK-LEVEL granularity&amp;#10;• Supports partial PREFIX matching&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;grp_full&quot; value=&quot;KVCache Group B — Full-attention layers&amp;#10;(MLA / GQA, the &amp;quot;1&amp;quot; in 3:1 / 5:1 / 7:1 hybrid stacks)&amp;#10;• Linear in seq-length, paged blocks&amp;#10;• BLOCK-LEVEL granularity&amp;#10;• Supports partial PREFIX matching&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=14;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;600&quot; y=&quot;80.0&quot; width=&quot;450&quot; height=&quot;160&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;grp_groups&quot; value=&quot;Group 0 / 1 / 2&amp;#10;(per linear-attn type)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#6c8ebf;dashed=1;fontSize=15;fontStyle=2;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;grp_groups&quot; value=&quot;Group 0 / 1 / 2&amp;#10;(per linear-attn type)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#6c8ebf;dashed=1;fontSize=15;fontStyle=2;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;120&quot; y=&quot;260.0&quot; width=&quot;370&quot; height=&quot;40&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;grp_group3&quot; value=&quot;Group 3 (full-attn KV)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#d6b656;dashed=1;fontSize=15;fontStyle=2;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;grp_group3&quot; value=&quot;Group 3 (full-attn KV)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#d6b656;dashed=1;fontSize=15;fontStyle=2;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;640&quot; y=&quot;260.0&quot; width=&quot;370&quot; height=&quot;40&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;pool&quot; value=&quot;Unified Hybrid Block Pool (aligned block sizes — every group allocates/frees from the SAME backing pool)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#e6f5e6;strokeColor=#28a745;fontSize=18;fontStyle=1;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pool&quot; value=&quot;Unified Hybrid Block Pool (aligned block sizes — every group allocates/frees from the SAME backing pool)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#e6f5e6;strokeColor=#28a745;fontSize=18;fontStyle=1;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;330.0&quot; width=&quot;1340&quot; height=&quot;240&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;pc_box&quot; value=&quot;Prefix-Cache Blocks&amp;#10;• reusable across requests&amp;#10;• MUST be fully populated&amp;#10;• block-aligned, intra-cluster only&amp;#10;• evictable by LRU/length policies&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pc_box&quot; value=&quot;Prefix-Cache Blocks&amp;#10;• reusable across requests&amp;#10;• MUST be fully populated&amp;#10;• block-aligned, intra-cluster only&amp;#10;• evictable by LRU/length policies&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;120&quot; y=&quot;380.0&quot; width=&quot;380&quot; height=&quot;170&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;tc_box&quot; value=&quot;Transfer-Cache Blocks&amp;#10;• tail-of-prefill output&amp;#10;• cross-cluster transport over Ethernet&amp;#10;• ANY length (not block-aligned)&amp;#10;• DISCARDED on transfer completion&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;tc_box&quot; value=&quot;Transfer-Cache Blocks&amp;#10;• tail-of-prefill output&amp;#10;• cross-cluster transport over Ethernet&amp;#10;• ANY length (not block-aligned)&amp;#10;• DISCARDED on transfer completion&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=16;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;540&quot; y=&quot;380.0&quot; width=&quot;380&quot; height=&quot;170&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;free_box&quot; value=&quot;Free Blocks&amp;#10;available for next allocation&amp;#10;(any group)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;free_box&quot; value=&quot;Free Blocks&amp;#10;available for next allocation&amp;#10;(any group)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f5f5f5;strokeColor=#666666;fontSize=16;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;960&quot; y=&quot;380.0&quot; width=&quot;380&quot; height=&quot;170&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;ea1&quot; style=&quot;endArrow=classic;html=1;dashed=1;strokeColor=#6c8ebf;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;grp_lin&quot; target=&quot;pool&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ea2&quot; style=&quot;endArrow=classic;html=1;dashed=1;strokeColor=#d6b656;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;grp_full&quot; target=&quot;pool&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;ea1&quot; style=&quot;endArrow=classic;html=1;dashed=1;strokeColor=#6c8ebf;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;grp_lin&quot; target=&quot;pool&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;ea2&quot; style=&quot;endArrow=classic;html=1;dashed=1;strokeColor=#d6b656;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;grp_full&quot; target=&quot;pool&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;note&quot; value=&quot;Why split prefix vs transfer? Cross-cluster cache transfer is expensive — only worth it for the request&#x27;s INCREMENTAL output (transfer-cache).&amp;#10;Long-term reuse (prefix-cache) stays cluster-local; the global manager redirects requests to the cluster that already holds the prefix when possible.&amp;#10;When BW is abundant, scheduler may copy a prefix block across clusters (rare path); when BW is scarce, prefix matching is evaluated INDEPENDENTLY per cluster.&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=16;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;note&quot; value=&quot;Why split prefix vs transfer? Cross-cluster cache transfer is expensive — only worth it for the request&#x27;s INCREMENTAL output (transfer-cache).&amp;#10;Long-term reuse (prefix-cache) stays cluster-local; the global manager redirects requests to the cluster that already holds the prefix when possible.&amp;#10;When BW is abundant, scheduler may copy a prefix block across clusters (rare path); when BW is scarce, prefix matching is evaluated INDEPENDENTLY per cluster.&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=15;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;600.0&quot; width=&quot;1340&quot; height=&quot;100&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
@@ -666,49 +667,49 @@ footer {
         &lt;mxCell id=&quot;0&quot; /&gt;
         &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot; /&gt;
 
-        &lt;mxCell id=&quot;title&quot; value=&quot;Converging pipeline: PrfaaS + PD-P → PD-D — end-to-end Λ_max bounded by slowest stage (per Eq. 6)&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;title&quot; value=&quot;Converging pipeline: PrfaaS + PD-P → PD-D — end-to-end Λ_max bounded by slowest stage (per Eq. 6)&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;rounded=0;whiteSpace=wrap;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;20.0&quot; width=&quot;1620&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;src&quot; value=&quot;Requests Λ&amp;#10;(arrival rate)&amp;#10;L ~ truncated log-normal&amp;#10;μ=9.9, σ=1.0, [128, 128K]&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=16;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;src&quot; value=&quot;Requests Λ&amp;#10;(arrival rate)&amp;#10;L ~ truncated log-normal&amp;#10;μ=9.9, σ=1.0, [128, 128K]&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;240.0&quot; width=&quot;220&quot; height=&quot;120&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;split&quot; value=&quot;Length-based router&amp;#10;split by t&quot; style=&quot;rhombus;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=16;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;split&quot; value=&quot;Length-based router&amp;#10;split by t&quot; style=&quot;rhombus;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=16;fontStyle=1;rounded=0;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;320&quot; y=&quot;260.0&quot; width=&quot;220&quot; height=&quot;80&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;es&quot; style=&quot;endArrow=classic;html=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;src&quot; target=&quot;split&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;es&quot; style=&quot;endArrow=classic;html=1;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;src&quot; target=&quot;split&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;prfaas&quot; value=&quot;PrfaaS prefill (top branch)&amp;#10;fraction p = P(L &amp;gt; t)&amp;#10;l_long = E[L | L &amp;gt; t]&amp;#10;&amp;#10;Θ_prfaas = min( N_prfaas / T_pre(l_long),&amp;#10;                     B_out / S_kv(l_long) )&amp;#10;&amp;#10;case study: 4 instances (32×H200), B_out=100Gbps&amp;#10;Θ_prfaas = 1.61 req/s (compute-bound, 13Gbps egress)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;prfaas&quot; value=&quot;PrfaaS prefill (top branch)&amp;#10;fraction p = P(L &amp;gt; t)&amp;#10;l_long = E[L | L &amp;gt; t]&amp;#10;&amp;#10;Θ_prfaas = min( N_prfaas / T_pre(l_long),&amp;#10;                     B_out / S_kv(l_long) )&amp;#10;&amp;#10;case study: 4 instances (32×H200), B_out=100Gbps&amp;#10;Θ_prfaas = 1.61 req/s (compute-bound, 13Gbps egress)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;640&quot; y=&quot;80.0&quot; width=&quot;420&quot; height=&quot;180&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;pd_p&quot; value=&quot;PD-P prefill (bottom branch)&amp;#10;fraction 1-p&amp;#10;l_short = E[L | L ≤ t]&amp;#10;&amp;#10;Θ_pd-p = N_p / T_pre(l_short)&amp;#10;(intra-cluster RDMA never bottlenecks)&amp;#10;&amp;#10;case study: N_p=3 (24×H20)&amp;#10;Θ_pd-p = 1.64 req/s&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_p&quot; value=&quot;PD-P prefill (bottom branch)&amp;#10;fraction 1-p&amp;#10;l_short = E[L | L ≤ t]&amp;#10;&amp;#10;Θ_pd-p = N_p / T_pre(l_short)&amp;#10;(intra-cluster RDMA never bottlenecks)&amp;#10;&amp;#10;case study: N_p=3 (24×H20)&amp;#10;Θ_pd-p = 1.64 req/s&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=15;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;640&quot; y=&quot;360.0&quot; width=&quot;420&quot; height=&quot;180&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;ep1&quot; value=&quot;p, Ethernet, transfer-cache&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#1e88e5;fontSize=15;fontStyle=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;split&quot; target=&quot;prfaas&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ep2&quot; value=&quot;1-p, RDMA local&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#fb8c00;fontSize=15;fontStyle=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;split&quot; target=&quot;pd_p&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;ep1&quot; value=&quot;p, Ethernet, transfer-cache&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#1e88e5;fontSize=15;fontStyle=1;rounded=0;whiteSpace=wrap&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;split&quot; target=&quot;prfaas&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;ep2&quot; value=&quot;1-p, RDMA local&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;strokeColor=#fb8c00;fontSize=15;fontStyle=1;rounded=0;whiteSpace=wrap&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;split&quot; target=&quot;pd_p&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;merge&quot; value=&quot;Merge: KV streams converge at decode&quot; style=&quot;ellipse;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=15;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;merge&quot; value=&quot;Merge: KV streams converge at decode&quot; style=&quot;ellipse;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;rounded=0;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;1140&quot; y=&quot;260.0&quot; width=&quot;200&quot; height=&quot;100&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;em1&quot; style=&quot;endArrow=classic;html=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;prfaas&quot; target=&quot;merge&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;em2&quot; style=&quot;endArrow=classic;html=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;pd_p&quot; target=&quot;merge&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;em1&quot; style=&quot;endArrow=classic;html=1;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;prfaas&quot; target=&quot;merge&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;em2&quot; style=&quot;endArrow=classic;html=1;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;pd_p&quot; target=&quot;merge&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;pd_d&quot; value=&quot;PD-D decode (consumer)&amp;#10;&amp;#10;Θ_pd-d = N_d · BS_max / (T_dec · L_out)&amp;#10;(BS_max, T_dec set by SLO)&amp;#10;&amp;#10;case study: N_d=5 (40×H20), L_out=1024&amp;#10;Θ_pd-d = 3.91 req/s&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#28a745;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;pd_d&quot; value=&quot;PD-D decode (consumer)&amp;#10;&amp;#10;Θ_pd-d = N_d · BS_max / (T_dec · L_out)&amp;#10;(BS_max, T_dec set by SLO)&amp;#10;&amp;#10;case study: N_d=5 (40×H20), L_out=1024&amp;#10;Θ_pd-d = 3.91 req/s&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#28a745;fontSize=13;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;1410&quot; y=&quot;180.0&quot; width=&quot;260&quot; height=&quot;220&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;ed1&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;merge&quot; target=&quot;pd_d&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;ed1&quot; style=&quot;endArrow=classic;html=1;strokeWidth=3;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;merge&quot; target=&quot;pd_d&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;eq&quot; value=&quot;Λ_max = min( Θ_prfaas / p,  Θ_pd-p / (1-p),  Θ_pd-d )    [Eq. 6]&amp;#10;&amp;#10;Optimum (Eq. 7 + Eq. 8): both upstream branches saturate together AND match downstream consumer&amp;#10;    Θ_prfaas / p = Θ_pd-p / (1-p)              ← split balance (tunes t)&amp;#10;    Θ_prfaas + Θ_pd-p = Θ_pd-d                  ← producer / consumer balance (tunes N_p / N_d)&amp;#10;&amp;#10;case study: t = 19.4K (≈50% of requests), N_prfaas=4, N_p=3, N_d=5  →  Λ_max = 3.24 req/s (1.54× homogeneous PD)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#fff9e6;strokeColor=#d6b656;fontSize=16;align=left;verticalAlign=middle;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;eq&quot; value=&quot;Λ_max = min( Θ_prfaas / p,  Θ_pd-p / (1-p),  Θ_pd-d )    [Eq. 6]&amp;#10;&amp;#10;Optimum (Eq. 7 + Eq. 8): both upstream branches saturate together AND match downstream consumer&amp;#10;    Θ_prfaas / p = Θ_pd-p / (1-p)              ← split balance (tunes t)&amp;#10;    Θ_prfaas + Θ_pd-p = Θ_pd-d                  ← producer / consumer balance (tunes N_p / N_d)&amp;#10;&amp;#10;case study: t = 19.4K (≈50% of requests), N_prfaas=4, N_p=3, N_d=5  →  Λ_max = 3.24 req/s (1.54× homogeneous PD)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#fff9e6;strokeColor=#d6b656;fontSize=16;align=left;verticalAlign=middle;fontStyle=1;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;570.0&quot; width=&quot;1620&quot; height=&quot;200&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
@@ -723,67 +724,67 @@ footer {
         &lt;mxCell id=&quot;0&quot; /&gt;
         &lt;mxCell id=&quot;1&quot; parent=&quot;0&quot; /&gt;
 
-        &lt;mxCell id=&quot;title&quot; value=&quot;Dual-timescale scheduler — short-term cache+BW-aware routing  ‖  long-term traffic-driven re-allocation&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;title&quot; value=&quot;Dual-timescale scheduler — short-term cache+BW-aware routing  ‖  long-term traffic-driven re-allocation&quot; style=&quot;text;align=left;fontSize=21;fontStyle=1;rounded=0;whiteSpace=wrap;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;20.0&quot; width=&quot;1400&quot; height=&quot;30&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;st_box&quot; value=&quot;Short-term: per-request routing (ms-scale)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=18;fontStyle=1;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;st_box&quot; value=&quot;Short-term: per-request routing (ms-scale)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=18;fontStyle=1;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;80.0&quot; width=&quot;1420&quot; height=&quot;350.0&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;st_in&quot; value=&quot;Incoming request:&amp;#10;l_total = total prompt length&amp;#10;l_prfaas = matched prefix in PrfaaS cluster&amp;#10;l_pd = matched prefix in PD cluster&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;st_in&quot; value=&quot;Incoming request:&amp;#10;l_total = total prompt length&amp;#10;l_prfaas = matched prefix in PrfaaS cluster&amp;#10;l_pd = matched prefix in PD cluster&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=13;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;120.0&quot; width=&quot;320&quot; height=&quot;120&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;st_bw&quot; value=&quot;Probe egress BW utilization U_BW&amp;#10;and PrfaaS queue depth Q&quot; style=&quot;rhombus;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=15;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;st_bw&quot; value=&quot;Probe egress BW utilization U_BW&amp;#10;and PrfaaS queue depth Q&quot; style=&quot;rhombus;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;rounded=0;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;450&quot; y=&quot;140.0&quot; width=&quot;240&quot; height=&quot;100&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
-        &lt;mxCell id=&quot;se1&quot; style=&quot;endArrow=classic;html=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;st_in&quot; target=&quot;st_bw&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;se1&quot; style=&quot;endArrow=classic;html=1;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;st_in&quot; target=&quot;st_bw&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;st_scarce&quot; value=&quot;BW SCARCE: evaluate caches independently&amp;#10;l_inc_pd = l_total − l_pd&amp;#10;if l_inc_pd ≤ t  → PD-P (local, no cross-DC traffic)&amp;#10;else                → PrfaaS (only PrfaaS prefix used)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;st_scarce&quot; value=&quot;BW SCARCE: evaluate caches independently&amp;#10;l_inc_pd = l_total − l_pd&amp;#10;if l_inc_pd ≤ t  → PD-P (local, no cross-DC traffic)&amp;#10;else                → PrfaaS (only PrfaaS prefix used)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;740&quot; y=&quot;80.0&quot; width=&quot;380&quot; height=&quot;140&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;st_abund&quot; value=&quot;BW ABUNDANT: pick the LONGEST cache anywhere&amp;#10;l_prefix = max(l_prfaas, l_pd)&amp;#10;l_inc = l_total − l_prefix&amp;#10;if l_inc ≤ t  → PD-P (with optional cross-DC prefix copy)&amp;#10;else              → PrfaaS (with optional cross-DC prefix copy)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#28a745;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;st_abund&quot; value=&quot;BW ABUNDANT: pick the LONGEST cache anywhere&amp;#10;l_prefix = max(l_prfaas, l_pd)&amp;#10;l_inc = l_total − l_prefix&amp;#10;if l_inc ≤ t  → PD-P (with optional cross-DC prefix copy)&amp;#10;else              → PrfaaS (with optional cross-DC prefix copy)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#d4edda;strokeColor=#28a745;fontSize=13;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;1140&quot; y=&quot;80.0&quot; width=&quot;320&quot; height=&quot;140&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;se_sc&quot; value=&quot;U_BW &amp;gt; threshold (or queueing)&quot; style=&quot;endArrow=classic;html=1;strokeColor=#b85450;fontSize=14;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;st_bw&quot; target=&quot;st_scarce&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;se_ab&quot; value=&quot;U_BW low&quot; style=&quot;endArrow=classic;html=1;strokeColor=#28a745;fontSize=14;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;st_bw&quot; target=&quot;st_abund&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;se_sc&quot; value=&quot;U_BW &amp;gt; threshold (or queueing)&quot; style=&quot;endArrow=classic;html=1;strokeColor=#b85450;rounded=0;whiteSpace=wrap;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;st_bw&quot; target=&quot;st_scarce&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;se_ab&quot; value=&quot;U_BW low&quot; style=&quot;endArrow=classic;html=1;strokeColor=#28a745;rounded=0;whiteSpace=wrap;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;st_bw&quot; target=&quot;st_abund&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;st_thr&quot; value=&quot;Periodic re-profile of t&amp;#10;• re-measure compute &amp;amp; egress capacity&amp;#10;• re-fit incremental-length distribution after prefix matching&amp;#10;• re-solve grid search to set NEW threshold t&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;st_thr&quot; value=&quot;Periodic re-profile of t&amp;#10;• re-measure compute &amp;amp; egress capacity&amp;#10;• re-fit incremental-length distribution after prefix matching&amp;#10;• re-solve grid search to set NEW threshold t&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=14;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;270.0&quot; width=&quot;500&quot; height=&quot;140&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;st_route&quot; value=&quot;Final route &amp;amp; admit:&amp;#10;• If PrfaaS: prefill + transfer-cache → cross-DC Ethernet → PD-D&amp;#10;• If PD-P: prefill + KVCache via intra-cluster RDMA → PD-D&amp;#10;• Update PrfaaS queue + BW counters&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;st_route&quot; value=&quot;Final route &amp;amp; admit:&amp;#10;• If PrfaaS: prefill + transfer-cache → cross-DC Ethernet → PD-D&amp;#10;• If PD-P: prefill + KVCache via intra-cluster RDMA → PD-D&amp;#10;• Update PrfaaS queue + BW counters&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=15;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;640&quot; y=&quot;270.0&quot; width=&quot;820&quot; height=&quot;140&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
         
-        &lt;mxCell id=&quot;lt_box&quot; value=&quot;Long-term: re-allocate roles inside local PD cluster (minute-to-hour scale)&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=18;fontStyle=1;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lt_box&quot; value=&quot;Long-term: re-allocate roles inside local PD cluster (minute-to-hour scale)&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=18;fontStyle=1;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;40&quot; y=&quot;460.0&quot; width=&quot;1420&quot; height=&quot;270.0&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lt_mon&quot; value=&quot;Monitor stage utilizations + queue depths&amp;#10;classify binding constraint:&amp;#10;• if Θ_prfaas + Θ_pd-p ≪ Θ_pd-d → prefill-bound&amp;#10;• if Θ_prfaas + Θ_pd-p ≫ Θ_pd-d → decode-bound&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lt_mon&quot; value=&quot;Monitor stage utilizations + queue depths&amp;#10;classify binding constraint:&amp;#10;• if Θ_prfaas + Θ_pd-p ≪ Θ_pd-d → prefill-bound&amp;#10;• if Θ_prfaas + Θ_pd-p ≫ Θ_pd-d → decode-bound&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=15;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;440.0&quot; width=&quot;420&quot; height=&quot;160&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lt_decide&quot; value=&quot;Decision (every period T):&amp;#10;• Convert nodes between PD-P ↔ PD-D (ramp drains, then loads new role)&amp;#10;• Re-solve Eq. 7 + Eq. 8 → new (N_p, N_d)&amp;#10;• Re-optimize threshold t&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lt_decide&quot; value=&quot;Decision (every period T):&amp;#10;• Convert nodes between PD-P ↔ PD-D (ramp drains, then loads new role)&amp;#10;• Re-solve Eq. 7 + Eq. 8 → new (N_p, N_d)&amp;#10;• Re-optimize threshold t&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=13;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;540&quot; y=&quot;440.0&quot; width=&quot;420&quot; height=&quot;160&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lt_apply&quot; value=&quot;Apply: warm new prefill weights, drain decode batches, push new t to global router; affected nodes briefly remove from rotation&quot; style=&quot;rounded=1;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=15;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lt_apply&quot; value=&quot;Apply: warm new prefill weights, drain decode batches, push new t to global router; affected nodes briefly remove from rotation&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=#ffffff;strokeColor=#d6b656;fontSize=13;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;1000&quot; y=&quot;440.0&quot; width=&quot;420&quot; height=&quot;160&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;le1&quot; style=&quot;endArrow=classic;html=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;lt_mon&quot; target=&quot;lt_decide&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
-        &lt;mxCell id=&quot;le2&quot; style=&quot;endArrow=classic;html=1;&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;lt_decide&quot; target=&quot;lt_apply&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;le1&quot; style=&quot;endArrow=classic;html=1;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;lt_mon&quot; target=&quot;lt_decide&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
+        &lt;mxCell id=&quot;le2&quot; style=&quot;endArrow=classic;html=1;rounded=0;fontSize=21&quot; edge=&quot;1&quot; parent=&quot;1&quot; source=&quot;lt_decide&quot; target=&quot;lt_apply&quot;&gt;&lt;mxGeometry relative=&quot;1&quot; as=&quot;geometry&quot; /&gt;&lt;/mxCell&gt;
 
-        &lt;mxCell id=&quot;lt_note&quot; value=&quot;Note: PrfaaS cluster size N_prfaas is treated as cap-ex constant in this model. Long-term cluster up/down-scaling lives outside this loop (cross-DC capacity planning).&amp;#10;Only N_p / N_d shifts occur within minutes; t shifts occur at minute or sub-minute cadence.&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#d6b656;dashed=1;fontSize=15;fontStyle=2;align=left;verticalAlign=top;&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
+        &lt;mxCell id=&quot;lt_note&quot; value=&quot;Note: PrfaaS cluster size N_prfaas is treated as cap-ex constant in this model. Long-term cluster up/down-scaling lives outside this loop (cross-DC capacity planning).&amp;#10;Only N_p / N_d shifts occur within minutes; t shifts occur at minute or sub-minute cadence.&quot; style=&quot;rounded=0;whiteSpace=wrap;fillColor=none;strokeColor=#d6b656;dashed=1;fontSize=14;fontStyle=2;align=left;verticalAlign=top;html=1&quot; vertex=&quot;1&quot; parent=&quot;1&quot;&gt;
           &lt;mxGeometry x=&quot;80&quot; y=&quot;620.0&quot; width=&quot;1340&quot; height=&quot;100&quot; as=&quot;geometry&quot; /&gt;
         &lt;/mxCell&gt;
 
@@ -862,13 +863,20 @@ footer {
 <tr><td style="text-align:left"><b>产消平衡</b></td><td style="text-align:left">Eq.(8)</td><td style="text-align:left">消费 (PD-D) 慢于生产则 prefill stall, 反之则 decode 空转</td></tr>
 </tbody>
 </table></div>
-<p><b>3c. Assumption Audit</b></p>
+<p><b>3c. Assumption Audit</b> — 每条 assumption 必须锚定到 §3.0 的 step 编号 (per-critique chain anchor 强制规则)</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">ID</th><th style="text-align:left">假设</th><th style="text-align:left">攻击 §3.0 哪一步</th><th style="text-align:left">评估</th></tr></thead><tbody>
+<tr><td style="text-align:left"><b>A1</b></td><td style="text-align:left">prefill latency 与 KV 大小是"近二次 vs 线性"的稳定关系 → 因此 increasing t 一定降 Φ_kv</td><td style="text-align:left"><b>step 3 的 premise</b> (hybrid stack 的"再压一个数量级"依赖于 Φ_kv 在长 t 区间仍可控)</td><td style="text-align:left">✅ Eq.(3) 推导的关键; Table 5 mostly 验证, 但 128K 后 prefill latency 近指数增长, t 取太大时 PrfaaS 算力被吃掉</td></tr>
+<tr><td style="text-align:left"><b>A2</b></td><td style="text-align:left">log-normal(μ=9.9, σ=1.0, [128, 128K]) mean ~27K ≈ 真实负载</td><td style="text-align:left"><b>step 4 的 premise</b> (workload 是长上下文 long-tail)</td><td style="text-align:left">⚠️ ShareGPT 短聊天均值 1-2K, agentic 是多轮短增量 — 不同负载下 PrfaaS 收益曲线截然不同; 论文未给敏感性分析</td></tr>
+<tr><td style="text-align:left"><b>A3</b></td><td style="text-align:left">跨 DC 链路 100 Gbps 持续稳定可用</td><td style="text-align:left"><b>step 4 的 premise</b> (commodity Ethernet 兜底, 但流量需平稳)</td><td style="text-align:left">⚠️ VPC 抖动常见, 论文用"congestion monitoring + multi-conn TCP"缓解但未量化故障率</td></tr>
+<tr><td style="text-align:left"><b>A4</b></td><td style="text-align:left">出口带宽是唯一外部链路约束 (入口 prompt 体积可忽略)</td><td style="text-align:left"><b>step 1/2 的 premise</b> (Φ_kv 决定 B_out, 入口忽略)</td><td style="text-align:left">✅ 长 prompt 下: 27K tokens × ~2 bytes ≈ 50 KB, 比 KV 小 4 个数量级</td></tr>
+<tr><td style="text-align:left"><b>A5</b></td><td style="text-align:left">跨 cluster cache transfer 在 BW abundant 时真的有收益</td><td style="text-align:left"><b>step 4 的 conclusion</b> (dual-timescale 调度的 BW-abundant 分支)</td><td style="text-align:left">⚠️ 假设"PD 不命中而 PrfaaS 命中"的概率 + 跨簇复制后的 evict 责任都未定义, 实证未给</td></tr>
+</tbody>
+</table></div>
+<p><b>没有 step 锚定的"质疑"</b> = 自由发挥, 不算合格批判:</p>
 <ul>
-<li><b>A1</b>: prefill latency 与 KV 大小有"近二次 vs 线性"的稳定关系 → 因此 increasing t 一定降 Φ_kv。✅ Eq.(3) 推导的关键; 实测 (Table 5) 验证了 mostly 成立, 但 128K 后 prefill latency 增长更快, 需要警惕 t 取太大时 PrfaaS 实际算力被吃掉。</li>
-<li><b>A2</b>: log-normal(μ=9.9, σ=1.0, [128, 128K]) ≈ 真实负载; 平均 ~27K → 这是个相当<b>激进的长尾假设</b>, ShareGPT-style 中等聊天均值在 1-2K 量级。论文坦诚这只代表"long-context characteristic of real-world workloads", 但敏感性分析未给。⚠️</li>
-<li><b>A3</b>: 跨 DC 链路稳定 (100 Gbps 持续可用) → 现实中 VPC 抖动并不少见, 论文用"congestion monitoring + multi-conn TCP"作为缓解但没量化故障率。⚠️</li>
-<li><b>A4</b>: 出口带宽是唯一外部链路约束 → 隐含假设入口带宽（请求 prompt 进 PrfaaS）小到忽略。在长 prompt 场景下成立: 27K tokens × ~2 bytes ≈ 50 KB, 比 KV 小 4 个数量级。✅</li>
-<li><b>A5</b>: 跨 cluster cache transfer 在 BW abundant 时<b>真的有收益</b> → 假设 PD 集群已经不命中而 PrfaaS 命中, 实证未给; 跨 cluster 复制 prefix 后, 谁负责 evict 也未定义。⚠️</li>
+<li>❌ "PrfaaS 不能扩到 1 万 GPU" — 没说攻击哪步; 真实攻击点应是 step 4 的 premise (调度算法在 1 万规模下是否仍可承载, 论文未做规模实验)。</li>
+<li>❌ "等成本下提升只有 15%" — 这是事实陈述不是假设质疑; 应改为"step 5 的 conclusion 在等成本约束下被显著弱化, 经济性论点退化为 P90 TTFT 改善"。</li>
 </ul>
 <p><b>3d. Core Technical Barrier — 系统侧最难复刻的一招</b></p>
 <blockquote><b>不是 hybrid attention（开源模型给了）, 不是 throughput model（数学很优雅但好懂）, 真正难的是 dual-timescale 调度里"跨 cluster prefix matching + BW-aware fallback"的一致性维护</b>。</blockquote>
@@ -877,12 +885,27 @@ footer {
 <p>2. 每个 cluster 必须主动 push BW utilization 到调度器, 否则 BW-scarce 判定会滞后</p>
 <p>3. 当 metadata 服务和实际状态短暂 inconsistent 时, fallback 不能踩雷（比如把请求路由到一个 prefix 已被 evict 的 cluster）</p>
 <p>Mooncake 已经做过单 DC 的 KVCache pool, 但跨 DC 的版本论文没开源——这是<b>真正的工程门槛</b>。</p>
-<p><b>3e. Design Binding Critique</b></p>
+<p><b>3e. Design Binding Critique</b> — 每条 binding 必须 (a) 锚定到 §3.0 的 step k, (b) 标注 load-bearing 还是 decorative, (c) 通过 Ecosystem Reality Check 双门 (Term gate + Plausibility gate)</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Binding</th><th style="text-align:left">攻击 §3.0 哪一步</th><th style="text-align:left">Load-bearing?</th><th style="text-align:left">Term gate (论文术语 vs 通俗)</th><th style="text-align:left">Plausibility gate (近 12 月 ≥2 个 production 案例)</th><th style="text-align:left">Beta</th></tr></thead><tbody>
+<tr><td style="text-align:left"><b>B1</b>: 绑定 hybrid stack (linear+full 交替)</td><td style="text-align:left"><b>step 3</b></td><td style="text-align:left"><b>load-bearing</b> (整个 PrfaaS 论点的存活基石)</td><td style="text-align:left">论文 "hybrid" = linear+full 交替 (Table 1: Kimi Linear / MiMo-V2-Flash / Qwen3.5 / Ring-2.5-1T 都是); ≠ 通俗"hybrid model"</td><td style="text-align:left">✅ Kimi K2 / Qwen3.5 / MiMo-V2 / Ring-2.5-1T / Nemotron-3 Nano / GPT-OSS-120b 已 ship</td><td style="text-align:left">medium</td></tr>
+<tr><td style="text-align:left"><b>B2</b>: 绑定 layer-wise prefill pipelining</td><td style="text-align:left"><b>step 3 的实现细节 + step 4 的 conclusion</b></td><td style="text-align:left">load-bearing (无 pipelining 则 BW utilization 塌陷, Eq.3 失效)</td><td style="text-align:left">"layer-wise pipelining" 同义于 vLLM hybrid manager 的 layer-stream API</td><td style="text-align:left">✅ vLLM 已实现 (Reference [28]), SGLang/Dynamo 适配中</td><td style="text-align:left">low</td></tr>
+<tr><td style="text-align:left"><b>B3</b>: 绑定 SLO 不变假设 (T_decode, BS_max 常数)</td><td style="text-align:left"><b>step 5 的 premise</b> (案例数字基于固定 SLO)</td><td style="text-align:left">decorative (换 workload 重新 profile 即可, 不破坏 main claim)</td><td style="text-align:left">"SLO" = 40 tok/s decode 的 throughput 目标, 跟通俗 SLA 同义</td><td style="text-align:left">n/a — 这是建模简化, 不是生态依赖</td><td style="text-align:left">n/a</td></tr>
+<tr><td style="text-align:left"><b>B4</b>: 绑定 cluster-internal 同构硬件</td><td style="text-align:left"><b>step 4 的 premise</b> ("each cluster contains only homogeneous hardware")</td><td style="text-align:left">decorative (允许 cluster 边界异构即够 PrfaaS 论点; 簇内异构是另一篇论文的事)</td><td style="text-align:left">论文明确说"homogeneous hardware within each cluster"</td><td style="text-align:left">n/a — 这是论文设计 scope 的主动选择</td><td style="text-align:left">n/a</td></tr>
+<tr><td style="text-align:left"><b>B5</b>: 绑定 100 Gbps 跨 DC 链路</td><td style="text-align:left"><b>step 1/4 的 premise</b></td><td style="text-align:left">load-bearing 但宽松 (论文已 demo 13 Gbps avg, 占 13%)</td><td style="text-align:left">"commodity Ethernet" = VPC peering or dedicated lines, 跟通俗 inter-DC link 同义</td><td style="text-align:left">✅ AWS/Azure/GCP VPC peering 标配, Moonshot 自有专线</td><td style="text-align:left">low</td></tr>
+</tbody>
+</table></div>
+<p><b>B1 真正的失效路径</b> (按 step 3 锚定 + Ecosystem Reality Check 通过):</p>
 <ul>
-<li><b>PrfaaS 强制绑定 hybrid stack (linear+full 交替), 而不是泛泛的"非 dense"</b>: 一个常见误解是"PrfaaS 绑定 hybrid attention, 一旦回归 dense 就失效"——但事实上 dense MHA 早已被 GQA/MQA/MLA 全面替代, "回归 dense"不是真问题。论文里所谓 "dense" baseline (MiniMax-M2.5, Qwen3-235B) 本身就是 GQA, 在 32K 时仍然吐 33-60 Gbps, <b>GQA/MLA 自身的压缩还不够跨 DC</b>。PrfaaS 真正绑定的是 "hybrid stack 把 KV 在 GQA/MLA 之上再压一个数量级"——Kimi Linear 的 3:1 KDA:MLA 把 KV 再压 ~8×, Ring-2.5-1T 的 7:1 Lightning:MLA 在 MLA 已有 4.5× 压缩之上再叠 ~8×, 累计 36×。一旦这条 hybrid stack 路线被某种更激进的方案 (e.g. native sparse attention 突破到既低 prefill 又压 KV; 模型级 KV 量化突破到 2-bit/1-bit; 或纯状态空间模型 Mamba/RWKV 完全替代 transformer) 取代, PrfaaS 的"刚好够用"窗口可能再次错位。这是 hybrid stack 的 medium-beta 赌注, 不是 dense 的 high-beta 赌注。</li>
-<li><b>强制绑定层级 prefill pipelining</b>: Eq.(3) 假设 layer-wise pipelining 已实现, 否则 transfer 与 prefill 不能 overlap, BW utilization 会塌陷。这要求 vLLM/SGLang 等推理引擎在 layer 边界暴露 KV 钩子——已经是 vLLM hybrid manager 的能力, 但其他引擎需要适配。</li>
-<li><b>强制绑定 SLO 不变假设</b>: T_decode 和 BS_max 被建模成常数, 但实际 BS_max 受 paged KV 内存碎片影响, T_decode 受 batch 内长度方差影响。换工作负载或换模型时要重新 profile, 不是 turnkey。</li>
-<li><b>绑定 cluster-internal 仍是同构硬件</b>: 论文明确说"each cluster contains only homogeneous hardware"; 这意味着跨 cluster 异构、簇内仍然要批量采购同型号 GPU, 灵活性来自 cluster 边界而非节点边界。</li>
+<li>1-2 年窗口风险来自: native sparse attention 突破 (Term: 真正 prefill+KV 双降, 非 Reference [6] 的 sparse) — 当前 NSA / TokenFormer 等仍 experimental, <b>目前 0 production case</b>, low plausibility</li>
+<li>模型级 KV 量化突破到 2-bit/1-bit: KIVI / KVQuant 已到 2-bit 但 quality 损失非 negligible, <b>0 production deployment</b> at 2-bit yet, low plausibility</li>
+<li>Mamba/RWKV 全替代 transformer: <b>0 flagship production model</b> 走纯 SSM 路线 (Mamba-2 / RWKV-7 都是研究阶段), low plausibility</li>
+</ul>
+<p><b>结论</b>: B1 是 <b>medium-beta + 1-2 年窗口安全</b> 的赌注, 不是高 beta 风险。早先的 "若 dense 回归" 表述违反了 Term gate (论文 dense ≠ 通俗 MHA) 和 Plausibility gate (MHA 已自 Llama-3 全消失), 是稻草人 — 已删除。</p>
+<p><b>没有 step 锚定的"绑定批判"反例</b> (避免再犯):</p>
+<ul>
+<li>❌ "PrfaaS 强绑定单云厂商" — 没攻击 §3.0 任何步; 是发挥, 不是论文论点上的真实绑定</li>
+<li>❌ "PrfaaS 不支持 multi-tenant" — 攻击的是 §8 API & Usability 一段话, 不在 §3.0 论证链上, 应放到 8 节而非 binding critique</li>
 </ul>
 <h3>4. Key Innovations</h3>
 <div class="table-wrap"><table class="md-table">
@@ -1004,13 +1027,14 @@ footer {
 <p>4. 与现有 LB / API gateway 的集成</p>
 <p>---</p>
 <h2 id="open-questions">Open Questions</h2>
+<p>每条 open question 标注它对应论证链的哪一步:</p>
 <ul>
-<li>若 hybrid stack 路线被替代 (native sparse attention 突破 / 模型级 2-bit KV 量化 / Mamba/RWKV 全替代 transformer), PrfaaS 的"刚好够用"窗口是否会再次错位?</li>
-<li>Cross-DC 链路抖动 / 中断时的 fallback 实现细节: transfer-cache 是否会触发 prefill 重做? PD-D 等待超时如何处理?</li>
-<li>t 与 N_p/N_d 的实时调整算法收敛性: 是否会出现"PrfaaS 队列爆 → 提高 t → 短请求被踢回 PD-P → PD-P 撞墙 → 降低 t"的振荡?</li>
-<li>PrfaaS 在多租户场景下的隔离保证 (跨租户 prefix cache 命中是否是隐私风险)?</li>
-<li>全局 KVCache manager 自身的可用性 / 一致性方案: Raft? gossip? 单点容灾如何做?</li>
-<li>等成本 (按 USD) 下相对同构 PD 的真实优势是 ~15% 而非 54%——这个 ROI 是否足以推动企业改造现有 PD 部署?</li>
+<li>[step 3 premise · medium-beta] 若 hybrid stack 路线被替代 (native sparse attention 突破 / 模型级 2-bit KV 量化 / Mamba/RWKV 全替代 transformer), PrfaaS 的"刚好够用"窗口是否会再次错位?</li>
+<li>[step 4 premise A3] Cross-DC 链路抖动 / 中断时的 fallback 实现细节: transfer-cache 是否会触发 prefill 重做? PD-D 等待超时如何处理?</li>
+<li>[step 4 conclusion] t 与 N_p/N_d 的实时调整算法收敛性: 是否会出现"PrfaaS 队列爆 → 提高 t → 短请求被踢回 PD-P → PD-P 撞墙 → 降低 t"的振荡?</li>
+<li>[§8 范畴, 不在 §3.0 论证链上] PrfaaS 在多租户场景下的隔离保证 (跨租户 prefix cache 命中是否是隐私风险)? — 这是论文 scope 之外的问题, 不构成对论证链的攻击, 但是工程化必答题</li>
+<li>[§3d Core Technical Barrier · 不在 §3.0 论证链上] 全局 KVCache manager 自身的可用性 / 一致性方案: Raft? gossip? 单点容灾如何做? — 这是 barrier 的展开, 不削弱论证, 是工程深水</li>
+<li>[step 5 conclusion 的边界] 等成本 (按 USD) 下相对同构 PD 的真实优势是 ~15% 而非 54%——这个 ROI 是否足以推动企业改造现有 PD 部署?</li>
 </ul>
 </div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>

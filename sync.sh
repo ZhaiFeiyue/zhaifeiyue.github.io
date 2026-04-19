@@ -468,27 +468,71 @@ def compact_drawio_xml(drawio_path, max_row_gap=20):
         return ('container=1' in s or 'swimlane' in s
                 or s.startswith('group') or 'group;' in s)
 
-    # ---- font-size scaling pass ----
-    # LLM-authored drawios commonly use fontSize=9-12pt, which renders very
-    # small once the diagram is scaled to fit a 1000px-wide page (CSS
-    # aspect-ratio + width:100%). Scale every fontSize by FONT_SCALE,
-    # enforce a floor, and inject a default for cells with no fontSize set.
+    # ---- per-cell style normalisation pass ----
+    # 1. Strip rounded corners (rounded=1 → rounded=0): user prefers crisp,
+    #    technical-document boxes.
+    # 2. Force whiteSpace=wrap;html=1 so long lines actually wrap inside
+    #    cells instead of overflowing.
+    # 3. Scale fontSize ×1.5 (min 13pt) for legibility…
+    # 4. …but CAP each cell's fontSize so the longest line of its text
+    #    does not exceed cell width. Estimate char width ≈ 0.55 × fontSize
+    #    (works for mixed CJK + ASCII).
     FONT_SCALE = 1.5
     FONT_MIN = 13
-    FONT_DEFAULT = 14   # drawio's untouched default is 12
+    FONT_DEFAULT = 14
+    CHAR_W_RATIO = 0.55   # avg width / fontSize for our CJK+ASCII mix
+
+    def _set_or_replace(style, key, value):
+        """Replace 'key=...' or append 'key=value;' if absent."""
+        if re.search(rf'(?:^|;){re.escape(key)}=', style):
+            return re.sub(rf'((?:^|;){re.escape(key)}=)[^;]*',
+                          rf'\g<1>{value}', style)
+        sep = ';' if (style and not style.endswith(';')) else ''
+        return f'{style}{sep}{key}={value}'
+
     for c in root.iter('mxCell'):
         s = c.get('style') or ''
-        if not s and not c.get('value'):
+        value = c.get('value') or ''
+        if not s and not value:
             continue
-        m = re.search(r'(fontSize=)(\d+)', s)
-        if m:
-            new_size = max(int(int(m.group(2)) * FONT_SCALE), FONT_MIN)
-            s = s[:m.start(2)] + str(new_size) + s[m.end(2):]
-            c.set('style', s)
-        elif c.get('value'):
-            # No explicit fontSize → inject default
-            sep = ';' if (s and not s.endswith(';')) else ''
-            c.set('style', f'{s}{sep}fontSize={FONT_DEFAULT};')
+
+        # (1) strip rounded corners — applies to both vertices and edges
+        s = _set_or_replace(s, 'rounded', '0')
+
+        is_text_cell = bool(value)
+
+        # (2) wrap long text inside the cell
+        if is_text_cell:
+            s = _set_or_replace(s, 'whiteSpace', 'wrap')
+            s = _set_or_replace(s, 'html', '1')
+
+        # (3) scale fontSize, with floor
+        fm = re.search(r'fontSize=(\d+)', s)
+        orig_fs = int(fm.group(1)) if fm else FONT_DEFAULT
+        scaled_fs = max(int(orig_fs * FONT_SCALE), FONT_MIN)
+
+        # (4) cap by cell width if available + text exists
+        if is_text_cell:
+            g = c.find('mxGeometry')
+            if g is not None:
+                try:
+                    w = float(g.get('width', 0))
+                    if w > 0:
+                        # longest "logical" line length (split on \n, ignore HTML <br>)
+                        plain = re.sub(r'<br\s*/?>', '\n', value)
+                        plain = re.sub(r'<[^>]+>', '', plain)
+                        longest = max((len(line) for line in plain.split('\n')),
+                                      default=0) or 1
+                        # available width minus 8pt internal padding both sides
+                        max_fs_for_width = max(int((w - 16) / (longest * CHAR_W_RATIO)),
+                                               FONT_MIN)
+                        scaled_fs = min(scaled_fs, max_fs_for_width)
+                        scaled_fs = max(scaled_fs, FONT_MIN)
+                except (TypeError, ValueError):
+                    pass
+
+        s = _set_or_replace(s, 'fontSize', str(scaled_fs))
+        c.set('style', s)
 
     for page in root.findall('.//diagram'):
         # 1. Collect inner-cell intervals; track containers separately so
