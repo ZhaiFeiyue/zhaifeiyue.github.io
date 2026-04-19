@@ -109,6 +109,7 @@ footer {
 NAV_HTML = """<nav>
   <a class="logo" href="/">Feiyue Zhai</a>
   <a href="/">Papers</a>
+  <a href="/knowledge-graph.html">Graph</a>
   <a href="/float.html">Tools</a>
   <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
 </nav>"""
@@ -732,5 +733,8 @@ for p in papers:
 
 print("Sync complete.")
 PYEOF
+
+# Regenerate the interactive knowledge graph (reads ~/.cursor/paper-db/papers.json)
+python3 "$SITE_DIR/tools/build_knowledge_graph.py"
 
 echo "Done."
