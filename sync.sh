@@ -35,7 +35,7 @@ if [ -f "$PAPER_DB/tools/dedupe_images.py" ]; then
 fi
 
 python3 - "$PAPER_DB" "$SITE_DIR" << 'PYEOF'
-import json, os, sys, re, html, base64, mimetypes, shutil
+import json, os, sys, re, html, base64, mimetypes, shutil, hashlib
 from pathlib import Path
 
 DB_DIR = sys.argv[1]
@@ -558,6 +558,34 @@ for p in papers:
         break
     summary_md = '\n'.join(summary_lines[skip:])
 
+    def _dedup_cross_section_figures(summary_html, details_html):
+        """Replace 2nd+ occurrence of an identical base64 image with a
+        compact "↑ see above" pointer. Operates across summary AND details
+        because notes frequently re-reference Key Figures inside Deep
+        Analysis. Preserves the <h3>Figure N: ...</h3> heading + caption
+        text so the deep-analysis prose still has its anchor."""
+        seen = {}  # b64_hash -> first_figure_label_seen
+        fig_pattern = re.compile(
+            r'<figure><img\s+src="data:image/(?:png|jpeg|gif);base64,([A-Za-z0-9+/=]+)"\s+alt="([^"]*)"[^>]*>'
+            r'(<figcaption>([^<]*)</figcaption>)?</figure>'
+        )
+        # First pass over summary establishes "first seen" mapping
+        def repl(m):
+            b64, alt, _, caption = m.group(1), m.group(2), m.group(3), m.group(4)
+            h = hashlib.md5(b64.encode()).hexdigest()
+            if h not in seen:
+                seen[h] = alt or caption or ""
+                return m.group(0)
+            label = seen[h] or "image"
+            return (f'<div class="fig-ref">'
+                    f'<span class="fig-ref-arrow">↑</span> '
+                    f'<em>{html.escape(label)}</em> '
+                    f'<span class="fig-ref-note">(see above)</span>'
+                    f'</div>')
+        summary_html = fig_pattern.sub(repl, summary_html)
+        details_html = fig_pattern.sub(repl, details_html)
+        return summary_html, details_html
+
     def inject_images_inline(md_text, paper_id):
         """Insert base64 images inline next to their figure descriptions."""
         img_paper_dir = os.path.join(IMG_DIR, paper_id)
@@ -603,8 +631,17 @@ for p in papers:
                             break
 
                 if matched_file:
-                    next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
-                    if not next_line.startswith('!['):
+                    # Look at the next NON-EMPTY line — empty lines between
+                    # the heading and the image link are common markdown style
+                    # and must not trigger a duplicate auto-injection.
+                    has_existing_link = False
+                    for la in lines[i + 1:i + 6]:
+                        s = la.strip()
+                        if not s:
+                            continue
+                        has_existing_link = s.startswith('![')
+                        break
+                    if not has_existing_link:
                         data = img_to_base64(paper_id, matched_file)
                         if data:
                             label = matched_file.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ')
@@ -622,6 +659,13 @@ for p in papers:
 
     summary_html = restore_drawio(sanitize_html(md_to_html(summary_md, paper_id=pid)), summary_drawio)
     details_html = restore_drawio(sanitize_html(md_to_html(details_md, paper_id=pid)), details_drawio) if details_md else ""
+
+    # Cross-section image dedup: notes commonly reference the same figure
+    # in `## Key Figures` AND inside `## Deep Analysis`. Render the binary
+    # only ONCE per paper; subsequent <figure><img> blocks become a slim
+    # "↑ Figure N (see above)" pointer that preserves the surrounding text.
+    summary_html, details_html = _dedup_cross_section_figures(
+        summary_html, details_html)
 
     has_drawio = bool(summary_drawio or details_drawio)
     drawio_script = DRAWIO_BOOTSTRAP_JS if has_drawio else ""
@@ -712,6 +756,18 @@ for p in papers:
   font-size: 0.8rem; color: var(--mt); margin-top: 6px;
   font-style: italic;
 }}
+.content .fig-ref {{
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; margin: 8px 0;
+  background: #f1f5f9; border-radius: 6px;
+  font-size: 0.85rem; color: var(--mt);
+}}
+.content .fig-ref-arrow {{
+  font-weight: 700; color: #2563eb;
+}}
+.content .fig-ref-note {{
+  font-size: 0.75rem; opacity: 0.7;
+}}
 .md-table {{
   width: 100%; border-collapse: collapse; margin: 12px 0;
   font-size: 0.85rem;
@@ -763,5 +819,16 @@ PYEOF
 
 # Regenerate the interactive knowledge graph (reads ~/.cursor/paper-db/papers.json)
 python3 "$SITE_DIR/tools/build_knowledge_graph.py"
+
+# Post-sync auto-dedup: scrub duplicate base64 image embeds from any
+# rendered HTML (paper pages and LLM-written reader HTMLs alike).
+python3 "$SITE_DIR/tools/dedupe_html_images.py" --all >/dev/null
+
+# Post-sync sanity: no published HTML may embed the same PNG twice.
+if ! python3 "$SITE_DIR/tools/check_published_dupes.py" "$SITE_DIR"; then
+  echo
+  echo "❌ Published-page image deduplication check failed."
+  exit 1
+fi
 
 echo "Done."
