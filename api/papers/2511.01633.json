@@ -1,0 +1,83 @@
+{
+  "id": "2511.01633",
+  "title": "Scaling Graph Chain-of-Thought Reasoning: A Multi-Agent Framework with Efficient LLM Serving",
+  "authors": [
+    "Chengying Huan",
+    "Ziheng Meng",
+    "Yongchao Liu",
+    "Zhengyi Yang",
+    "Shipeng Li",
+    "Xiabao Wu",
+    "Haitao Zhang",
+    "Yue Yun",
+    "Yun Zhu",
+    "Shaonan Ma",
+    "Rong Gu",
+    "Chuntao Hong",
+    "Guihai Chen",
+    "Chen Tian"
+  ],
+  "date": "2025-11",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2511.01633",
+  "category": "framework",
+  "secondary_tags": [
+    "agent",
+    "graph-cot",
+    "kv-cache",
+    "multi-agent",
+    "serving",
+    "prefix-caching"
+  ],
+  "core_contribution": "GLM is the first multi-agent Graph-CoT system co-designed with a Graph-CoT-aware LLM serving stack (vertex-centric KV reuse + four-tier priority eviction + RetrieveNode/decode pipeline), reducing token cost by 95.7%, latency by 90.3%, and boosting throughput 15.1x while lifting Graph-CoT accuracy by up to 38%.",
+  "summary": "Graph-CoT augments LLMs with iterative graph retrieval for structured multi-hop reasoning, but existing single-agent pipelines pay heavy token/latency costs (40k+ tokens, $3+ per query, 30s+ latency) while accuracy stalls below the 0.50 reliability threshold due to the lost-in-the-middle effect; serving-side, vLLM prefix caching only hits ~61%, LRU evicts to-be-reused graph facts, and vector retrieval is fully serialized. GLM jointly redesigns both layers: (1) decomposes the monolithic agent into a Classification Agent (deterministic vs. non-deterministic routing), a Reasoning Agent that operates on an incrementally-built notebook, an Action Agent that generates executable Python snippets (collapsing k1 LLM rounds into k2+1), and a Graph-RAG Retriever exposing {RetrieveNode, NodeInfo, NodeFeature, NodeDegree, neighbourCheck}; (2) introduces a Graph-CoT-aware serving stack with a vertex-centric KV reuse unit (a node plus its top-k neighbours forms a stable, nameable cache key), a four-tier priority eviction policy (shared prompt prefix P-I permanently kept, active notebook P-II, archived notebook P-III, transient missing-info P-IV, LRU within each tier), and a pipelined execution strategy that streaming-detects the RetrieveNode line in Action-Agent output to trigger asynchronous retrieval overlapping with decode, plus an LRU text->nodeID cache. On GRBench (1040 QA across 5 domains), GLM improves R-L from 0.31-0.46 to 0.55-0.77 (peak +38%), cuts per-query cost from $1.7-$3.6 to $0.1-$0.2, reduces latency from 11.3-38.6s to 2.8-5.9s, and achieves 6.8-9.1 QPS vs. 0.6-2.2 QPS (up to 15.1x).",
+  "key_findings": [
+    "Multi-agent decomposition beats longer CoT: splitting classify/reason/act eliminates lost-in-the-middle, driving unexpected-agent-output errors from 41% to 2% and step-limit errors from 37% to 4%.",
+    "Code-generation Action Agent collapses k1 LLM rounds into k2+1 (avg LLM calls per query: 9-14 -> 2-3; per-call tokens: 1875-4483 -> 769-991).",
+    "Vertex chunk (node + top-k neighbours) as the KV reuse unit is the single biggest lever: +17.7% hit rate and +41.6% throughput from this alone.",
+    "LRU is a reverse signal in Graph-CoT: the most-recently-generated A-Agent suffix is the least reusable; semantic priority (shared-prefix > notebook > archived-notebook > transient) beats vLLM single-queue LRU by +14.3% throughput / -15.1% miss.",
+    "RetrieveNode almost always appears as the first line of Action-Agent snippets, enabling deterministic (not speculative) overlap with decode; pipeline alone cuts latency by 47.8%.",
+    "Accuracy gains concentrate on information-aggregation multi-hop tasks (E-commerce R-L 0.39->0.77, Healthcare 0.33->0.62) rather than single-fact lookups (Legal 0.46->0.63).",
+    "Code generation is not free lunch: code-execution errors jump from 2% to 21%, requiring a timeout + self-correction fault-tolerance loop."
+  ],
+  "limitations": [
+    "Accuracy ceiling bounded by backbone LLM capacity (Qwen3-235B-A22B); requires distillation/LoRA/structure-aware prompting to decouple.",
+    "Retrieval remains dominant bottleneck on very large graphs (e.g. Legal 84M nodes) where retrieval exceeds decode window, weakening pipeline gains.",
+    "Code-execution error becomes the new dominant failure mode (48% of errors); mitigation via self-correction is heuristic, no systematic verifier.",
+    "Priority eviction and streaming RetrieveNode hook depend on non-standard vLLM v0.8.5 APIs; porting to SGLang/TRT-LLM requires rework.",
+    "C-Agent deterministic/non-deterministic classifier not quantified (no FP/FN reported); distribution shift could silently degrade.",
+    "Vertex chunk top-k neighbour truncation (by degree) may drop low-degree but query-relevant neighbours.",
+    "Notebook has no compression policy; very long multi-hop sessions may inflate Priority-II cache."
+  ],
+  "infra_impact": {
+    "algorithm": "Provides a reusable classify/reason/act decomposition recipe for agentic RAG; applicable to KGQA, structured information extraction, and task planning; can serve as an environment template for agentic RL (GRPO-style).",
+    "kernel": "N/A — no new kernels; all wins come from scheduler/cache management on top of vLLM paged attention.",
+    "framework": "Major contribution: introduces semantic priority KV eviction (replacing pure LRU) and retrieval-aware deterministic pipelining as generalizable primitives for multi-agent serving; direct relevance to vLLM / SGLang prefix-caching policy and multi-agent session APIs.",
+    "llm": "No model modifications; multi-agent decomposition alleviates long-context lost-in-the-middle pressure, offering an alternative to raw context-window scaling.",
+    "agent": "Formalizes the idea that agent boundaries equal KV-priority boundaries; turns multi-agent from prompt engineering into serving-system primitives; relevant to LangGraph / AutoGen / MetaGPT style orchestrators.",
+    "cluster": "N/A — single-node (8x A800 NVLink); no networking or cross-node innovations.",
+    "hardware": "N/A — hardware-agnostic.",
+    "code": "~3K Python + vLLM v0.8.5 fork; priority-eviction + streaming hook patches could become an upstream RFC to vLLM/SGLang for multi-agent session support."
+  },
+  "related_paper_ids": [
+    "2504.20068",
+    "2507.07400",
+    "2509.02121",
+    "2601.22705",
+    "2603.16104",
+    "2505.05286",
+    "2601.12967",
+    "2602.21548",
+    "2602.21477",
+    "2510.17015"
+  ],
+  "open_questions": [
+    "Does the RetrieveNode-first-line assumption hold across different backbones and coding styles?",
+    "Can priority tiers be learned online from runtime hit/miss logs rather than hand-engineered?",
+    "How does the approach scale when distilled Action Agents (7B/13B) replace the 235B backbone while keeping code-execution reliable?",
+    "Can vertex chunk granularity be made adaptive per query (degree vs. semantic relevance vs. PageRank)?",
+    "Can the approach integrate with SGLang RadixAttention or Mooncake-style multi-tier global KV stores?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

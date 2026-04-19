@@ -1,0 +1,74 @@
+{
+  "id": "2504.20068",
+  "title": "JITServe: SLO-aware LLM Serving with Imprecise Request Information",
+  "authors": [
+    "Wei Zhang",
+    "Zhiyu Wu",
+    "Yi Mu",
+    "Rui Ning",
+    "Banruo Liu",
+    "Nikhil Sarda",
+    "Myungjin Lee",
+    "Fan Lai"
+  ],
+  "date": "2025-04",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2504.20068",
+  "category": "framework",
+  "secondary_tags": [
+    "slo-aware",
+    "llm-serving",
+    "scheduling",
+    "goodput",
+    "agent-serving",
+    "length-prediction",
+    "competitive-ratio"
+  ],
+  "core_contribution": "First SLO-aware LLM serving system that maximizes service goodput across latency/deadline/compound workloads by using conservative quantile upper-bound length predictions (QRF) plus pattern-graph dependency matching, scheduled by a Grouped Margin Goodput Maximization (GMAX) algorithm with a provable ~1/8.55 competitive ratio against the optimal oracle.",
+  "summary": "JITServe targets the growing diversity of LLM workloads (streaming chat, deadline-sensitive agent tool calls, and compound multi-stage requests such as deep research and multi-agent systems) where existing schedulers optimizing aggregate throughput (vLLM FCFS, Sarathi-Serve) or mean E2EL (Autellix LAS, LTR SJF) fail to satisfy per-request SLOs — the paper proves SJF and EDF have arbitrarily bad competitive ratios against an oracle and that the underlying optimal scheduling is NP-hard (Multiple Knapsack reduction). Its approach accepts that precise response-length and dependency prediction is infeasible (BERT/Llama3 predictors systematically under-predict) and instead uses a Quantile Regression Forest to produce a high-quantile upper bound on length in 7ms, re-invoked every 50 tokens for online refinement, plus a pattern-graph matcher (K-medoids + Gaussian kernel) that infers sub-deadlines for compound requests by a cumulative-share formulation phi(s) = t_<=s / t_total. The GMAX scheduler then prioritizes each request by margin goodput per unit bandwidth (Priority = goodput(r)/t_gen(r), invariant to frame size), applies top-p filtering to protect goodput floor, and uses an input-length sliding window of size B to jointly maximize goodput and batch homogeneity (critical because heterogeneous-length batches remain slow even with Flash Decoding). The system is built as a vLLM middleware with only a few API changes (deadline, target_tbt, target_ttft, waiting_time), offloads Request Analyzer to an async gRPC process, and proves a constant competitive ratio ~1/8.55 under delta=10% preemption threshold via credit-charging + preemption-chain amortization. On 16×A100 with Llama-3.1-8B/70B, Qwen2.5-14B, Qwen3-30B-MoE-A3B across chat/deep-research/agentic-codegen/math workloads and 10K+ requests per run, JITServe improves service goodput 1.4x-6.3x over vLLM/Sarathi-Serve/Autellix/LTR, saves 28.5%-83.2% resources for equivalent goodput, keeps throughput at 96-98% of Sarathi-Serve, and sits within 3-9% of an oracle with perfect foresight.",
+  "key_findings": [
+    "SJF and EDF scheduling have arbitrarily bad competitive ratios against the oracle; Appendix D.1 constructs adversarial workloads where OPT/SJF and OPT/EDF are unbounded.",
+    "Upper-bound length prediction (QRF P95) is 7x faster than BERT (7ms vs 49ms) and unlike point predictors never under-predicts, which is what makes SLO-safe scheduling possible.",
+    "Heterogeneous-length batches remain 20-40% slower per-token even with Flash Decoding, forcing GMAX to group by input length as a separate scheduling dimension orthogonal to goodput priority.",
+    "JITServe's two-step GMAX decoupling (top-p priority filter + input-length sliding window) admits a provable ~1/8.55 competitive ratio via credit-charging + preemption-chain amortization.",
+    "Experimentally within 3-9% of an oracle with perfect length+dependency knowledge, effectively ceiling-ing the value of better length predictors for goodput-oriented serving.",
+    "Beats Sarathi-Serve by 1.72x even on its home-turf latency-only workload, and matches Sarathi on raw throughput (96-98%), meaning scheduling sophistication does not cost throughput here."
+  ],
+  "limitations": [
+    "QRF requires historical prompt-to-response-length labeled data; cold-start accuracy on brand-new models or never-seen agent workflows is not quantified.",
+    "Pattern-graph matching degrades to uniform sub-deadline allocation on truly novel workflow structures with no similar historical graphs.",
+    "Evaluated only on 16xA100 + vLLM; no measurement on H100, MI300X/MI355X, SGLang, or TRT-LLM backends where TMA and dynamic shapes may weaken the batch-length-homogeneity assumption.",
+    "External SLOs are a mandatory input; the system does not infer deadlines from application context.",
+    "No discussion of multi-tenant fairness, billing model, or how conservative bandwidth reservation interacts with pricing tiers.",
+    "No integration with prefill-decode disaggregation (DistServe, MoonCake) where the frame-based bandwidth model needs to be rewritten across pools."
+  ],
+  "infra_impact": {
+    "algorithm": "Establishes goodput as a first-class scheduling objective and provides a pattern-graph + sub-deadline template that can inform online RL and agentic RL training systems.",
+    "kernel": "Does not require new kernels, but the finding that batch-length heterogeneity hurts even with Flash Decoding motivates future length-heterogeneous attention kernels.",
+    "framework": "Direct push to make SLO (deadline/target_tbt/target_ttft/waiting_time) a first-class API in vLLM/SGLang-style stacks, aligned with OpenAI-style request parameters.",
+    "llm": "Model-architecture agnostic (dense + MoE validated); but QRF accuracy depends on response-length distribution stability, which may degrade for reasoning models (o1/R1).",
+    "agent": "Largest incremental value: pattern-graph matching + cumulative-share sub-deadline allocation provides a native E2E deadline management primitive for multi-agent/deep-research workflows, previously absent.",
+    "code": "Minimal integration footprint (vLLM scheduler policy module + async gRPC analyzer); however the QRF training pipeline is not open-sourced, the primary reproduction barrier."
+  },
+  "related_paper_ids": [
+    "2507.07400",
+    "2601.12967",
+    "2602.21548",
+    "2601.22705",
+    "2602.13692",
+    "2603.16104",
+    "2505.05286",
+    "2511.01633",
+    "2602.21477"
+  ],
+  "open_questions": [
+    "How does QRF behave on reasoning models (o1/R1/DeepSeek-R1) where response length has heavy-tail variance and weak correlation with prompt features?",
+    "Can GMAX be extended to prefill-decode disaggregated serving (DistServe/MoonCake) where the frame-based bandwidth model needs cross-pool decomposition?",
+    "How should multi-tenant fairness and billing be folded into the Priority = goodput/t_gen formulation without breaking the competitive-ratio proof?",
+    "What is the QRF cold-start behavior for brand-new models, and can LLM-as-predictor or retrieval-augmented QRF provide a zero-shot fallback?",
+    "Does the batch-length-homogeneity benefit persist on H100/MI350 where TMA + dynamic shape reduce the penalty of mixed-length batches?",
+    "How does JITServe interact with KV-cache migration and mid-request failover (Llumnix/SpotServe-style)?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

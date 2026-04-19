@@ -1,0 +1,70 @@
+{
+  "id": "2604.15186",
+  "title": "Scepsy: Serving Agentic Workflows Using Aggregate LLM Pipelines",
+  "authors": [
+    "Marcel Wagenländer",
+    "Otto White",
+    "Britannio Jarrett",
+    "Pedro Silvestre",
+    "Yanda Tao",
+    "Guo Li",
+    "Huanzhou Zhu",
+    "Llúis Vilanova",
+    "Peter Pietzuch"
+  ],
+  "date": "2026-04",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2604.15186",
+  "category": "framework",
+  "secondary_tags": [
+    "agentic-workflow",
+    "multi-LLM-serving",
+    "GPU-scheduling",
+    "fractional-GPU",
+    "topology-aware-placement",
+    "kubernetes"
+  ],
+  "core_contribution": "Scepsy introduces the Aggregate LLM Pipeline — an abstraction that exploits the empirical stability of each LLM's relative execution-time share across agentic workflow requests — to drive a joint (fractional-GPU, tensor-parallelism, replica-count) search with topology-aware placement, achieving up to 2.4× throughput and 27× lower latency than Kubernetes HPA, Aegaeon multiplexing, and Ayo on RAG+reranker and beam-search workloads.",
+  "summary": "Agentic workflows orchestrate multiple heterogeneous LLMs and tools with data-dependent control flow (branches, fan-out, loops), making their end-to-end latency highly unpredictable and causing severe GPU oversubscription on small-to-medium self-managed clusters. Existing approaches fall short: per-LLM autoscaling (K8s HPA, AIBrix) oscillates because it ignores inter-LLM coupling; multi-LLM multiplexing (AlpaServe, MuxServe, Aegaeon) uses fixed strategies ignoring workflow structure; workflow-aware systems (Parrot, Ayo, Autellix, JITServe) are restricted to single-LLM workflows and/or DSL-based programming. Scepsy's insight is that while absolute latencies vary wildly, the *fractional share* each LLM contributes to total execution time is ~4× more stable than absolute values. It compresses every LLM into an Aggregate LLM Pipeline stage parameterized by average invocation count n_m, average parallelism p_m, and per-LLM throughput/latency curves, yielding closed-form workflow-level predictors L_w = Σ L_m(λ·n_m)·n_m/p_m and T_w = min T_m/n_m. A joint scheduler searches over (fractional-GPU, tensor-parallelism, replica-count) pruned by latency-ratio heuristics and high-bandwidth-domain constraints, and a hierarchical placement algorithm maps allocations onto NVLink domains via Kubernetes + an extended NVIDIA device plugin + MPS. On a 16-GPU A6000 cluster, Scepsy delivers 1.2-2.4× higher throughput and 1.3-27× lower latency than K8s HPA, 2.5-7.3× throughput and 3.4-14.1× latency gains over Aegaeon, and 2.1-8.2× higher peak throughput than Ayo — with scheduler search time <35s for typical cluster sizes and <70s projected for 128 GPUs.",
+  "key_findings": [
+    "Relative per-LLM execution-time share is ~4× more stable across workflow requests than absolute latencies — this empirical fact is the foundation of the entire Aggregate LLM Pipeline abstraction.",
+    "Simple analytical predictors (L_w, T_w) using aggregate statistics plus per-LLM T-L profiling give enough accuracy to drive GPU allocation decisions without re-simulating stochastic workflow execution.",
+    "Joint (fractional-GPU, tensor-parallelism, replica-count) search space is the minimal sufficient dimension set for co-optimizing throughput and latency; ablations show each dimension contributes differently per workload (fractional dominates RAG throughput gains; TP dominates beam-search latency gains).",
+    "Workflow-awareness at the allocation layer beats both workflow-agnostic multi-LLM multiplexing (Aegaeon) and single-LLM workflow-aware request scheduling (Ayo) — showing that these two optimization axes are complementary, not alternatives.",
+    "Topology-aware fractional placement is an engineering gap in existing GPU orchestrators; Scepsy fills it with an ahead-of-time hierarchical heuristic + extended NVIDIA device plugin + MPS isolation.",
+    "Large search spaces (~29M candidates for 5 LLMs × 16 GPUs × 10 fractions) become tractable via three pruning strategies — sort LLMs by latency ratio, contiguous allocation only, cap TP at high-bandwidth-domain size — reducing runtime to <35s."
+  ],
+  "limitations": [
+    "Aggregate Pipeline mis-models workflows where fan-out spans different LLMs (treats it as serial), over-estimating latency; discussion proposes overlap-tracking fix but not implemented.",
+    "Single-LLM bimodal load distributions (same LLM playing multiple roles or shared across workflows) are fitted by a single aggregate and mis-allocated; proposed pattern-classification fix is unimplemented.",
+    "Relies on the assumption that non-LLM tool execution time is <few ms — invalid for agents with long-running tools (web search, code execution, visual processing, RL rollouts).",
+    "Requires a 'representative trace' for initial profiling; no online drift detection or incremental re-profiling mechanism.",
+    "Evaluation is small-scale (16× A6000 with only 2-lane NVLink pair + PCIe4 + 100G IB), not representative of H100/NVSwitch clusters where tensor-parallelism search space is much larger; 128-GPU numbers are micro-benchmark extrapolation only.",
+    "Tensor parallelism is hard-capped at the high-bandwidth domain size, sacrificing large cross-domain TP configurations.",
+    "Isolation relies on NVIDIA MPS static SM/memory limits, with no explicit QoS guarantees against noisy-neighbor effects.",
+    "Ayo baseline uses an older vLLM v0.2 for compatibility, which may under-represent Ayo's performance."
+  ],
+  "infra_impact": {
+    "algorithm": "N/A — no new training/inference algorithm; indirectly enables production deployment of inference-time-scaling methods like beam search and MCTS by making them cost-effective on modest clusters.",
+    "kernel": "N/A — uses off-the-shelf vLLM/SGLang engines; no kernel modifications.",
+    "framework": "Direct impact — introduces a workflow-aware orchestration layer between Kubernetes control plane and vLLM/SGLang engines, pushing K8s device plugins toward first-class fractional + topology-aware GPU resource models; complements per-LLM autoscaling stacks (AIBrix, llm-d, vLLM Production Stack) as a drop-in scheduler.",
+    "llm": "N/A — model-architecture agnostic; supports any vLLM/SGLang-compatible model.",
+    "agent": "Core impact — provides a zero-code-change GPU auto-allocation runtime for LangChain / LangGraph / AutoGen / Camel agents, filling a critical gap in self-managed agentic deployment stacks; complements request-level schedulers (Autellix, JITServe) which handle priority but not LLM-level allocation.",
+    "cluster": "Introduces new scheduling requirements — fractional GPU × NVLink-domain placement — that Kubernetes schedulers and gang-schedulers (Kai-scheduler, Volcano) do not yet support natively.",
+    "code": "Reference implementation (~25K LoC Python) planned to be open-sourced post-acceptance at github.com/anon/Scepsy; structurally reusable by AIBrix / llm-d / vLLM Production Stack."
+  },
+  "related_paper_ids": [
+    "2602.21548",
+    "2601.12967"
+  ],
+  "open_questions": [
+    "How to extend Aggregate LLM Pipeline to bimodal load distributions when a single LLM plays multiple roles across or within workflows?",
+    "How to incorporate long-running non-LLM tools (web search, code execution, RL rollouts) as first-class stages in the pipeline model?",
+    "How should scheduler behavior adapt when production traffic drifts away from the profiling trace distribution?",
+    "Does the 'relative share stability' assumption hold for highly adaptive ReAct-style agents where each turn may trigger a completely different tool/LLM chain?",
+    "How does the search space and pruning behavior scale on H100/NVSwitch clusters where TP-domain size is much larger than A6000's 2-lane NVLink pair?",
+    "Can a two-layer scheduler combining Scepsy's allocation-level decisions with Autellix-style request-level priority deliver additional gains?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

@@ -1,0 +1,77 @@
+{
+  "id": "2507.07400",
+  "title": "KVFlow: Efficient Prefix Caching for Accelerating LLM-Based Multi-Agent Workflows",
+  "authors": [
+    "Zaifeng Pan",
+    "Ajjkumar Patel",
+    "Zhengding Hu",
+    "Yipeng Shen",
+    "Yue Guan",
+    "Wan-Lu Li",
+    "Lianhui Qin",
+    "Yida Wang",
+    "Yufei Ding"
+  ],
+  "date": "2025-07",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2507.07400",
+  "category": "framework",
+  "secondary_tags": [
+    "prefix-caching",
+    "kv-cache-management",
+    "multi-agent-serving",
+    "sglang-extension",
+    "scheduling"
+  ],
+  "core_contribution": "Workflow-aware KV cache management for multi-agent LLM serving: replaces LRU with steps-to-execution priorities over the radix tree (min aggregation on shared prefixes), adds proactive CPU-GPU prefetching and 4-state status-aware scheduling to fully overlap PCIe transfer with GPU compute.",
+  "summary": "KVFlow observes that the standard LRU eviction policy used by SGLang/vLLM misbehaves in cyclic or sequential agentic workflows, because the 'most recently used' agent is exactly the one about to execute next. It introduces the Agent Step Graph abstraction where each agent node is assigned a step aggregation function (max+1 for AND-join, min+1 for OR-branch) that unifies DAG, cycle, and conditional branch topologies and computes each agent's steps-to-execution (STE). These STE values are propagated down to individual KV nodes in the radix tree using min aggregation for shared prefixes, enabling fine-grained eviction that preserves soon-to-be-reused entries. On top of that, KVFlow adds proactive CPU-to-GPU prefetching that exploits PCIe full-duplex to overlap transfer with GPU compute, and a 4-state status machine (in-GPU, in-CPU, loading, offloading) with a status-aware scheduler that bypasses requests whose KV is still loading so the GPU never stalls. Implemented as a patch on SGLang v0.4.4, KVFlow achieves up to 1.83x speedup over SGLang+HiCache on single workflows with large (8192-token) prompts, and up to 2.19x over HiCache under 64 concurrent workflows (where HiCache itself regresses to 0.57x of plain SGLang due to reactive-load thrashing). The speedup scales with fixed-prompt length (1.28x at 4096 fixed, 1.48x at 8192 fixed) and diminishes when decode dominates runtime.",
+  "key_findings": [
+    "LRU is structurally wrong for cyclic/sequential agentic workflows: recency anti-correlates with next-use in workflow topologies.",
+    "Agent Step Graph with per-node aggregation functions (max+1 / min+1) uniformly handles DAG, cycle, and branch without separate graph-structure treatment.",
+    "KV-node-level priority with min aggregation resolves shared-prefix conflicts that agent-level priorities cannot handle.",
+    "PCIe full-duplex enables truly zero-contention overlap of CPU->GPU prefetch with GPU->CPU offload/sampling, previously untapped in prefix-cache systems.",
+    "Proactive prefetching alone is insufficient under high concurrency (prefetch slower than compute); a 4-state status machine + scheduler bypass is required.",
+    "Speedup scales linearly with fixed-prompt length (miss cost is O(n^2) prefill, load is O(n) PCIe), and shrinks as output length grows (decode dominates).",
+    "HiCache (SGLang's reactive CPU-cache extension) can regress below plain SGLang at high concurrency because reactive load-back disrupts the layer-by-layer pipeline."
+  ],
+  "limitations": [
+    "Assumes workflow graph is static and observable at request time; does not handle ReAct/Reflexion-style dynamic agent programs whose next agent is decided at runtime.",
+    "No CPU-side capacity management or secondary eviction; CPU memory can itself exhaust under very high concurrency.",
+    "Evaluation is single-GPU only; distributed/multi-node prefix-cache migration is not addressed.",
+    "Does not resolve the underlying SGLang KV fragmented layout; only better overlaps the sub-peak PCIe bandwidth.",
+    "Reports only average E2E latency; no TTFT/TPOT/P99 or tail-latency distribution.",
+    "Tight coupling to radix-tree cache, SGLang frontend (sgl.function), and the presence of CPU second-tier cache.",
+    "No ablation separating eviction-only vs prefetch-only vs scheduling contributions."
+  ],
+  "infra_impact": {
+    "algorithm": "Implies agentic-workflow autotuners (AFlow, Cognify) should co-design cache-friendly topologies with serving-layer priorities.",
+    "kernel": "N/A - pure cache/scheduler layer, no new kernels required; reuses SGLang attention.",
+    "framework": "Template for passing application-layer graph metadata into serving backends; natural candidate for vLLM v1 pluggable prefix-cache eviction policies.",
+    "llm": "Model-architecture agnostic (MHA/GQA/MLA all benefit); long-prompt agents benefit most due to larger KV footprint and higher miss cost.",
+    "agent": "Plug-in compatible with static-DAG frameworks (MetaGPT, AutoGen graph, LangGraph); requires on-the-fly graph extension for dynamic agents (ReAct, Reflexion).",
+    "cluster": "Single-node only today; cross-node STE propagation and workflow-aware routing are open follow-up directions.",
+    "code": "Implemented as an SGLang v0.4.4 patch touching radix-tree eviction, request scheduler, and frontend HTTP metadata; not yet merged upstream."
+  },
+  "related_paper_ids": [
+    "2604.03143",
+    "2504.20068",
+    "2601.12967",
+    "2602.21548",
+    "2601.22705",
+    "2602.13692",
+    "2603.16104",
+    "2505.05286",
+    "2511.01633",
+    "2602.21477"
+  ],
+  "open_questions": [
+    "How to extend Agent Step Graph to dynamic agent programs (ReAct/Reflexion) with runtime-decided next steps?",
+    "How to manage a secondary eviction policy when CPU memory itself is exhausted (three-tier cache with NVMe)?",
+    "How to migrate prefix caches across nodes in multi-GPU/multi-node deployments and propagate STE over RDMA?",
+    "What is the joint speedup when combined with speculative decoding or KV sparsity in decode-heavy agentic workloads?",
+    "Can workflow optimizers (AFlow, Cognify) incorporate a KVFlow-predicted miss-cost term to generate cache-friendly topologies?",
+    "Would reporting TTFT/TPOT/P99 reveal starvation of long-load requests under status-aware bypass scheduling?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

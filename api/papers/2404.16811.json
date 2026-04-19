@@ -1,0 +1,67 @@
+{
+  "id": "2404.16811",
+  "title": "Make Your LLM Fully Utilize the Context",
+  "authors": [
+    "Shengnan An",
+    "Zexiong Ma",
+    "Zeqi Lin",
+    "Nanning Zheng",
+    "Jian-Guang Lou"
+  ],
+  "date": "2024-04",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2404.16811",
+  "category": "algorithm",
+  "secondary_tags": [
+    "long-context",
+    "lost-in-the-middle",
+    "data-synthesis",
+    "instruction-tuning",
+    "RoPE",
+    "evaluation"
+  ],
+  "core_contribution": "Proposes Information-Intensive (IN2) training: a purely data-driven SFT recipe that synthesises 1.75M long-context QA examples (4K-32K tokens) where the gold information is forced to occur at uniformly-random positions, producing FilM-7B which eliminates the lost-in-the-middle problem on Mistral-7B-Instruct-v0.2 without any architectural change.",
+  "summary": "The paper hypothesises that lost-in-the-middle is caused by position bias hidden in standard pretraining and SFT data (next-token loss favours nearby tokens; system prompts always sit at position 0). To explicitly counter this bias, the authors construct an IN2 dataset by (1) splitting C4 realnewslike texts into 128-token segments, (2) prompting GPT-4-Turbo to generate either fine-grained single-segment QA (~63%) or multi-hop multi-segment QA (~17%), and (3) shuffling the gold segment(s) with random segments and using reject sampling to make both context length (4K-32K) and gold-segment position uniform. Mistral-7B-Instruct-v0.2 is fine-tuned for 1 epoch (14K steps, bs=128, LR 1e-6 cosine, 16x8 A100 ~300 GPU-days) on the 1.75M mixture (1.4M long QA + 150K short QA + 200K OpenOrca). The resulting FilM-7B achieves 85.9 average vs 79.0 for GPT-4-Turbo on the new VaL Probing suite (3 styles: document/code/database x 3 retrieval patterns: forward/backward/bi-directional), with the smallest min-max position gap of 13.9 (vs GPT-4 32.1). On 9 LongBench tasks the average rises from 30.6 to 39.9, and short-context performance (MMLU 59.3->59.2, etc.) is essentially preserved. An ablation shows sliding-window attention is incompatible with long-context goals, and that increasing RoPE base theta to 10x default further improves IN2 training.",
+  "key_findings": [
+    "Lost-in-the-middle is a data-distribution problem, not an architecture problem - it is fixable purely via SFT data without changing attention or position encoding.",
+    "Forcing the GOLD information segment to occupy uniformly-random positions in 4K-32K contexts (via reject sampling) is the critical design choice that makes IN2 work.",
+    "Synthesised long-context QA generated from short C4 segments by GPT-4-Turbo generalises to real long-context tasks (NarrativeQA F1 23.5->26.9; LongBench avg 30.6->39.9).",
+    "FilM-7B matches or beats GPT-4-Turbo on VaL Probing average (85.9 vs 79.0) and dramatically lowers the position gap (13.9 vs 32.1), showing improved robustness rather than just higher mean.",
+    "VaL Probing (with backward and bi-directional retrieval, code and structured-data contexts) reveals that Needle-in-the-Haystack overestimates long-context capability - LongAlign and InternLM2 score near-perfect on NIH but still U-shape on VaL.",
+    "Sliding-window attention cannot coexist with long-context targets: enabling a 4K SW during IN2 training collapses retrieval accuracy beyond 4K to ~0.",
+    "Higher information intensity (not only longer context) calls for a larger RoPE base theta - 10x the default raises VaL avg by ~5 points, with diminishing returns past 1e7."
+  ],
+  "limitations": [
+    "Heavy reliance on GPT-4-Turbo for QA generation makes the pipeline expensive (~$50K-$100K LLM cost) and creates an effective distillation ceiling at the teacher's quality.",
+    "Validated only at 32K context length; generalisation to 64K/128K/1M long-context settings is untested.",
+    "All synthetic data is sourced from C4 realnewslike (English news); domain coverage for code, math, dialogue, and other languages is limited.",
+    "Reject-sampled uniform length distribution diverges from real long-tailed workload distributions, with unknown effect on production behaviour.",
+    "Catastrophic forgetting is only partially mitigated - HellaSwag drops -4.5 and ARC-C drops -3.4, larger than the paper's 'minor variances' framing.",
+    "Training stability details (gradient clipping, mixed precision, loss spike handling) are not disclosed, hurting reproducibility.",
+    "No release of the full 1.75M training data; only the construction code and VaL probing data are open-sourced."
+  ],
+  "infra_impact": {
+    "algorithm": "Establishes a standard recipe for long-context SFT - subsequent work can adopt the IN2 idea (uniform gold-position via reject sampling + fine-grained/multi-hop QA split) as a default pattern.",
+    "kernel": "N/A - no new kernels required; standard attention. Care needed when using fused RoPE kernels that hard-code theta=1e6 (must be retunable to 1e7).",
+    "framework": "Mostly N/A - standard FSDP + answer-only loss. Adds a soft requirement for length-aware batch packing and reject-sampling utilities in data pipelines.",
+    "llm": "No model architecture change. Suggests system-prompt placement should be diversified during SFT to avoid baking position bias into future LLMs.",
+    "agent": "Direct uplift for agent runtimes that consume long tool-call histories and conversation memory - flat retrieval performance across positions improves multi-turn reliability.",
+    "code": "Open-sourced at github.com/microsoft/FILM (data-gen prompts, VaL probing dataset, evaluation scripts); checkpoint at huggingface.co/In2Training/FILM-7B-32K. Full training data not released."
+  },
+  "related_paper_ids": [
+    "2412.10079",
+    "2502.05167",
+    "2506.08371",
+    "2511.05850",
+    "2601.15300"
+  ],
+  "open_questions": [
+    "Can a cheaper teacher (e.g. Llama-3-70B, DeepSeek-V2/V3, Qwen-2.5-72B) substitute for GPT-4-Turbo without quality loss, lowering the data-generation cost by 10x?",
+    "Does IN2 training generalise to 128K / 1M context windows, or does each new length tier require fresh data with appropriately resized segments?",
+    "What is the optimal multi-hop ratio (paper uses 17%); does pushing it to 50% trade single-segment retrieval for stronger reasoning?",
+    "Can IN2-style position-uniform synthetic data be added to PRETRAINING (not just SFT), bypassing the catastrophic forgetting risk seen on HellaSwag/ARC-C?",
+    "How does FilM-7B perform on multilingual long-context tasks given that all training data is English C4?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-19"
+}

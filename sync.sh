@@ -131,6 +131,42 @@ footer {
   font-size: 0.7rem; font-weight: 700; padding: 2px 10px;
   border-radius: 999px; color: #fff; display: inline-block;
 }
+
+/* =========  Responsive breakpoints  =========
+   ≤480px  — phone portrait (iPhone 12-15 mini, SE)
+   ≤768px  — phone landscape / iPad Mini 7 portrait
+   ≤1024px — iPad Mini 7 landscape / iPad Pro 12.9 portrait
+   >1024px — desktop / iPad Pro 12.9 landscape
+   ============================================== */
+
+/* Tablet & below: shrink content padding, lighter spacing */
+@media (max-width: 1024px) {
+  .w { padding: 0 18px 48px; }
+  footer { padding: 24px 18px; }
+}
+
+/* iPad Mini portrait & smaller: nav becomes scrollable, hero compacted */
+@media (max-width: 768px) {
+  nav {
+    padding: 0 16px; gap: 18px; height: 48px;
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  nav::-webkit-scrollbar { display: none; }
+  nav .logo { font-size: 0.98rem; flex-shrink: 0; }
+  nav a { font-size: 0.82rem; flex-shrink: 0; white-space: nowrap; }
+  .w { padding: 0 14px 40px; }
+}
+
+/* Phone portrait: stack everything */
+@media (max-width: 480px) {
+  nav { gap: 14px; padding: 0 12px; height: 44px; }
+  nav .logo { font-size: 0.92rem; }
+  nav a { font-size: 0.78rem; }
+  .w { padding: 0 12px 32px; }
+  .cat-tag { font-size: 0.65rem; padding: 2px 8px; }
+}
 """
 
 NAV_HTML = """<nav>
@@ -264,6 +300,39 @@ index_html = f"""<!DOCTYPE html>
   background: var(--accent); color: #fff; border-color: var(--accent);
 }}
 .paper-row.hidden {{ display: none; }}
+
+/* ---- Index responsive ---- */
+@media (max-width: 768px) {{
+  .hero {{ padding: 36px 16px 24px; }}
+  .hero h1 {{ font-size: 1.5rem; }}
+  .hero p {{ font-size: 0.92rem; }}
+  .chart {{ gap: 8px; max-width: 100%; height: 90px; margin: 24px auto 8px; }}
+  .bar {{ min-width: 24px; }}
+  .bar-count {{ font-size: 0.95rem; }}
+  .bar-label {{ font-size: 0.65rem; }}
+  .total-badge b {{ font-size: 1.4rem; }}
+  .filters {{ gap: 6px; margin-bottom: 16px; overflow-x: auto;
+              flex-wrap: nowrap; -webkit-overflow-scrolling: touch;
+              scrollbar-width: none; padding-bottom: 4px; }}
+  .filters::-webkit-scrollbar {{ display: none; }}
+  .filter-btn {{ font-size: 0.78rem; padding: 5px 12px; flex-shrink: 0; }}
+  .paper-row {{ padding: 14px 16px; border-radius: 10px; margin-bottom: 10px; }}
+  .pr-meta {{ gap: 8px; flex-wrap: wrap; }}
+  .pr-title {{ font-size: 0.98rem; }}
+  .pr-desc {{ font-size: 0.8rem; }}
+}}
+@media (max-width: 480px) {{
+  .hero {{ padding: 24px 12px 18px; }}
+  .hero h1 {{ font-size: 1.3rem; }}
+  .hero p {{ font-size: 0.85rem; }}
+  .chart {{ height: 70px; gap: 6px; }}
+  .bar {{ min-width: 18px; }}
+  .bar-label {{ font-size: 0.6rem; }}
+  .paper-row {{ padding: 12px 14px; }}
+  .pr-title {{ font-size: 0.92rem; line-height: 1.35; }}
+  .pr-desc {{ font-size: 0.76rem; -webkit-line-clamp: 2; display: -webkit-box;
+              -webkit-box-orient: vertical; overflow: hidden; }}
+}}
 </style>
 </head>
 <body>
@@ -964,6 +1033,46 @@ for p in papers:
   padding: 4px 0; margin: 16px 0;
 }}
 .back {{ display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }}
+
+/* ---- Per-paper page responsive ---- */
+@media (max-width: 1024px) {{
+  .paper-header {{ padding: 32px 18px 20px; }}
+  .tldr {{ margin: 18px 18px 24px; padding: 16px 18px; }}
+  .content {{ padding: 0 18px 48px; }}
+  .back {{ margin: 18px; }}
+}}
+@media (max-width: 768px) {{
+  .paper-header {{ padding: 24px 14px 16px; }}
+  .paper-header h1 {{ font-size: 1.3rem; line-height: 1.3; margin-bottom: 8px; }}
+  .paper-meta {{ font-size: 0.78rem; line-height: 1.6; }}
+  .paper-meta span, .paper-meta a {{ white-space: nowrap; }}
+  .tldr {{ margin: 14px 14px 20px; padding: 14px 16px; font-size: 0.9rem; }}
+  .tldr-label {{ font-size: 0.65rem; }}
+  .content {{ padding: 0 14px 36px; font-size: 0.9rem; }}
+  .content h2 {{ font-size: 1.05rem; margin: 24px 0 8px; padding-bottom: 4px; }}
+  .content h3 {{ font-size: 0.98rem; margin: 18px 0 6px; }}
+  .content pre {{ padding: 12px; font-size: 0.78rem; }}
+  .content figure img {{ box-shadow: 0 1px 4px rgba(0,0,0,0.08); }}
+  .md-table {{ font-size: 0.78rem; }}
+  .md-table th, .md-table td {{ padding: 6px 10px; }}
+  .md-table th {{ font-size: 0.72rem; }}
+  .mermaid {{ padding: 12px 8px; margin: 16px 0; }}
+  .back {{ margin: 14px; font-size: 0.84rem; }}
+}}
+@media (max-width: 480px) {{
+  .paper-header {{ padding: 18px 12px 12px; }}
+  .paper-header h1 {{ font-size: 1.15rem; }}
+  .paper-meta {{ font-size: 0.74rem; }}
+  .tldr {{ margin: 12px 12px 16px; padding: 12px 14px; font-size: 0.86rem; }}
+  .content {{ padding: 0 12px 28px; font-size: 0.88rem; }}
+  .content h2 {{ font-size: 0.98rem; }}
+  .content h3 {{ font-size: 0.92rem; }}
+  .content pre {{ padding: 10px; font-size: 0.74rem; }}
+  .md-table {{ font-size: 0.72rem; }}
+  .md-table th, .md-table td {{ padding: 5px 8px; }}
+  .tag {{ font-size: 0.66rem; padding: 1px 7px; }}
+  .back {{ margin: 12px; font-size: 0.8rem; }}
+}}
 </style>
 </head>
 <body>
@@ -1000,6 +1109,60 @@ for p in papers:
 
 print("Sync complete.")
 PYEOF
+
+# ---------- Public JSON API ----------
+# Expose papers.json under /api/ so any client (mobile app, dashboard, etc.)
+# can fetch the full reading list without needing the GitHub Pages HTML.
+python3 - "$PAPER_DB" "$SITE_DIR" << 'PYAPI'
+import json, os, sys
+from datetime import date
+DB_DIR, SITE_DIR = sys.argv[1], sys.argv[2]
+api_dir = os.path.join(SITE_DIR, "api")
+api_papers_dir = os.path.join(api_dir, "papers")
+os.makedirs(api_papers_dir, exist_ok=True)
+
+with open(os.path.join(DB_DIR, "papers.json")) as f:
+    db = json.load(f)
+papers = sorted(db["papers"], key=lambda p: p.get("date", ""), reverse=True)
+
+# /api/papers.json — full list (curated, no internal-only fields)
+PUBLIC_FIELDS = ["id", "title", "authors", "date", "source", "url",
+                 "category", "secondary_tags", "core_contribution",
+                 "summary", "key_findings", "limitations",
+                 "infra_impact", "related_paper_ids", "open_questions",
+                 "read_depth", "date_read"]
+public_papers = [{k: p.get(k) for k in PUBLIC_FIELDS} for p in papers]
+with open(os.path.join(api_dir, "papers.json"), "w") as f:
+    json.dump({
+        "version": 1,
+        "generated_at": date.today().isoformat(),
+        "total": len(public_papers),
+        "papers": public_papers,
+    }, f, ensure_ascii=False, indent=2)
+
+# /api/papers/{id}.json — per-paper detail (same fields)
+for p in public_papers:
+    pp = os.path.join(api_papers_dir, f"{p['id']}.json")
+    with open(pp, "w") as f:
+        json.dump(p, f, ensure_ascii=False, indent=2)
+
+# /api/categories.json — per-category index (id list per cat + count)
+cat_index = {}
+for p in public_papers:
+    c = p.get("category", "code")
+    cat_index.setdefault(c, {"count": 0, "ids": []})
+    cat_index[c]["count"] += 1
+    cat_index[c]["ids"].append(p["id"])
+with open(os.path.join(api_dir, "categories.json"), "w") as f:
+    json.dump({
+        "version": 1,
+        "generated_at": date.today().isoformat(),
+        "categories": cat_index,
+    }, f, ensure_ascii=False, indent=2)
+
+print(f"Wrote api/papers.json + api/categories.json + "
+      f"{len(public_papers)} api/papers/{{id}}.json")
+PYAPI
 
 # Regenerate the interactive knowledge graph (reads ~/.cursor/paper-db/papers.json)
 python3 "$SITE_DIR/tools/build_knowledge_graph.py"

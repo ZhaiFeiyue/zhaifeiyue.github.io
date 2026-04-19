@@ -1,0 +1,82 @@
+{
+  "id": "2602.13692",
+  "title": "ThunderAgent: A Simple, Fast and Program-Aware Agentic Inference System",
+  "authors": [
+    "Hao Kang",
+    "Ziyang Li",
+    "Xinyu Yang",
+    "Weili Xu",
+    "Yinfang Chen",
+    "Junxiong Wang",
+    "Beidi Chen",
+    "Tushar Krishna",
+    "Chenfeng Xu",
+    "Simran Arora"
+  ],
+  "date": "2026-02",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2602.13692",
+  "category": "framework",
+  "secondary_tags": [
+    "agentic-inference",
+    "kv-cache-scheduling",
+    "program-abstraction",
+    "rl-rollout",
+    "tool-orchestration",
+    "agent-serving",
+    "multi-turn"
+  ],
+  "core_contribution": "Introduces the Agentic Program as a first-class scheduling unit persisting across LLM calls and tool executions, plus a program-aware scheduler (global waiting queue, state-aware pause/restore, provably optimal exponential time-decay caching function) and lifecycle-aware tool resource manager, delivering 1.5-3.6x serving and 1.8-3.9x RL rollout throughput gains for multi-turn agent workloads.",
+  "summary": "Current agent serving systems loosely pair an LLM engine (vLLM/SGLang) with a tool orchestrator (Kubernetes), each making decisions at per-request granularity and hence oblivious to workflow-level state. On 8xH100 with GLM-4.6 running SWE-Agent / OpenHands / ToolOrchestra, this causes three systemic failures: (1) KV-cache thrashing amplifies end-to-end latency by up to 7.14x as the tool-wait KV is evicted and must be reprefilled; (2) KV-aware routing pins workflows to fixed nodes, causing up to 51% cross-node memory imbalance over 90-minute rollouts; (3) completed workflows leak Docker sandboxes and ports, driving disk usage to system capacity. ThunderAgent solves all three by lifting each workflow into an Agentic Program tuple <ID, c, T, L, tau, s> (identifier, context tokens, tool environment set, node placement, execution phase R/A, status Active/Paused/Terminated) that the scheduler treats as a first-class object. On top, a cost model decomposes STP into decode+prefill (productive) vs recompute+unused+caching (wasted); the scheduler periodically (every delta-t) checks per-backend thrashing condition C_total < sum(c_p) and pauses/restores programs using scores that strictly prioritize Acting over Reasoning states and shorter contexts (shortest-first provably minimizes the quadratic recompute cost). A time-decay function f(t) discounts Acting programs' effective occupation; the authors prove via a Cauchy functional equation that exponential decay exp(-lambda*t) is the unique optimal form under the memoryless assumption. A global program-aware waiting queue replaces pin-to-node routing (lossless, since paused KV is already evicted), and a release-signal-driven GC with async environment preparation manages tool resources. Evaluations across coding (SWE-Bench), computer-use (OpenHands), routing (ToolOrchestra) and scientific discovery (ScienceAgentBench) agents show 1.48-3.58x serving and 1.79-3.92x RL-rollout throughput improvements, plus 4.2x disk savings. Importantly, appendix experiments show KV offloading (LMCache) and PD disaggregation - both winners for chatbots - actually hurt throughput in agent workloads, narrowing the legitimate design space.",
+  "key_findings": [
+    "KV-cache thrashing is the #1 bottleneck for agent serving: per-request scheduling ignores cross-turn prefix reuse, amplifying end-to-end latency by up to 7.14x.",
+    "Session-pinned KV-aware routing (vLLM) is harmful for agents: two-node DP rollout sees 51% peak memory imbalance and >20% divergence for 37 of 90 minutes.",
+    "Shortest-first eviction is provably optimal: Cost_recompute is proportional to c_i^2 (quadratic in context length), and the convex super-additive objective yields strict optimality for evicting smallest-c programs.",
+    "Exponential decay f(t)=e^{-lambda*t} is the only admissible caching discount function under memoryless tool latencies; the proof uses the Cauchy functional equation f(t+delta)=f(t)f(delta) with boundary conditions.",
+    "High KV cache hit rate does not imply high throughput: Continuum's TTL-pin achieves higher hit rates but lower throughput than ThunderAgent due to inflated caching cost.",
+    "PD disaggregation degrades agent workloads: partitioning HBM into prefill-only / decode-only pools triggers thrashing at much lower concurrency because agent contexts grow monotonically.",
+    "KV offloading to CPU/SSD via LMCache cannot rescue agent serving: PCIe bandwidth is insufficient for high-frequency context switches.",
+    "Low-touch adoption: only three application-layer changes are required (tag requests with program_id, pass program_id to tool calls, POST /programs/release at termination) while keeping the OpenAI API surface unchanged."
+  ],
+  "limitations": [
+    "The memoryless assumption underlying optimal exponential decay does not hold for heavy-tailed remote APIs (Appendix C shows p99 in the hundreds of seconds); optimal decay form for Pareto-tailed tools is an open question.",
+    "Shortest-first eviction offers no fairness guarantee - short programs can starve while long ones are never paused; production deployment requires a priority or aging mechanism.",
+    "The tool resource GC depends on applications correctly sending an explicit release signal; forgetting it degrades back to Kubernetes-style timeout GC.",
+    "Only single-model workloads evaluated; multi-tenant multi-model routing is not addressed.",
+    "Not compared end-to-end against concurrent 2026 agent-serving systems (MegaFlow, RollArt, AgentRL, VerlTool) - only related-work discussion.",
+    "Scheduling is centralized with a global queue; scalability beyond tens of nodes is unverified (largest experiment is 2 nodes / 16 GPUs).",
+    "Requires backends to support pause/restore (abort_request) semantics and the DP (not PD) architecture - binding it away from some existing deployments.",
+    "Hysteresis window is collapsed to lambda_min=lambda_max=1 based on shared-prompt buffering assumption; may oscillate when system prompts are short or workflows heterogeneous."
+  ],
+  "infra_impact": {
+    "algorithm": "Directly benefits asynchronous RL training by raising rollout throughput 1.8-3.9x, reducing policy lag and improving convergence speed and final policy quality for agent RL (PPO/GRPO-style).",
+    "kernel": "N/A - operates entirely at the scheduling layer and is orthogonal to FlashAttention, FP8 GEMM, or other kernel-level optimizations.",
+    "framework": "Positions as the next generation of agent-aware middleware on top of vLLM/SGLang; directly competes with or extends Autellix, Continuum, Sutradhara, and MegaFlow. Highly likely to be absorbed into vLLM router and SGLang Gateway in 2026.",
+    "llm": "Model-agnostic; any multi-turn + tool-using model benefits. Demonstrated on GLM-4.6 MoE.",
+    "agent": "Major impact: agent frameworks (SWE-Agent, OpenHands, ToolOrchestra) gain a throughput-optimal runtime and will increasingly expose Reasoning vs Acting state explicitly as a de facto standard.",
+    "cluster": "N/A - does not address networking or interconnect topology; lives above the node-level routing layer.",
+    "hardware": "N/A - pure software; HBM-constrained accelerators (H20, A30) stand to gain more because thrashing triggers earlier.",
+    "code": "Open-sourced at https://github.com/HaoKang-Timmy/ThunderAgent (arXiv HTML) / https://github.com/Agentic-Kinetics/ThunderAgent (arXiv abstract); program abstraction, global waiting queue, and time-decay modules are the key paths to study."
+  },
+  "related_paper_ids": [
+    "2602.21548",
+    "2601.12967",
+    "2409.19256",
+    "2312.11819",
+    "2504.20068",
+    "2507.07400",
+    "2601.22705",
+    "2603.16104",
+    "2505.05286"
+  ],
+  "open_questions": [
+    "Under heavy-tailed (Pareto / log-normal) tool latency distributions that violate memorylessness, what is the optimal decay function f(t)? Is it a power-law instead of exponential?",
+    "How to add fairness / aging to shortest-first eviction without sacrificing its optimality on Cost_recompute?",
+    "Can program-level scheduling be composed with sub-program sparse KV methods (ShadowKV, Pensieve, Quest, H2O) for compound gains?",
+    "Does the centralized global waiting queue scale to hundreds or thousands of nodes, or is hierarchical / decentralized scheduling required?",
+    "How should program routing and the six-tuple extend when multiple models share a cluster (multi-tenant multi-model serving)?",
+    "For sub-second local tools, does the periodic delta-t check introduce meaningful latency vs event-driven scheduling?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

@@ -1,0 +1,63 @@
+{
+  "id": "2604.03143",
+  "title": "TokenDance: Scaling Multi-Agent LLM Serving via Collective KV Cache Sharing",
+  "authors": [
+    "Zhuohang Bian",
+    "Feiyang Wu",
+    "Chengrui Zhang",
+    "Hangcheng Dong",
+    "Yun Liang",
+    "Youwei Zhuo"
+  ],
+  "date": "2026-04",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2604.03143",
+  "category": "framework",
+  "secondary_tags": [
+    "multi-agent-serving",
+    "kv-cache-sharing",
+    "position-independent-caching",
+    "llm-inference",
+    "agent-systems"
+  ],
+  "core_contribution": "Elevate KV cache reuse from per-request to per-round All-Gather collective, amortizing RoPE + important-position selection across N agents in one pass, and compressing sibling caches via Master + block-sparse diff storage for 11-17x compression and 2.7x more concurrent agents under SLO.",
+  "summary": "TokenDance targets the memory bottleneck of multi-agent LLM serving. Frameworks like GenerativeAgents and AgentSociety organize execution in synchronized rounds where each agent's prompt concatenates a private history with the same set of shared output blocks from the previous round, but at different absolute positions. Prefix caching fails because private histories differ in length, while position-independent caching (e.g., CacheBlend) performs redundant RoPE and diff analysis for every agent. TokenDance introduces three components: a round-aware prompt interface that preserves block boundaries via separator tokens; collective KV cache reuse that groups compatible requests and performs one shared RoPE + diff pass per round; and diff-aware Master-Mirror storage with fused restore that encodes sibling caches as block-sparse diffs merged inline with the transfer pipeline. On A100-80G with Qwen2.5-7B/14B evaluated on GenerativeAgents and AgentSociety, TokenDance supports up to 2.7x more concurrent agents under a 1500 ms SLO than vLLM with prefix caching, compresses per-agent KV storage by 11.2x (7B) to 17.5x (14B), achieves 2.57x peak prefill speedup over serial CacheBlend, and 1.3-2.6x fused restore speedup over dense reconstruction, while producing numerically identical output to the underlying CacheBlend PIC backend.",
+  "key_findings": [
+    "The All-Gather pattern is a systemic opportunity: in 8-agent GenerativeAgents rounds, pairwise block-level KV similarity is 91-97%, yet vLLM treats each cache as independent, wasting most GPU memory.",
+    "Per-request PIC is structurally wasteful: N agents trigger N identical RoPE rotations and diff analyses; collective grouping amortizes these from O(N) to O(1).",
+    "Multi-agent memory grows as O(N * R); reducing prefill compute alone cannot solve scaling, per-agent storage must shrink.",
+    "Recovered KV caches differ in only 10-20% of block positions (avg 53.2 blocks of 500-700 for 7B, 59.6 for 14B), enabling 11.2-17.5x compression with Master + block-sparse diff.",
+    "Fused diff restore (ping-pong buffer + inline sparse merge in the transfer pipeline) is essential to preserve the compression benefit online, giving 1.3-2.6x speedup over dense reconstruction.",
+    "TokenDance's accuracy equals the underlying PIC backend (CacheBlend); 3 of 8 tested scenarios match vLLM bit-exactly under greedy decoding, the rest diverge 3.3-11.9% solely due to CacheBlend's selective recomputation.",
+    "Scaling gain grows with both agent count and model size: 14B benefits more because per-agent KV footprint doubles while the absolute number of differing blocks stays flat."
+  ],
+  "limitations": [
+    "Strong dependence on the All-Gather pattern; DAG, tree, or partial-gather multi-agent topologies degrade compression and reuse.",
+    "Group compatibility requires same active prompt length, same cached span, and disjoint slot mappings; production schedulers may fail to form large groups and fall back to per-request PIC.",
+    "Accuracy is inherited from the PIC backend; applications that cannot tolerate CacheBlend-level drift must disable reuse and forfeit the speedup.",
+    "Fused restore currently operates in the transfer pipeline rather than inside the attention tile loader; deeper fusion is only suggested as future work.",
+    "Evaluation is limited to a single A100-80G with Qwen2.5-7B/14B; no data for H100/H200/MI300, MoE/MLA models, or multi-node TP/PP deployments.",
+    "No open-source repository cited in the paper as of April 2026; references to OpenClaw/MoltBook as evidence of real-world All-Gather adoption may be premature."
+  ],
+  "infra_impact": {
+    "algorithm": "Indirectly enables cheaper multi-agent RL rollouts where rollout workloads exhibit All-Gather structure; no direct training-algorithm change.",
+    "kernel": "Introduces a paired block-sparse KV diff CUDA kernel (~500 lines) aligned with attention tile boundaries; presents an integration opportunity with FlashAttention/FlashInfer tile loaders.",
+    "framework": "Primary contribution layer: establishes 'round' as a first-class scheduling and caching unit, likely to influence vLLM/SGLang toward round-aware APIs and diff-aware KV backends on top of LMCache.",
+    "llm": "Architecture-agnostic in principle but currently bound to RoPE and vanilla K/V layout; adaptation to MLA (DeepSeek-V3), GQA, and MoE requires non-trivial redesign and is not evaluated.",
+    "agent": "Directly benefits multi-agent runtimes (AgentSociety, GenerativeAgents, OpenClaw, MoltBook) by providing a standard round-aware prompt interface activated by a single separator-token change.",
+    "code": "~3K lines Python + 500 lines CUDA/C++ on top of LMCache + vLLM V1; no public repo referenced in the paper, but would be a major LMCache contribution if open-sourced."
+  },
+  "related_paper_ids": [
+    "2507.07400",
+    "2509.02121"
+  ],
+  "open_questions": [
+    "How does the Master-Mirror layout degrade quantitatively when the prompt structure deviates from pure All-Gather (DAG, partial gather, tree aggregation)? Is there a structural-similarity threshold that predicts the compression cliff?",
+    "Is the deviation-score-minimizing Master selection heuristic near-optimal, or are there pathological $\\mathcal{O}^t$ distributions where it produces significantly larger diffs than an optimal choice?",
+    "How do the gains compound with per-cache quantization (KIVI, KVQuant) or eviction (H2O), and does quantizing the diff values interact destructively with CacheBlend's already-noisy selective recomputation?",
+    "How much does Master-Mirror need to be redesigned for MLA (latent KV) and MoE (per-token expert routing) architectures, and how large are the resulting Mirror diffs?",
+    "What is the achievable gain of pushing fused restore inside the FlashAttention tile loader (HBM -> SMEM) versus the current transfer-pipeline-level fusion?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

@@ -1,0 +1,73 @@
+{
+  "id": "2510.17015",
+  "title": "Justitia: Fair and Efficient Scheduling of Task-parallel LLM Agents with Selective Pampering",
+  "authors": [
+    "Mingyan Yang",
+    "Guanjie Wang",
+    "Manqi Luo",
+    "Yifei Liu",
+    "Chen Chen",
+    "Han Zhao",
+    "Yu Feng",
+    "Quan Chen",
+    "Minyi Guo"
+  ],
+  "date": "2025-10",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2510.17015",
+  "category": "framework",
+  "secondary_tags": [
+    "agent-scheduling",
+    "fair-queuing",
+    "kv-cache",
+    "vllm",
+    "application-level-scheduling",
+    "virtual-time-wfq"
+  ],
+  "core_contribution": "Ports 1990s network WFQ (virtual-time fair queuing over GPS) to LLM application-level scheduling, using a memory-centric KV token-time cost (c = pd + d^2/2) and per-app TF-IDF+MLP demand prediction, achieving 57.5% average JCT reduction vs VTC with a provable worst-case delay bound of 2c_max + C_max/M.",
+  "summary": "Task-parallel LLM agents (MapReduce summarization, Self-Consistency, Fact Verification, ReAct, etc.) are served on shared GPU clusters where users care about end-to-end application completion time rather than individual inferences. Existing schedulers fail: vLLM/Parrot FCFS suffers head-of-line blocking, VTC/FairServe enforce short-term fair sharing that slows every app by restricting it to its 1/N share, and pure SRJF starves long apps. Justitia argues users want long-term (finish-time) fairness, not instantaneous equal-share, and therefore trades short-term fairness for serving apps sequentially in their GPS completion order (saturated serving) — each prioritized app can use all KV cache to finish fast, and the fair-completion-order prevents any app from being delayed versus the idealized fair scheduler. To operationalize this, Justitia models serving cost as KV token-time c = pd + d^2/2 (matching vLLM's actual KV-capacity bottleneck, with cost quadratic in decode length), predicts each app's total cost at arrival via a per-application 4-layer MLP over TF-IDF-vectorized prompts (2.16ms/53% error, vs Distillbert's 55.7ms/452%), and borrows WFQ's virtual time V(t) with dV/dt = M/N_t so the virtual finish time F_j = V(a_j) + C_j is computed once and never refreshed; scheduling is O(log N_t) min-heap. A formal proof bounds worst-case delay by 2c_max + C_max/M. Implemented atop vLLM and evaluated on LLaMA-7B (A100) / LLaMA-13B (4xV100) with 300 mixed agents on Mooncake arrival traces, Justitia reduces average JCT by 57.5% vs VTC and 61.1% vs Parrot, with 92% of apps finishing no later than under VTC (worst ratio 1.26) and near-SJF efficiency without SRJF's starvation problem.",
+  "key_findings": [
+    "Memory is the true bottleneck for vLLM-like frameworks: KV token-time cost c = pd + d^2/2 (with quadratic dependence on decode length) is fundamentally better than VTC's linear compute-centric p+2d — ablation shows 42.3% JCT degradation when reverted.",
+    "Long-term (finish-time) fairness is the right fairness notion for LLM applications: giving up instantaneous equal-share enables saturated serving to achieve near-SJF efficiency while still guaranteeing no app is delayed versus the idealized fair scheduler.",
+    "Per-application small MLPs beat a single large Distillbert for cost prediction on every axis: 53% vs 452% error, 2.16ms vs 55.7ms inference, ~1min vs ~2h training — because different LLM applications have heterogeneous cost distributions.",
+    "Network WFQ (Parekh-Gallager 1993) transfers cleanly to LLM serving: treating KV-blocks as the divisible resource and LLM inferences as non-preemptable packets, virtual-time fair queuing gives O(log N_t) scheduling with no refresh on app arrival.",
+    "Formal worst-case delay bound f_j - GPS_f_j <= 2c_max + C_max/M; empirically tight because Mooncake traces show single requests average only 3.20% of total KV cache on LLaMA-3.3 70B.",
+    "Justitia avoids SRJF starvation: in elephant+mice micro-benchmark the elephant JCT stays bounded under Justitia while growing linearly with mice count under SRJF.",
+    "End-to-end: 57.5% average JCT reduction vs VTC (61.1% vs Parrot) across 300 mixed agents on A100/LLaMA-7B; scheduling overhead under 10ms even at 100 apps/min."
+  ],
+  "limitations": [
+    "Only evaluated on single-node (A100) and small TP multi-GPU (4xV100); multi-node distributed deployment with global virtual-time synchronization is not designed or measured.",
+    "Requires per-application-type profiling data (100 samples per app); no cold-start strategy for newly-defined agent workflows (e.g., user-supplied LangChain chains) is provided.",
+    "KV token-time cost formula ignores prefix caching / RadixAttention; would over-estimate cost for apps with shared system prompts, making direct deployment on SGLang suboptimal without modification.",
+    "Does not support dynamic-fanout applications (Tree-of-Thoughts, MCTS) whose branching cost is unknown at arrival time.",
+    "Non-preemptive: a long in-flight decode cannot be interrupted by a high-priority arriving app until it finishes; Mooncake's 3.20% KV-per-request assumption is required for the tight delay bound.",
+    "Fairness metric (finish-time fair ratio) is defined relative to VTC, making it somewhat self-referential; absolute max-min fairness is not reported.",
+    "Does not integrate with disaggregated prefill/decode (DistServe) architectures where prefill and decode have separate KV lifetimes."
+  ],
+  "infra_impact": {
+    "algorithm": "Not directly about training algorithms, but inspires RL rollout / best-of-N sampling scheduling where aggregate KV cost can be used for early-stopping or reward shaping.",
+    "kernel": "N/A — no kernel changes; operates purely in the CPU-side scheduler layer above vLLM's paged attention.",
+    "framework": "Direct contribution: a drop-in application-level scheduler replacing vLLM's FCFS default, with memory-centric cost modeling and virtual-time fair queuing; forms a layered design point with Parrot (semantic variable), VTC (short-term fair), and SGLang's Radix-tree scheduler.",
+    "llm": "Model-agnostic; assumes standard Transformer + KV cache. MLA/absorb-style architectures would need the KV token-time formula adjusted.",
+    "agent": "Strongly relevant — specifically designed for agentic workloads (MapReduce, Self-Consistency, Fact Verification, ReAct). Provides finish-time fairness guarantee needed for multi-tenant agent hosting.",
+    "cluster": "Gives a template for multi-tenant GPU-cluster scheduling combining finish-time fairness with SJF-like efficiency; complementary to Pollux/Sia goodput-optimized ML-cluster schedulers.",
+    "hardware": "N/A.",
+    "code": "Implemented atop vLLM as a scheduler replacement; integration point is vLLM's Scheduler._schedule_default; ~few hundred LOC estimated."
+  },
+  "related_paper_ids": [
+    "2601.22705",
+    "2603.16104",
+    "2511.01633",
+    "2601.12967"
+  ],
+  "open_questions": [
+    "How to modify KV token-time cost for prefix-caching frameworks (SGLang RadixAttention) where shared prompts inflate the naive c = pd + d^2/2?",
+    "How to extend Justitia to disaggregated prefill/decode (DistServe / Mooncake) where prefill and decode have different KV lifetimes?",
+    "Can the framework handle cold-start applications (no profiling data) via online learning with bounded regret?",
+    "How to synchronize global virtual time V(t) across a distributed multi-node cluster without destroying the O(log N_t) complexity?",
+    "Does the constant delay bound still hold when adding SLO-aware weights (weighted WFQ) for paid-tier users?",
+    "How does dynamic-fanout (Tree-of-Thoughts, MCTS) reasoning — where branch count is runtime-determined — interact with the once-compute-never-refresh F_j design?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

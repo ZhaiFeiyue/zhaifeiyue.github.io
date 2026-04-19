@@ -1,0 +1,71 @@
+{
+  "id": "2603.16104",
+  "title": "Efficient LLM Serving for Agentic Workflows: A Data Systems Perspective",
+  "authors": [
+    "Noppanat Wadlom",
+    "Junyi Shen",
+    "Yao Lu"
+  ],
+  "date": "2026-03",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2603.16104",
+  "category": "framework",
+  "secondary_tags": [
+    "agent-serving",
+    "prefix-caching",
+    "query-optimization",
+    "scheduling",
+    "batch-agentic-workflows",
+    "vllm"
+  ],
+  "core_contribution": "Helium reframes batch agentic LLM workflows as database query plans with LLMs as first-class operators, combining proactive KV/prompt caching, a Templated Radix Tree encoding both static prefix structure and operator dependencies, and a cost-based cache-aware scheduler that produces nested operator sequences exploiting two levels of prefix sharing, achieving up to 1.56x speedup over KVFlow.",
+  "summary": "Existing LLM serving engines (vLLM, SGLang) optimize single calls and treat workflow structure as invisible; orchestration frameworks (LangGraph, AgentScope) wrap LLMs as black-box UDFs and are blind to KV cache and prefill/decode asymmetry. Helium closes this gap by borrowing classical data-systems machinery: DSL -> DAG -> query optimizer (plan pruning + CSE + CacheFetch substitution) -> Templated Radix Tree -> cost-based cache-aware scheduler -> vLLM workers via IPC. The TRT encodes static prompt prefixes AND operator dependencies in one structure, enabling a nested-sequence schedule where inner sequences share per-query context and outer sequences share static system prompts, a dual-prefix reuse impossible for single-prefix schedulers. Proactive caching pre-fills static prefixes once and pins them across batches; a global prompt cache replaces repeat deterministic operators with CacheFetch retrievals. Evaluated on five primitive workflows (MapRed, Debate, Reflect, Iterative, Parallel) on MMLU/TAT-QA/Amazon with Qwen3-8B on 2xH100, Helium beats vLLM by 38-101x, LangGraph by up to 1.83x, Parrot by 2.21x, and KVFlow by 1.56x. On a realistic 88-operator Trading workflow it is 1.34x over KVFlow and 39.5x over vLLM. Scheduling quality: 0.9% average optimality gap vs MILP, 16x tighter than SGLang-style LSPF. Ablations surprisingly show plan pruning (-23.35%) contributes more than any cache mechanism.",
+  "key_findings": [
+    "Plan pruning via CSE is the single largest contributor (-23.35% if removed), larger than all cache mechanisms combined; unpruned redundant operators pollute the TRT and cascade into worse schedules.",
+    "Templated Radix Tree + nested-sequence schedule is the core barrier: dual-layer prefix reuse (static system prompt + per-query context) cannot be achieved by any single-prefix scheduler; LSPF's hit rate is only 1.5% above Random while Helium's is 32.9% above LSPF.",
+    "Scheduling quality is within 0.9% of MILP optimum on average vs 14.5% for LSPF and 16.3% for Random, proving global workflow-level visibility beats local online prefix heuristics.",
+    "High cache hit rate does not imply fast execution: vLLM on Qwen3-14B matches Helium's 42.9% hit rate but is 38x slower because it executes sequentially; scheduling must translate hit rate into effective batch expansion.",
+    "TRT metadata footprint scales with workflow structure not batch size: 552 KiB vs SGLang RadixCache's 14.8 MiB at 16 branches (27x advantage).",
+    "Helium's advantage widens with batch size (8 to 80) and with model size (8B to 32B), confirming the thesis that workflow-level redundancy grows with workload scale."
+  ],
+  "limitations": [
+    "DAG abstraction cannot natively express dynamic control flow (conditional loops, runtime-dependent fan-out, MCTS rollouts); paper explicitly flags this for future work.",
+    "Closed world: no remote API/tool calls, no model heterogeneity (all agents share one base LLM), no quality-aware approximation.",
+    "Prompt cache and CacheFetch require deterministic operators (greedy sampling), making the 13.56% prompt-cache contribution vanish for temperature>0 exploration workloads like ToT/GoT.",
+    "Requires offline profiling of output-length statistics per operator; brittle for reasoning LLMs with high CoT length variance.",
+    "Evaluated only on single-node 2xH100; no multi-node scheduling, no cross-host KV migration, no integration with disaggregated prefill/decode.",
+    "On Qwen3-14B the proactive KV advantage shrinks because pinned prefixes compete with active-request KV blocks under HBM pressure.",
+    "Users must rewrite workflows in Helium's custom DSL; no drop-in LangGraph/AgentScope compatibility."
+  ],
+  "infra_impact": {
+    "algorithm": "Repositions agent workflows as algebraic query plans amenable to CSE, plan rewriting, and cost-based ordering; opens door to treating prompt selection and sampling as algebraic rewrites.",
+    "kernel": "No new kernels; relies on vLLM PagedAttention. Augments vLLM with a pin mechanism for KV blocks tied to static prefixes, which future kernel work could specialize.",
+    "framework": "Biggest impact layer. Introduces TRT data structure, proactive vs passive cache taxonomy, and operator-level scheduling granularity; directly contests Parrot, SGLang, KVFlow, and LangGraph design choices.",
+    "llm": "Orthogonal to model architecture; any decoder-only LLM with standard KV cache works. Does require deterministic sampling for prompt-cache hits.",
+    "agent": "Provides a Python DSL that records workflow as symbolic DAG, enabling global optimization; could become compilation target for LangGraph/AgentScope if they expose structure rather than UDF black boxes.",
+    "cluster": "N/A at single-node scope; cross-node KV migration is out of scope.",
+    "hardware": "N/A; no hardware-specific optimizations, though HBM capacity directly determines how much pinned prefix fits.",
+    "code": "Open-source prototype at github.com/mlsys-io/helium_demo, built on vLLM v0.16.0 with IPC-based worker engines."
+  },
+  "related_paper_ids": [
+    "2504.20068",
+    "2507.07400",
+    "2509.02121",
+    "2601.22705",
+    "2602.13692",
+    "2601.12967",
+    "2602.21548",
+    "2511.01633",
+    "2510.17015"
+  ],
+  "open_questions": [
+    "How to extend TRT to dynamic control flow (conditional loops, runtime fan-out) without losing the compile-time optimization benefits?",
+    "Can prompt caching be made sampling-aware via approximate semantic equivalence (embedding similarity) or confidence-weighted caching?",
+    "How does the cost model and scheduler generalize to multi-node deployments where pinned KV cannot be shared across hosts, and to disaggregated prefill/decode settings?",
+    "Can Helium's batch-centric approach be unified with online serving (mixed workloads of periodic batches + interactive requests)?",
+    "In heterogeneous-model pipelines (router sending easy queries to small models, hard ones to big), how to reason about prefix sharing when KV is not transferable across model architectures?",
+    "Under high HBM pressure (14B+ models, long pinned prefixes), how should hierarchical KV offload (HBM/DRAM/NVMe) be orchestrated with workflow-aware scheduling?"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}

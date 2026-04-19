@@ -1,0 +1,76 @@
+{
+  "id": "2503.20215",
+  "title": "Qwen2.5-Omni Technical Report",
+  "authors": [
+    "Jin Xu",
+    "Zhifang Guo",
+    "Jinzheng He",
+    "Hangrui Hu",
+    "Ting He",
+    "Shuai Bai",
+    "Keqin Chen",
+    "Jialin Wang",
+    "Yang Fan",
+    "Kai Dang",
+    "Bin Zhang",
+    "Xiong Wang",
+    "Yunfei Chu",
+    "Junyang Lin"
+  ],
+  "date": "2025-03",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2503.20215",
+  "category": "llm",
+  "secondary_tags": [
+    "multimodal",
+    "omni-model",
+    "speech-generation",
+    "thinker-talker",
+    "streaming"
+  ],
+  "core_contribution": "首个开源的 omni-modal 端到端模型 (text+image+audio+video → text+speech)。Thinker-Talker 架构: Thinker (dense 7B-class, 28L × 3584, GQA 28/4, FFN 18944) 处理理解, Talker (dense 24L × 896, dual-track AR, vocab 8448) 直接消费 Thinker hidden + token embed 驱动 codec; TM-RoPE (M-RoPE [16,24,24] + 40ms 绝对时间) 对齐音视频; Flow-Matching DiT (22L × 1024, sliding 4-block) + Modified BigVGAN 实现流式波形合成 @ 24kHz.",
+  "summary": "Qwen2.5-Omni 是 Qwen3-Omni 的前代, 全 dense + 单 codebook + DiT vocoder。Thinker (init Qwen2.5): 28L × 3584, GQA 28/4 head_dim=128, FFN 18944, vocab 152064, M-RoPE [16, 24, 24], context 32768. Talker (dual-track AR): 24L × 896, GQA 12/4, FFN 18944 (居然和 Thinker 同), 输入 = Thinker layer hidden 3584 + 采样 token embed, 输出单 codec stream vocab 8448. Audio Encoder = Whisper-large-v3 init: 32L × 1280, 20 heads × 64, GELU FFN 5120, 2-sec block attn, mel 128/25ms/10ms. Vision Encoder = Qwen2.5-VL ViT: 32L × 1280, 16 heads × 80, patch 14, fullatt @ [7,15,23,31], spatial_merge=2. Speech chain: qwen-tts-tokenizer (单 codebook 8448) → Flow-Matching DiT (22L × 1024, sliding-window 4 blocks: 2 lookback + current + 1 lookahead) → Modified BigVGAN (upsample [5,3,2,2,2,2]) → PCM 24 kHz. TM-RoPE: M-RoPE 三轴 + 40ms/temporal step + 25 Hz alignment grid + 2-sec chunks (视觉先音频后 interleave). 训练: S1 encoder alignment (LLM frozen, adapter-first then encoder) → S2 joint pretrain (800B image + 300B audio + 100B video-with-audio incremental) → S3 long context 32K. 后训练: ChatML SFT + Talker 4 阶段 (continuation → DPO LDPO with WER+pause → multi-speaker FT → timbre disentangle).",
+  "key_findings": [
+    "Thinker dense 7B: 28×3584, GQA 28/4, head_dim=128, FFN 18944",
+    "Talker dense 0.6B: 24×896, GQA 12/4, head_dim=128, FFN 18944, vocab 8448",
+    "Talker 输入: Thinker hidden (3584) + 采样 text token embed (紧耦合, Qwen3-Omni 后来解耦)",
+    "Audio = Whisper-large-v3 init: 32×1280, 20 heads × head_dim=64, GELU FFN 5120, 2-sec blocks",
+    "Vision = Qwen2.5-VL: 32×1280, 16 heads × head_dim=80, fullatt @ [7,15,23,31], spatial_merge=2",
+    "TM-RoPE: M-RoPE [16, 24, 24] + 40ms/temporal step, position_id_per_seconds=25",
+    "Speech codec: 单 codebook 8448 (qwen-tts-tokenizer)",
+    "Vocoder: DiT 22L × 1024 + BigVGAN, sliding 4-block window (2 back + current + 1 fwd)",
+    "Joint pretrain (S2): 800B image + 300B audio + 100B video-with-audio (incremental)",
+    "Long context: 8192 → 32768 (no YaRN)",
+    "Talker post-train: continuation → LDPO (WER + pause reward) → multi-speaker FT → timbre disent",
+    "Token rate ~25 Hz (vs Qwen3-Omni 12.5 Hz)",
+    "首包延迟 ~640ms+ (DiT 4-block 等 lookahead, vs Qwen3-Omni 234ms)",
+    "Apache 2.0 开源"
+  ],
+  "limitations": [
+    "模型规模仅 7B，相对闭源模型参数量有限",
+    "语音生成基于 sliding-window DiT 计算开销仍较大",
+    "音视频 interleaved 排列依赖 2 秒 chunk，限制时间分辨率",
+    "语音理解语种支持有限"
+  ],
+  "infra_impact": {
+    "algorithm": "Thinker-Talker 双组件训练范式为多模态 text+speech 生成开创新方向",
+    "kernel": "Sliding-window DiT 和 block-wise attention 需定制 kernel",
+    "framework": "需支持流式推理的 serving 框架和 Thinker/Talker 异步 prefill",
+    "llm": "TMRoPE 为多模态位置编码提供通用方案",
+    "agent": "端到端语音对话能力直接支持 voice agent 场景"
+  },
+  "related_paper_ids": [
+    "2509.17765",
+    "2601.15300",
+    "2604.14148"
+  ],
+  "open_questions": [
+    "Thinker-Talker 紧耦合实际收益多少？Qwen3-Omni 解耦后性能反而提升",
+    "Talker 24L × d=896 + FFN 18944 这个'瘦但 FFN 大'设计的根据？",
+    "DPO 中 WER + pause reward 权重比例？",
+    "25 Hz token rate 是否过高？为什么不直接降到 12.5？",
+    "训练 GPU-hours 和 infra 完全黑盒"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-18"
+}
