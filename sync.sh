@@ -169,6 +169,9 @@ footer {
 }
 """
 
+# CANONICAL NAV — single source of truth for all site pages.
+# If you change links here, also update the nav unifier script in
+# ~/.cursor/skills/paper-reader/SKILL.md (Phase 9, step 7).
 NAV_HTML = """<nav>
   <a class="logo" href="/">Feiyue Zhai</a>
   <a href="/">Papers</a>
