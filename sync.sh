@@ -527,11 +527,11 @@ def extract_drawio(md_text, state):
         # Compute REAL bounding box from XML — eliminates the blank-space bug
         bw, bh = compute_drawio_page_bounds(drawio_path, page_num)
         # Aspect ratio CSS: container fills width responsively, height auto.
-        # Cap height at 80vh so very tall diagrams stay scrollable not page-eating.
-        aspect_style = (
-            f"aspect-ratio: {bw} / {bh}; "
-            f"max-height: 80vh;"
-        )
+        # NOTE: do NOT set max-height — combining max-height with aspect-ratio
+        # + width:100% causes the container to be wider than `width/ratio` on
+        # short viewports, leaving vertical white space inside the SVG region.
+        # If the user has a very tall diagram, browser scroll handles it.
+        aspect_style = f"aspect-ratio: {bw} / {bh};"
 
         source_id = 'drawio-xml-' + re.sub(r'[^a-zA-Z0-9]+', '-', rel_path).strip('-')
         source_html = ''
@@ -546,14 +546,18 @@ def extract_drawio(md_text, state):
                 f'</div>'
             )
 
+        # Container CSS: tight margins, the inner mxgraph div uses display:block
+        # to avoid baseline alignment slack underneath the SVG.
         embed_html = (
             source_html
-            + '<div class="drawio-embed" style="margin:20px 0;">'
+            + '<div class="drawio-embed" style="margin:12px 0;line-height:0;">'
             f'<div class="mxgraph mxg-lazy" data-xml-source="{source_id}" '
             f'data-page="{page_num}" '
-            f'style="width:100%;{aspect_style}'
-            f'border:1px solid #ddd;border-radius:8px;background:#fff;"></div>'
-            '<p style="font-size:0.8rem;color:#6b7280;text-align:center;margin-top:8px;">'
+            f'style="display:block;width:100%;{aspect_style}'
+            f'border:1px solid #ddd;border-radius:8px;background:#fff;'
+            f'overflow:hidden;"></div>'
+            '<p style="font-size:0.8rem;color:#6b7280;text-align:center;'
+            'margin:6px 0 0 0;line-height:1.4;">'
             f'💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · '
             f'<a href="/assets/{rel_path}" download>下载 .drawio</a>'
             '</p>'
@@ -1046,6 +1050,21 @@ for p in papers:
 }}
 .mermaid svg {{
   max-width: 100%; height: auto;
+}}
+/* drawio viewer-static SVG should fill the container instead of the
+   default xMidYMid meet (which leaves blank top/bottom when container
+   aspect-ratio doesn't perfectly match SVG viewBox). Forcing the inner
+   SVG to width:100%/height:100% with display:block kills the bottom
+   baseline whitespace. */
+.drawio-embed .mxgraph svg,
+.drawio-embed .mxgraph > svg {{
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}}
+.drawio-embed .mxgraph {{
+  display: block;
+  position: relative;
 }}
 .content .katex-display {{
   overflow-x: auto; overflow-y: hidden;
