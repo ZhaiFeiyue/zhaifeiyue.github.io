@@ -316,8 +316,18 @@ DRAWIO_BOOTSTRAP_JS = """<script>
     var cfg = {
       highlight: '#0000ff',
       nav: true,
-      resize: true,
+      // resize:false — we control container size via aspect-ratio CSS so the
+      // viewer should NOT try to auto-grow the container (causes blank space
+      // when its internal size estimate exceeds the diagram's actual bounds).
+      resize: false,
       toolbar: 'zoom layers tags lightbox pages',
+      'toolbar-position': 'top',
+      // fit:1 → viewer scales the diagram to fit the container width on init,
+      // eliminating large empty margins around small diagrams.
+      fit: 1,
+      'auto-fit': 1,
+      // When users zoom out beyond fit, allow scroll within container.
+      lightbox: false,
       edit: '_blank',
       xml: src.textContent.trim(),
       page: parseInt(el.dataset.page || '0', 10)
@@ -330,15 +340,55 @@ DRAWIO_BOOTSTRAP_JS = """<script>
 <script type="text/javascript" src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>"""
 
 
-def extract_drawio(md_text, state):
-    """Replace `{{drawio:file#page=N&height=500}}` markers with HTML embed blocks.
+def compute_drawio_page_bounds(drawio_path, page_idx):
+    """Parse drawio XML and return (width, height) in pixels for page_idx.
 
-    - state dict tracks which drawio files have already been inlined on the current
-      paper page. First occurrence inlines the full XML inside a hidden text
-      container; subsequent occurrences just reference it. This avoids blowing
-      up page size when a multi-page drawio is embedded in many sections.
-    - Each embed honours #page=N (0-indexed default page) and #height=Npx
-      (minimum initial height, default 500px).
+    Walks every <mxCell><mxGeometry x= y= width= height=> within the requested
+    <diagram> page, computes max(x+width) and max(y+height) across cells.
+    Falls back to (1000, 600) on parse error.
+    """
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(drawio_path)
+        root = tree.getroot()
+        diagrams = root.findall('.//diagram')
+        if not diagrams:
+            return (1000, 600)
+        page = diagrams[min(page_idx, len(diagrams) - 1)]
+        # diagram may contain raw mxGraphModel OR base64-compressed text.
+        # Sub-agent-authored files are always raw; vendor exports may be compressed.
+        max_x, max_y = 0, 0
+        for geom in page.iter('mxGeometry'):
+            try:
+                x = float(geom.get('x', 0))
+                y = float(geom.get('y', 0))
+                w = float(geom.get('width', 0))
+                h = float(geom.get('height', 0))
+                # ignore relative/edge geometries (they have x/y but no width)
+                if w == 0 and h == 0:
+                    continue
+                max_x = max(max_x, x + w)
+                max_y = max(max_y, y + h)
+            except (TypeError, ValueError):
+                continue
+        # Add 30pt margin on right & bottom to avoid clipping
+        if max_x < 100 or max_y < 50:
+            return (1000, 600)
+        return (int(max_x + 30), int(max_y + 30))
+    except Exception:
+        return (1000, 600)
+
+
+def extract_drawio(md_text, state):
+    """Replace `{{drawio:file#page=N}}` markers with HTML embed blocks.
+
+    - state dict tracks which drawio files have already been inlined on the
+      current paper page. First occurrence inlines the full XML inside a
+      hidden text container; subsequent occurrences just reference it.
+    - Each embed honours #page=N (0-indexed default page).
+    - The container's aspect-ratio is computed from the actual diagram
+      bounds parsed from XML — no hand-tuned height parameter needed.
+      Any `#height=NNN` is honoured as a hard min-height fallback only.
     """
     blocks = []
 
@@ -362,9 +412,15 @@ def extract_drawio(md_text, state):
             page_num = int(opts.get('page', 0))
         except ValueError:
             page_num = 0
-        height = opts.get('height', '500').strip()
-        if height.isdigit():
-            height = height + 'px'
+
+        # Compute REAL bounding box from XML — eliminates the blank-space bug
+        bw, bh = compute_drawio_page_bounds(drawio_path, page_num)
+        # Aspect ratio CSS: container fills width responsively, height auto.
+        # Cap height at 80vh so very tall diagrams stay scrollable not page-eating.
+        aspect_style = (
+            f"aspect-ratio: {bw} / {bh}; "
+            f"max-height: 80vh;"
+        )
 
         source_id = 'drawio-xml-' + re.sub(r'[^a-zA-Z0-9]+', '-', rel_path).strip('-')
         source_html = ''
@@ -384,8 +440,8 @@ def extract_drawio(md_text, state):
             + '<div class="drawio-embed" style="margin:20px 0;">'
             f'<div class="mxgraph mxg-lazy" data-xml-source="{source_id}" '
             f'data-page="{page_num}" '
-            f'style="max-width:100%;border:1px solid #ddd;border-radius:8px;'
-            f'background:#fff;min-height:{height};"></div>'
+            f'style="width:100%;{aspect_style}'
+            f'border:1px solid #ddd;border-radius:8px;background:#fff;"></div>'
             '<p style="font-size:0.8rem;color:#6b7280;text-align:center;margin-top:8px;">'
             f'💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · '
             f'<a href="/assets/{rel_path}" download>下载 .drawio</a>'
