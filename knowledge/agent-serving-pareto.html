@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>从标准 Serving 到 Agent Serving 的 Pareto 曲线推演</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+
+:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+nav .logo { font-weight: 700; font-size: 1.05rem; }
+nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+nav a:hover { color: #fff; text-decoration: none; }
+.w { max-width: 960px; margin: 0 auto; padding: 0 24px 64px; }
+footer {
+  text-align: center; padding: 28px 24px; color: var(--mt);
+  font-size: 0.8rem; border-top: 1px solid var(--bd);
+  max-width: 960px; margin: 0 auto;
+}
+
+
+.article-header {
+  max-width: 960px; margin: 0 auto; padding: 40px 24px 20px;
+}
+.article-header h1 {
+  font-size: 1.7rem; font-weight: 800; letter-spacing: -0.02em;
+  margin-bottom: 12px; line-height: 1.3;
+}
+.article-meta {
+  font-size: 0.85rem; color: var(--mt); margin-bottom: 8px; line-height: 1.8;
+}
+.article-meta a { font-size: 0.85rem; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tag {
+  font-size: 0.72rem; padding: 2px 10px; border-radius: 999px;
+  background: #f1f5f9; color: var(--mt); font-weight: 600;
+}
+.content {
+  font-family: 'Noto Serif SC', 'Lora', serif;
+  font-size: 0.95rem;
+}
+.content h2 {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1.25rem; font-weight: 700; margin: 36px 0 14px;
+  padding-bottom: 6px; border-bottom: 2px solid var(--accent);
+  color: var(--accent);
+}
+.content h3 {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1.08rem; font-weight: 700; margin: 28px 0 10px;
+  color: #334155;
+}
+.content h4 {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.98rem; font-weight: 700; margin: 20px 0 8px;
+  color: #475569;
+}
+.content p { margin: 8px 0; }
+.content ul, .content ol { margin: 8px 0 8px 20px; }
+.content li { margin: 4px 0; }
+.content blockquote {
+  border-left: 4px solid var(--accent); padding: 8px 16px;
+  margin: 12px 0; background: #f8fafc; border-radius: 0 8px 8px 0;
+  font-style: italic;
+}
+.content pre {
+  background: #1e293b; color: #e2e8f0; padding: 16px 20px;
+  border-radius: 8px; overflow-x: auto; margin: 12px 0;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;
+  line-height: 1.65; white-space: pre; word-wrap: normal;
+}
+.content code {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.85em;
+  background: #f1f5f9; padding: 1px 5px; border-radius: 4px;
+}
+.content pre code {
+  background: none; padding: 0;
+}
+.content hr {
+  border: none; border-top: 1px solid var(--bd); margin: 32px 0;
+}
+.table-wrap {
+  margin: 16px 0; overflow-x: auto; border-radius: 8px;
+  border: 1px solid var(--bd); background: #fff;
+}
+.md-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.85rem; min-width: 100%;
+}
+.md-table th, .md-table td {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 8px 14px; white-space: nowrap;
+}
+.md-table th {
+  background: #f8fafc; font-weight: 700; color: #475569;
+  position: sticky; top: 0; z-index: 1;
+  border-bottom: 2px solid var(--bd);
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.md-table tbody tr:nth-child(even) td { background: #fafbfc; }
+.md-table tbody tr:hover td { background: #eff6ff; }
+.back { display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }
+
+@media (max-width: 768px) {
+  .article-header { padding: 24px 14px 16px; }
+  .article-header h1 { font-size: 1.3rem; }
+  .content { font-size: 0.9rem; }
+  .content h2 { font-size: 1.1rem; }
+  .content h3 { font-size: 0.98rem; }
+  .content pre { padding: 12px; font-size: 0.76rem; }
+  .md-table { font-size: 0.78rem; }
+  .md-table th, .md-table td { padding: 6px 10px; }
+}
+@media (max-width: 480px) {
+  .article-header { padding: 18px 12px 12px; }
+  .article-header h1 { font-size: 1.15rem; }
+  .content { font-size: 0.88rem; }
+  .content pre { font-size: 0.72rem; padding: 10px; }
+}
+
+.toc {
+  background: #fff; border: 1px solid var(--bd); border-radius: 12px;
+  padding: 20px 24px; margin: 0 0 32px;
+}
+.toc h3 {
+  font-family: 'IBM Plex Sans', sans-serif; font-size: 0.9rem;
+  font-weight: 700; margin: 0 0 12px; color: var(--accent);
+  border: none; padding: 0;
+}
+.toc ul { list-style: none; margin: 0; padding: 0; }
+.toc li { margin: 4px 0; }
+.toc a {
+  font-size: 0.88rem; color: #334155; font-weight: 500;
+  display: block; padding: 2px 0;
+}
+.toc a:hover { color: var(--accent); text-decoration: none; }
+
+</style>
+</head>
+<body>
+<nav>
+  <a class="logo" href="/">Feiyue Zhai</a>
+  <a href="/">Papers</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/float.html">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+<div class="article-header">
+  <a class="back" href="/knowledge/">&larr; Knowledge Base</a>
+  <h1>从标准 Serving 到 Agent Serving 的 Pareto 曲线推演</h1>
+  <div class="article-meta">
+    <b>Feiyue Zhai</b> &middot; 2026-04-17 &middot;
+    <a href="/tools/agent-pareto.html">交互工具: Agent Serving Pareto Explorer &rarr;</a>
+  </div>
+  <div class="tags">
+    <span class="tag">LLM Serving</span>
+    <span class="tag">Agent</span>
+    <span class="tag">Pareto Frontier</span>
+    <span class="tag">Prefix Cache</span>
+    <span class="tag">Queuing Theory</span>
+  </div>
+</div>
+<div class="w content">
+<div class="toc"><h3>目录</h3><ul><li><a href="#1-背景与动机">1. 背景与动机</a></li><li><a href="#2-系统模型">2. 系统模型</a></li><li><a href="#3-数学推演">3. 数学推演</a></li><li><a href="#4-关键结论">4. 关键结论</a></li><li><a href="#5-性能模型详解-交互工具实现">5. 性能模型详解（交互工具实现）</a></li><li><a href="#6-参考资料">6. 参考资料</a></li><li><a href="#7-修订历史">7. 修订历史</a></li></ul></div>
+<blockquote><b>作者</b>: Feiyue Zhai</blockquote>
+<blockquote><b>日期</b>: 2026-04-17</blockquote>
+<blockquote><b>标签</b>: LLM serving, agent, Pareto frontier, prefix cache, queuing theory</blockquote>
+<blockquote><b>交互工具</b>: <a href="/tools/agent-pareto.html">Agent Serving Pareto Explorer</a></blockquote>
+<hr>
+<h2 id="1-背景与动机">1. 背景与动机</h2>
+<h3 id="1-1-为什么需要-pareto-曲线">1.1 为什么需要 Pareto 曲线？</h3>
+<p>LLM serving 系统有两个核心指标：</p>
+<ul>
+<li><b>Throughput</b>（吞吐量）：系统每秒能处理多少 tokens / requests</li>
+<li><b>Latency</b>（延迟）：单个请求从发出到完成需要多长时间</li>
+</ul>
+<p>这两个指标天然矛盾：通过增大 batch size 可以提高吞吐量，但每个请求的延迟也会增加。<b>Pareto 曲线</b>（帕累托前沿）描绘了在给定硬件上，throughput 和 latency 之间的<b>最优权衡边界</b>——即不可能在不牺牲一个指标的前提下改善另一个指标的点集。</p>
+<h3 id="1-2-aiconfigurator-的方法论">1.2 AIConfigurator 的方法论</h3>
+<p>NVIDIA 的 <a href="https://arxiv.org/abs/2601.06288">AIConfigurator</a> 论文提出了一套系统性的方法来生成 LLM serving 的 Pareto 曲线：</p>
+<ul>
+<li><b>X 轴</b>: per-user generation speed (tokens/s/user) —— 每用户的生成速度</li>
+<li><b>Y 轴</b>: system throughput (tokens/s/GPU) —— 系统吞吐量</li>
+<li><b>每个数据点</b>: 一种 serving 配置（TP/PP/EP × batch size × aggregated/disaggregated）</li>
+<li><b>方法</b>: 算子级性能数据库（PerfDatabase）+ 数学模型估算，无需实际 GPU profiling</li>
+</ul>
+<p>AIConfigurator 的核心贡献是将配置搜索从数天的 GPU 实验缩减到 <1 秒的 CPU 计算（427,000× 加速），其 Pareto 分析直观展示了 disaggregated serving 可以比 aggregated 高 <b>53% throughput</b>（Qwen3-235B on 64×H200）。</p>
+<h3 id="1-3-agent-场景的挑战">1.3 Agent 场景的挑战</h3>
+<p>AIConfigurator 的 Pareto 分析基于<b>标准 serving 假设</b>：每个请求是独立的、单轮的、ISL/OSL 固定的。但现代 AI Agent 系统（如 Cursor、Claude Code、SWE-bench agents）的工作负载有本质不同：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">维度</th><th style="text-align:left">标准 Serving</th><th style="text-align:left">Agent Serving</th></tr></thead><tbody>
+<tr><td style="text-align:left">请求模式</td><td style="text-align:left">单轮 request-response</td><td style="text-align:left">多轮对话，轮数不确定（8-64+ 轮）</td></tr>
+<tr><td style="text-align:left">KV-cache</td><td style="text-align:left">每次请求独立</td><td style="text-align:left">Prefix cache 跨轮复用，命中率影响巨大</td></tr>
+<tr><td style="text-align:left">计算特征</td><td style="text-align:left">prefill 一次 + decode 一次</td><td style="text-align:left">每轮都有 incremental prefill + decode</td></tr>
+<tr><td style="text-align:left">Context 增长</td><td style="text-align:left">固定 ISL/OSL</td><td style="text-align:left">context 随轮次单调增长（累积工具结果）</td></tr>
+<tr><td style="text-align:left">延迟定义</td><td style="text-align:left">TTFT + TPOT</td><td style="text-align:left">端到端 task completion time</td></tr>
+<tr><td style="text-align:left">吞吐定义</td><td style="text-align:left">tokens/s</td><td style="text-align:left">tasks completed/s 或 useful tokens/s</td></tr>
+<tr><td style="text-align:left">初始 Prompt</td><td style="text-align:left">较短（百~千 tokens）</td><td style="text-align:left">很长（Cursor system prompt ~16K tokens）</td></tr>
+<tr><td style="text-align:left">轮间行为</td><td style="text-align:left">无</td><td style="text-align:left">工具执行暂停（0.5s - 30s）</td></tr>
+</tbody></table></div>
+<p><b>核心问题：标准 serving 的 Pareto 曲线如何映射到 Agent 场景？Prefix cache、多轮暂停、context 增长如何重塑 Pareto 前沿？</b></p>
+<hr>
+<h2 id="2-系统模型">2. 系统模型</h2>
+<h3 id="2-1-系统设定">2.1 系统设定</h3>
+<pre><code>
+                 ┌──────────────────────────────────┐
+                 │       LLM Serving System          │
+  Session 1 ───→│  (GPU, KV-cache, scheduler)       │
+  Session 2 ───→│                                    │
+  ...           │  Standard metrics:                 │
+  Session C ───→│    Throughput X, Latency R         │
+                 └──────────────────────────────────┘
+</code></pre>
+<p><b>C 个并发 Agent sessions</b>，每个 session 的生命周期：</p>
+<pre><code>
+Session i: [Turn 1] ──Z₁──→ [Turn 2] ──Z₂──→ ... ──→ [Turn Nᵢ] → done
+</code></pre>
+<ul>
+<li><b>Turn j</b>: 一次 LLM 推理（prefill + decode），耗时 R_j</li>
+<li><b>Z_j</b>: 轮间暂停（tool execution、外部 API 调用），不同 session 不同 turn 的 Z_j 各不相同</li>
+</ul>
+<h3 id="2-2-context-增长模型">2.2 Context 增长模型</h3>
+<p>每一轮 Agent 与工具交互都会累积新的 context：</p>
+<pre><code>
+Turn j 的 context 长度:
+  L(j) = L₀ + Σₖ₌₁ʲ⁻¹ [OSL(k) + ΔL_tool(k)] + ΔL_tool(j)
+         \_/   \________________________________/   \________/
+       初始      前面所有轮的累积 output + 工具结果      本轮新增
+       prompt
+       (16K+)
+</code></pre>
+<p>典型值（代码 Agent，初始 prompt 16K）：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">Turn</th><th style="text-align:left">累积 context</th><th style="text-align:left">本轮新增 ΔL</th><th style="text-align:left">本轮输出 OSL</th></tr></thead><tbody>
+<tr><td style="text-align:left">1</td><td style="text-align:left">16,000</td><td style="text-align:left">16,000</td><td style="text-align:left">128</td></tr>
+<tr><td style="text-align:left">5</td><td style="text-align:left">24,512</td><td style="text-align:left">2,128</td><td style="text-align:left">128</td></tr>
+<tr><td style="text-align:left">10</td><td style="text-align:left">35,152</td><td style="text-align:left">2,128</td><td style="text-align:left">128</td></tr>
+<tr><td style="text-align:left">15</td><td style="text-align:left">45,792</td><td style="text-align:left">2,128</td><td style="text-align:left">128</td></tr>
+<tr><td style="text-align:left">20</td><td style="text-align:left">56,432</td><td style="text-align:left">2,128</td><td style="text-align:left">128</td></tr>
+</tbody></table></div>
+<p>每轮 agent 输出约 128 tokens（function call + 简短推理），工具返回约 2000 tokens（文件内容/搜索结果）。</p>
+<h3 id="2-3-prefix-cache-的影响">2.3 Prefix Cache 的影响</h3>
+<pre><code>
+Without prefix cache:  prefill 整个 L(j) ──→ O(L²) attention
+With prefix cache:     prefill 仅 ΔL(j)  ──→ O(ΔL × L) cross-attention
+                                               ↑ 小得多
+</code></pre>
+<p>Prefix cache 让每轮的 TTFT 从处理 <b>完整 context</b>（可能 50K+ tokens）降低到只处理<b>增量 tokens</b>（~2K tokens），这是 Agent serving 特有的关键优化。</p>
+<hr>
+<h2 id="3-数学推演">3. 数学推演</h2>
+<h3 id="step-1-封闭排队模型-closed-loop-queuing">Step 1: 封闭排队模型（Closed-Loop Queuing）</h3>
+<p>Agent 系统天然是一个<b>封闭排队系统</b>（closed-loop / think-time model）。每个 session 不断循环：</p>
+<pre><code>
+      ┌─→ [等待排队] → [Prefill] → [Decode] → [返回结果] ─┐
+      │         响应时间 R(j)                               │
+      │                                                     ↓
+      └──────────── [工具执行 / 暂停 Z(j)] ←────────────────┘
+</code></pre>
+<p>由 <b>Little's Law 的封闭系统形式</b>（Operational Analysis）：</p>
+<pre><code>
+X = C / (R + Z)
+</code></pre>
+<p>其中：</p>
+<ul>
+<li>X: 系统的 turn-level throughput（turns/s）</li>
+<li>C: 并发 session 数</li>
+<li>R: 平均 per-turn 响应时间（排队 + prefill + decode）</li>
+<li>Z: 平均轮间暂停时间</li>
+</ul>
+<p>反解得到 <b>Pareto 关系的基本形式</b>：</p>
+<pre><code>
+R = C / X - Z
+</code></pre>
+<p>这就是 Agent Pareto 曲线的方程。R vs X 的关系被 C 和 Z 参数化。</p>
+<h3 id="step-2-暂停时间-z-如何移动-pareto-曲线">Step 2: 暂停时间 Z 如何移动 Pareto 曲线</h3>
+<p>固定 C = 32 个并发 session，不同的平均暂停时间：</p>
+<pre><code>
+Turn Throughput X (turns/s)  ↑
+                              │
+   Z=0 (无暂停,              │ ╱ 
+    理论上界)                 │╱    ← 标准 serving 的 Pareto
+                              │
+   Z=0.5s (快工具,           │  ╱
+    代码执行)                 │ ╱
+                              │╱
+   Z=2s (中等工具,           │  ╱
+    文件读写)                 │ ╱
+                              │╱
+   Z=10s (慢工具,            │    ╱
+    web browsing)             │   ╱
+                              │  ╱
+                              └──────────────────→ Per-Turn Latency R (ms)
+</code></pre>
+<p><b>关键洞察</b>：暂停时间 Z <b>右移</b>了 Pareto 曲线，也<b>降低</b>了有效吞吐量上界。</p>
+<p>固定 R 时：X = C / (R + Z)</p>
+<ul>
+<li>Z = 0: X_max = C / R_min</li>
+<li>Z = 2s, R_min = 1s: X_max = 32 / 3 = 10.7 turns/s</li>
+<li>Z = 10s, R_min = 1s: X_max = 32 / 11 = 2.9 turns/s</li>
+</ul>
+<p><b>暂停时间长 → 吞吐量天花板急剧下降，但 GPU 有空余容量可以塞更多 session。</b></p>
+<h3 id="step-3-动态并发-暂停期间塞入更多-session">Step 3: 动态并发 —— 暂停期间塞入更多 session</h3>
+<p>定义<b>活跃比</b> ρ：</p>
+<pre><code>
+ρ = R / (R + Z)
+</code></pre>
+<p>即一个 session 有多少比例时间在消耗 GPU 计算。</p>
+<pre><code>
+Session 1: [██████]────────[██████]────────[██████]────────
+Session 2: ──[██████]────────[██████]────────[██████]──────
+Session 3: ────[██████]────────[██████]────────[██████]────
+Session 4: ──────[██████]────────[██████]────────[██████]──
+           ↑                                              
+           GPU sees continuous work if C &gt; 1/ρ             
+           (█ = GPU active, ─ = paused/tool exec)
+</code></pre>
+<p><b>有效 GPU 并发</b> = C × ρ = C × R / (R + Z)</p>
+<p>为了保持 GPU 满载（有效并发 = B_max）：</p>
+<pre><code>
+C_needed = B_max / ρ = B_max × (1 + Z / R)
+</code></pre>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">Z (暂停)</th><th style="text-align:left">R (响应)</th><th style="text-align:left">ρ (活跃比)</th><th style="text-align:left">需要的 C 来保持 GPU 满载 (B=32)</th></tr></thead><tbody>
+<tr><td style="text-align:left">0s</td><td style="text-align:left">2s</td><td style="text-align:left">100%</td><td style="text-align:left">32</td></tr>
+<tr><td style="text-align:left">0.5s</td><td style="text-align:left">2s</td><td style="text-align:left">80%</td><td style="text-align:left">40</td></tr>
+<tr><td style="text-align:left">2s</td><td style="text-align:left">2s</td><td style="text-align:left">50%</td><td style="text-align:left">64</td></tr>
+<tr><td style="text-align:left">10s</td><td style="text-align:left">2s</td><td style="text-align:left">17%</td><td style="text-align:left">192</td></tr>
+</tbody></table></div>
+<h3 id="step-4-kv-cache-内存墙-agent-的真正瓶颈">Step 4: KV-Cache 内存墙 —— Agent 的真正瓶颈</h3>
+<p>每个活跃 session（无论在计算还是暂停中）都需要在 GPU 上保留 KV-cache。</p>
+<p><b>KV-cache per session</b>：</p>
+<pre><code>
+M_kv(j) = 2 × n_layers × n_kv_heads × d_head × L(j) × sizeof(dtype)
+</code></pre>
+<p>对 70B 模型（80 layers, 8 KV heads via GQA, d=128, FP16）：</p>
+<pre><code>
+KV per token = 2 × 8 × 128 × 80 × 2 bytes = 327,680 bytes ≈ 320 KB/token
+</code></pre>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">Turn</th><th style="text-align:left">Context L(j)</th><th style="text-align:left">KV-cache/session</th><th style="text-align:left">32 sessions 总占用</th></tr></thead><tbody>
+<tr><td style="text-align:left">1</td><td style="text-align:left">16K</td><td style="text-align:left">5.1 GB</td><td style="text-align:left">163 GB</td></tr>
+<tr><td style="text-align:left">10</td><td style="text-align:left">35K</td><td style="text-align:left">11.2 GB</td><td style="text-align:left">358 GB</td></tr>
+<tr><td style="text-align:left">15</td><td style="text-align:left">46K</td><td style="text-align:left">14.7 GB</td><td style="text-align:left">470 GB</td></tr>
+<tr><td style="text-align:left">20</td><td style="text-align:left">56K</td><td style="text-align:left">17.9 GB</td><td style="text-align:left">573 GB</td></tr>
+</tbody></table></div>
+<p>8×H100 总显存 = 640 GB，模型权重占 ~140 GB (FP16)，可用 KV-cache 约 <b>500 GB</b>。</p>
+<p><b>这意味着</b>：</p>
+<ul>
+<li>Turn 1 时，可以支持 500 / 5.1 ≈ <b>98 个并发 session</b></li>
+<li>Turn 10 时，可以支持 500 / 11.2 ≈ <b>44 个并发 session</b></li>
+<li>Turn 20 时，可以支持 500 / 17.9 ≈ <b>27 个并发 session</b></li>
+</ul>
+<p><b>关键洞察</b>：Agent 的 context 增长导致 KV-cache 挤占内存，可支持的并发 session 数在 task 生命周期内持续下降。这是 Agent serving 独有的动态约束。</p>
+<h3 id="step-5-prefix-cache-对-pareto-的双重影响">Step 5: Prefix Cache 对 Pareto 的双重影响</h3>
+<p><b>影响 1：降低 per-turn latency（R 减小）</b></p>
+<pre><code>
+Without prefix cache (turn 15, L=46K):
+  TTFT = prefill(46,000 tokens) ≈ 800ms (at batch=1)
+                                 ≈ 3,000ms (at batch=32)
+
+With prefix cache (turn 15, ΔL=2,128):
+  TTFT = incr_prefill(2,128 tokens) ≈ 38ms (at batch=1)
+                                     ≈ 120ms (at batch=32)
+</code></pre>
+<p>TTFT 差异：800ms → 38ms（21× 提速）。</p>
+<p><b>影响 2：Cache 命中率取决于暂停时间 Z</b></p>
+<pre><code>
+Cache hit rate h(Z):
+
+ h  1.0 ┤████████████████████████████
+        │                            ╲
+    0.8 ┤                             ╲
+        │                              ╲
+    0.5 ┤                               ╲
+        │                                ╲
+    0.2 ┤                                 ╲
+        │                                  ╲______
+    0.0 ┤
+        └──┴──┴──┴──┴──┴──┴──┴──┴──┴──→ Z (暂停时间)
+          0  1  2  5  10  20  30  60 sec
+              ↑           ↑
+        cache 安全区   cache 开始被 evict
+</code></pre>
+<p>暂停时间短 → cache 命中率高 → prefill 快 → latency 低</p>
+<p>暂停时间长 → cache 被 evict → 全量 re-prefill → latency 高</p>
+<p>这形成一个<b>正反馈环</b>：</p>
+<pre><code>
+Z ↑ ⟹ h ↓ ⟹ R ↑ ⟹ ρ ↓ ⟹ C_needed ↑ ⟹ memory pressure ↑ ⟹ h ↓
+</code></pre>
+<h3 id="step-6-per-turn-latency-分解">Step 6: Per-Turn Latency 分解</h3>
+<p>每一轮的 LLM 推理延迟可以分解为：</p>
+<pre><code>
+R(j) = TTFT(j) + TPOT(B_eff) × OSL
+</code></pre>
+<p><b>TTFT（Time To First Token）</b>：</p>
+<pre><code>
+T_prefill(j) = h(Z) · T_incr(ΔL_j) + (1 - h(Z)) · T_full(L_j)
+</code></pre>
+<p>其中 T_incr 和 T_full 由算子级模型决定：</p>
+<pre><code>
+TTFT(L) = 2 × active_params × L / total_FLOPS / η_prefill
+</code></pre>
+<p>η_prefill ≈ 0.65（prefill 是 compute-bound，大 kernel 摊薄了 launch 开销，效率高于 decode）。</p>
+<p><b>TPOT（Time Per Output Token）</b>：</p>
+<p>由 decode step time 决定，受 memory bandwidth 限制：</p>
+<pre><code>
+step_time_ideal = max(T_weight_load + T_kv_load, T_compute)
+
+T_weight_load = active_params × dtype_bytes / total_bandwidth   [恒定]
+T_kv_load     = B × L_avg × kv_bytes_per_token / BW            [随 batch 和 context 增长]
+T_compute     = 2 × active_params × B / total_FLOPS             [随 batch 增长]
+
+TPOT = step_time_ideal / η_decode
+</code></pre>
+<p>注意 KV-cache 带宽受 GQA head 数约束：</p>
+<pre><code>
+kv_effective_GPUs = min(numGPUs, n_kv_heads)
+T_kv_load = B × L_avg × kv_bytes_per_token / (kv_effective_GPUs × BW_per_GPU)
+</code></pre>
+<p>当 numGPUs > n_kv_heads（如 8 KV heads on 16 GPUs），KV-cache 无法进一步拆分，每张卡至少保留 1 个完整 head。此时 T_kv 不再随 GPU 数量缩减。</p>
+<p>加上 10% elementwise 开销（LayerNorm, RoPE, activation, residual add）：</p>
+<pre><code>
+T_memory = (T_weight_load + T_kv_load) × 1.10
+</code></pre>
+<p>其中 η_decode ≈ 0.40 是 decode 效率因子，补偿 roofline 模型未覆盖的实际开销：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">开销来源</th><th style="text-align:left">典型值 (70B, TP=8)</th><th style="text-align:left">说明</th></tr></thead><tbody>
+<tr><td style="text-align:left">TP all-reduce 通信</td><td style="text-align:left">~4-6ms</td><td style="text-align:left">每层 2 次 all-reduce × 80 层，每次 ~30μs latency</td></tr>
+<tr><td style="text-align:left">Kernel launch</td><td style="text-align:left">~2-3ms</td><td style="text-align:left">每层 10+ kernel × 80 层 = 800+ kernel launches</td></tr>
+<tr><td style="text-align:left">非 matmul 算子</td><td style="text-align:left">~1-2ms</td><td style="text-align:left">LayerNorm, RoPE, activation, residual add</td></tr>
+<tr><td style="text-align:left">内存管理</td><td style="text-align:left">~0.5-1ms</td><td style="text-align:left">Paged attention, cache lookup</td></tr>
+</tbody></table></div>
+<p><b>验证</b>：70B FP16, 8×H100, B=1</p>
+<ul>
+<li>T_weight = 140GB / 26,800 GB/s = 5.22ms</li>
+<li>TPOT_ideal = 5.22ms</li>
+<li>TPOT_actual = 5.22 / 0.40 = <b>13.1ms</b>（实测 ~12-15ms ✓）</li>
+</ul>
+<h3 id="step-7-完整的-agent-pareto-方程组">Step 7: 完整的 Agent Pareto 方程组</h3>
+<h4 id="符号定义">符号定义</h4>
+<p><b>系统参数</b>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">符号</th><th style="text-align:left">单位</th><th style="text-align:left">定义</th></tr></thead><tbody>
+<tr><td style="text-align:left">G</td><td style="text-align:left">个</td><td style="text-align:left">GPU 数量</td></tr>
+<tr><td style="text-align:left">BW</td><td style="text-align:left">GB/s</td><td style="text-align:left">单卡 HBM 带宽</td></tr>
+<tr><td style="text-align:left">F</td><td style="text-align:left">TFLOPS</td><td style="text-align:left">单卡算力（按模型精度选 FP16/FP8/FP4）</td></tr>
+<tr><td style="text-align:left">M_gpu</td><td style="text-align:left">GB</td><td style="text-align:left">单卡显存</td></tr>
+</tbody></table></div>
+<p><b>模型参数</b>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">符号</th><th style="text-align:left">单位</th><th style="text-align:left">定义</th><th style="text-align:left">示例 (Llama-70B)</th><th style="text-align:left">示例 (K2.5)</th></tr></thead><tbody>
+<tr><td style="text-align:left">P_total</td><td style="text-align:left">B</td><td style="text-align:left">模型总参数量</td><td style="text-align:left">70</td><td style="text-align:left">1000</td></tr>
+<tr><td style="text-align:left">P_active</td><td style="text-align:left">B</td><td style="text-align:left">每 token 激活参数量</td><td style="text-align:left">70</td><td style="text-align:left">32</td></tr>
+<tr><td style="text-align:left">d</td><td style="text-align:left">bytes</td><td style="text-align:left">每参数字节数</td><td style="text-align:left">2 (FP16)</td><td style="text-align:left">0.5 (FP4)</td></tr>
+<tr><td style="text-align:left">n_kv</td><td style="text-align:left">个</td><td style="text-align:left">KV head 数（GQA）或 1（MLA）</td><td style="text-align:left">8</td><td style="text-align:left">1</td></tr>
+<tr><td style="text-align:left">κ</td><td style="text-align:left">bytes</td><td style="text-align:left">每 token KV-cache 大小（所有层）</td><td style="text-align:left">327,680</td><td style="text-align:left">70,272</td></tr>
+<tr><td style="text-align:left">η_d</td><td style="text-align:left">—</td><td style="text-align:left">decode 效率因子</td><td style="text-align:left">0.40</td><td style="text-align:left">0.40</td></tr>
+<tr><td style="text-align:left">η_p</td><td style="text-align:left">—</td><td style="text-align:left">prefill 效率因子</td><td style="text-align:left">0.65</td><td style="text-align:left">0.65</td></tr>
+</tbody></table></div>
+<p><b>MoE 专用参数</b>（dense 模型无此项）：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">符号</th><th style="text-align:left">单位</th><th style="text-align:left">定义</th><th style="text-align:left">示例 (K2.5)</th></tr></thead><tbody>
+<tr><td style="text-align:left">E</td><td style="text-align:left">个</td><td style="text-align:left">routed expert 总数</td><td style="text-align:left">384</td></tr>
+<tr><td style="text-align:left">K</td><td style="text-align:left">个</td><td style="text-align:left">每 token 激活 expert 数 (topK)</td><td style="text-align:left">8</td></tr>
+<tr><td style="text-align:left">P_expert</td><td style="text-align:left">B</td><td style="text-align:left">单个 expert 参数量</td><td style="text-align:left">0.04404</td></tr>
+<tr><td style="text-align:left">P_nonmoe</td><td style="text-align:left">B</td><td style="text-align:left">非 MoE 参数（attention + shared + embed）</td><td style="text-align:left">11.5</td></tr>
+</tbody></table></div>
+<p><b>Agent 工作负载参数</b>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">符号</th><th style="text-align:left">单位</th><th style="text-align:left">定义</th></tr></thead><tbody>
+<tr><td style="text-align:left">C</td><td style="text-align:left">个</td><td style="text-align:left">并发 session 数</td></tr>
+<tr><td style="text-align:left">N</td><td style="text-align:left">轮</td><td style="text-align:left">每 session 轮数</td></tr>
+<tr><td style="text-align:left">Z</td><td style="text-align:left">ms</td><td style="text-align:left">轮间暂停时间（工具执行）</td></tr>
+<tr><td style="text-align:left">L₀</td><td style="text-align:left">tokens</td><td style="text-align:left">初始 prompt 长度（system prompt）</td></tr>
+<tr><td style="text-align:left">ΔL</td><td style="text-align:left">tokens</td><td style="text-align:left">每轮新增 tokens（工具返回结果）</td></tr>
+<tr><td style="text-align:left">OSL</td><td style="text-align:left">tokens</td><td style="text-align:left">每轮输出 tokens</td></tr>
+<tr><td style="text-align:left">h</td><td style="text-align:left">—</td><td style="text-align:left">prefix cache 命中率 (0~1)</td></tr>
+</tbody></table></div>
+<p><b>派生量</b>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">符号</th><th style="text-align:left">单位</th><th style="text-align:left">定义</th><th style="text-align:left">公式</th></tr></thead><tbody>
+<tr><td style="text-align:left">L(j)</td><td style="text-align:left">tokens</td><td style="text-align:left">第 j 轮的 context 长度</td><td style="text-align:left">L₀ + (j-1) × (OSL + ΔL)</td></tr>
+<tr><td style="text-align:left">B_eff</td><td style="text-align:left">个</td><td style="text-align:left">稳态有效 batch size</td><td style="text-align:left">C × ρ</td></tr>
+<tr><td style="text-align:left">ρ</td><td style="text-align:left">—</td><td style="text-align:left">GPU 活跃比</td><td style="text-align:left">R / (R + Z)</td></tr>
+<tr><td style="text-align:left">C_max</td><td style="text-align:left">个</td><td style="text-align:left">KV 内存限制的最大并发</td><td style="text-align:left">⌊M_avail / M_kv_session⌋</td></tr>
+</tbody></table></div>
+<hr>
+<h4 id="方程组">方程组</h4>
+<p><b>方程 1: Per-turn latency R(j)</b></p>
+<p>第 j 轮的端到端推理延迟 = TTFT + decode 时间：</p>
+<pre><code>
+R(j) = TTFT(j) + TPOT(j) × OSL
+</code></pre>
+<p><b>方程 2: TTFT — prefill 时间（compute-bound）</b></p>
+<p>Prefill 处理输入 tokens，计算量由 active params 和输入长度决定：</p>
+<pre><code>
+L_prefill(j) = h × ΔL + (1 - h) × L(j)       # cache 命中时只处理增量
+
+TTFT(j) = 2 × P_active × L_prefill(j) / (G × F × 10¹²) × 10³ / η_p     [ms]
+</code></pre>
+<ul>
+<li>因子 2: 每个参数在 matmul 中贡献 2 FLOPs (multiply + accumulate)</li>
+<li>η_p ≈ 0.65: prefill 效率（compute-bound，大 kernel 摊薄 overhead）</li>
+</ul>
+<p><b>方程 3: TPOT — decode step 时间（memory-bound）</b></p>
+<p>每个 decode step 需要加载权重 + KV-cache，产生 B_eff 个 token：</p>
+<pre><code>
+TPOT(j) = max(T_mem(j), T_compute) / η_d      [ms]
+T_mem(j) = (T_weight + T_kv(j)) × 1.10        # ×1.10 = 10% elementwise 开销
+</code></pre>
+<ul>
+<li>η_d ≈ 0.40: decode 效率（TP 通信、kernel launch、scheduling overhead）</li>
+<li>×1.10: LayerNorm, RoPE, activation, residual add 等 elementwise 算子</li>
+</ul>
+<p><b>方程 3a: T_weight — 模型权重加载时间</b></p>
+<p>Dense 模型（Llama）：权重 TP-split 到 G 张卡：</p>
+<pre><code>
+T_weight = P_active × d / (G × BW) × 10³     [ms]
+</code></pre>
+<p>MoE 模型（K2.5）：拆分为 non-MoE + batch-dependent expert loading：</p>
+<pre><code>
+T_nonmoe = P_nonmoe × d / (G × BW) × 10³     [ms]    # TP-split
+E_active = min(B_eff × K, E)                           # 活跃 expert 数（batch-dependent）
+E_per_gpu = E_active / G                                # 每卡加载的 expert 数
+T_moe = E_per_gpu × P_expert × d / BW × 10³   [ms]    # 每卡串行加载
+T_weight = T_nonmoe + T_moe
+</code></pre>
+<p>关键：小 batch 时 E_active ≪ E（如 B=1, K=8 → 只加载 8/384 = 2% expert），weight loading 很快。大 batch 时所有 expert 都活跃。</p>
+<p><b>方程 3b: T_kv — KV-cache 加载时间</b></p>
+<p>每个 decode step 读取 batch 中所有 request 的全部 KV-cache 用于 attention：</p>
+<pre><code>
+G_kv = min(G, n_kv)                                  # KV 有效 GPU 数
+T_kv(j) = B_eff × L(j) × κ / (G_kv × BW × 10⁹) × 10³    [ms]
+</code></pre>
+<ul>
+<li>GQA (n_kv=8): KV 最多拆到 8 张卡</li>
+<li>MLA (n_kv=1): c_KV 不可拆，每卡读完整压缩向量</li>
+</ul>
+<p><b>方程 3c: T_compute — 计算时间</b></p>
+<pre><code>
+T_compute = 2 × P_active × B_eff / (G × F × 10¹²) × 10³  [ms]
+</code></pre>
+<p>Decode 通常 memory-bound（T_mem ≫ T_compute），但超大 batch 时可能翻转为 compute-bound。</p>
+<p><b>方程 4: 封闭排队稳态（Little's Law）</b></p>
+<p>Agent session 循环：推理 R → 暂停 Z → 推理 R → ...</p>
+<pre><code>
+ρ = R / (R + Z)                        # GPU 活跃比
+B_eff = C_eff × ρ                      # 稳态有效 batch
+X_turn = C_eff / (R/10³ + Z/10³)       # turn 吞吐 [turns/s]
+</code></pre>
+<p>B_eff 与 R 互相依赖（R 取决于 B_eff 通过 TPOT，B_eff 取决于 R 通过 ρ），需迭代求解：</p>
+<pre><code>
+初始: B_eff = 1
+重复:
+    TPOT = computeStepTime(B_eff, L(j))
+    R = TTFT + TPOT × OSL
+    ρ = R / (R + Z)
+    B_eff_new = C_eff × ρ
+    若 |B_eff_new - B_eff| &lt; ε 则收敛
+    B_eff ← 0.6 × B_eff + 0.4 × B_eff_new      # damped update
+</code></pre>
+<p><b>方程 5: KV-cache 内存约束</b></p>
+<p>KV-cache 内存限制最大并发 session 数：</p>
+<pre><code>
+M_model = P_total × d                                  # 模型权重显存 [GB]
+M_avail = G × M_gpu - M_model                          # 可用于 KV 的总显存 [GB]
+r_kv = G / min(G, n_kv)                                # KV 复制因子（GPU &gt; kvHeads 时 &gt;1）
+M_kv_session = L̄ × κ × r_kv / 10⁹                     # 每 session KV 占用 [GB]
+C_max = ⌊M_avail / M_kv_session⌋
+C_eff = min(C, C_max)
+</code></pre>
+<p>L̄ 使用 session 平均 context 长度。当 G > n_kv 时，KV 需复制到多卡，r_kv > 1，C_max 降低。</p>
+<p><b>方程 6: Task-level 映射</b></p>
+<p>从 turn-level 聚合到 task-level：</p>
+<pre><code>
+T_task = Σ_{j=1}^{N} [R(j)/10³ + Z/10³]    [s]
+X_task = X_turn / N                          [tasks/s]
+</code></pre>
+<p><b>方程 7: 标准 Serving → Agent Serving 映射</b></p>
+<p>已有标准 Pareto 数据时的快速估算：</p>
+<pre><code>
+X_agent ≈ X_serving(L_prefill_eff, OSL, B_eff) / N × ρ
+</code></pre>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">因子</th><th style="text-align:left">说明</th></tr></thead><tbody>
+<tr><td style="text-align:left">/ N</td><td style="text-align:left">每个 task 包含 N 轮</td></tr>
+<tr><td style="text-align:left">× ρ</td><td style="text-align:left">GPU 只有 ρ 比例时间在工作（其余在等工具）</td></tr>
+<tr><td style="text-align:left">L_prefill_eff</td><td style="text-align:left">有效 prefill 长度（取决于 cache 命中率和轮次）</td></tr>
+</tbody></table></div>
+<h3 id="step-8-数值推演-三种-agent-场景对比">Step 8: 数值推演 —— 三种 Agent 场景对比</h3>
+<p><b>硬件</b>: 70B 模型, 8×H100</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">参数</th><th style="text-align:left">Code Agent</th><th style="text-align:left">Research Agent</th><th style="text-align:left">Deep Reasoning</th></tr></thead><tbody>
+<tr><td style="text-align:left">并发 C</td><td style="text-align:left">32</td><td style="text-align:left">16</td><td style="text-align:left">8</td></tr>
+<tr><td style="text-align:left">平均轮数 N</td><td style="text-align:left">8</td><td style="text-align:left">15</td><td style="text-align:left">20</td></tr>
+<tr><td style="text-align:left">暂停 Z</td><td style="text-align:left">0.5s (代码执行)</td><td style="text-align:left">5.0s (web 搜索)</td><td style="text-align:left">1.0s (思考链)</td></tr>
+<tr><td style="text-align:left">初始 prompt L₀</td><td style="text-align:left">16K</td><td style="text-align:left">24K</td><td style="text-align:left">32K</td></tr>
+<tr><td style="text-align:left">ΔL per turn</td><td style="text-align:left">500 tok</td><td style="text-align:left">3000 tok</td><td style="text-align:left">4000 tok</td></tr>
+<tr><td style="text-align:left">OSL per turn</td><td style="text-align:left">128 tok</td><td style="text-align:left">64 tok</td><td style="text-align:left">4096 tok</td></tr>
+<tr><td style="text-align:left">最终 context</td><td style="text-align:left">~21K</td><td style="text-align:left">~70K</td><td style="text-align:left">~113K</td></tr>
+<tr><td style="text-align:left">Cache 命中率</td><td style="text-align:left">~95%</td><td style="text-align:left">~70%</td><td style="text-align:left">~85%</td></tr>
+<tr><td style="text-align:left">活跃比 ρ</td><td style="text-align:left">~67%</td><td style="text-align:left">~12%</td><td style="text-align:left">~82%</td></tr>
+</tbody></table></div>
+<p><b>推演结果</b>（含效率因子 η_decode=0.40, η_prefill=0.65）：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">指标</th><th style="text-align:left">Code Agent</th><th style="text-align:left">Research Agent</th><th style="text-align:left">Deep Reasoning</th></tr></thead><tbody>
+<tr><td style="text-align:left">TTFT (有 cache)</td><td style="text-align:left">~55ms</td><td style="text-align:left">~200ms</td><td style="text-align:left">~175ms</td></tr>
+<tr><td style="text-align:left">TTFT (无 cache)</td><td style="text-align:left">~580ms</td><td style="text-align:left">~3,800ms</td><td style="text-align:left">~6,200ms</td></tr>
+<tr><td style="text-align:left">TPOT</td><td style="text-align:left">~13ms</td><td style="text-align:left">~14ms</td><td style="text-align:left">~18ms</td></tr>
+<tr><td style="text-align:left">Per-turn latency R</td><td style="text-align:left">~1.7s</td><td style="text-align:left">~1.1s</td><td style="text-align:left">~74s</td></tr>
+<tr><td style="text-align:left">GPU 利用率</td><td style="text-align:left">~77%</td><td style="text-align:left">~18%</td><td style="text-align:left">~99%</td></tr>
+<tr><td style="text-align:left">Max sessions (KV)</td><td style="text-align:left">~73</td><td style="text-align:left">~21</td><td style="text-align:left">~13</td></tr>
+<tr><td style="text-align:left">Token throughput/GPU</td><td style="text-align:left">~155 tok/s</td><td style="text-align:left">~7.5 tok/s</td><td style="text-align:left">~36 tok/s</td></tr>
+</tbody></table></div>
+<p><b>关键观察</b>：</p>
+<ul>
+<li>Code Agent: 快速工具 + 短暂停 → GPU 利用率尚可，但不满载</li>
+<li>Research Agent: 慢工具 → GPU 大量空闲（88%），需要更多 session 填满</li>
+<li>Deep Reasoning: 长输出 → 高 GPU 利用率，但 KV-cache 快速膨胀限制并发</li>
+</ul>
+<h3 id="step-9-标准-serving-agent-serving-的映射公式">Step 9: 标准 Serving ↔ Agent Serving 的映射公式</h3>
+<p>从标准 serving 的 Pareto 数据可以直接推导 Agent 场景的性能：</p>
+<pre><code>
+X_agent = X_serving(effective_ISL, OSL, B_eff) / N × 1 / (1 + Z/R)
+</code></pre>
+<p>即：标准 serving 的吞吐量 → 除以平均轮数 N → 再乘以活跃比 ρ = R/(R+Z)。</p>
+<p>如果有 AIConfigurator 对某个模型/硬件的标准 Pareto 数据，可以用这个公式将它映射到 Agent 场景下的 Pareto。</p>
+<hr>
+<h2 id="4-关键结论">4. 关键结论</h2>
+<h3 id="4-1-z-暂停时间-决定-pareto-曲线位置">4.1 Z（暂停时间）决定 Pareto 曲线位置</h3>
+<p>Z 越大，曲线右移且下压。但这意味着 GPU 有大量空闲——可以通过增加并发 C 来填满，前提是 KV-cache 内存允许。</p>
+<h3 id="4-2-prefix-cache-是-agent-pareto-的-杠杆点">4.2 Prefix Cache 是 Agent Pareto 的"杠杆点"</h3>
+<ul>
+<li>有 cache 时：TTFT 几乎不随轮次增长，Pareto 曲线稳定</li>
+<li>无 cache 时：后期轮次 TTFT 暴增，Pareto 曲线随 session 寿命恶化</li>
+<li><b>Cache 命中率本身是暂停时间 Z 和并发 C 的函数</b>——这个耦合关系是 Agent 独有的</li>
+</ul>
+<h3 id="4-3-kv-cache-内存是隐藏的-第三维度">4.3 KV-Cache 内存是隐藏的"第三维度"</h3>
+<p>标准 Pareto 是 2D（throughput vs latency），但 Agent 场景需要加上第三个约束轴：<b>KV-cache memory / 最大并发 session 数</b>。一个看似很好的 throughput-latency 配置点可能因为 KV-cache 溢出而不可行。</p>
+<h3 id="4-4-初始-prompt-的影响被低估">4.4 初始 Prompt 的影响被低估</h3>
+<p>现代 agent 系统的 system prompt 非常长（Cursor ~16K tokens, Claude Code 类似），这意味着：</p>
+<ul>
+<li>即使第一轮的 TTFT 也不低（16K tokens 的 prefill）</li>
+<li>KV-cache 的基线占用就很高（16K × 320KB = 5.1 GB/session for 70B）</li>
+<li>Prefix cache 对 system prompt 部分几乎总是命中的，这是 agent 的天然优势</li>
+</ul>
+<h3 id="4-5-moe-mla-模型改变-pareto-形态">4.5 MoE + MLA 模型改变 Pareto 形态</h3>
+<p>对于 MoE + MLA 模型（如 Kimi K2.5, 1T total / 32B active, MLA d_c=512）：</p>
+<ul>
+<li><b>计算</b>: 由 active params (32B) 决定 → TTFT/TPOT 类似小模型</li>
+<li><b>带宽</b>: 每步只加载 active expert 权重 → 类似小模型</li>
+<li><b>内存</b>: 所有 expert 驻留显存 → 类似大模型（1T × FP4 = 500GB）</li>
+<li><b>KV-cache</b>: MLA 将 KV 压缩到 ~90 KB/token（vs GQA 的 320 KB），C_max 大幅增加</li>
+</ul>
+<p><b>MLA 的 KV-cache 计算</b>（Kimi K2.5 / DeepSeek-V3 架构）：</p>
+<p>MLA 不存储 K/V 原始向量，而是存储压缩后的 latent 向量 c_KV + 解耦的 RoPE key k_rope：</p>
+<pre><code>
+KV/token/layer = (d_c + d_rope) × sizeof(dtype)
+               = (512 + 64) × 2 = 1,152 bytes
+
+KV/token = 1,152 × 61 layers = 70,272 bytes ≈ 69 KB
+</code></pre>
+<p>（注：K2.5 实际 61 层，来自 <a href="https://huggingface.co/moonshotai/Kimi-K2.5/blob/main/config.json">HuggingFace config.json</a>）</p>
+<p>对比标准 GQA（Llama-70B）的 320 KB/token，MLA 压缩了 <b>4.6×</b>。</p>
+<p><b>MLA 对 TP 拆分的影响</b>：c_KV 是整体压缩向量，不按 head 拆分。每张 GPU 需读取完整 c_KV 来重建自己负责的 Q heads 对应的 K/V。因此 MLA 的 <code>kvHeads</code> 等效为 1，KV 带宽不随 TP 缩减——但绝对值小（90 KB vs 320 KB/token）。</p>
+<p>MoE + MLA 在 Agent 场景下的优势：计算快（active params 少）+ KV-cache 小（MLA 压缩）→ 可支持更多并发 session，特别适合长 context 的 agent workload。</p>
+<hr>
+<h2 id="5-性能模型详解-交互工具实现">5. 性能模型详解（交互工具实现）</h2>
+<p><a href="/tools/agent-pareto.html">Agent Serving Pareto Explorer</a> 基于以下性能模型实现：</p>
+<h3 id="5-1-ttft-模型-prefill-compute-bound">5.1 TTFT 模型（Prefill, compute-bound）</h3>
+<pre><code>
+TTFT(L) = 2 × active_params × L / total_FLOPS / η_prefill    (η_prefill ≈ 0.65)
+</code></pre>
+<ul>
+<li>active_params: 对 dense 模型等于 model_size，对 MoE 等于 active_size</li>
+<li>total_FLOPS: 根据模型精度自动选择 FP16/FP8/FP4 TFLOPS</li>
+<li>FP4 模型在 B200/MI355X 上使用 FP4 TFLOPS（原生支持）</li>
+<li>FP4 模型在 H100/H200 上回退到 FP8 TFLOPS（解量化执行）</li>
+</ul>
+<h3 id="5-2-tpot-模型-decode-memory-bound">5.2 TPOT 模型（Decode, memory-bound）</h3>
+<p><b>Dense 模型</b>（Llama 系列）：</p>
+<pre><code>
+T_weight  = model_params × dtype_bytes / (numGPUs × BW_per_GPU)     # TP-split
+T_kv      = B × L_avg × kvBPT / (min(numGPUs, kvHeads) × BW)       # GQA head-split
+T_compute = 2 × model_params × B / total_FLOPS
+T_memory  = (T_weight + T_kv) × 1.10                                # +10% elementwise
+TPOT      = max(T_memory, T_compute) / η_decode
+</code></pre>
+<p><b>MoE 模型</b>（Kimi K2.5）—— 权重加载拆分为 non-MoE + MoE：</p>
+<pre><code>
+# non-MoE: attention + shared experts + embeddings, TP-split
+T_nonmoe  = nonMoeB × dtype_bytes / (numGPUs × BW_per_GPU)
+
+# MoE: only active experts load weights, distributed across GPUs
+active_experts = min(B × topK, totalExperts)      # e.g. min(10×8, 384) = 80
+active_per_gpu = active_experts / numGPUs          # e.g. 80/8 = 10
+T_moe     = active_per_gpu × expertB × dtype_bytes / BW_per_GPU
+
+T_weight  = T_nonmoe + T_moe
+T_kv      = B × L_avg × kvBPT / (min(numGPUs, kvHeads) × BW)
+T_compute = 2 × activeSize × B / total_FLOPS
+T_memory  = (T_weight + T_kv) × 1.10
+TPOT      = max(T_memory, T_compute) / η_decode
+</code></pre>
+<p>K2.5 的 expert 极小（44M = 22MB in FP4），weight loading 瓶颈在 non-MoE（11.5B）和 KV-cache，不在 expert。小 batch 时大量 expert 不被路由，进一步减少 weight loading。</p>
+<p><b>模型参数来源</b>: 所有配置从 HuggingFace config.json 获取：</p>
+<ul>
+<li>K2.5: <a href="https://huggingface.co/moonshotai/Kimi-K2.5/blob/main/config.json">moonshotai/Kimi-K2.5</a></li>
+<li>Llama: <a href="https://huggingface.co/meta-llama">meta-llama/Llama-3.1-*</a></li>
+</ul>
+<h3 id="5-3-闭环稳态求解">5.3 闭环稳态求解</h3>
+<p>对于给定的并发 C，通过迭代求解稳态 B_eff：</p>
+<pre><code>
+repeat:
+    tpot = computeStepTime(B_eff, L_avg, hw)
+    R = TTFT + tpot × OSL
+    ρ = R / (R + Z)
+    B_eff_new = C × ρ
+until converged
+</code></pre>
+<h3 id="5-4-硬件参数">5.4 硬件参数</h3>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">GPU</th><th style="text-align:left">HBM BW</th><th style="text-align:left">FP16 TFLOPS</th><th style="text-align:left">FP8 TFLOPS</th><th style="text-align:left">FP4 TFLOPS</th><th style="text-align:left">VRAM</th></tr></thead><tbody>
+<tr><td style="text-align:left">H100 SXM</td><td style="text-align:left">3,350 GB/s</td><td style="text-align:left">989</td><td style="text-align:left">1,979</td><td style="text-align:left">—</td><td style="text-align:left">80 GB</td></tr>
+<tr><td style="text-align:left">H200 SXM</td><td style="text-align:left">4,800 GB/s</td><td style="text-align:left">989</td><td style="text-align:left">1,979</td><td style="text-align:left">—</td><td style="text-align:left">141 GB</td></tr>
+<tr><td style="text-align:left">B200</td><td style="text-align:left">8,000 GB/s</td><td style="text-align:left">2,250</td><td style="text-align:left">4,500</td><td style="text-align:left">9,000</td><td style="text-align:left">192 GB</td></tr>
+<tr><td style="text-align:left">MI355X</td><td style="text-align:left">8,000 GB/s</td><td style="text-align:left">2,500</td><td style="text-align:left">5,000</td><td style="text-align:left">10,000</td><td style="text-align:left">288 GB</td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="6-参考资料">6. 参考资料</h2>
+<h3 id="论文">论文</h3>
+<ol>
+<li><b>AIConfigurator</b> (2601.06288): *Lightning-Fast Configuration Optimization for Multi-Framework LLM Serving*. NVIDIA, 2025.</li>
+</ol>
+<ul>
+<li>算子级性能建模方法论，Pareto 分析框架</li>
+<li><a href="/papers/2601.06288.html">Paper Reading Notes</a></li>
+</ul>
+<ol>
+<li><b>Sutradhara</b> (2601.12967): *An Intelligent Orchestrator-Engine Co-design for Tool-based Agentic Inference*. 2026.</li>
+</ol>
+<ul>
+<li>Orchestrator-engine co-design for agent serving</li>
+<li>prompt splitting, prefill-tool overlap</li>
+<li><a href="/papers/2601.12967.html">Paper Reading Notes</a></li>
+</ul>
+<ol>
+<li><b>DualPath</b> (2602.21548): *Breaking the Storage Bandwidth Bottleneck in Agentic LLM Inference*. 2026.</li>
+</ol>
+<ul>
+<li>Dual-path KV-Cache loading for PD-disaggregated agent inference</li>
+<li><a href="/papers/2602.21548.html">Paper Reading Notes</a></li>
+</ul>
+<ol>
+<li><b>DynaServe</b> (2504.09285): *Unified and Elastic Execution for Dynamic Disaggregated LLM Serving*. 2025.</li>
+</ol>
+<ul>
+<li>Micro-request abstraction, two-level scheduling</li>
+<li><a href="/papers/2504.09285.html">Paper Reading Notes</a></li>
+</ul>
+<h3 id="硬件白皮书">硬件白皮书</h3>
+<ol>
+<li><b>NVIDIA Blackwell Architecture</b>: B200 spec, FP4 Tensor Core</li>
+</ol>
+<ul>
+<li><a href="/papers/nv-blackwell-whitepaper.html">Paper Reading Notes</a></li>
+</ul>
+<ol>
+<li><b>AMD CDNA 4 Architecture</b>: MI355X spec, MXFP4/FP8</li>
+</ol>
+<ul>
+<li><a href="/papers/amd-cdna4-whitepaper.html">Paper Reading Notes</a></li>
+</ul>
+<h3 id="排队论基础">排队论基础</h3>
+<ol>
+<li><b>Lazowska et al.</b> *Quantitative System Performance* (1984). Closed-loop queuing models, MVA.</li>
+</ol>
+<ol>
+<li><b>Little's Law</b>: L = λW. 封闭系统形式: X = C / (R + Z).</li>
+</ol>
+<h3 id="agent-系统">Agent 系统</h3>
+<ol>
+<li><b>Cursor IDE</b>: System prompt ~16K tokens, multi-turn code agent</li>
+<li><b>Claude Code</b> (Anthropic): CLI-based coding agent, similar prompt structure</li>
+<li><b>OpenAI Agents SDK</b>: Multi-agent workflow framework</li>
+</ol>
+<ul>
+<li><a href="/papers/openai-openai-agents-python.html">Code Reading Notes</a></li>
+</ul>
+<hr>
+<h2 id="7-修订历史">7. 修订历史</h2>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">日期</th><th style="text-align:left">变更</th></tr></thead><tbody>
+<tr><td style="text-align:left">2026-04-17</td><td style="text-align:left">初始版本：完整推演 + 交互工具</td></tr>
+</tbody></table></div>
+</div>
+<footer>Built with Claude Opus 4.6 &middot; <a href="/knowledge/">Back to Knowledge Base</a></footer>
+</body>
+</html>
