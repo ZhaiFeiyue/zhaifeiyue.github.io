@@ -7,6 +7,19 @@ PAPERS_DIR="$SITE_DIR/papers"
 
 mkdir -p "$PAPERS_DIR"
 
+# Pre-flight: LaTeX validation. Stray $ for currency, CJK in math etc.
+# would render as red garbage on the published pages, so block the sync.
+if [ -f "$PAPER_DB/tools/check_latex.py" ]; then
+  echo "Running LaTeX pre-flight check on all notes..."
+  if ! python3 "$PAPER_DB/tools/check_latex.py" --all --summary; then
+    echo
+    echo "❌ LaTeX errors found. Run with details:"
+    echo "   python3 $PAPER_DB/tools/check_latex.py --all --quiet"
+    echo "   python3 $PAPER_DB/tools/check_latex.py --all --fix    # auto-escape currency"
+    exit 1
+  fi
+fi
+
 python3 - "$PAPER_DB" "$SITE_DIR" << 'PYEOF'
 import json, os, sys, re, html, base64, mimetypes, shutil
 from pathlib import Path

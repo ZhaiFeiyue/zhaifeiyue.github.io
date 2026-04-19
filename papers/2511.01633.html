@@ -166,7 +166,7 @@ footer {
 <h2 id="core-contribution">Core Contribution</h2>
 <p><b>GLM</b> 是第一个把 Graph-CoT (LLM 在知识图谱上逐步推理) 的 <b>reasoning 架构</b> 和 <b>LLM serving 架构 co-design</b> 的系统：在上层用 C/R/A 三个专门化 agent + Graph-RAG retriever 取代"单 agent monolithic prompt"，在下层用 vertex-centric KV-cache reuse + 四级优先级驱逐 + retrieval/decoding pipelined execution，同时把 Graph-CoT 的 token 成本降 95.7%、延迟降 90.3%、吞吐升 15.1×，而准确率 R-L 提升 38%。</p>
 <h2 id="summary">Summary</h2>
-<p><b>背景与痛点</b>：Graph-CoT（Jin et al., ACL 2024）让 LLM 在知识图谱上"查节点→取邻居→累积证据→再推理"的迭代闭环里解答多跳问题，但现有实现把所有功能（判断是否该停、生成下一步动作、总结当前已知）塞进一个 agent 的 monolithic prompt。其后果双重：(1) <b>accuracy-cost 剪刀差</b>：每轮都把完整上下文 + 中间痕迹重新喂回去，一个 query 40k+ tokens，GPT-4.5 单次 $1.9–$3.6，但 R-L 只有 0.31–0.46，远低于业界 0.50 的"可靠推理"门槛，并随着步数从 3 涨到 9，GPTScore 反从 0.42 跌到 0.17（lost-in-the-middle）；(2) <b>serving 失效</b>：每步 prompt 都是"不同的 prefix + 飘动的中间状态"，vLLM 标配的 prefix caching 命中率只有 61%，LRU 会把马上要复用的图事实驱逐掉，而图检索（向量相似度搜索）又占了 23% 端到端时间却完全序列化。</p>
+<p><b>背景与痛点</b>：Graph-CoT（Jin et al., ACL 2024）让 LLM 在知识图谱上"查节点→取邻居→累积证据→再推理"的迭代闭环里解答多跳问题，但现有实现把所有功能（判断是否该停、生成下一步动作、总结当前已知）塞进一个 agent 的 monolithic prompt。其后果双重：(1) <b>accuracy-cost 剪刀差</b>：每轮都把完整上下文 + 中间痕迹重新喂回去，一个 query 40k+ tokens，GPT-4.5 单次 \$1.9–\$3.6，但 R-L 只有 0.31–0.46，远低于业界 0.50 的"可靠推理"门槛，并随着步数从 3 涨到 9，GPTScore 反从 0.42 跌到 0.17（lost-in-the-middle）；(2) <b>serving 失效</b>：每步 prompt 都是"不同的 prefix + 飘动的中间状态"，vLLM 标配的 prefix caching 命中率只有 61%，LRU 会把马上要复用的图事实驱逐掉，而图检索（向量相似度搜索）又占了 23% 端到端时间却完全序列化。</p>
 <p><b>方法</b>：GLM 从两个层面 co-design。<b>上层多 agent 框架</b>把单 agent 拆成 C-Agent（判定 deterministic vs. non-deterministic）、R-Agent（基于 notebook 累积的事实判断是否已经能答，否则给出"缺什么"）、A-Agent（把"缺什么"翻译成一段可 exec 的 Python 代码段，调用 Graph-RAG 原语）和 Graph-RAG Retriever（执行代码、返回 vertex chunk）。Determinstic 分支 1 次分类 + 1 次代码生成 + 1 次检索直接结束；non-deterministic 进入 R/A 轮换，每轮 notebook 只累积新事实而不是整段推理。A-Agent 生成的是"多 RetrieveNode/NodeFeature 调用 + if/for/set/dict + 单 print()"的完整 snippet，把原本 k1 轮 LLM call 压缩到 k2+1 轮。<b>下层 Graph-CoT-aware inference</b>含三件事：(1) <b>vertex chunk</b> 作为 KV cache 的复用单元——把 [Node{attrs}][neighbours(top-k by weight){attrs}] 作为一个 coarse chunk，让不同 query/不同 agent 只要碰到同一个节点就能命中已算好的 KV；(2) <b>四级优先级驱逐</b>：P-I = 三个 agent 的共享 prompt prefix（永不驱逐）、P-II = 当前会话的 notebook（会话内复用）、P-III = 已完成会话的 notebook（跨 query 可复用）、P-IV = 临时的 missing-info / 原始 question（最先驱逐），每级内部仍用 LRU；(3) <b>pipelined execution</b>：A-Agent 生成的代码第一行几乎总是 <code>RetrieveNode()</code>（向量检索，最贵的一步），系统 streaming 地读 A-Agent 输出，一旦检测到这行就立刻触发检索，让它与后续 token 的 decode 并行，同时用 LRU global cache 把 RetrieveNode(text)→nodeID 映射缓存起来消除重复调用。</p>
 <p><b>结果</b>：GRBench 1040 个问题 × 5 个领域（academia/e-commerce/literature/healthcare/legal）上，相对 Graph-CoT baseline：R-L 0.31–0.46 → 0.55–0.77（up to +38%）；单 query token 22,613–45,490 → 1,538–2,974（↓95.7%，其中 LLM call 数 9–14 → 2–3，每 call token 1,875–4,483 → 769–991）；延迟 11.3–38.6s → 2.8–5.9s（↓74.7–90.3%）；吞吐 0.6–2.2 QPS → 6.8–9.1 QPS（up to 15.1×）。消融：pipelined execution 单独把延迟降 47.8%，vertex-centric reuse 单独把吞吐升 41.6% 且 hit rate +17.7%，priority eviction 再贡献吞吐 +14.3%、miss rate −15.1%。</p>
 <h2 id="key-findings">Key Findings</h2>
@@ -228,7 +228,7 @@ footer {
 <p><b>Why it matters</b>: 说明三项优化彼此正交贡献——pipeline 专治延迟，vertex-centric 专治 hit-rate，priority eviction 补上高并发下的内存管理缺口，组合起来才吃到 15.1× 吞吐的上限。</p>
 <p><b>Detailed description</b>: (a) 柱状 pipeline vs. non-pipeline 延迟对比，pipeline 降 47.8%；(b)(c) 开/关 vertex-centric 下的 throughput bar / hit rate bar，throughput +41.6%、hit rate +17.7%；(d)(e) 四级优先级 vs. 单队列 LRU 的 throughput bar / miss rate bar，throughput +14.3%、miss rate −15.1%。</p>
 <h2 id="key-tables">Key Tables</h2>
-<h3>Table 1: Graph-CoT vs. GLM 端到端对比（Cost $ / R-L / Latency）</h3>
+<h3>Table 1: Graph-CoT vs. GLM 端到端对比（Cost \$ / R-L / Latency）</h3>
 <table class="md-table"><tr><th>Domain</th><th>GC Cost($)</th><th>GC R-L</th><th>GC Lat(s)</th><th>GLM Cost($)</th><th>GLM R-L</th><th>GLM Lat(s)</th></tr>
 <tr><td>Academic</td><td>1.9</td><td>0.31</td><td>27.2</td><td><b>0.1</b></td><td><b>0.55</b></td><td><b>3.0</b></td></tr>
 <tr><td>E-commerce</td><td>1.9</td><td>0.39</td><td>17.8</td><td><b>0.1</b></td><td><b>0.77</b></td><td><b>3.1</b></td></tr>
@@ -236,7 +236,7 @@ footer {
 <tr><td>Healthcare</td><td>3.6</td><td>0.33</td><td>38.6</td><td><b>0.2</b></td><td><b>0.62</b></td><td><b>3.4</b></td></tr>
 <tr><td>Legal</td><td>2.8</td><td>0.46</td><td>22.8</td><td><b>0.2</b></td><td><b>0.63</b></td><td><b>5.9</b></td></tr>
 </table>
-<p><b>Takeaway</b>: 成本从 $1.7–$3.6 → $0.1–$0.2（~20×）；R-L 全部从 <0.50 跨过 0.50 阈值；延迟从 11.3–38.6s → 2.8–5.9s，全部进入"交互式"区间。</p>
+<p><b>Takeaway</b>: 成本从 \$1.7–\$3.6 → \$0.1–\$0.2（~20×）；R-L 全部从 <0.50 跨过 0.50 阈值；延迟从 11.3–38.6s → 2.8–5.9s，全部进入"交互式"区间。</p>
 <h3>Table 4: 与四类 baseline 的精度对比（R-L / GPTScore）</h3>
 <table class="md-table"><tr><th>Method</th><th>Acad R-L</th><th>Acad GS</th><th>Ecom R-L</th><th>Ecom GS</th><th>Lit R-L</th><th>Lit GS</th><th>Heal R-L</th><th>Heal GS</th><th>Legal R-L</th><th>Legal GS</th></tr>
 <tr><td>Base</td><td>0.09</td><td>0.15</td><td>0.14</td><td>0.20</td><td>0.11</td><td>0.23</td><td>0.06</td><td>0.20</td><td>0.16</td><td>0.26</td></tr>
@@ -366,7 +366,7 @@ footer {
 </ul>
 <h3>6. Target Scenarios & Workload Characterization</h3>
 <table class="md-table"><tr><th>Scenario</th><th>Workload Pattern</th><th>SLO / Goal</th><th>Why existing systems fail</th></tr>
-<tr><td>图谱问答 (KGQA)</td><td>多跳聚合、中频并发</td><td>E2E < 5s, cost < $0.5/query</td><td>Graph-CoT 单 agent token 爆炸</td></tr>
+<tr><td>图谱问答 (KGQA)</td><td>多跳聚合、中频并发</td><td>E2E < 5s, cost < \$0.5/query</td><td>Graph-CoT 单 agent token 爆炸</td></tr>
 <tr><td>结构化推荐 (E-commerce)</td><td>短 query、要节点间共现</td><td>TTFT < 500ms, throughput ≥ 5 QPS</td><td>vLLM LRU + 单 agent prefix 不稳</td></tr>
 <tr><td>医疗多跳推理</td><td>长推理链、低并发高准确</td><td>R-L > 0.5</td><td>lost-in-the-middle 主宰精度</td></tr>
 </table>
@@ -383,7 +383,7 @@ footer {
 </table>
 <p>#### 7b. Before-After</p>
 <table class="md-table"><tr><th>Optimization</th><th>Metric</th><th>Baseline</th><th>After</th><th>Improv</th><th>Conditions</th></tr>
-<tr><td>Multi-agent + code-gen</td><td>Cost / query</td><td>$1.7–$3.6</td><td>$0.1–$0.2</td><td>~20×</td><td>Qwen3-235B-A22B, GRBench</td></tr>
+<tr><td>Multi-agent + code-gen</td><td>Cost / query</td><td>\$1.7–\$3.6</td><td>\$0.1–\$0.2</td><td>~20×</td><td>Qwen3-235B-A22B, GRBench</td></tr>
 <tr><td>Multi-agent + code-gen</td><td>R-L (avg across 5 domain)</td><td>0.31–0.46</td><td>0.55–0.77</td><td>+38% abs on worst</td><td>same</td></tr>
 <tr><td>Multi-agent + code-gen</td><td>LLM calls / query</td><td>9–14</td><td>2–3</td><td>~4–5× fewer</td><td>same</td></tr>
 <tr><td>Pipelined execution</td><td>e2e latency</td><td>4.3–10.2 s</td><td>2.8–5.3 s</td><td>↓47.8%</td><td>with vertex-centric already on</td></tr>
