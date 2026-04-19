@@ -414,11 +414,19 @@ DRAWIO_BOOTSTRAP_JS = """<script>
       resize: false,
       toolbar: 'zoom layers tags lightbox pages',
       'toolbar-position': 'top',
-      // fit:1 → viewer scales the diagram to fit the container width on init,
-      // eliminating large empty margins around small diagrams.
+      // fit:1 + auto-fit → viewer scales the diagram to fit the container width
+      // on init AND on layout changes, eliminating empty margins around small
+      // diagrams.
       fit: 1,
       'auto-fit': 1,
-      // When users zoom out beyond fit, allow scroll within container.
+      // border: minimum padding (in source-coord pixels) around the diagram
+      // inside the SVG viewport. Default is 60 → leaves visible white frame.
+      // 5 is tight but avoids clipping anti-aliased strokes.
+      border: 5,
+      // 'page-visible' false hides the drawio "page" rectangle background
+      // (which would otherwise outline the canvas in light gray and look like
+      // wasted space when the diagram is smaller than the page).
+      'page-visible': false,
       lightbox: false,
       edit: '_blank',
       xml: src.textContent.trim(),
@@ -433,10 +441,16 @@ DRAWIO_BOOTSTRAP_JS = """<script>
 
 
 def compute_drawio_page_bounds(drawio_path, page_idx):
-    """Parse drawio XML and return (width, height) in pixels for page_idx.
+    """Parse drawio XML and return TIGHT (width, height) in pixels for page_idx.
 
-    Walks every <mxCell><mxGeometry x= y= width= height=> within the requested
-    <diagram> page, computes max(x+width) and max(y+height) across cells.
+    Computes the actual content bounding box (max_xy - min_xy) instead of
+    naive max(x+width). LLM-authored drawios often start cells at x=40, y=10
+    or even larger offsets; using just max(x+w) lets that wasted top/left
+    margin become real blank space in the rendered container. The drawio
+    viewer's `fit:1` + `border:5` config will re-center the content within
+    the tight bounding box, eliminating both inner viewer margin AND
+    outer container padding caused by stale offsets.
+
     Falls back to (1000, 600) on parse error.
     """
     try:
@@ -447,9 +461,8 @@ def compute_drawio_page_bounds(drawio_path, page_idx):
         if not diagrams:
             return (1000, 600)
         page = diagrams[min(page_idx, len(diagrams) - 1)]
-        # diagram may contain raw mxGraphModel OR base64-compressed text.
-        # Sub-agent-authored files are always raw; vendor exports may be compressed.
-        max_x, max_y = 0, 0
+        min_x, min_y = float('inf'), float('inf')
+        max_x, max_y = 0.0, 0.0
         for geom in page.iter('mxGeometry'):
             try:
                 x = float(geom.get('x', 0))
@@ -459,14 +472,20 @@ def compute_drawio_page_bounds(drawio_path, page_idx):
                 # ignore relative/edge geometries (they have x/y but no width)
                 if w == 0 and h == 0:
                     continue
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
                 max_x = max(max_x, x + w)
                 max_y = max(max_y, y + h)
             except (TypeError, ValueError):
                 continue
-        # Add 30pt margin on right & bottom to avoid clipping
-        if max_x < 100 or max_y < 50:
+        if max_x < 100 or max_y < 50 or min_x == float('inf'):
             return (1000, 600)
-        return (int(max_x + 30), int(max_y + 30))
+        # Tight bbox: subtract leading offset so a diagram starting at (40,10)
+        # doesn't inflate the container by those leftover margins.
+        used_w = max_x - min_x
+        used_h = max_y - min_y
+        # Keep 5pt slack on each side for anti-aliased stroke clipping.
+        return (int(used_w + 10), int(used_h + 10))
     except Exception:
         return (1000, 600)
 
