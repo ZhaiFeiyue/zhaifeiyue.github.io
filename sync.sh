@@ -20,6 +20,20 @@ if [ -f "$PAPER_DB/tools/check_latex.py" ]; then
   fi
 fi
 
+# Pre-flight: image-duplicate check. Sub-agents that download Tier-1 (xN.png)
+# AND rename them to semantic names (figN-...) leave both copies behind.
+if [ -f "$PAPER_DB/tools/dedupe_images.py" ]; then
+  echo "Checking for duplicate PNGs..."
+  if ! python3 "$PAPER_DB/tools/dedupe_images.py" --check >/dev/null 2>&1; then
+    echo
+    echo "❌ Duplicate images detected. Run:"
+    echo "   python3 $PAPER_DB/tools/dedupe_images.py --dry-run   # preview"
+    echo "   python3 $PAPER_DB/tools/dedupe_images.py             # auto-clean safe dups"
+    python3 "$PAPER_DB/tools/dedupe_images.py" --check
+    exit 1
+  fi
+fi
+
 python3 - "$PAPER_DB" "$SITE_DIR" << 'PYEOF'
 import json, os, sys, re, html, base64, mimetypes, shutil
 from pathlib import Path
