@@ -810,6 +810,35 @@ footer {
 <p>2. <b>Prefix cache rebalancing</b>: 全局 KVCache manager 在检测到 hotspot 时会跨 cluster 复制 prefix 块, 数据量按热点 prefix 体积变化, 频率较低（min/hour 量级）, 不能 overlap, 阻塞调度器决策但不阻塞用户请求路径。</p>
 <p>3. <b>Intra-cluster RDMA KV transfer (PD-P → PD-D)</b>: 数据量同 transfer-cache, 但走 800 Gbps RDMA, 几 ms 内完成, 在论文模型中假设"never bottlenecks"。</p>
 <h3>3. Design Space & Constraint Analysis (extends Phase 2)</h3>
+<p><b>3.0 论证链重构 (Argument Chain Reconstruction) — 批判前的对内梳理</b></p>
+<p>在做 3a-3e 之前先把作者的论证链拆成 explicit 步骤, 这样质疑和绑定批判才能精确锚定到 step k, 而不是攻击我自己脑补的简化版:</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:right">Step</th><th style="text-align:left">Premise (引用)</th><th style="text-align:left">Conclusion</th><th style="text-align:left">Load-bearing?</th></tr></thead><tbody>
+<tr><td style="text-align:right">1</td><td style="text-align:left">跨 DC 链路经济上限 ~100 Gbps; dense MHA 在 32K 时 KV throughput 巨大 (~480 Gbps for 64-instance 集群) (§2.1, Table 1, Figure 2)</td><td style="text-align:left">MHA 跨 DC <b>不可行</b> (4× 数量级差)</td><td style="text-align:left">load-bearing 但已被生态验证 (Llama-3+ 全转 GQA), 论文不在此攻防</td></tr>
+<tr><td style="text-align:right">2</td><td style="text-align:left">GQA/MLA 在 32K 仍吐 33-60 Gbps (Table 3 dense 列 = MiniMax-M2.5 GQA / Qwen3-235B GQA), 512 H200 集群仍需 2-4 Tbps</td><td style="text-align:left"><b>GQA/MLA 必要不充分</b> — 已经做了一层压缩, 但仍超出 100 Gbps 跨 DC 链路一个数量级</td><td style="text-align:left"><b>load-bearing</b>, 这是论文 §2.2 的核心 motivation</td></tr>
+<tr><td style="text-align:right">3</td><td style="text-align:left">hybrid stack (linear+full 交替) 在 GQA/MLA 之上<b>再压一个数量级</b> (Kimi Linear 3:1 KDA:MLA → 3-8 Gbps; Ring-2.5-1T 7:1 累计 36×) (Table 3 hybrid 列, §2.2)</td><td style="text-align:left"><b>hybrid stack 把"必要"变"充分"</b> — 跨 DC 第一次 BW-feasible</td><td style="text-align:left"><b>load-bearing</b>, 整个 PrfaaS 论点的存活基石</td></tr>
+<tr><td style="text-align:right">4</td><td style="text-align:left">hybrid stack 让"够用"成立, 但 bursty + 长度偏态 + prefix 不均 + 抖动让 naive 全外部化失败 (§3 + Table 6 naive 仅 +16%)</td><td style="text-align:left">必须叠加 selective offloading + dual-timescale 调度 (PrfaaS-PD 三件套)</td><td style="text-align:left"><b>load-bearing</b>, 但相对独立 (即使 step 3 弱化, 调度论点仍部分有效)</td></tr>
+<tr><td style="text-align:right">5</td><td style="text-align:left">1T 模型案例验证三件套联合给出 +54% Λ_max / -64% P90 TTFT, 出口仅占 13% 链路 (§4)</td><td style="text-align:left">PrfaaS-PD 在 1T hybrid + ~27K mean 长度 + log-normal 分布下<b>生产可用</b></td><td style="text-align:left">decorative — 案例验证, 不是论证基础</td></tr>
+</tbody>
+</table></div>
+<p><b>论证链已经被论文自身预先封堵的常见反对</b>:</p>
+<ul>
+<li>"GQA/MLA 不就够了吗?" → step 2 的 Table 3 用具体 33-60 Gbps 数字直接证否</li>
+<li>"naive 异构应该够吧?" → step 4 用 Table 6 的 1.16× vs 1.54× 直接证否</li>
+<li>"MHA 回归怎么办?" → 论文根本不需要回答, 因为 step 1 早被生态淘汰, 论文里的 "dense" 在 Table 1 里已经只列 GQA/MLA</li>
+</ul>
+<p><b>真正可攻击的位置</b> (后续 3c/3e 必须锚定到这些 step):</p>
+<ul>
+<li>step 3 的 premise: hybrid stack 路线持续主流 (medium-beta, 短期安全, 1-2 年窗口风险来自 native sparse attn / 模型级 2-bit KV 量化 / Mamba 全替代)</li>
+<li>step 4 的 premise: log-normal(mean ~27K) workload 假设 (短聊天负载 ShareGPT mean 1-2K 下 PrfaaS 不再适用)</li>
+<li>step 5 的 premise: 等成本下 +54% 缩为 +15% (论文坦诚, 但这是经济性边界)</li>
+</ul>
+<p>不应攻击的位置 (脑补稻草人):</p>
+<ul>
+<li>❌ "若 dense 回归" — step 1 已被生态完成, 论文不在此攻防</li>
+<li>❌ "若 GQA/MLA 失效" — step 2 已用数据证明 GQA/MLA 即便存在也不够, 攻击它无意义</li>
+<li>❌ "若 hybrid 不主流" — 必须改为 specific alternative 路径 (见 step 3 的真实可攻击点)</li>
+</ul>
 <p><b>3a. Alternative Approaches</b> — 这篇论文真正的"约束推导"密度很高, 我把作者隐含的拒绝路径展开:</p>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">方案</th><th style="text-align:left">核心</th><th style="text-align:left">是否可行</th><th style="text-align:left">失败原因</th></tr></thead><tbody>
