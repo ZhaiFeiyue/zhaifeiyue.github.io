@@ -440,6 +440,151 @@ DRAWIO_BOOTSTRAP_JS = """<script>
 <script type="text/javascript" src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>"""
 
 
+def compact_drawio_xml(drawio_path, max_row_gap=20):
+    """Read drawio XML, COLLAPSE vertical empty space > max_row_gap inside
+    every page, return the modified XML as a string.
+
+    LLM-authored drawios often place cells with naive y coordinates that
+    leave huge gaps (e.g. row at y=160, next row at y=350 → 190pt blank).
+    Visually this looks like "the diagram is half empty". This function
+    detects such gaps in each page and shifts subsequent rows upward so
+    no gap exceeds max_row_gap pixels.
+
+    CONTAINER cells (style contains 'container=1' / 'swimlane' / 'group',
+    or width > 500 AND height > 300) are EXCLUDED from gap-detection —
+    they visually wrap content but their height is decorative; gaps
+    inside them must be detected via the inner cells. After shifting,
+    container heights are also auto-shrunk to fit their inner content.
+
+    Edges that reference cells by source/target id automatically follow
+    their cells. Edges with absolute mxPoint waypoints are also shifted.
+    """
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(drawio_path)
+    root = tree.getroot()
+
+    def _is_container(cell):
+        s = (cell.get('style') or '').lower()
+        return ('container=1' in s or 'swimlane' in s
+                or s.startswith('group') or 'group;' in s)
+
+    for page in root.findall('.//diagram'):
+        # 1. Collect inner-cell intervals; track containers separately so
+        #    we can shrink them after.
+        inner_intervals = []     # (y, y+h) for non-container cells
+        containers = []          # (mxCell, mxGeometry, original_y, h)
+        all_geoms = []           # for the shift pass
+        for c in page.iter('mxCell'):
+            g = c.find('mxGeometry')
+            if g is None:
+                continue
+            try:
+                y = float(g.get('y', 0))
+                w = float(g.get('width', 0))
+                h = float(g.get('height', 0))
+            except (TypeError, ValueError):
+                continue
+            all_geoms.append(g)
+            if w == 0 and h == 0:
+                continue
+            is_big_container = _is_container(c) or (w > 500 and h > 300)
+            if is_big_container:
+                containers.append((c, g, y, h))
+            else:
+                inner_intervals.append((y, y + h))
+
+        if not inner_intervals:
+            continue
+        inner_intervals.sort()
+
+        # 2. Merge overlapping intervals → "row coverage" segments
+        merged = []
+        for y_s, y_e in inner_intervals:
+            if merged and y_s <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], y_e))
+            else:
+                merged.append((y_s, y_e))
+
+        # 3. Find gaps > max_row_gap
+        shifts = []  # (after_y_threshold, delta)
+        for i in range(1, len(merged)):
+            gap = merged[i][0] - merged[i - 1][1]
+            if gap > max_row_gap:
+                delta = gap - max_row_gap
+                shifts.append((merged[i][0], delta))
+        if not shifts:
+            continue
+
+        def _shift_y(y_val):
+            cumulative = 0
+            for after_y, delta in shifts:
+                if y_val >= after_y - 0.5:
+                    cumulative += delta
+            return y_val - cumulative
+
+        # 4. Shift all mxGeometry y + mxPoint y waypoints
+        for g in all_geoms:
+            try:
+                y = g.get('y')
+                if y is not None:
+                    g.set('y', str(_shift_y(float(y))))
+            except (TypeError, ValueError):
+                pass
+        for g in page.iter('mxGeometry'):
+            for pt in g.iter('mxPoint'):
+                py = pt.get('y')
+                if py is not None:
+                    try:
+                        pt.set('y', str(_shift_y(float(py))))
+                    except (TypeError, ValueError):
+                        pass
+
+        # 5. Shrink container heights so they end where their inner content
+        #    ends (post-shift). Each container's new height = sum of all
+        #    deltas whose threshold falls inside the container's vertical
+        #    extent.
+        for cell, g, orig_y, orig_h in containers:
+            shrink = sum(d for after_y, d in shifts
+                         if orig_y < after_y <= orig_y + orig_h)
+            if shrink > 0:
+                try:
+                    new_h = max(40.0, float(g.get('height', orig_h)) - shrink)
+                    g.set('height', str(new_h))
+                except (TypeError, ValueError):
+                    pass
+
+    return ET.tostring(root, encoding='unicode')
+
+
+def compute_drawio_page_bounds_from_xml(xml_string, page_idx):
+    """Same as compute_drawio_page_bounds but takes XML string (post-compact)."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_string)
+    diagrams = root.findall('.//diagram')
+    if not diagrams:
+        return (1000, 600)
+    page = diagrams[min(page_idx, len(diagrams) - 1)]
+    min_x, min_y = float('inf'), float('inf')
+    max_x, max_y = 0.0, 0.0
+    for geom in page.iter('mxGeometry'):
+        try:
+            x = float(geom.get('x', 0))
+            y = float(geom.get('y', 0))
+            w = float(geom.get('width', 0))
+            h = float(geom.get('height', 0))
+            if w == 0 and h == 0:
+                continue
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x + w)
+            max_y = max(max_y, y + h)
+        except (TypeError, ValueError):
+            continue
+    if max_x < 100 or max_y < 50 or min_x == float('inf'):
+        return (1000, 600)
+    return (int(max_x - min_x + 10), int(max_y - min_y + 10))
+
+
 def compute_drawio_page_bounds(drawio_path, page_idx):
     """Parse drawio XML and return TIGHT (width, height) in pixels for page_idx.
 
@@ -524,8 +669,12 @@ def extract_drawio(md_text, state):
         except ValueError:
             page_num = 0
 
-        # Compute REAL bounding box from XML — eliminates the blank-space bug
-        bw, bh = compute_drawio_page_bounds(drawio_path, page_num)
+        # Compact the drawio: collapse vertical gaps > 30pt inside each page.
+        # This is a format transform — it doesn't touch the source file, just
+        # the inlined copy used for browser rendering.
+        compacted_xml = compact_drawio_xml(drawio_path, max_row_gap=30)
+        # Compute bbox AFTER compaction so the container fits the tightened diagram.
+        bw, bh = compute_drawio_page_bounds_from_xml(compacted_xml, page_num)
         # Aspect ratio CSS: container fills width responsively, height auto.
         # NOTE: do NOT set max-height — combining max-height with aspect-ratio
         # + width:100% causes the container to be wider than `width/ratio` on
@@ -537,12 +686,11 @@ def extract_drawio(md_text, state):
         source_html = ''
         if rel_path not in state:
             state[rel_path] = source_id
-            with open(drawio_path, encoding='utf-8') as fh:
-                xml = fh.read()
+            # Inline the COMPACTED XML so the viewer renders the tightened diagram.
             source_html = (
                 f'<div id="{source_id}" class="drawio-xml-source" '
                 f'style="display:none !important;" aria-hidden="true">'
-                f'{html.escape(xml)}'
+                f'{html.escape(compacted_xml)}'
                 f'</div>'
             )
 
