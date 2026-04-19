@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent System Architecture: CPU / GPU / Tool Call</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0e17;
+  --surface: #111827;
+  --surface2: #1a2332;
+  --border: #2a3a50;
+  --cpu-primary: #f59e0b;
+  --cpu-bg: rgba(245,158,11,0.08);
+  --cpu-border: rgba(245,158,11,0.3);
+  --gpu-primary: #06b6d4;
+  --gpu-bg: rgba(6,182,212,0.08);
+  --gpu-border: rgba(6,182,212,0.3);
+  --tool-primary: #a78bfa;
+  --tool-bg: rgba(167,139,250,0.08);
+  --tool-border: rgba(167,139,250,0.3);
+  --text: #e2e8f0;
+  --text-dim: #94a3b8;
+  --accent: #f43f5e;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+  padding: 32px;
+  overflow-x: hidden;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.header h1 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--cpu-primary), var(--gpu-primary), var(--tool-primary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 8px;
+}
+
+.header p {
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 300;
+}
+
+.arch-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  position: relative;
+}
+
+.zone {
+  padding: 24px;
+  position: relative;
+}
+
+.zone-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.components {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.component {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  transition: all 0.3s;
+  cursor: default;
+  position: relative;
+  overflow: hidden;
+}
+
+.component::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+}
+
+.cpu-zone .component::before { background: var(--cpu-primary); }
+.gpu-zone .component::before { background: var(--gpu-primary); }
+.tool-zone .component::before { background: var(--tool-primary); }
+
+.component:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+
+.component h3 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.cpu-zone .component h3 { color: var(--cpu-primary); }
+.gpu-zone .component h3 { color: var(--gpu-primary); }
+.tool-zone .component h3 { color: var(--tool-primary); }
+
+.component p {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.component .metric {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--accent);
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.cpu-zone {
+  background: var(--cpu-bg);
+  border: 1px solid var(--cpu-border);
+  border-bottom: none;
+  border-radius: 16px 16px 0 0;
+}
+.cpu-zone .zone-label {
+  background: rgba(245,158,11,0.15);
+  color: var(--cpu-primary);
+}
+
+.gpu-zone {
+  background: var(--gpu-bg);
+  border: 1px solid var(--gpu-border);
+  border-bottom: none;
+  border-top: none;
+}
+.gpu-zone .zone-label {
+  background: rgba(6,182,212,0.15);
+  color: var(--gpu-primary);
+}
+
+.tool-zone {
+  background: var(--tool-bg);
+  border: 1px solid var(--tool-border);
+  border-top: none;
+  border-radius: 0 0 16px 16px;
+}
+.tool-zone .zone-label {
+  background: rgba(167,139,250,0.15);
+  color: var(--tool-primary);
+}
+
+.flow-connector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 40px;
+  position: relative;
+  z-index: 10;
+}
+
+.flow-arrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.bottleneck {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(244,63,94,0.15);
+  color: var(--accent);
+  margin-top: 4px;
+}
+
+.pulse { animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:0.6} 50%{opacity:1} }
+
+.subtext {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 12px;
+  font-style: italic;
+}
+
+/* Timeline */
+.timeline {
+  max-width: 1200px;
+  margin: 48px auto 0;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+.timeline h2 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+.track-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.track-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  width: 80px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.track-bar {
+  flex: 1;
+  height: 36px;
+  display: flex;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.track-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+.seg-cpu { background: var(--cpu-primary); }
+.seg-gpu-prefill { background: #0891b2; }
+.seg-gpu-decode { background: var(--gpu-primary); }
+.seg-tool { background: var(--tool-primary); }
+.seg-idle { background: var(--surface2); color: var(--text-dim); }
+
+/* Data flow */
+.dataflow {
+  max-width: 1200px;
+  margin: 32px auto 0;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+.dataflow h2 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+.flow-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 16px 0;
+}
+.flow-node {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  min-width: 100px;
+}
+.flow-node.cpu { background: rgba(245,158,11,0.2); border: 1px solid var(--cpu-border); color: var(--cpu-primary); }
+.flow-node.gpu { background: rgba(6,182,212,0.2); border: 1px solid var(--gpu-border); color: var(--gpu-primary); }
+.flow-node.tool { background: rgba(167,139,250,0.2); border: 1px solid var(--tool-border); color: var(--tool-primary); }
+.flow-edge {
+  font-size: 18px;
+  color: var(--text-dim);
+  padding: 0 4px;
+}
+
+/* Stats */
+.stats {
+  max-width: 1200px;
+  margin: 32px auto 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.stat-card {
+  padding: 20px;
+  border-radius: 12px;
+  text-align: center;
+}
+.stat-card.cpu-card { background: var(--cpu-bg); border: 1px solid var(--cpu-border); }
+.stat-card.gpu-card { background: var(--gpu-bg); border: 1px solid var(--gpu-border); }
+.stat-card.tool-card { background: var(--tool-bg); border: 1px solid var(--tool-border); }
+.stat-card h3 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.stat-card.cpu-card h3 { color: var(--cpu-primary); }
+.stat-card.gpu-card h3 { color: var(--gpu-primary); }
+.stat-card.tool-card h3 { color: var(--tool-primary); }
+.stat-card .value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+}
+.stat-card .desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.dispatch-bar {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--cpu-primary);
+  margin: 0 24px;
+}
+
+.legend {
+  margin-top: 12px;
+  display: flex;
+  gap: 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.insights {
+  max-width: 1200px;
+  margin: 32px auto 0;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+.insights h2 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  margin-bottom: 16px;
+}
+.insight-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.insight-card {
+  padding: 12px;
+  border-radius: 8px;
+}
+.insight-card strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.loop-indicator {
+  max-width: 1200px;
+  margin: 8px auto 0;
+  text-align: center;
+}
+.loop-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(244,63,94,0.1);
+  padding: 8px 24px;
+  border-radius: 8px;
+  border: 1px dashed rgba(244,63,94,0.3);
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Agent System Architecture</h1>
+  <p>CPU Orchestration &bull; GPU Inference &bull; Tool Execution &mdash; Multi-Turn Agent Loop</p>
+</div>
+
+<div class="arch-container">
+
+  <!-- ========== CPU ZONE ========== -->
+  <div class="zone cpu-zone">
+    <div class="zone-label">&#9632; CPU HOST &mdash; Orchestration &amp; Preprocessing</div>
+    <div class="components">
+      <div class="component">
+        <h3>Agent Orchestrator</h3>
+        <p>ReAct loop, planning, decision routing, multi-agent coordination, state machine</p>
+        <div class="metric">~1-5ms per decision step</div>
+      </div>
+      <div class="component">
+        <h3>Prompt Construction</h3>
+        <p>System prompt (16K+), history assembly, tool result injection, context window management</p>
+        <div class="metric">~2-10ms, string concat intensive</div>
+      </div>
+      <div class="component">
+        <h3>Tokenizer / Detokenizer</h3>
+        <p>BPE/SentencePiece encode &rarr; token IDs; decode output IDs &rarr; text. Pure CPU.</p>
+        <div class="metric">~0.5-3ms per 2K tokens</div>
+      </div>
+      <div class="component">
+        <h3>Sampling &amp; Output Parsing</h3>
+        <p>Top-p/top-k/temperature sampling on logits; structured output parsing (JSON tool_call, code blocks)</p>
+        <div class="metric">~0.1-1ms per output token</div>
+      </div>
+      <div class="component">
+        <h3>Session &amp; Memory Mgmt</h3>
+        <p>Conversation state, KV cache metadata &amp; eviction policy, prefix cache index, session lifecycle</p>
+        <div class="metric">O(C) sessions tracked in DRAM</div>
+      </div>
+      <div class="component">
+        <h3>Request Scheduler</h3>
+        <p>Batch formation, priority queuing, preemption, continuous batching, KV budget allocation</p>
+        <div class="metric">~0.5-2ms scheduling overhead</div>
+      </div>
+    </div>
+    <div class="subtext">
+      CPU bottleneck: prompt construction scales with context length; at high throughput, tokenization &amp; scheduling overhead can reach <strong>15-40%</strong> of per-turn time (TaxBreak, 2603.12465)
+    </div>
+  </div>
+
+  <!-- CPU → GPU connector -->
+  <div class="flow-connector">
+    <div class="flow-arrow">
+      <span>token_ids + attention_mask + position_ids</span>
+      <span style="font-size:18px;">&#9660;</span>
+      <span style="color:var(--gpu-primary);">PCIe/NVLink &rarr; GPU HBM</span>
+    </div>
+  </div>
+
+  <!-- ========== GPU ZONE ========== -->
+  <div class="zone gpu-zone">
+    <div class="zone-label">&#9632; GPU DEVICE &mdash; LLM Inference Engine</div>
+    <div class="components">
+      <div class="component">
+        <h3>Prefill (Compute-bound)</h3>
+        <p>Process all input tokens in parallel. Self-attention O(L&sup2;) + MLP. Determines TTFT.</p>
+        <div class="metric">TTFT = 2&times;P<sub>active</sub>&times;L / (G&times;F) / &eta;<sub>p</sub></div>
+        <div class="bottleneck">&#9888; O(L&sup2;) without prefix cache</div>
+      </div>
+      <div class="component">
+        <h3>Decode (Memory-bound)</h3>
+        <p>Auto-regressive generation, 1 token/step. Weight + KV-cache loading from HBM dominates.</p>
+        <div class="metric">TPOT = max(T<sub>weight</sub>+T<sub>kv</sub>, T<sub>compute</sub>) / &eta;<sub>d</sub></div>
+        <div class="bottleneck">&#9888; HBM bandwidth-limited</div>
+      </div>
+      <div class="component">
+        <h3>KV Cache (HBM)</h3>
+        <p>Per-session KV tensors. Grows with L(j) &times; C. Eviction needed when memory full.</p>
+        <div class="metric">GQA: ~320 KB/tok &bull; MLA: ~69 KB/tok</div>
+        <div class="bottleneck pulse">&#9888; memory wall: C<sub>max</sub> shrinks per turn</div>
+      </div>
+      <div class="component">
+        <h3>Prefix Cache</h3>
+        <p>Reuse KV from prior turns. Reduces prefill to incremental &Delta;L only. Hit rate h(Z).</p>
+        <div class="metric">cache hit &rarr; 21&times; TTFT speedup</div>
+      </div>
+      <div class="component">
+        <h3>Attention Kernels</h3>
+        <p>FlashAttention / PagedAttention. GQA or MLA. TP all-reduce per layer.</p>
+        <div class="metric">~30&mu;s all-reduce &times; 2/layer &times; 80 layers</div>
+      </div>
+      <div class="component">
+        <h3>MLP / MoE Experts</h3>
+        <p>Dense FFN or routed MoE. EP across GPUs. Small batch = few active experts.</p>
+        <div class="metric">E<sub>active</sub> = min(B&times;K, E<sub>total</sub>)</div>
+      </div>
+    </div>
+    <div class="subtext">
+      GPU <strong>idle</strong> during tool execution pauses (Z). Active ratio &rho; = R/(R+Z). Need C &ge; B<sub>max</sub>/&rho; concurrent sessions to keep GPU saturated.
+    </div>
+  </div>
+
+  <!-- GPU → CPU connector -->
+  <div class="flow-connector">
+    <div class="flow-arrow">
+      <span style="color:var(--gpu-primary);">output logits / token IDs</span>
+      <span style="font-size:18px;">&#9660;</span>
+      <span>CPU: detokenize + parse tool_call</span>
+    </div>
+  </div>
+
+  <!-- Dispatch bar -->
+  <div class="dispatch-bar">
+    <span>&#9632; CPU: parse_tool_call(output)</span>
+    <span style="color:var(--text-dim);">&rarr;</span>
+    <span>extract function_name + arguments</span>
+    <span style="color:var(--text-dim);">&rarr;</span>
+    <span style="color:var(--tool-primary);">&#9660; dispatch to Tool Environment</span>
+  </div>
+
+  <div style="height:8px"></div>
+
+  <!-- ========== TOOL ZONE ========== -->
+  <div class="zone tool-zone">
+    <div class="zone-label">&#9632; TOOL EXECUTION &mdash; External Environment (CPU / I/O / Network bound)</div>
+    <div class="components">
+      <div class="component">
+        <h3>Code Sandbox</h3>
+        <p>Python/shell in isolated container. Process spawn + execution. CPU-bound compute.</p>
+        <div class="metric">Z ~ 0.5-5s typical</div>
+      </div>
+      <div class="component">
+        <h3>File I/O</h3>
+        <p>Read/write/search files. Grep, glob, AST parsing. Disk I/O + CPU string ops.</p>
+        <div class="metric">Z ~ 0.1-2s typical</div>
+      </div>
+      <div class="component">
+        <h3>Web Search / Browse</h3>
+        <p>HTTP requests, page rendering, content extraction. Network latency dominant.</p>
+        <div class="metric">Z ~ 2-30s typical</div>
+      </div>
+      <div class="component">
+        <h3>API Calls</h3>
+        <p>Database queries, REST/gRPC, external service invocations. Network I/O bound.</p>
+        <div class="metric">Z ~ 0.1-10s typical</div>
+      </div>
+      <div class="component">
+        <h3>RAG / Retrieval</h3>
+        <p>Vector DB search, embedding, document chunking, re-ranking. CPU + optional GPU.</p>
+        <div class="metric">Z ~ 0.2-3s typical</div>
+      </div>
+      <div class="component">
+        <h3>Result Formatting</h3>
+        <p>Truncation, summarization, structured output. Prepare &Delta;L tokens for next prompt.</p>
+        <div class="metric">&Delta;L ~ 500-3000 tokens/turn</div>
+      </div>
+    </div>
+    <div class="subtext">
+      Tool results feed back to CPU for next-turn prompt construction. GPU is <strong>completely IDLE</strong> during this phase. Waste ratio = 1&minus;&rho;.
+    </div>
+  </div>
+
+</div>
+
+<!-- Loop indicator -->
+<div class="loop-indicator">
+  <div class="loop-badge">
+    <span style="font-size:18px;">&#8635;</span>
+    <span>Repeat N turns until task complete &mdash; Context grows: L(j) = L&#8320; + (j-1)&times;(OSL+&Delta;L)</span>
+  </div>
+</div>
+
+<!-- ========== TIMELINE ========== -->
+<div class="timeline">
+  <h2>&#9202; Single-Turn Timeline (Code Agent, 70B on 8&times;H100)</h2>
+
+  <div class="track-row">
+    <div class="track-label">CPU</div>
+    <div class="track-bar">
+      <div class="track-segment seg-cpu" style="flex:3;">prompt build</div>
+      <div class="track-segment seg-cpu" style="flex:1;">tok</div>
+      <div class="track-segment seg-idle" style="flex:1;">&#8595;</div>
+      <div class="track-segment seg-idle" style="flex:9;">wait for GPU</div>
+      <div class="track-segment seg-cpu" style="flex:1;">detok</div>
+      <div class="track-segment seg-cpu" style="flex:2;">parse</div>
+      <div class="track-segment seg-cpu" style="flex:1;">dispatch</div>
+      <div class="track-segment seg-idle" style="flex:7;">wait for tool</div>
+    </div>
+  </div>
+
+  <div class="track-row">
+    <div class="track-label">GPU</div>
+    <div class="track-bar">
+      <div class="track-segment seg-idle" style="flex:4;">wait</div>
+      <div class="track-segment seg-gpu-prefill" style="flex:2;">prefill 55ms</div>
+      <div class="track-segment seg-gpu-decode" style="flex:9;">decode 128 tok ~1.7s</div>
+      <div class="track-segment seg-idle" style="flex:10;">IDLE (tool pause Z=0.5s)</div>
+    </div>
+  </div>
+
+  <div class="track-row">
+    <div class="track-label">Tool</div>
+    <div class="track-bar">
+      <div class="track-segment seg-idle" style="flex:16;">idle</div>
+      <div class="track-segment seg-tool" style="flex:7;">execute tool Z~500ms</div>
+      <div class="track-segment seg-cpu" style="flex:2;">result fmt</div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><span class="legend-dot" style="background:var(--cpu-primary);"></span>CPU active</span>
+    <span><span class="legend-dot" style="background:#0891b2;"></span>GPU prefill</span>
+    <span><span class="legend-dot" style="background:var(--gpu-primary);"></span>GPU decode</span>
+    <span><span class="legend-dot" style="background:var(--tool-primary);"></span>Tool exec</span>
+    <span><span class="legend-dot" style="background:var(--surface2);"></span>Idle/Wait</span>
+  </div>
+</div>
+
+<!-- ========== DATA FLOW ========== -->
+<div class="dataflow">
+  <h2>&#8644; Per-Turn Data Flow</h2>
+  <div class="flow-diagram">
+    <div class="flow-node cpu">User Input<br><span style="font-size:9px;opacity:0.7">+ history</span></div>
+    <div class="flow-edge">&rarr;</div>
+    <div class="flow-node cpu">Prompt<br>Assembly<br><span style="font-size:9px;opacity:0.7">L(j) tokens</span></div>
+    <div class="flow-edge">&rarr;</div>
+    <div class="flow-node cpu">Tokenizer<br><span style="font-size:9px;opacity:0.7">BPE encode</span></div>
+    <div class="flow-edge">&rarr;</div>
+    <div class="flow-node gpu">Prefill<br><span style="font-size:9px;opacity:0.7">&Delta;L w/ cache</span></div>
+    <div class="flow-edge">&rarr;</div>
+    <div class="flow-node gpu">Decode<br><span style="font-size:9px;opacity:0.7">OSL tokens</span></div>
+    <div class="flow-edge">&rarr;</div>
+    <div class="flow-node cpu">Parse<br>Tool Call<br><span style="font-size:9px;opacity:0.7">JSON extract</span></div>
+    <div class="flow-edge">&rarr;</div>
+    <div class="flow-node tool">Execute<br>Tool<br><span style="font-size:9px;opacity:0.7">Z seconds</span></div>
+    <div class="flow-edge">&rarr;</div>
+    <div class="flow-node cpu">Format<br>Result<br><span style="font-size:9px;opacity:0.7">&Delta;L tokens</span></div>
+    <div class="flow-edge" style="color:var(--accent);">&#8635;</div>
+  </div>
+</div>
+
+<!-- ========== STATS ========== -->
+<div class="stats">
+  <div class="stat-card cpu-card">
+    <h3>CPU Overhead Share</h3>
+    <div class="value">15-40%</div>
+    <div class="desc">of end-to-end per-turn time<br>(up to 40% at small batch, TaxBreak)</div>
+  </div>
+  <div class="stat-card gpu-card">
+    <h3>GPU Active Ratio &rho;</h3>
+    <div class="value">12-82%</div>
+    <div class="desc">R/(R+Z) depends on tool speed<br>Research:12% &bull; Code:67% &bull; Reasoning:82%</div>
+  </div>
+  <div class="stat-card tool-card">
+    <h3>Tool Pause Z</h3>
+    <div class="value">0.5-30s</div>
+    <div class="desc">GPU completely idle during Z<br>code:0.5s &bull; file:2s &bull; web:10-30s</div>
+  </div>
+</div>
+
+<!-- ========== KEY INSIGHTS ========== -->
+<div class="insights">
+  <h2>&#128270; Key Insights from Papers</h2>
+  <div class="insight-grid">
+    <div class="insight-card" style="background:var(--cpu-bg); border:1px solid var(--cpu-border);">
+      <strong style="color:var(--cpu-primary);">CPU-Centric Perspective (2511.00739)</strong>
+      Agent orchestration overhead (prompt construction, tool dispatch, JSON parsing) is <strong>entirely CPU-side</strong>. For short tool calls, CPU overhead can dominate end-to-end latency. Proposes CPU-aware co-design.
+    </div>
+    <div class="insight-card" style="background:var(--gpu-bg); border:1px solid var(--gpu-border);">
+      <strong style="color:var(--gpu-primary);">TaxBreak (2603.12465)</strong>
+      Host-side overhead (kernel launch, tokenization, sampling, scheduling) accounts for <strong>up to 40%</strong> of inference time in latency-sensitive agentic deployments. Decomposes overhead into 7 categories.
+    </div>
+    <div class="insight-card" style="background:var(--tool-bg); border:1px solid var(--tool-border);">
+      <strong style="color:var(--tool-primary);">Agent.xpu (2506.24045)</strong>
+      Heterogeneous SoC scheduling: prefill&rarr;NPU, decode&rarr;iGPU, orchestration&rarr;CPU. <strong>CPU/NPU/iGPU co-scheduling</strong> for on-device agents reduces idle time.
+    </div>
+    <div class="insight-card" style="background:rgba(244,63,94,0.08); border:1px solid rgba(244,63,94,0.3);">
+      <strong style="color:var(--accent);">AgentOpt (2604.06296)</strong>
+      First systematic work on <strong>client-side optimization</strong>: prompt construction batching, parallel tool dispatch, speculative context pre-assembly on CPU side.
+    </div>
+  </div>
+</div>
+
+<div style="max-width:1200px; margin:32px auto; padding:20px; text-align:center; font-size:11px; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">
+  Generated for agent-serving-pareto analysis &bull; Feiyue Zhai &bull; 2026-04
+</div>
+
+</body>
+</html>
