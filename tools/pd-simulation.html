@@ -107,8 +107,15 @@ function mkReq(){return{id:rid++,isl:Math.round(C.isl*(C.rng+Math.random()*(1-C.
   ct:S.t,ps:0,pe:0,ds:0,de:0,ot:0};}
 function reset(){
   C=rCfg();rid=0;
-  S={t:0,pau:false,done:false,pool:C.tot,inf:0,pq:[],pgq:[],ri:0,tq:[],comp:[],pg:[],dg:[]};
-  for(let i=0;i<C.pfN;i++){S.pg.push({a:false,b:[],st:0,et:0,d:0});S.pgq.push([]);}
+  S={t:0,pau:false,done:false,pool:C.tot,inf:0,
+    pq:[],ri:0,tq:[],comp:[],
+    pfR:[], pfQ:[], pfB:[],
+    dg:[]};
+  for(let ni=0;ni<C.pfN;ni++){
+    S.pfR.push(Array.from({length:C.pfD},()=>({s:'FETCH',r:null,ce:0})));
+    S.pfQ.push(Array.from({length:C.pfD},()=>[]));
+    S.pfB.push({sc:0,ec:0,bt:0,cs:0});
+  }
   for(let i=0;i<C.dcN;i++)S.dg.push({rk:Array.from({length:C.dcD},()=>[]),ls:0,idle:true});
   const burst=Math.min(C.conc,S.pool);
   for(let i=0;i<burst;i++){S.pq.push(mkReq());S.pool--;S.inf++;}
@@ -132,18 +139,57 @@ function fillDC(){
 }
 function tick(dt){
   if(S.done)return;S.t+=dt;
-  while(S.pq.length>0){S.pgq[S.ri%C.pfN].push(S.pq.shift());S.ri++;}
-  for(let i=0;i<S.pg.length;i++){
-    const g=S.pg[i],q=S.pgq[i];
-    if(g.a&&S.t>=g.et){
-      for(const r of g.b){r.pe=g.et;S.tq.push(r);}
-      const ls=g.b.map(r=>r.isl),mx=Math.max(...ls);
-      T.pU+=ls.reduce((a,b)=>a+b,0);T.pT+=mx*C.pfD;g.a=false;g.b=[];}
-    if(!g.a&&q.length>0){
-      const b=[];for(let j=0;j<C.pfD&&q.length>0;j++)b.push(q.shift());
-      const mx=Math.max(...b.map(r=>r.isl));
-      g.b=b;g.st=S.t;g.d=mx/C.isl*C.pfL;g.et=S.t+g.d;g.a=true;
-      for(const r of b)r.ps=S.t;}}
+
+  // === Router Actor: pq → per-rank queues (round-robin across all visible DP ranks) ===
+  const totalPfRanks=C.pfN*C.pfD;
+  while(S.pq.length>0){
+    const fi=S.ri%totalPfRanks;
+    const ni=Math.floor(fi/C.pfD),ri=fi%C.pfD;
+    S.pfQ[ni][ri].push(S.pq.shift());
+    S.ri++;
+  }
+
+  // === Prefill Rank Actors (independent state machines per rank, barrier per node) ===
+  for(let ni=0;ni<C.pfN;ni++){
+    const bar=S.pfB[ni];
+    for(let ri=0;ri<C.pfD;ri++){
+      const rk=S.pfR[ni][ri];
+      if(rk.s==='FETCH'){
+        const q=S.pfQ[ni][ri];
+        rk.r=q.length>0?q.shift():null;
+        if(rk.r)rk.r.ps=S.t;
+        rk.s='START_WAIT';
+        bar.sc++;
+      }
+      if(rk.s==='COMPUTING'&&S.t>=rk.ce){
+        rk.s='END_WAIT';
+        bar.ec++;
+      }
+    }
+    if(bar.sc===C.pfD){
+      const isls=S.pfR[ni].map(r=>r.r?r.r.isl:0);
+      const mx=Math.max(0,...isls);
+      const sumI=isls.reduce((a,b)=>a+b,0);
+      bar.bt=mx>0?mx/C.isl*C.pfL:0;
+      bar.cs=S.t;
+      bar.sc=0;
+      if(mx>0){T.pU+=sumI;T.pT+=mx*C.pfD;}
+      for(const rk of S.pfR[ni]){
+        rk.ce=S.t+bar.bt;
+        rk.s=bar.bt>0?'COMPUTING':'END_WAIT';
+      }
+      if(bar.bt===0)bar.ec=C.pfD;
+    }
+    if(bar.ec===C.pfD){
+      bar.ec=0;
+      for(const rk of S.pfR[ni]){
+        if(rk.r){rk.r.pe=S.t;S.tq.push(rk.r);rk.r=null;}
+        rk.s='FETCH';
+      }
+    }
+  }
+
+  // === Decode Node Actors (independent timer per node) ===
   fillDC();
   for(const g of S.dg){
     let mrc=0;for(const rk of g.rk)if(rk.length>mrc)mrc=rk.length;
@@ -161,13 +207,18 @@ function tick(dt){
       fillDC();mrc=0;for(const rk of g.rk)if(rk.length>mrc)mrc=rk.length;
       if(mrc===0){g.idle=true;break;}
       tp=Math.max(C.mt,C.tpot*mrc/C.mrr);}}
-  for(const g of S.pg){T.pTM+=dt;if(g.a)T.pBM+=dt;}
+
+  // === Stats accumulators ===
+  for(let ni=0;ni<C.pfN;ni++)for(let ri=0;ri<C.pfD;ri++){
+    T.pTM+=dt;if(S.pfR[ni][ri].s==='COMPUTING')T.pBM+=dt;}
   for(const g of S.dg){let tot=0;for(const rk of g.rk)tot+=rk.length;
     T.dAM+=tot*dt;T.dTM+=C.dcD*C.mrr*dt;}
+
+  // === Chart recording ===
   if(S.t-CS.lr>=500){CS.lr=S.t;
     let dr=0;for(const g of S.dg)for(const rk of g.rk)dr+=rk.length;
-    let pq=S.pq.length;for(const q of S.pgq)pq+=q.length;
-    let pfr=0;for(const g of S.pg)if(g.a)pfr+=g.b.length;
+    let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;
+    let pfr=0;for(const nr of S.pfR)for(const rk of nr)if(rk.s==='COMPUTING'&&rk.r)pfr++;
     CS.ts.push(S.t/1000);CS.pq.push(pq);CS.tq.push(S.tq.length);CS.dr.push(dr);CS.inf.push(S.inf);CS.pfr.push(pfr);
     while(CS.ts.length>300){CS.ts.shift();CS.pq.shift();CS.tq.shift();CS.dr.shift();CS.inf.shift();CS.pfr.shift();}}
 }
@@ -179,7 +230,8 @@ const vc=$('vc'),vx=vc.getContext('2d');let dp=devicePixelRatio||1;
 function rsz(){
   const r=vc.parentElement.getBoundingClientRect();
   const dc=S.dg.length>6?3:S.dg.length>3?2:1,dr=Math.ceil(S.dg.length/dc);
-  const h=Math.max(300,60+Math.max(S.pg.length*52,dr*94));
+  const pfRows=S.pfR.length;
+  const h=Math.max(300,60+Math.max(pfRows*56,dr*94));
   vc.style.height=h+'px';vc.width=r.width*dp;vc.height=h*dp;vx.setTransform(dp,0,0,dp,0,0);}
 function rr(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);c.lineTo(x+w-r,y);c.quadraticCurveTo(x+w,y,x+w,y+r);
   c.lineTo(x+w,y+h-r);c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);c.lineTo(x+r,y+h);
@@ -214,20 +266,47 @@ function dRt(c,x,y,w,h){
   c.rotate(-Math.PI/4);c.fillStyle='#58a6ff';c.font='bold 9px system-ui';c.textAlign='center';c.textBaseline='middle';
   c.fillText('RR',0,0);c.restore();c.fillStyle='#8b949e';c.font='9px system-ui';c.textAlign='center';c.textBaseline='alphabetic';c.fillText('Router',x+w/2,y-6);}
 function dPF(c,x,y,w,h){
-  const gs=S.pg,gH=Math.min(48,(h-5)/Math.max(1,gs.length)-4);
-  c.font='9px system-ui';c.fillStyle='#8b949e';c.textAlign='center';c.fillText('Prefill(DEP'+C.pfD+')',x+w/2,y-6);
-  for(let i=0;i<gs.length;i++){
-    const g=gs[i],q=S.pgq[i],gy=y+i*(gH+4);
-    rr(c,x,gy,w,gH,5);c.fillStyle=g.a?'#0d1926':'#0d1117';c.fill();
-    c.strokeStyle=g.a?'#58a6ff44':'#30363d';c.lineWidth=1;c.stroke();
-    c.fillStyle='#8b949e';c.font='9px system-ui';c.textAlign='left';c.fillText('P'+(i+1),x+4,gy+12);
-    if(q.length>0){c.fillStyle='#58a6ff';c.font='bold 9px system-ui';c.fillText('['+q.length+']',x+18,gy+12);}
-    const cp=34,gp=2,cw=Math.max(12,(w-cp-gp*(C.pfD-1))/C.pfD),ch2=gH-18,cy=gy+14;
-    for(let j=0;j<C.pfD;j++){
-      const cx=x+cp+j*(cw+gp);c.fillStyle='#1c2333';c.fillRect(cx,cy,cw,ch2);
-      if(g.b[j]&&g.a){const p=Math.min(1,(S.t-g.st)/g.d);c.fillStyle='#58a6ff';c.fillRect(cx,cy,cw*p,ch2);}
-      c.strokeStyle='#30363d';c.lineWidth=.5;c.strokeRect(cx,cy,cw,ch2);}
-    if(g.a){const p=Math.min(1,(S.t-g.st)/g.d);c.fillStyle='#58a6ff';c.font='9px system-ui';c.textAlign='right';c.fillText(Math.round(p*100)+'%',x+w-4,gy+12);}}}
+  const nNodes=S.pfR.length,gH=Math.min(52,(h-5)/Math.max(1,nNodes)-4);
+  c.font='9px system-ui';c.fillStyle='#8b949e';c.textAlign='center';
+  c.fillText('Prefill(DEP'+C.pfD+')',x+w/2,y-6);
+  for(let ni=0;ni<nNodes;ni++){
+    const ranks=S.pfR[ni],bar=S.pfB[ni],gy=y+ni*(gH+4);
+    const anyComp=ranks.some(r=>r.s==='COMPUTING');
+    rr(c,x,gy,w,gH,5);c.fillStyle=anyComp?'#0d1926':'#0d1117';c.fill();
+    c.strokeStyle=anyComp?'#58a6ff44':'#30363d';c.lineWidth=1;c.stroke();
+    c.fillStyle='#8b949e';c.font='9px system-ui';c.textAlign='left';
+    c.fillText('N'+(ni+1),x+4,gy+12);
+    if(anyComp&&bar.bt>0){
+      const p=Math.min(1,(S.t-bar.cs)/bar.bt);
+      c.fillStyle='#58a6ff';c.font='9px system-ui';c.textAlign='right';
+      c.fillText(Math.round(p*100)+'%',x+w-4,gy+12);
+    }
+    const cp=24,gp=2,cw=Math.max(14,(w-cp-gp*(C.pfD-1))/C.pfD),ch2=gH-20,cy=gy+16;
+    for(let ri=0;ri<C.pfD;ri++){
+      const cx=x+cp+ri*(cw+gp),rk=ranks[ri],q=S.pfQ[ni][ri];
+      // Cell background by state
+      if(rk.s==='COMPUTING'){
+        c.fillStyle='#1c2333';c.fillRect(cx,cy,cw,ch2);
+        if(rk.r){
+          const p=bar.bt>0?Math.min(1,(S.t-bar.cs)/bar.bt):0;
+          c.fillStyle='#58a6ff';c.fillRect(cx,cy,cw*p,ch2);
+        } else {
+          c.fillStyle='#58a6ff22';c.fillRect(cx,cy,cw,ch2);
+        }
+      } else if(rk.s==='START_WAIT'||rk.s==='END_WAIT'){
+        c.fillStyle='#2d2a00';c.fillRect(cx,cy,cw,ch2);
+      } else {
+        c.fillStyle='#1c2333';c.fillRect(cx,cy,cw,ch2);
+      }
+      c.strokeStyle='#30363d';c.lineWidth=.5;c.strokeRect(cx,cy,cw,ch2);
+      // Queue depth badge
+      if(q.length>0){
+        c.fillStyle='#58a6ff';c.font='bold 7px system-ui';c.textAlign='center';
+        c.fillText(q.length,cx+cw/2,cy-2);
+      }
+    }
+  }
+}
 function dDC(c,x,y,w,h){
   const gs=S.dg,cols=gs.length>6?3:gs.length>3?2:1,rows=Math.ceil(gs.length/cols);
   const cW=(w-(cols-1)*6)/cols,gH=Math.min(90,(h-5)/rows-4);
@@ -276,14 +355,15 @@ function draw(){
   const pw=fx*.25,dw=fx*.75;
   let cx2=pd;const clX=cx2;cx2+=cliW+gx;const pqX=cx2;cx2+=qw+gx;const rtX=cx2;cx2+=rtw+gx;
   const pgX=cx2;cx2+=pw+gx;const tqX=cx2;cx2+=qw+gx;const dgX=cx2;cx2+=dw+gx;const oX=cx2;
-  let pq=S.pq.length;for(const q of S.pgq)pq+=q.length;
+  let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;
+  const anyPfComp=S.pfR.some(nr=>nr.some(rk=>rk.s==='COMPUTING'));
   dCli(c,clX,ty,cliW,ch2);dQ(c,pq,pqX,ty,qw,ch2,'#58a6ff','PF Queue');
   dRt(c,rtX,ty,rtw,ch2);dPF(c,pgX,ty,pw,ch2);
   dQ(c,S.tq.length,tqX,ty,qw,ch2,'#d29922','Transfer Q');
   dDC(c,dgX,ty,dw,ch2);dOut(c,oX,ty,ow,ch2);
   const my=ty+ch2/2;
   dArr(c,clX+cliW,my,pqX,my,S.inf>0);dArr(c,pqX+qw,my,rtX,my,pq>0);
-  dArr(c,rtX+rtw,my,pgX,my,pq>0);dArr(c,pgX+pw,my,tqX,my,S.tq.length>0||S.pg.some(g=>g.a));
+  dArr(c,rtX+rtw,my,pgX,my,pq>0);dArr(c,pgX+pw,my,tqX,my,S.tq.length>0||anyPfComp);
   let hd=false;for(const g of S.dg)for(const rk of g.rk)if(rk.length){hd=true;break;}
   dArr(c,tqX+qw,my,dgX,my,hd||S.tq.length>0);dArr(c,dgX+dw,my,oX,my,T.cc>0);
   if(T.cc>0){const fy=ty+ch2+4;c.save();c.strokeStyle='#3fb95033';c.lineWidth=1;
@@ -320,7 +400,7 @@ function uSt(){
   const t=S.t/1000;$('s0').textContent=Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
   $('s1').textContent=S.pool+'/'+C.tot;$('s2').textContent=S.inf+'/'+C.conc;
   $('s3').textContent=T.cc+'/'+C.tot;$('s4').textContent=(S.t>0?(T.cc/(S.t/1000)):0).toFixed(2)+' req/s';
-  let pq=S.pq.length;for(const q of S.pgq)pq+=q.length;$('s5').textContent=pq;$('s6').textContent=S.tq.length;
+  let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;$('s5').textContent=pq;$('s6').textContent=S.tq.length;
   let dr=0;for(const g of S.dg)for(const rk of g.rk)dr+=rk.length;
   $('s7').textContent=dr+'/'+(C.dcN*C.dcD*C.mrr);
   $('s8').textContent=(T.pTM>0?(T.pBM/T.pTM*100):0).toFixed(1)+'%';
