@@ -2,7 +2,18 @@
 // Consumes a PDSimulator instance for read-only state + config.
 
 (function(){
+const UI_VERSION = '1.0.0';
 const $ = id => document.getElementById(id);
+// Show version in header (also cross-check simulator lib version)
+(function showVer(){
+  const lbl = document.getElementById('verLbl');
+  if (!lbl) return;
+  const simV = (window.PDSimulator && window.PDSimulator.VERSION) || '?';
+  const pageV = window.PD_VERSION || '?';
+  const ok = simV === UI_VERSION && simV === pageV;
+  lbl.textContent = 'v' + UI_VERSION + (ok ? '' : ' (mismatch: page=' + pageV + ' sim=' + simV + ' ui=' + UI_VERSION + ')');
+  if (!ok) lbl.style.color = '#f85149';
+})();
 
 // ===================== Config I/O =====================
 function readConfig(){

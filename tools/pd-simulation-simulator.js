@@ -2,6 +2,7 @@
 // Exposes a Simulator class with: reset(), tick(dt), state, config.
 
 (function(global){
+const SIM_VERSION = '1.0.0';
 class Simulator {
   constructor(config){
     this.cfg = { ...config };
@@ -217,4 +218,5 @@ class Simulator {
 }
 
 global.PDSimulator = Simulator;
+global.PDSimulator.VERSION = SIM_VERSION;
 })(typeof window !== 'undefined' ? window : globalThis);
