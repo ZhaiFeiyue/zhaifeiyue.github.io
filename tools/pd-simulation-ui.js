@@ -2,7 +2,7 @@
 // Consumes a PDSimulator instance for read-only state + config.
 
 (function(){
-const UI_VERSION = '1.1.3';
+const UI_VERSION = '1.1.4';
 const $ = id => document.getElementById(id);
 // Show version in header (also cross-check simulator lib version)
 (function showVer(){
@@ -52,7 +52,7 @@ function loadCfg(){
   try {
     const o = JSON.parse(localStorage.getItem('pd_sim_cfg'));
     if (!o) return;
-    // v1.0.0 -> v1.1.3 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
+    // v1.0.0 -> v1.1.4 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
     if (o.c_pfD != null && o.c_pfDP == null) o.c_pfDP = o.c_pfD;
     if (o.c_dcD != null && o.c_dcDP == null) o.c_dcDP = o.c_dcD;
     for (const id of cfgInputs) if (o[id] != null) $(id).value = o[id];
@@ -542,11 +542,6 @@ function uSt(){
   $('s7').textContent = dr + '/' + (C.dcN * C.dcDP * C.mrr);
   $('s8').textContent = (T.pTM > 0 ? (T.pBM / T.pTM * 100) : 0).toFixed(1) + '%';
   $('s9').textContent = (T.pT > 0 ? ((1 - T.pU / T.pT) * 100) : 0).toFixed(1) + '%';
-  const pfTPS = S.t > 0 ? (T.pfTok / (S.t / 1000)) : 0;
-  const dcTPS = S.t > 0 ? (T.dcTok / (S.t / 1000)) : 0;
-  const pfGPU = C.pfN * C.pfDP, dcGPU = C.dcN * C.dcDP;
-  $('sh').textContent = fmtT(pfTPS) + ' / ' + fmtT(pfTPS / pfGPU);
-  $('si').textContent = fmtT(dcTPS) + ' / ' + fmtT(dcTPS / dcGPU);
   $('sa').textContent = (T.dTM > 0 ? (T.dAM / T.dTM * 100) : 0).toFixed(1) + '%';
   $('sb').textContent = (T.dTS > 0 ? ((1 - T.dUS / T.dTS) * 100) : 0).toFixed(1) + '%';
   if (T.cc > 0){
