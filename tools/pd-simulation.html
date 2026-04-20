@@ -107,7 +107,7 @@ function rCfg(){return{
 let C,S,T,CS,rid=0;
 function mkReq(){return{id:rid++,isl:Math.round(C.isl*(C.rng+Math.random()*(1-C.rng))),
   osl:Math.round(C.osl*(C.rng+Math.random()*(1-C.rng))),
-  ct:S.t,ps:0,pe:0,ds:0,de:0,ot:0};}
+  ct:S.t,ps:0,pe:0,ds:0,ft:0,de:0,ot:0};}
 function reset(){
   C=rCfg();rid=0;
   S={t:0,pau:false,done:false,pool:C.tot,inf:0,
@@ -125,11 +125,15 @@ function reset(){
   const burst=Math.min(C.conc,S.pool);
   for(let i=0;i<burst;i++){S.pq.push(mkReq());S.pool--;S.inf++;}
   T={pBM:0,pTM:0,pU:0,pT:0,dAM:0,dTM:0,dUS:0,dTS:0,cc:0,lS:0,tS:0};
-  CS={ts:[],pq:[],tq:[],dr:[],inf:[],pfr:[],lr:0};
-  if(ch1){[ch1,ch2,ch3].forEach(c=>{c.data.labels=[];c.data.datasets.forEach(d=>d.data=[]);c.update('none');});}
+  CS={ts:[],pq:[],tq:[],inf:[],
+    pfr:[],pfrR:Array.from({length:C.pfN*C.pfD},()=>[]),
+    dr:[],drR:Array.from({length:C.dcN*C.dcD},()=>[]),
+    lr:0};
+  if(ch1){ch1.destroy();ch2.destroy();ch3.destroy();ch1=ch2=ch3=null;}
+  initCh();
 }
 function onComp(r){
-  T.cc++;T.lS+=r.de-r.ct;T.tS+=r.ds-r.ct;S.comp.push(r);S.inf--;
+  T.cc++;T.lS+=r.de-r.ct;T.tS+=r.ft-r.ct;S.comp.push(r);S.inf--;
   if(S.pool>0){S.pq.push(mkReq());S.pool--;S.inf++;}
   if(S.inf===0&&S.pool===0)S.done=true;
 }
@@ -226,6 +230,7 @@ function tick(dt){
       for(let ri=0;ri<g.rk.length;ri++)
         for(let j=g.rk[ri].length-1;j>=0;j--){
           g.rk[ri][j].ot++;
+          if(g.rk[ri][j].ot===1)g.rk[ri][j].ft=g.ls;
           if(g.rk[ri][j].ot>=g.rk[ri][j].osl){g.rk[ri][j].de=g.ls;onComp(g.rk[ri][j]);g.rk[ri].splice(j,1);}}
       mrc=0;for(const rk of g.rk)if(rk.length>mrc)mrc=rk.length;
       if(mrc===0){g.idle=true;break;}
@@ -244,7 +249,12 @@ function tick(dt){
     let pfr=0;for(const nr of S.pfR)for(const rk of nr)if(rk.s==='COMPUTING'&&rk.r)pfr++;
     let txC2=0;for(const no of S.pfOut)for(const ro of no)txC2+=ro.length;
     CS.ts.push(S.t/1000);CS.pq.push(pq);CS.tq.push(txC2);CS.dr.push(dr);CS.inf.push(S.inf);CS.pfr.push(pfr);
-    while(CS.ts.length>300){CS.ts.shift();CS.pq.shift();CS.tq.shift();CS.dr.shift();CS.inf.shift();CS.pfr.shift();}}
+    for(let i=0;i<C.pfN*C.pfD;i++){const ni=Math.floor(i/C.pfD),ri=i%C.pfD;
+      CS.pfrR[i].push(S.pfR[ni][ri].s==='COMPUTING'&&S.pfR[ni][ri].r?1:0);}
+    for(let i=0;i<C.dcN*C.dcD;i++){const gi=Math.floor(i/C.dcD),ri=i%C.dcD;
+      CS.drR[i].push(S.dg[gi].rk[ri].length);}
+    const mx=300;while(CS.ts.length>mx){CS.ts.shift();CS.pq.shift();CS.tq.shift();CS.dr.shift();CS.inf.shift();CS.pfr.shift();
+      for(const a of CS.pfrR)a.shift();for(const a of CS.drR)a.shift();}}
 }
 function sim(rdt){
   if(S.pau||S.done)return;C.spd=+$('c_spd').value;
@@ -403,26 +413,31 @@ function draw(){
   c.fillText(st,w/2,h-3);}
 let ch1,ch2,ch3;Chart.defaults.color='#8b949e';Chart.defaults.borderColor='#21262d';
 const copts={responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},
-  plugins:{legend:{labels:{font:{size:10},boxWidth:12}}},
+  plugins:{legend:{labels:{font:{size:10},boxWidth:12,filter:item=>!item.text.startsWith('_')}}},
   scales:{x:{ticks:{font:{size:8},maxTicksLimit:10}},y:{min:0,ticks:{font:{size:8}},grid:{color:'#21262d'}}}};
+function hsl(h,s,l,a){return `hsla(${h},${s}%,${l}%,${a})`;}
 function initCh(){
   ch1=new Chart($('cc1').getContext('2d'),{type:'line',data:{labels:[],datasets:[
     {label:'In-Flight',data:[],borderColor:'#bc8cff',backgroundColor:'#bc8cff22',borderWidth:2,pointRadius:0,tension:.3},
     {label:'PF Queue',data:[],borderColor:'#58a6ff',backgroundColor:'#58a6ff22',borderWidth:1.5,pointRadius:0,tension:.3},
     {label:'KV Xfer',data:[],borderColor:'#d29922',backgroundColor:'#d2992222',borderWidth:1.5,pointRadius:0,tension:.3,borderDash:[4,3]},
   ]},options:{...copts}});
-  ch2=new Chart($('cc2').getContext('2d'),{type:'line',data:{labels:[],datasets:[
-    {label:'PF Running',data:[],borderColor:'#58a6ff',backgroundColor:'#58a6ff33',borderWidth:2,pointRadius:0,tension:.3,fill:true},
-  ]},options:{...copts}});
-  ch3=new Chart($('cc3').getContext('2d'),{type:'line',data:{labels:[],datasets:[
-    {label:'DC Running',data:[],borderColor:'#3fb950',backgroundColor:'#3fb95033',borderWidth:2,pointRadius:0,tension:.3,fill:true},
-  ]},options:{...copts}});
+  const pfDS=[{label:'Total',data:[],borderColor:'#58a6ff',backgroundColor:'#58a6ff33',borderWidth:2.5,pointRadius:0,tension:.3,fill:true}];
+  for(let i=0;i<C.pfN*C.pfD;i++){const ni=Math.floor(i/C.pfD),ri=i%C.pfD;
+    pfDS.push({label:'_N'+(ni+1)+'.R'+ri,data:[],borderColor:hsl(210,70,50+i*30/(C.pfN*C.pfD),.7),borderWidth:1,pointRadius:0,tension:.3});}
+  ch2=new Chart($('cc2').getContext('2d'),{type:'line',data:{labels:[],datasets:pfDS},options:{...copts}});
+  const dcDS=[{label:'Total',data:[],borderColor:'#3fb950',backgroundColor:'#3fb95033',borderWidth:2.5,pointRadius:0,tension:.3,fill:true}];
+  for(let i=0;i<C.dcN*C.dcD;i++){const gi=Math.floor(i/C.dcD),ri=i%C.dcD;
+    dcDS.push({label:'_D'+(gi+1)+'.R'+ri,data:[],borderColor:hsl(130,50,40+i*30/(C.dcN*C.dcD),.5),borderWidth:1,pointRadius:0,tension:.3});}
+  ch3=new Chart($('cc3').getContext('2d'),{type:'line',data:{labels:[],datasets:dcDS},options:{...copts}});
 }
 let lcu=0;function uCh(n){if(n-lcu<250)return;lcu=n;
   const lb=CS.ts.map(t=>t.toFixed(1));
   ch1.data.labels=lb;ch1.data.datasets[0].data=[...CS.inf];ch1.data.datasets[1].data=[...CS.pq];ch1.data.datasets[2].data=[...CS.tq];ch1.update('none');
-  ch2.data.labels=lb;ch2.data.datasets[0].data=[...CS.pfr];ch2.update('none');
-  ch3.data.labels=lb;ch3.data.datasets[0].data=[...CS.dr];ch3.update('none');}
+  ch2.data.labels=lb;ch2.data.datasets[0].data=[...CS.pfr];
+  for(let i=0;i<CS.pfrR.length;i++)ch2.data.datasets[1+i].data=[...CS.pfrR[i]];ch2.update('none');
+  ch3.data.labels=lb;ch3.data.datasets[0].data=[...CS.dr];
+  for(let i=0;i<CS.drR.length;i++)ch3.data.datasets[1+i].data=[...CS.drR[i]];ch3.update('none');}
 function uSt(){
   const t=S.t/1000;$('s0').textContent=Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
   $('s1').textContent=S.pool+'/'+C.tot;$('s2').textContent=S.inf+'/'+C.conc;
@@ -450,7 +465,7 @@ $('bP').addEventListener('click',()=>{S.pau=!S.pau;$('bP').textContent=S.pau?'Re
 $('bR').addEventListener('click',()=>{reset();$('bP').textContent='Pause';});
 let lft=0;function loop(ts){if(!lft)lft=ts;const dt=Math.min(ts-lft,100);lft=ts;
   sim(dt);draw();uCh(ts);uSt();requestAnimationFrame(loop);}
-reset();initCh();requestAnimationFrame(loop);
+reset();requestAnimationFrame(loop);
 </script>
 </body>
 </html>
