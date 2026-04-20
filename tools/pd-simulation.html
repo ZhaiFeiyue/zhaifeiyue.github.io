@@ -70,6 +70,7 @@ h1{font-size:18px;color:#58a6ff;padding:8px 0;text-align:center;border-bottom:1p
   <div class="cw"><h4>In-Flight / Queues</h4><canvas id="cc1"></canvas></div>
   <div class="cw"><h4>Prefill Running</h4><canvas id="cc2"></canvas></div>
   <div class="cw"><h4>Decode Running</h4><canvas id="cc3"></canvas></div>
+  <div class="cw"><h4>TPS (Tokens/s)</h4><canvas id="cc6"></canvas></div>
   <div style="display:flex;gap:6px">
    <div class="cw" style="flex:1"><h4>Input Length (ISL) Distribution</h4><canvas id="cc4"></canvas></div>
    <div class="cw" style="flex:1"><h4>Output Length (OSL) Distribution</h4><canvas id="cc5"></canvas></div>
@@ -133,8 +134,9 @@ function reset(){
   CS={ts:[],pq:[],tq:[],inf:[],
     pfr:[],pfrR:Array.from({length:C.pfN*C.pfD},()=>[]),
     dr:[],drR:Array.from({length:C.dcN*C.dcD},()=>[]),
+    pfTps:[],dcTps:[],lastPfTok:0,lastDcTok:0,
     lr:0};
-  if(ch1){[ch1,ch2,ch3,ch4,ch5].forEach(c=>c&&c.destroy());ch1=ch2=ch3=ch4=ch5=null;}
+  if(ch1){[ch1,ch2,ch3,ch4,ch5,ch6].forEach(c=>c&&c.destroy());ch1=ch2=ch3=ch4=ch5=ch6=null;}
   initCh();
 }
 function onComp(r){
@@ -249,12 +251,16 @@ function tick(dt){
     let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;
     let pfr=0;for(const nr of S.pfR)for(const rk of nr)if(rk.s==='COMPUTING'&&rk.r)pfr++;
     let txC2=0;for(const no of S.pfOut)for(const ro of no)txC2+=ro.length;
+    const dpfT=(T.pfTok-CS.lastPfTok)/0.5,ddcT=(T.dcTok-CS.lastDcTok)/0.5;
+    CS.lastPfTok=T.pfTok;CS.lastDcTok=T.dcTok;
     CS.ts.push(S.t/1000);CS.pq.push(pq);CS.tq.push(txC2);CS.dr.push(dr);CS.inf.push(S.inf);CS.pfr.push(pfr);
+    CS.pfTps.push(dpfT);CS.dcTps.push(ddcT);
     for(let i=0;i<C.pfN*C.pfD;i++){const ni=Math.floor(i/C.pfD),ri=i%C.pfD;
       CS.pfrR[i].push(S.pfR[ni][ri].s==='COMPUTING'&&S.pfR[ni][ri].r?1:0);}
     for(let i=0;i<C.dcN*C.dcD;i++){const gi=Math.floor(i/C.dcD),ri=i%C.dcD;
       CS.drR[i].push(S.dg[gi].rk[ri].length);}
     const mx=300;while(CS.ts.length>mx){CS.ts.shift();CS.pq.shift();CS.tq.shift();CS.dr.shift();CS.inf.shift();CS.pfr.shift();
+      CS.pfTps.shift();CS.dcTps.shift();
       for(const a of CS.pfrR)a.shift();for(const a of CS.drR)a.shift();}}
 }
 function sim(rdt){
@@ -412,7 +418,7 @@ function draw(){
   const t=S.t/1000,mm=Math.floor(t/60),ss=(t%60).toFixed(1);
   let st='Sim:'+mm+':'+ss.padStart(4,'0')+' | Speed:'+C.spd+'x';if(S.done)st+=' | ALL COMPLETED';
   c.fillText(st,w/2,h-3);}
-let ch1,ch2,ch3,ch4,ch5;Chart.defaults.color='#8b949e';Chart.defaults.borderColor='#21262d';
+let ch1,ch2,ch3,ch4,ch5,ch6;Chart.defaults.color='#8b949e';Chart.defaults.borderColor='#21262d';
 const copts={responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:'index',intersect:false},
   plugins:{legend:{labels:{font:{size:10},boxWidth:12,filter:item=>!item.text.startsWith('_')}}},
   scales:{x:{ticks:{font:{size:8},maxTicksLimit:10}},y:{min:0,ticks:{font:{size:8}},grid:{color:'#21262d'}}}};
@@ -439,6 +445,10 @@ function initCh(){
     {data:[],backgroundColor:'#58a6ff88',borderColor:'#58a6ff',borderWidth:1}]},options:{...hopts}});
   ch5=new Chart($('cc5').getContext('2d'),{type:'bar',data:{labels:[],datasets:[
     {data:[],backgroundColor:'#3fb95088',borderColor:'#3fb950',borderWidth:1}]},options:{...hopts}});
+  ch6=new Chart($('cc6').getContext('2d'),{type:'line',data:{labels:[],datasets:[
+    {label:'PF TPS',data:[],borderColor:'#58a6ff',backgroundColor:'#58a6ff22',borderWidth:2,pointRadius:0,tension:.3},
+    {label:'DC TPS',data:[],borderColor:'#3fb950',backgroundColor:'#3fb95022',borderWidth:2,pointRadius:0,tension:.3},
+  ]},options:{...copts}});
 }
 let lcu=0;function uCh(n){if(n-lcu<250)return;lcu=n;
   const lb=CS.ts.map(t=>t.toFixed(1));
@@ -447,6 +457,7 @@ let lcu=0;function uCh(n){if(n-lcu<250)return;lcu=n;
   for(let i=0;i<CS.pfrR.length;i++)ch2.data.datasets[1+i].data=[...CS.pfrR[i]];ch2.update('none');
   ch3.data.labels=lb;ch3.data.datasets[0].data=[...CS.dr];
   for(let i=0;i<CS.drR.length;i++)ch3.data.datasets[1+i].data=[...CS.drR[i]];ch3.update('none');
+  ch6.data.labels=lb;ch6.data.datasets[0].data=[...CS.pfTps];ch6.data.datasets[1].data=[...CS.dcTps];ch6.update('none');
   if(S.comp.length>0){
     const nBins=20;
     function mkHist(vals,nb){
