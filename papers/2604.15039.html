@@ -880,7 +880,7 @@ footer {
 <li>❌ "等成本下提升只有 15%" — 这是事实陈述不是假设质疑; 应改为"step 5 的 conclusion 在等成本约束下被显著弱化, 经济性论点退化为 P90 TTFT 改善"。</li>
 </ul>
 <p><b>3d. Core Technical Barrier — 系统侧最难复刻的一招</b></p>
-<blockquote><b>不是 hybrid attention（开源模型给了）, 不是 throughput model（数学很优雅但好懂）, 真正难的是 dual-timescale 调度里"跨 cluster prefix matching + BW-aware fallback"的一致性维护</b>。</blockquote>
+<blockquote>Hybrid attention 由开源模型提供, throughput model 是 load-bearing 的<b>论证骨架</b>（见 §3f, 不要因为"数学清晰"就降级它）, 但<b>真正最难复刻的工程一招</b>是 dual-timescale 调度里"跨 cluster prefix matching + BW-aware fallback"的一致性维护。</blockquote>
 <p>具体来说: 全局 KVCache manager 必须实时知道每个 prefix 块在哪个 cluster 哪台机器上, 以及当前每条 inter-DC 链路的 instantaneous utilization, 然后在 sub-ms 内对每个新请求做"该不该跨 cluster 复用 prefix"的决策。这要求:</p>
 <p>1. 全局 metadata 服务的可用性 / 延迟 / 一致性需要类似 Paxos 的设计（论文未披露具体方案）</p>
 <p>2. 每个 cluster 必须主动 push BW utilization 到调度器, 否则 BW-scarce 判定会滞后</p>
@@ -908,6 +908,106 @@ footer {
 <li>❌ "PrfaaS 强绑定单云厂商" — 没攻击 §3.0 任何步; 是发挥, 不是论文论点上的真实绑定</li>
 <li>❌ "PrfaaS 不支持 multi-tenant" — 攻击的是 §8 API & Usability 一段话, 不在 §3.0 论证链上, 应放到 8 节而非 binding critique</li>
 </ul>
+<p><b>3f. Solution Justification — Throughput Model 完整走读 (作者证明设计正确性的核心机制)</b></p>
+<blockquote>SKILL.md Phase 2b "作者证明 (SJM)" 强制要求: 任何 paper 都要识别<b>作者用什么 formal/quasi-formal 装置把 "我设计的方案是对的" 论证出来</b>, 并在 deep read 中<b>完整复现</b>该装置 (notation + 推导 + 单调性 + 与 case study 的映射), 不允许仅以 "Eq.X 给出 ..." 一笔带过。</blockquote>
+<p>></p>
+<blockquote>对 PrfaaS 而言, SJM 类型 = <b>closed-form converging-pipeline 吞吐模型 + 2D grid search</b> (论文 §3.4)。它的论证重量: case study (§4) 的 54%/19.4K/N_p=3/N_d=5/13 Gbps <b>不是 sweep 出来的, 而是 Eq.(3)-(8) 给定 Table 5 profile 后的一阶解</b>——丢掉模型, case study 就是无源 magic numbers。</blockquote>
+<h4>3f.1 Notation (论文 Table 4 完整复现)</h4>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">符号</th><th style="text-align:left">含义</th><th style="text-align:left">类别</th></tr></thead><tbody>
+<tr><td style="text-align:left">$\Lambda$</td><td style="text-align:left">request 到达率 (req/s, 端到端 throughput)</td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$L$</td><td style="text-align:left">uncached input length (随机变量)</td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$t$</td><td style="text-align:left">routing threshold (token) — <b>决策变量 1</b></td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$l_{\text{long}}=\mathbb{E}[L\mid L>t]$</td><td style="text-align:left">PrfaaS 平均长度</td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$l_{\text{short}}=\mathbb{E}[L\mid L\le t]$</td><td style="text-align:left">PD-P 平均长度</td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$p=P(L>t)$</td><td style="text-align:left">路由到 PrfaaS 的请求比例</td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$L_{\text{out}}$</td><td style="text-align:left">平均输出长度 (case study=1024)</td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$S_{\text{kv}}(l)$</td><td style="text-align:left">长度 $l$ 的 KVCache 体积 (Bytes)</td><td style="text-align:left">traffic</td></tr>
+<tr><td style="text-align:left">$N_{\text{prfaas}}$</td><td style="text-align:left">PrfaaS prefill instances 数</td><td style="text-align:left">system</td></tr>
+<tr><td style="text-align:left">$N_p, N_d$</td><td style="text-align:left">PD-P / PD-D instances 数 — <b>决策变量 2 (满足 $N_p+N_d=$ 常数)</b></td><td style="text-align:left">system</td></tr>
+<tr><td style="text-align:left">$B_{\text{out}}$</td><td style="text-align:left">PrfaaS 出口跨 DC 带宽 (Gbps)</td><td style="text-align:left">system</td></tr>
+<tr><td style="text-align:left">$\text{BS}_{\max}$</td><td style="text-align:left">decode 最大 batch size (SLO 锁定常数)</td><td style="text-align:left">system</td></tr>
+<tr><td style="text-align:left">$T_{\text{prefill}}(l)$</td><td style="text-align:left">长度 $l$ 的 prefill 耗时</td><td style="text-align:left">system</td></tr>
+<tr><td style="text-align:left">$T_{\text{decode}}$</td><td style="text-align:left">单 token decode 耗时 (SLO 锁定常数)</td><td style="text-align:left">system</td></tr>
+<tr><td style="text-align:left">$\Theta_{\text{prfaas}},\Theta_{\text{pd-p}},\Theta_{\text{pd-d}}$</td><td style="text-align:left">三角色稳态吞吐 (req/s)</td><td style="text-align:left">derived</td></tr>
+</tbody>
+</table></div>
+<h4>3f.2 三段稳态吞吐 (Eq.3-5) — 每条都讲清楚为什么</h4>
+<p>$$\Theta_{\text{prfaas}}=\min\!\left(\frac{N_{\text{prfaas}}}{T_{\text{prefill}}(l_{\text{long}})},\;\frac{B_{\text{out}}}{S_{\text{kv}}(l_{\text{long}})}\right) \quad\text{(Eq.3)}$$</p>
+<ul>
+<li><b>为什么是 min</b>: layer-wise prefill pipelining 让"算 KV"和"传 KV"在每一层都并行 (生成第 $k$ 层就开始传, 同时算第 $k+1$ 层), 因此 PrfaaS 集群的稳态吞吐由<b>算与传中较慢的那一支</b>决定 (经典 producer-consumer pipeline)。</li>
+<li>第一项 $N_{\text{prfaas}} / T_{\text{prefill}}$ = 算力上限 (每 instance 每秒处理多少请求 × instance 数);</li>
+<li>第二项 $B_{\text{out}} / S_{\text{kv}}$ = 带宽上限 (每秒传出多少字节 ÷ 每请求字节数)。</li>
+<li>case study: $N_{\text{prfaas}}=4, T_{\text{prefill}}(44\text{K})\approx 2.49\text{s}, S_{\text{kv}}(44\text{K})\approx 950\text{ MiB}$ → 算力项 ≈ 1.61 req/s, 带宽项 ≈ 13 req/s — <b>算力是 binding constraint, 带宽 8× 余量</b>。</li>
+</ul>
+<p>$$\Theta_{\text{pd-p}}=\frac{N_p}{T_{\text{prefill}}(l_{\text{short}})} \quad\text{(Eq.4)}$$</p>
+<ul>
+<li><b>为什么 RDMA 不进 min</b>: 簇内 800 Gbps RDMA × hybrid 模型 ≤ 8 Gbps/instance 的 KV throughput → RDMA 永远不可能成为 PD-P 内部的瓶颈 (差 100×), 所以<b>纯 compute-bound</b>, 不写 min。</li>
+<li>case study: $N_p=3, T_{\text{prefill}}(\sim 5\text{K})\approx 1.83\text{s}$ → 1.64 req/s。</li>
+</ul>
+<p>$$\Theta_{\text{pd-d}}=\frac{N_d \cdot \text{BS}_{\max}}{T_{\text{decode}} \cdot L_{\text{out}}} \quad\text{(Eq.5)}$$</p>
+<ul>
+<li><b>为什么是这个形式</b>: SLO (40 tok/s) 把 $T_{\text{decode}}$ 钉死成常数, batch size 上限 $\text{BS}_{\max}$ 也是 SLO 隐含约束 (再大就违反 TPOT)。每 instance 每秒完成 $\text{BS}_{\max}/(T_{\text{decode}}\cdot L_{\text{out}})$ 个请求 (一个请求要 1024 个 token, 每 token 25 ms)。</li>
+<li>case study: $N_d=5$ → 3.91 req/s。</li>
+</ul>
+<h4>3f.3 端到端瓶颈方程 (Eq.6) — 为什么是三段 min, 为什么要除以 p</h4>
+<p>$$\Lambda_{\max}=\min\!\left(\frac{\Theta_{\text{prfaas}}}{p},\;\frac{\Theta_{\text{pd-p}}}{1-p},\;\Theta_{\text{pd-d}}\right) \quad\text{(Eq.6)}$$</p>
+<p><b>converging pipeline 的几何理解</b>:</p>
+<pre><code>
+                     pp                    ↘
+请求流 Λ →  分流  →  PrfaaS Prefill (p 比例)  →
+                                              ↘
+                     1-p                       →  PD-D Decode (汇合)
+                  →  PD-P Prefill (1-p 比例)  →
+</code></pre>
+<ul>
+<li><b>PrfaaS 与 PD-P 是并联生产者</b>: 它们不是串行木桶, 而是各承担一部分请求 (按比例 $p$ vs $1{-}p$)。</li>
+<li><b>关键陷阱: 为什么除以 $p$?</b> $\Theta_{\text{prfaas}}$ 是 PrfaaS 的产能 (req/s), 但 PrfaaS 只承接 $p$ 比例的总流量。如果总流量是 $\Lambda$, 那么 PrfaaS 实际接到 $p\Lambda$, 要求 $p\Lambda \le \Theta_{\text{prfaas}}$ → $\Lambda \le \Theta_{\text{prfaas}}/p$。同理 PD-P 是 $\Lambda \le \Theta_{\text{pd-p}}/(1-p)$。</li>
+<li><b>PD-D 不除以任何东西</b>: 因为它是唯一汇聚的 consumer, 接收<b>全部</b> $\Lambda$ 请求, 所以 $\Lambda \le \Theta_{\text{pd-d}}$ 直接成立。</li>
+<li>三个不等式同时成立 → $\Lambda_{\max}$ 取三者最小。</li>
+</ul>
+<h4>3f.4 最优配置的两条平衡方程 (Eq.7-8) — 证明 grid search 必然收敛</h4>
+<p>最优 $(\hat t, \hat N_p/\hat N_d)$ 必须同时满足两条饱和条件:</p>
+<p>$$\frac{\Theta_{\text{prfaas}}}{p}=\frac{\Theta_{\text{pd-p}}}{1-p} \quad\text{(Eq.7, 路径平衡)}$$</p>
+<p>$$\Theta_{\text{prfaas}}+\Theta_{\text{pd-p}}=\Theta_{\text{pd-d}} \quad\text{(Eq.8, 产消平衡)}$$</p>
+<p><b>Eq.7 单调性证明 (论文未展开, 我补)</b>:</p>
+<ul>
+<li>$t \uparrow \Rightarrow p \downarrow$ (更多请求被踢回 PD-P), 同时 $l_{\text{long}} \uparrow$ (PrfaaS 只服务更长的) → $T_{\text{prefill}}(l_{\text{long}})\uparrow$ → $\Theta_{\text{prfaas}}\downarrow$ → $\Theta_{\text{prfaas}}/p$ 分子降分母降, <b>净效应: 在 prefill latency 近二次而 KV size 近线性的区间, 该比值随 t 单调降</b> (论文 §3.4.2 文字说明)</li>
+<li>同理 $\Theta_{\text{pd-p}}/(1-p)$ 随 $t$ 单调升 (PD-P 处理更多短请求)</li>
+<li>两条单调反向曲线必相交且交点唯一 → <b>Eq.7 在 (0, $L_{\max}$) 内有唯一解</b></li>
+</ul>
+<p><b>Eq.8 几何</b>:</p>
+<ul>
+<li>$N_p+N_d=$ 常数 (硬件总量); $N_p\uparrow$ 则 $\Theta_{\text{pd-p}}\uparrow$, $\Theta_{\text{pd-d}}\downarrow$ → 左边升右边降, 唯一交点</li>
+</ul>
+<p><b>结论</b>: 2 决策变量 ($t$, $N_p/N_d$) + 2 方程 (Eq.7, Eq.8) → 良定问题, <b>2D 网格搜索保证收敛到全局最优</b> (而不是局部极值)。</p>
+<h4>3f.5 从模型到 case study 的一阶映射 (54% / 19.4K / 13 Gbps 怎么"算"出来的)</h4>
+<p>把 Table 5 profile (1T 模型在 8×H200 上的 $S_{\text{kv}}, T_{\text{prefill}}$) + 工作负载 (log-normal μ=9.9, σ=1.0) + 硬件 ($N_{\text{prfaas}}=4$ instances, $N_p+N_d=8$ instances, $B_{\text{out}}=100$ Gbps) + SLO (40 tok/s, $L_{\text{out}}=1024$) 代入 Eq.3-8, <b>不需要任何调参 / sweep</b>, 数学上一阶就解出:</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">输出</th><th style="text-align:left">来源</th><th style="text-align:left">数值</th></tr></thead><tbody>
+<tr><td style="text-align:left">最优 $\hat t$</td><td style="text-align:left">Eq.7 在 log-normal CDF 下的根</td><td style="text-align:left"><b>19.4K tokens</b></td></tr>
+<tr><td style="text-align:left">$\hat p = P(L>\hat t)$</td><td style="text-align:left">log-normal CDF</td><td style="text-align:left"><b>49.6%</b> (≈ 一半请求走 PrfaaS)</td></tr>
+<tr><td style="text-align:left">$l_{\text{long}}=\mathbb{E}[L\mid L>\hat t]$</td><td style="text-align:left">log-normal 条件期望</td><td style="text-align:left"><b>44K tokens</b></td></tr>
+<tr><td style="text-align:left">最优 $\hat N_p/\hat N_d$</td><td style="text-align:left">Eq.8 + $N_p+N_d=8$</td><td style="text-align:left"><b>3 / 5</b></td></tr>
+<tr><td style="text-align:left">$\Lambda_{\max}$</td><td style="text-align:left">Eq.6 三段 min 在最优点的值</td><td style="text-align:left"><b>3.24 req/s</b></td></tr>
+<tr><td style="text-align:left">PrfaaS 出口 actual</td><td style="text-align:left">$\hat p \cdot \Lambda_{\max} \cdot S_{\text{kv}}(l_{\text{long}})$</td><td style="text-align:left"><b>≈ 13 Gbps</b></td></tr>
+<tr><td style="text-align:left">同构 baseline 在 $N_p=9, N_d=3$ 时的 $\Lambda_{\max}$</td><td style="text-align:left">同样代入 Eq.4-6 (无 PrfaaS 项)</td><td style="text-align:left"><b>2.11 req/s</b></td></tr>
+<tr><td style="text-align:left">提升</td><td style="text-align:left">$\Lambda_{\max}^{\text{PrfaaS}} / \Lambda_{\max}^{\text{homo}} = 3.24 / 2.11$</td><td style="text-align:left"><b>1.54×</b></td></tr>
+</tbody>
+</table></div>
+<p><b>关键洞察</b>: 整个 §4 case study 是<b>一次模型求值</b>, 不是经验调参。这正是 throughput model 作为 SJM 的<b>论证力量</b>——它不仅证明 PrfaaS-PD 设计可行, 还<b>给出可解的最优配置算法</b>, 任何采纳者把自己的 profile 代入即可重做这次 case study。</p>
+<h4>3f.6 一句话防守 (假设没有 case study, 我如何只用模型说服你?)</h4>
+<blockquote>在 hybrid 模型把 $\Phi_{\text{kv}}$ 压到 < 10 Gbps/instance 后, Eq.(3) 表明 PrfaaS 集群在合理 t 下<b>不再是带宽瓶颈而是算力瓶颈</b>——这意味着我们可以<b>在 commodity Ethernet 上扩 PrfaaS 算力</b>而不撞跨 DC 链路天花板; 同时 Eq.(7)(8) 把"合理 t"和"合理 $N_p/N_d$"从经验问题降为 2 元方程组, 给运维一个<b>closed-form 的容量规划工具</b>。这两条结论合起来, <b>不依赖任何 case study 数字就能成立</b>——case study 只是验证模型在 1T Kimi Linear 配置下没塌, 不是论点本身。</blockquote>
+<h4>3f.7 SJM 的可攻击面 (作为 §3c assumption audit 的补充)</h4>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">模型简化</th><th style="text-align:left">现实 deviation</th><th style="text-align:left">影响</th></tr></thead><tbody>
+<tr><td style="text-align:left">$l_{\text{long}}=\mathbb{E}[L\mid L>t]$ 一个代表值</td><td style="text-align:left">长尾分布下方差大, 真实 $T_{\text{prefill}}(l)$ 是非线性函数, $\mathbb{E}[T(L)] \neq T(\mathbb{E}[L])$ (Jensen)</td><td style="text-align:left">模型可能<b>低估</b>长尾下的实际带宽峰值</td></tr>
+<tr><td style="text-align:left">log-normal($\mu$=9.9, $\sigma$=1.0)</td><td style="text-align:left">ShareGPT/agentic 偏短, Loogle 偏长且双峰</td><td style="text-align:left">同模型不同 workload 解出截然不同的 $\hat t$, 论文未做敏感性</td></tr>
+<tr><td style="text-align:left">$T_{\text{decode}}$ 与 $\text{BS}_{\max}$ 是常数</td><td style="text-align:left">实际 batch composition (短长混合) 影响 $T_{\text{decode}}$</td><td style="text-align:left">Eq.5 是一阶近似, 真实 $\Theta_{\text{pd-d}}$ 在 long-tail batch 下偏低</td></tr>
+<tr><td style="text-align:left">Prefix cache 命中率被吸收进 $L_{\text{avg}}$</td><td style="text-align:left">命中率 ↔ 路由 ↔ $\hat t$ 三者强耦合</td><td style="text-align:left">静态模型解出的 $\hat t$ 在动态命中率下次优</td></tr>
+</tbody>
+</table></div>
+<p>这些不削弱模型的论证地位 (它在 first-order 上是对的), 但<b>说明 case study 数字的可移植性有限</b>——这才是 §3c A2/A5 的真正攻击点 (而不是脑补 "PrfaaS 不能扩到 1 万 GPU")。</p>
 <h3>4. Key Innovations</h3>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Innovation</th><th style="text-align:left">Mechanism</th><th style="text-align:left">Benefit</th><th style="text-align:left">Cost / Tradeoff</th></tr></thead><tbody>
@@ -915,7 +1015,7 @@ footer {
 <tr><td style="text-align:left">Selective offloading (length-based t)</td><td style="text-align:left">只把 l>t 的请求路由到 PrfaaS</td><td style="text-align:left">短请求避免跨 DC 传输; PrfaaS 算力专心服务长请求</td><td style="text-align:left">t 必须随负载实时调整, 否则 PrfaaS 队列爆</td></tr>
 <tr><td style="text-align:left">Hybrid prefix cache pool</td><td style="text-align:left">线性 attn 状态与全 attn KV 同物理池, 分组管理</td><td style="text-align:left">内存利用率高; 一套 eviction policy 服务两类 KV</td><td style="text-align:left">块对齐和 partial-match 语义复杂; 跨 cluster 时要区分 prefix-cache vs transfer-cache</td></tr>
 <tr><td style="text-align:left">Dual-timescale scheduling</td><td style="text-align:left">短时 BW+cache aware 路由; 长时 N_p/N_d 重分配</td><td style="text-align:left">既应对突发 (短时), 又应对 traffic shift (长时)</td><td style="text-align:left">长时切换需要 drain 节点, 切换瞬时容量下降</td></tr>
-<tr><td style="text-align:left">Throughput model (Eq.3-6)</td><td style="text-align:left">converging pipeline 形式, 端到端吞吐 = 三段瓶颈 min</td><td style="text-align:left">把"找最优"问题降为 2D 网格搜索</td><td style="text-align:left">假设 closed-form, 真实场景 tail latency 与 cache 命中模型未捕捉</td></tr>
+<tr><td style="text-align:left">Throughput model (Eq.3-6) — <b>load-bearing SJM, 详见 §3f</b></td><td style="text-align:left">converging pipeline 形式, 三段稳态 + 端到端 min, 并联生产者除以承担比例</td><td style="text-align:left">把"找最优"从经验问题降为 2 元方程组 + 2D 网格搜索, 给采纳者 closed-form 容量规划工具</td><td style="text-align:left">简化为代表长度 (Jensen 偏差), workload 锁死单一 log-normal, prefix cache 命中率被 $L_{\text{avg}}$ 吸收</td></tr>
 </tbody>
 </table></div>
 <h3>5. Scheduling & Resource Management</h3>
