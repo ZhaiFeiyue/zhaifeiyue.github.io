@@ -213,10 +213,14 @@ for p in papers:
     date = p.get("date", "")
     depth = p.get("read_depth", "overview")
     depth_badge = '<span style="color:#16a34a;font-weight:600;font-size:0.75rem">Details</span>' if depth == "deep" else '<span style="color:#d97706;font-weight:600;font-size:0.75rem">Summary</span>'
-    paper_rows += f"""<a class="paper-row" href="papers/{pid}.html" data-cat="{p['category']}">
+    tags = " ".join(p.get("secondary_tags", []))
+    authors_str = " ".join(p.get("authors", [])[:5])
+    search_text = html.escape(f"{pid} {title} {contrib} {tags} {authors_str} {cat}".lower())
+    paper_rows += f"""<a class="paper-row" href="papers/{pid}.html" data-cat="{p['category']}" data-id="{pid}" data-search="{search_text}">
   <div class="pr-meta">
     <span class="cat-tag" style="background:{color}">{cat}</span>
     <span class="pr-date">{date}</span>
+    <span class="pr-id">{pid}</span>
     {depth_badge}
   </div>
   <div class="pr-title">{title}</div>
@@ -304,6 +308,38 @@ index_html = f"""<!DOCTYPE html>
   background: var(--accent); color: #fff; border-color: var(--accent);
 }}
 .paper-row.hidden {{ display: none; }}
+.pr-id {{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem; color: var(--mt); opacity: 0.7;
+}}
+.search-wrap {{
+  margin-bottom: 16px; position: relative;
+}}
+.search-input {{
+  width: 100%; padding: 10px 16px 10px 40px;
+  border: 2px solid var(--bd); border-radius: 10px;
+  background: var(--sf); color: var(--tx);
+  font-family: 'JetBrains Mono', monospace; font-size: 0.88rem;
+  outline: none; transition: border-color .15s;
+}}
+.search-input:focus {{
+  border-color: var(--accent);
+}}
+.search-input::placeholder {{
+  color: var(--mt); font-family: 'IBM Plex Sans', sans-serif;
+  font-weight: 400;
+}}
+.search-icon {{
+  position: absolute; left: 14px; top: 50%;
+  transform: translateY(-50%); color: var(--mt);
+  font-size: 0.9rem; pointer-events: none;
+}}
+.search-count {{
+  font-size: 0.78rem; color: var(--mt); margin-top: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  display: none;
+}}
+.search-count.visible {{ display: block; }}
 
 /* ---- Index responsive ---- */
 @media (max-width: 768px) {{
@@ -320,6 +356,7 @@ index_html = f"""<!DOCTYPE html>
               scrollbar-width: none; padding-bottom: 4px; }}
   .filters::-webkit-scrollbar {{ display: none; }}
   .filter-btn {{ font-size: 0.78rem; padding: 5px 12px; flex-shrink: 0; }}
+  .search-input {{ font-size: 0.82rem; padding: 9px 14px 9px 36px; }}
   .paper-row {{ padding: 14px 16px; border-radius: 10px; margin-bottom: 10px; }}
   .pr-meta {{ gap: 8px; flex-wrap: wrap; }}
   .pr-title {{ font-size: 0.98rem; }}
@@ -350,6 +387,12 @@ index_html = f"""<!DOCTYPE html>
   </div>
 </div>
 <div class="w">
+<div class="search-wrap">
+  <span class="search-icon">&#128269;</span>
+  <input class="search-input" id="search" type="text"
+    placeholder="Search by arXiv ID, title, keyword, author...  (e.g. 2603.18897, FlashAttention, agent)">
+  <div class="search-count" id="search-count"></div>
+</div>
 <div class="filters">
   <button class="filter-btn active" data-filter="all">All ({total})</button>
   {"".join(f'<button class="filter-btn" data-filter="{c}" style="--fc:{CAT_COLORS.get(c,"#6b7280")}">{CAT_LABELS.get(c,c)} ({n})</button>' for c, n in sorted(cat_counts.items(), key=lambda x:-x[1]))}
@@ -360,16 +403,54 @@ index_html = f"""<!DOCTYPE html>
 </div>
 <footer>Built with Claude Opus 4.6</footer>
 <script>
-document.querySelectorAll('.filter-btn').forEach(btn => {{
-  btn.addEventListener('click', () => {{
-    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const f = btn.dataset.filter;
-    document.querySelectorAll('.paper-row').forEach(row => {{
-      row.classList.toggle('hidden', f !== 'all' && row.dataset.cat !== f);
+(function() {{
+  const rows = document.querySelectorAll('.paper-row');
+  const searchInput = document.getElementById('search');
+  const searchCount = document.getElementById('search-count');
+  let activeCat = 'all';
+
+  function applyFilters() {{
+    const q = searchInput.value.trim().toLowerCase();
+    const terms = q.split(/\s+/).filter(t => t.length > 0);
+    let visible = 0;
+    rows.forEach(row => {{
+      const catOk = activeCat === 'all' || row.dataset.cat === activeCat;
+      let searchOk = true;
+      if (terms.length > 0) {{
+        const hay = row.dataset.search || '';
+        const id = row.dataset.id || '';
+        searchOk = terms.every(t => hay.includes(t) || id.includes(t));
+      }}
+      const show = catOk && searchOk;
+      row.classList.toggle('hidden', !show);
+      if (show) visible++;
+    }});
+    if (terms.length > 0) {{
+      searchCount.textContent = visible + ' / {total} papers matched';
+      searchCount.classList.add('visible');
+    }} else {{
+      searchCount.classList.remove('visible');
+    }}
+  }}
+
+  searchInput.addEventListener('input', applyFilters);
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {{
+    btn.addEventListener('click', () => {{
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeCat = btn.dataset.filter;
+      applyFilters();
     }});
   }});
-}});
+
+  // Support ?q=xxx URL param for direct linking
+  const urlQ = new URLSearchParams(window.location.search).get('q');
+  if (urlQ) {{
+    searchInput.value = urlQ;
+    applyFilters();
+  }}
+}})();
 </script>
 </body>
 </html>"""
