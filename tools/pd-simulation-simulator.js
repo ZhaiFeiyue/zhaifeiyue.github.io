@@ -2,7 +2,7 @@
 // Exposes a Simulator class with: reset(), tick(dt), state, config.
 
 (function(global){
-const SIM_VERSION = '1.1.0';
+const SIM_VERSION = '1.1.1';
 class Simulator {
   constructor(config){
     this.cfg = { ...config };
