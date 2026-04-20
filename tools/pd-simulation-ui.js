@@ -2,7 +2,7 @@
 // Consumes a PDSimulator instance for read-only state + config.
 
 (function(){
-const UI_VERSION = '1.1.4';
+const UI_VERSION = '1.1.5';
 const $ = id => document.getElementById(id);
 // Show version in header (also cross-check simulator lib version)
 (function showVer(){
@@ -52,7 +52,7 @@ function loadCfg(){
   try {
     const o = JSON.parse(localStorage.getItem('pd_sim_cfg'));
     if (!o) return;
-    // v1.0.0 -> v1.1.4 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
+    // v1.0.0 -> v1.1.5 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
     if (o.c_pfD != null && o.c_pfDP == null) o.c_pfDP = o.c_pfD;
     if (o.c_dcD != null && o.c_dcDP == null) o.c_dcDP = o.c_dcD;
     for (const id of cfgInputs) if (o[id] != null) $(id).value = o[id];
@@ -72,7 +72,6 @@ function resetChartHistory(){
     pfr: [], pfrR: Array.from({ length: C.pfN * C.pfDP }, () => []),
     dr: [], drR: Array.from({ length: C.dcN * C.dcDP }, () => []),
     pfTps: [], dcTps: [],
-    lastPfTok: 0, lastDcTok: 0,
     lr: 0,
   };
 }
@@ -90,9 +89,16 @@ function sampleChartHistory(){
   let txC = 0;
   for (const no of S.pfOut) for (const ro of no) txC += ro.length;
 
-  const dPf = (T.pfTok - CS.lastPfTok) / 0.5;
-  const dDc = (T.dcTok - CS.lastDcTok) / 0.5;
-  CS.lastPfTok = T.pfTok; CS.lastDcTok = T.dcTok;
+  // Per-step instantaneous TPS: sum across all nodes of each node's current step rate.
+  // Each node's rate = tokens computed in its latest step / step duration (tokens/s).
+  // A node only contributes while it has active work (COMPUTING with reqs for PF, non-idle for DC).
+  let dPf = 0;
+  for (let ni = 0; ni < S.pfR.length; ni++){
+    const anyActive = S.pfR[ni].some(r => r.s === 'COMPUTING' && r.run.some(it => it.take > 0));
+    if (anyActive) dPf += S.pfB[ni].rate || 0;
+  }
+  let dDc = 0;
+  for (const g of S.dg){ if (!g.idle) dDc += g.rate || 0; }
 
   CS.ts.push(S.t / 1000);
   CS.pq.push(pq); CS.tq.push(txC); CS.dr.push(dr); CS.inf.push(S.inf);

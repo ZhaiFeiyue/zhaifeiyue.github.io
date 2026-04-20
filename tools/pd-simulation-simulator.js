@@ -2,7 +2,7 @@
 // Exposes a Simulator class with: reset(), tick(dt), state, config.
 
 (function(global){
-const SIM_VERSION = '1.1.4';
+const SIM_VERSION = '1.1.5';
 class Simulator {
   constructor(config){
     this.cfg = { ...config };
@@ -137,6 +137,7 @@ class Simulator {
         bar.bt = mx > 0 ? Math.max(20, mx / C.isl * C.pfL) : 0;
         bar.cs = S.t;
         bar.sc = 0;
+        bar.rate = (mx > 0 && bar.bt > 0) ? sumC * 1000 / bar.bt : 0;
         if (mx > 0){ T.pU += sumC; T.pT += mx * C.pfDP; }
         for (const rk of S.pfR[ni]){
           rk.ce = S.t + bar.bt;
@@ -172,7 +173,7 @@ class Simulator {
     for (const g of S.dg){
       let mrc = 0;
       for (const rk of g.rk) if (rk.length > mrc) mrc = rk.length;
-      if (mrc === 0){ g.idle = true; g.ls = S.t; continue; }
+      if (mrc === 0){ g.idle = true; g.ls = S.t; g.rate = 0; continue; }
       if (g.idle){ g.ls = S.t; g.idle = false; }
       let tp = Math.max(C.mt, C.tpot * mrc / C.mrr);
       let safe = 0;
@@ -182,6 +183,7 @@ class Simulator {
         let sum = 0;
         for (const rk of g.rk) sum += rk.length;
         T.dUS += sum; T.dTS += mrc * C.dcDP; T.dcTok += sum;
+        g.rate = tp > 0 ? sum * 1000 / tp : 0;
         for (let ri = 0; ri < g.rk.length; ri++){
           for (let j = g.rk[ri].length - 1; j >= 0; j--){
             const req = g.rk[ri][j];
