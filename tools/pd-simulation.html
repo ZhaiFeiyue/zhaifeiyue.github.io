@@ -111,19 +111,18 @@ function rCfg(){return{
 let C,S,T,CS,rid=0;
 function mkReq(){return{id:rid++,isl:Math.round(C.isl*(C.rng+Math.random()*(1-C.rng))),
   osl:Math.round(C.osl*(C.rng+Math.random()*(1-C.rng))),
-  ct:S.t,ps:0,pe:0,ds:0,ft:0,de:0,ot:0};}
+  ct:S.t,ps:0,pe:0,ds:0,ft:0,de:0,ot:0,dcNi:0,dcRi:0};}
 function reset(){
   C=rCfg();rid=0;
   S={t:0,pau:false,done:false,pool:C.tot,inf:0,
-    pq:[],ri:0,comp:[],
-    pfR:[], pfQ:[], pfB:[], pfOut:[], pfDcRI:[],
+    pq:[],ri:0,dri:0,comp:[],
+    pfR:[], pfQ:[], pfB:[], pfOut:[],
     dg:[]};
   for(let ni=0;ni<C.pfN;ni++){
     S.pfR.push(Array.from({length:C.pfD},()=>({s:'FETCH',r:null,ce:0})));
     S.pfQ.push(Array.from({length:C.pfD},()=>[]));
     S.pfB.push({sc:0,ec:0,bt:0,cs:0});
     S.pfOut.push(Array.from({length:C.pfD},()=>[]));
-    S.pfDcRI.push(Array.from({length:C.pfD},()=>0));
   }
   for(let i=0;i<C.dcN;i++)S.dg.push({rk:Array.from({length:C.dcD},()=>[]),ls:0,idle:true});
   const burst=Math.min(C.conc,S.pool);
@@ -144,13 +143,16 @@ function onComp(r){
 function tick(dt){
   if(S.done)return;S.t+=dt;
 
-  // === Router Actor: pq → per-rank queues (round-robin across all visible DP ranks) ===
-  const totalPfRanks=C.pfN*C.pfD;
+  // === Router Actor: assigns each req a PF rank + DC rank (independent round-robins) ===
+  const totalPfRanks=C.pfN*C.pfD,totalDcRanks=C.dcN*C.dcD;
   while(S.pq.length>0){
-    const fi=S.ri%totalPfRanks;
-    const ni=Math.floor(fi/C.pfD),ri=fi%C.pfD;
-    S.pfQ[ni][ri].push(S.pq.shift());
+    const req=S.pq.shift();
+    const pfi=S.ri%totalPfRanks;
+    S.pfQ[Math.floor(pfi/C.pfD)][pfi%C.pfD].push(req);
     S.ri++;
+    const dfi=S.dri%totalDcRanks;
+    req.dcNi=Math.floor(dfi/C.dcD);req.dcRi=dfi%C.dcD;
+    S.dri++;
   }
 
   // === Prefill Rank Actors (independent state machines per rank, barrier per node) ===
@@ -198,25 +200,17 @@ function tick(dt){
     }
   }
 
-  // === Transfer KV Actor: per-rank output → decode ranks (each rank round-robins independently) ===
-  const totalDcRanks=C.dcN*C.dcD;
+  // === Transfer KV Actor: place into pre-assigned DC rank when transfer done ===
   for(let ni=0;ni<C.pfN;ni++){
     for(let ri=0;ri<C.pfD;ri++){
       const oq=S.pfOut[ni][ri];
       while(oq.length>0&&S.t>=oq[0].te){
-        let placed=false;
-        for(let a=0;a<totalDcRanks;a++){
-          const fi=(S.pfDcRI[ni][ri]+a)%totalDcRanks;
-          const dN=Math.floor(fi/C.dcD),dR=fi%C.dcD;
-          if(S.dg[dN].rk[dR].length<C.mrr){
-            const req=oq.shift().r;
-            req.pe=S.t;req.ds=S.t;req.ot=0;
-            S.dg[dN].rk[dR].push(req);
-            S.pfDcRI[ni][ri]=(fi+1)%totalDcRanks;
-            placed=true;break;
-          }
-        }
-        if(!placed)break;
+        const req=oq[0].r;
+        if(S.dg[req.dcNi].rk[req.dcRi].length<C.mrr){
+          oq.shift();
+          req.pe=S.t;req.ds=S.t;req.ot=0;
+          S.dg[req.dcNi].rk[req.dcRi].push(req);
+        }else break;
       }
     }
   }
