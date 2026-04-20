@@ -51,6 +51,8 @@ h1{font-size:18px;color:#58a6ff;padding:8px 0;text-align:center;border-bottom:1p
   <label>DEP<input type="number" id="c_pfD" value="4" min="1" max="16"></label>
   <label>Latency<input type="number" id="c_pfL" value="600" step="50" min="10"><span class="u">ms@ISL</span></label>
   <label>PrefixCache<input type="number" id="c_pcR" value="0" step="5" min="0" max="100"><span class="u">%</span></label>
+  <label>ChunkSz<input type="number" id="c_chk" value="8192" step="1024" min="128"></label>
+  <label>PFMaxReq<input type="number" id="c_pfMR" value="1" min="1" step="1"></label>
   <label>TxCost<input type="number" id="c_txP" value="10" step="1" min="0" max="100"><span class="u">%</span></label>
  </div>
  <div class="cg"><div class="ct">Decode (DEP)</div>
@@ -112,7 +114,7 @@ const $=id=>document.getElementById(id);
 function rCfg(){return{
   tot:+$('c_total').value,conc:+$('c_conc').value,
   isl:+$('c_isl').value,osl:+$('c_osl').value,rng:+$('c_range').value,
-  pfN:+$('c_pfN').value,pfD:+$('c_pfD').value,pfL:+$('c_pfL').value,pcR:+$('c_pcR').value/100,txP:+$('c_txP').value/100,
+  pfN:+$('c_pfN').value,pfD:+$('c_pfD').value,pfL:+$('c_pfL').value,pcR:+$('c_pcR').value/100,chk:+$('c_chk').value,pfMR:+$('c_pfMR').value,txP:+$('c_txP').value/100,
   dcN:+$('c_dcN').value,dcD:+$('c_dcD').value,mrr:+$('c_mrr').value,
   tpot:+$('c_tpot').value,mt:+$('c_mt').value,spd:+$('c_spd').value};}
 let C,S,T,CS,rid=0;
@@ -126,7 +128,7 @@ function reset(){
     pfR:[], pfQ:[], pfB:[], pfOut:[],
     dg:[]};
   for(let ni=0;ni<C.pfN;ni++){
-    S.pfR.push(Array.from({length:C.pfD},()=>({s:'FETCH',r:null,ce:0})));
+    S.pfR.push(Array.from({length:C.pfD},()=>({s:'FETCH',run:[],con:0,ce:0})));
     S.pfQ.push(Array.from({length:C.pfD},()=>[]));
     S.pfB.push({sc:0,ec:0,bt:0,cs:0});
     S.pfOut.push(Array.from({length:C.pfD},()=>[]));
@@ -163,48 +165,54 @@ function tick(dt){
     S.dri++;
   }
 
-  // === Prefill Rank Actors (independent state machines per rank, barrier per node) ===
+  // === Prefill Rank Actors (chunked prefill with barrier per node) ===
   for(let ni=0;ni<C.pfN;ni++){
     const bar=S.pfB[ni];
     for(let ri=0;ri<C.pfD;ri++){
       const rk=S.pfR[ni][ri];
       if(rk.s==='FETCH'){
         const q=S.pfQ[ni][ri];
-        rk.r=q.length>0?q.shift():null;
-        if(rk.r)rk.r.ps=S.t;
-        rk.s='START_WAIT';
-        bar.sc++;
+        // Output completed reqs (rem <= 0)
+        for(let i=rk.run.length-1;i>=0;i--){
+          if(rk.run[i].rem<=0){
+            const req=rk.run[i].r;
+            const realT=req.isl/C.isl*C.pfL;
+            S.pfOut[ni][ri].push({r:req,te:S.t+realT*C.txP});
+            rk.run.splice(i,1);
+          }
+        }
+        // Pull new reqs up to pfMaxReq
+        while(rk.run.length<C.pfMR&&q.length>0){
+          const req=q.shift();req.ps=S.t;
+          rk.run.push({r:req,rem:Math.round(req.isl*(1-C.pcR))});
+        }
+        // Distribute chunk budget across running reqs
+        let budget=C.chk;rk.con=0;
+        for(const item of rk.run){
+          if(budget<=0)break;
+          const take=Math.min(item.rem,budget);
+          item.take=take;budget-=take;rk.con+=take;
+        }
+        rk.s='START_WAIT';bar.sc++;
       }
-      if(rk.s==='COMPUTING'&&S.t>=rk.ce){
-        rk.s='END_WAIT';
-        bar.ec++;
-      }
+      if(rk.s==='COMPUTING'&&S.t>=rk.ce){rk.s='END_WAIT';bar.ec++;}
     }
+    // Start barrier release
     if(bar.sc===C.pfD){
-      const isls=S.pfR[ni].map(r=>r.r?r.r.isl:0);
-      const effIsls=isls.map(l=>l*(1-C.pcR));
-      const mx=Math.max(0,...effIsls);
-      const sumI=isls.reduce((a,b)=>a+b,0);
+      const cons=S.pfR[ni].map(r=>r.con);
+      const mx=Math.max(0,...cons);
+      const sumC=cons.reduce((a,b)=>a+b,0);
       bar.bt=mx>0?Math.max(20,mx/C.isl*C.pfL):0;
-      bar.cs=S.t;
-      bar.sc=0;
-      const sumEff=effIsls.reduce((a,b)=>a+b,0);
-      if(mx>0){T.pU+=sumEff;T.pT+=mx*C.pfD;}
-      for(const rk of S.pfR[ni]){
-        rk.ce=S.t+bar.bt;
-        rk.s=bar.bt>0?'COMPUTING':'END_WAIT';
-      }
+      bar.cs=S.t;bar.sc=0;
+      if(mx>0){T.pU+=sumC;T.pT+=mx*C.pfD;}
+      for(const rk of S.pfR[ni]){rk.ce=S.t+bar.bt;rk.s=bar.bt>0?'COMPUTING':'END_WAIT';}
       if(bar.bt===0)bar.ec=C.pfD;
     }
+    // End barrier release
     if(bar.ec===C.pfD){
       bar.ec=0;
-      for(let ri=0;ri<C.pfD;ri++){
-        const rk=S.pfR[ni][ri];
-        if(rk.r){
-          const realT=rk.r.isl/C.isl*C.pfL;
-          S.pfOut[ni][ri].push({r:rk.r,te:S.t+realT*C.txP});
-          rk.r=null;
-        }
+      for(const rk of S.pfR[ni]){
+        for(const item of rk.run){item.rem-=(item.take||0);item.take=0;}
         rk.s='FETCH';
       }
     }
@@ -246,7 +254,7 @@ function tick(dt){
 
   // === Stats accumulators ===
   for(let ni=0;ni<C.pfN;ni++)for(let ri=0;ri<C.pfD;ri++){
-    T.pTM+=dt;if(S.pfR[ni][ri].s==='COMPUTING')T.pBM+=dt;}
+    T.pTM+=dt;if(S.pfR[ni][ri].s==='COMPUTING'&&S.pfR[ni][ri].run.length>0)T.pBM+=dt;}
   for(const g of S.dg){let tot=0;for(const rk of g.rk)tot+=rk.length;
     T.dAM+=tot*dt;T.dTM+=C.dcD*C.mrr*dt;}
 
@@ -254,14 +262,14 @@ function tick(dt){
   if(S.t-CS.lr>=500){CS.lr=S.t;
     let dr=0;for(const g of S.dg)for(const rk of g.rk)dr+=rk.length;
     let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;
-    let pfr=0;for(const nr of S.pfR)for(const rk of nr)if(rk.s==='COMPUTING'&&rk.r)pfr++;
+    let pfr=0;for(const nr of S.pfR)for(const rk of nr)if(rk.s==='COMPUTING')pfr+=rk.run.length;
     let txC2=0;for(const no of S.pfOut)for(const ro of no)txC2+=ro.length;
     const dpfT=(T.pfTok-CS.lastPfTok)/0.5,ddcT=(T.dcTok-CS.lastDcTok)/0.5;
     CS.lastPfTok=T.pfTok;CS.lastDcTok=T.dcTok;
     CS.ts.push(S.t/1000);CS.pq.push(pq);CS.tq.push(txC2);CS.dr.push(dr);CS.inf.push(S.inf);CS.pfr.push(pfr);
     CS.pfTps.push(dpfT);CS.dcTps.push(ddcT);
     for(let i=0;i<C.pfN*C.pfD;i++){const ni=Math.floor(i/C.pfD),ri=i%C.pfD;
-      CS.pfrR[i].push(S.pfR[ni][ri].s==='COMPUTING'&&S.pfR[ni][ri].r?1:0);}
+      CS.pfrR[i].push(S.pfR[ni][ri].s==='COMPUTING'?S.pfR[ni][ri].run.length:0);}
     for(let i=0;i<C.dcN*C.dcD;i++){const gi=Math.floor(i/C.dcD),ri=i%C.dcD;
       CS.drR[i].push(S.dg[gi].rk[ri].length);}
     const mx=300;while(CS.ts.length>mx){CS.ts.shift();CS.pq.shift();CS.tq.shift();CS.dr.shift();CS.inf.shift();CS.pfr.shift();
@@ -330,26 +338,18 @@ function dPF(c,x,y,w,h){
     const cp=24,gp=2,cw=Math.max(14,(w-cp-gp*(C.pfD-1))/C.pfD),ch2=gH-20,cy=gy+16;
     for(let ri=0;ri<C.pfD;ri++){
       const cx=x+cp+ri*(cw+gp),rk=ranks[ri],q=S.pfQ[ni][ri];
-      // Cell background by state
       if(rk.s==='COMPUTING'){
         c.fillStyle='#1c2333';c.fillRect(cx,cy,cw,ch2);
-        if(rk.r){
+        if(rk.run.length>0){
           const p=bar.bt>0?Math.min(1,(S.t-bar.cs)/bar.bt):0;
           c.fillStyle='#58a6ff';c.fillRect(cx,cy,cw*p,ch2);
-        } else {
-          c.fillStyle='#58a6ff22';c.fillRect(cx,cy,cw,ch2);
-        }
+        } else {c.fillStyle='#58a6ff22';c.fillRect(cx,cy,cw,ch2);}
       } else if(rk.s==='START_WAIT'||rk.s==='END_WAIT'){
         c.fillStyle='#2d2a00';c.fillRect(cx,cy,cw,ch2);
-      } else {
-        c.fillStyle='#1c2333';c.fillRect(cx,cy,cw,ch2);
-      }
+      } else {c.fillStyle='#1c2333';c.fillRect(cx,cy,cw,ch2);}
       c.strokeStyle='#30363d';c.lineWidth=.5;c.strokeRect(cx,cy,cw,ch2);
-      // Queue depth badge
-      if(q.length>0){
-        c.fillStyle='#58a6ff';c.font='bold 7px system-ui';c.textAlign='center';
-        c.fillText(q.length,cx+cw/2,cy-2);
-      }
+      if(rk.run.length>0){c.fillStyle='#fff';c.font='bold 7px system-ui';c.textAlign='center';c.textBaseline='middle';c.fillText(rk.run.length,cx+cw/2,cy+ch2/2);c.textBaseline='alphabetic';}
+      if(q.length>0){c.fillStyle='#58a6ff';c.font='bold 7px system-ui';c.textAlign='center';c.fillText(q.length,cx+cw/2,cy-2);}
     }
   }
 }
@@ -508,7 +508,7 @@ function uSt(){
     $('sg').textContent=p99.toFixed(2)+'s';
   } else{$('sc').textContent='-';$('sd').textContent='-';$('sf').textContent='-';$('sg').textContent='-';}
   $('se').textContent=(C.dcN*C.dcD*C.mrr/(C.osl*C.tpot/1000)).toFixed(1)+' req/s';}
-const cfgInputs=['c_total','c_conc','c_isl','c_osl','c_range','c_pfN','c_pfD','c_pfL','c_pcR','c_txP','c_dcN','c_dcD','c_mrr','c_tpot','c_mt','c_spd'];
+const cfgInputs=['c_total','c_conc','c_isl','c_osl','c_range','c_pfN','c_pfD','c_pfL','c_pcR','c_chk','c_pfMR','c_txP','c_dcN','c_dcD','c_mrr','c_tpot','c_mt','c_spd'];
 function saveCfg(){const o={};for(const id of cfgInputs)o[id]=$(id).value;localStorage.setItem('pd_sim_cfg',JSON.stringify(o));}
 function loadCfg(){try{const o=JSON.parse(localStorage.getItem('pd_sim_cfg'));if(!o)return;for(const id of cfgInputs)if(o[id]!=null)$(id).value=o[id];}catch(e){}}
 loadCfg();$('spdL').textContent=$('c_spd').value+'x';
