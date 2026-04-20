@@ -2,7 +2,7 @@
 // Consumes a PDSimulator instance for read-only state + config.
 
 (function(){
-const UI_VERSION = '1.1.1';
+const UI_VERSION = '1.1.2';
 const $ = id => document.getElementById(id);
 // Show version in header (also cross-check simulator lib version)
 (function showVer(){
@@ -52,7 +52,7 @@ function loadCfg(){
   try {
     const o = JSON.parse(localStorage.getItem('pd_sim_cfg'));
     if (!o) return;
-    // v1.0.0 -> v1.1.1 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
+    // v1.0.0 -> v1.1.2 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
     if (o.c_pfD != null && o.c_pfDP == null) o.c_pfDP = o.c_pfD;
     if (o.c_dcD != null && o.c_dcDP == null) o.c_dcDP = o.c_dcD;
     for (const id of cfgInputs) if (o[id] != null) $(id).value = o[id];
@@ -569,9 +569,10 @@ function uSt(){
     const sumISL = S.comp.reduce((s, r) => s + r.isl, 0);
     const sumOSL = S.comp.reduce((s, r) => s + r.osl, 0);
     const ePF = sumISL / e2eCost, eDC = sumOSL / e2eCost, eAll = (sumISL + sumOSL) / e2eCost;
-    $('sk').textContent = e2eCost > 0 ? fmtT(ePF) + ' / ' + fmtT(ePF / pfGPU) : '-';
-    $('sl').textContent = e2eCost > 0 ? fmtT(eDC) + ' / ' + fmtT(eDC / dcGPU) : '-';
-    $('sm').textContent = e2eCost > 0 ? fmtT(eAll) + ' / ' + fmtT(eAll / (pfGPU + dcGPU)) : '-';
+    const pfTotalGPU = C.pfN * C.pfTP, dcTotalGPU = C.dcN * C.dcTP;
+    $('sk').textContent = e2eCost > 0 ? fmtT(ePF) + ' / ' + fmtT(ePF / pfTotalGPU) : '-';
+    $('sl').textContent = e2eCost > 0 ? fmtT(eDC) + ' / ' + fmtT(eDC / dcTotalGPU) : '-';
+    $('sm').textContent = e2eCost > 0 ? fmtT(eAll) + ' / ' + fmtT(eAll / (pfTotalGPU + dcTotalGPU)) : '-';
   } else {
     $('sj').textContent = '-'; $('sk').textContent = '-';
     $('sl').textContent = '-'; $('sm').textContent = '-';
