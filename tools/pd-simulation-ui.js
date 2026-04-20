@@ -2,7 +2,7 @@
 // Consumes a PDSimulator instance for read-only state + config.
 
 (function(){
-const UI_VERSION = '1.0.0';
+const UI_VERSION = '1.1.0';
 const $ = id => document.getElementById(id);
 // Show version in header (also cross-check simulator lib version)
 (function showVer(){
@@ -16,20 +16,33 @@ const $ = id => document.getElementById(id);
 })();
 
 // ===================== Config I/O =====================
+// Snap DP/EP to {1, TP}: anything else snaps to TP.
+function snap1TP(v, tp){ return v === 1 ? 1 : tp; }
+
 function readConfig(){
+  const pfTP = +$('c_pfTP').value;
+  const pfDP = snap1TP(+$('c_pfDP').value, pfTP);
+  const pfEP = snap1TP(+$('c_pfEP').value, pfTP);
+  const dcTP = +$('c_dcTP').value;
+  const dcDP = snap1TP(+$('c_dcDP').value, dcTP);
+  const dcEP = snap1TP(+$('c_dcEP').value, dcTP);
+  if (+$('c_pfDP').value !== pfDP) $('c_pfDP').value = pfDP;
+  if (+$('c_pfEP').value !== pfEP) $('c_pfEP').value = pfEP;
+  if (+$('c_dcDP').value !== dcDP) $('c_dcDP').value = dcDP;
+  if (+$('c_dcEP').value !== dcEP) $('c_dcEP').value = dcEP;
   return {
     tot: +$('c_total').value, conc: +$('c_conc').value,
     isl: +$('c_isl').value, osl: +$('c_osl').value, rng: +$('c_range').value,
-    pfN: +$('c_pfN').value, pfD: +$('c_pfD').value, pfL: +$('c_pfL').value,
+    pfN: +$('c_pfN').value, pfTP, pfDP, pfEP, pfL: +$('c_pfL').value,
     pcR: +$('c_pcR').value / 100, chk: +$('c_chk').value, pfMR: +$('c_pfMR').value,
     txP: +$('c_txP').value / 100,
-    dcN: +$('c_dcN').value, dcD: +$('c_dcD').value, mrr: +$('c_mrr').value,
+    dcN: +$('c_dcN').value, dcTP, dcDP, dcEP, mrr: +$('c_mrr').value,
     tpot: +$('c_tpot').value, mt: +$('c_mt').value,
     spd: +$('c_spd').value,
   };
 }
 
-const cfgInputs = ['c_total','c_conc','c_isl','c_osl','c_range','c_pfN','c_pfD','c_pfL','c_pcR','c_chk','c_pfMR','c_txP','c_dcN','c_dcD','c_mrr','c_tpot','c_mt','c_spd'];
+const cfgInputs = ['c_total','c_conc','c_isl','c_osl','c_range','c_pfN','c_pfTP','c_pfDP','c_pfEP','c_pfL','c_pcR','c_chk','c_pfMR','c_txP','c_dcN','c_dcTP','c_dcDP','c_dcEP','c_mrr','c_tpot','c_mt','c_spd'];
 function saveCfg(){
   const o = {};
   for (const id of cfgInputs) o[id] = $(id).value;
@@ -39,6 +52,9 @@ function loadCfg(){
   try {
     const o = JSON.parse(localStorage.getItem('pd_sim_cfg'));
     if (!o) return;
+    // v1.0.0 -> v1.1.0 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
+    if (o.c_pfD != null && o.c_pfDP == null) o.c_pfDP = o.c_pfD;
+    if (o.c_dcD != null && o.c_dcDP == null) o.c_dcDP = o.c_dcD;
     for (const id of cfgInputs) if (o[id] != null) $(id).value = o[id];
   } catch(e){}
 }
@@ -53,8 +69,8 @@ function resetChartHistory(){
   const C = sim.config;
   CS = {
     ts: [], pq: [], tq: [], inf: [],
-    pfr: [], pfrR: Array.from({ length: C.pfN * C.pfD }, () => []),
-    dr: [], drR: Array.from({ length: C.dcN * C.dcD }, () => []),
+    pfr: [], pfrR: Array.from({ length: C.pfN * C.pfDP }, () => []),
+    dr: [], drR: Array.from({ length: C.dcN * C.dcDP }, () => []),
     pfTps: [], dcTps: [],
     lastPfTok: 0, lastDcTok: 0,
     lr: 0,
@@ -82,13 +98,13 @@ function sampleChartHistory(){
   CS.pq.push(pq); CS.tq.push(txC); CS.dr.push(dr); CS.inf.push(S.inf);
   CS.pfr.push(pfr);
   CS.pfTps.push(dPf); CS.dcTps.push(dDc);
-  for (let i = 0; i < C.pfN * C.pfD; i++){
-    const ni = Math.floor(i / C.pfD), ri = i % C.pfD;
+  for (let i = 0; i < C.pfN * C.pfDP; i++){
+    const ni = Math.floor(i / C.pfDP), ri = i % C.pfDP;
     const rkI = S.pfR[ni][ri];
     CS.pfrR[i].push(rkI.s === 'COMPUTING' ? rkI.run.filter(it => it.take > 0).length : 0);
   }
-  for (let i = 0; i < C.dcN * C.dcD; i++){
-    const gi = Math.floor(i / C.dcD), ri = i % C.dcD;
+  for (let i = 0; i < C.dcN * C.dcDP; i++){
+    const gi = Math.floor(i / C.dcDP), ri = i % C.dcDP;
     CS.drR[i].push(S.dg[gi].rk[ri].length);
   }
 }
@@ -214,7 +230,7 @@ function dPF(c, x, y, w, h){
   const nNodes = S.pfR.length;
   const gH = Math.min(52, (h - 5) / Math.max(1, nNodes) - 4);
   c.font = '9px system-ui'; c.fillStyle = '#8b949e'; c.textAlign = 'center';
-  c.fillText('Prefill(DEP' + C.pfD + ')', x + w / 2, y - 6);
+  c.fillText('Prefill(TP'+C.pfTP+'/DP'+C.pfDP+'/EP'+C.pfEP+')', x + w / 2, y - 6);
   for (let ni = 0; ni < nNodes; ni++){
     const ranks = S.pfR[ni], bar = S.pfB[ni], gy = y + ni * (gH + 4);
     const anyComp = ranks.some(r => r.s === 'COMPUTING');
@@ -230,9 +246,9 @@ function dPF(c, x, y, w, h){
       c.fillText(Math.round(p * 100) + '%', x + w - 4, gy + 12);
     }
     const cp = 24, gp = 2;
-    const cw = Math.max(14, (w - cp - gp * (C.pfD - 1)) / C.pfD);
+    const cw = Math.max(14, (w - cp - gp * (C.pfDP - 1)) / C.pfDP);
     const ch2 = gH - 20, cy = gy + 16;
-    for (let ri = 0; ri < C.pfD; ri++){
+    for (let ri = 0; ri < C.pfDP; ri++){
       const cx = x + cp + ri * (cw + gp), rk = ranks[ri], q = S.pfQ[ni][ri];
       if (rk.s === 'COMPUTING'){
         c.fillStyle = '#1c2333'; c.fillRect(cx, cy, cw, ch2);
@@ -268,13 +284,13 @@ function dDC(c, x, y, w, h){
   const cW = (w - (cols - 1) * 6) / cols;
   const gH = Math.min(60, (h - 5) / rows - 4);
   c.font = '9px system-ui'; c.fillStyle = '#8b949e'; c.textAlign = 'center';
-  c.fillText('Decode(DEP' + C.dcD + ' x' + C.mrr + '/rank)', x + w / 2, y - 6);
+  c.fillText('Decode(TP'+C.dcTP+'/DP'+C.dcDP+'/EP'+C.dcEP+' x'+C.mrr+'/rank)', x + w / 2, y - 6);
   for (let i = 0; i < gs.length; i++){
     const g = gs[i], col = i % cols, row = Math.floor(i / cols);
     const gx = x + col * (cW + 6), gy = y + row * (gH + 4);
     let tr = 0, mrc = 0;
     for (const rk of g.rk){ tr += rk.length; if (rk.length > mrc) mrc = rk.length; }
-    const mt = C.dcD * C.mrr;
+    const mt = C.dcDP * C.mrr;
     const tp = mrc > 0 ? Math.max(C.mt, C.tpot * mrc / C.mrr) : 0;
     rr(c, gx, gy, cW, gH, 5);
     c.fillStyle = tr > 0 ? '#0b1a0b' : '#0d1117'; c.fill();
@@ -290,9 +306,9 @@ function dDC(c, x, y, w, h){
       c.fillText(tp.toFixed(0) + 'ms', gx + cW - 3, gy + 17);
     }
     const bp = 3, bg = 1;
-    const bw = Math.max(4, (cW - 2 * bp - (C.dcD - 1) * bg) / C.dcD);
+    const bw = Math.max(4, (cW - 2 * bp - (C.dcDP - 1) * bg) / C.dcDP);
     const bh = gH - 20, by = gy + 18;
-    for (let ri = 0; ri < C.dcD; ri++){
+    for (let ri = 0; ri < C.dcDP; ri++){
       const bx = gx + bp + ri * (bw + bg), rk = g.rk[ri];
       c.fillStyle = '#1c2333'; c.fillRect(bx, by, bw, bh);
       if (rk.length > 0){
@@ -437,15 +453,15 @@ function initCh(){
     { label: 'KV Xfer', data: [], borderColor: '#d29922', backgroundColor: '#d2992233', borderWidth: 2, pointRadius: 0, tension: .3, fill: true },
   ]}, options: { ...copts } });
   const pfDS = [{ label: 'Total', data: [], borderColor: '#58a6ff', backgroundColor: '#58a6ff33', borderWidth: 2.5, pointRadius: 0, tension: .3, fill: true }];
-  for (let i = 0; i < C.pfN * C.pfD; i++){
-    const ni = Math.floor(i / C.pfD), ri = i % C.pfD;
-    pfDS.push({ label: '_N' + (ni + 1) + '.R' + ri, data: [], borderColor: hsl(210, 70, 50 + i * 30 / (C.pfN * C.pfD), .7), borderWidth: 1, pointRadius: 0, tension: .3 });
+  for (let i = 0; i < C.pfN * C.pfDP; i++){
+    const ni = Math.floor(i / C.pfDP), ri = i % C.pfDP;
+    pfDS.push({ label: '_N' + (ni + 1) + '.R' + ri, data: [], borderColor: hsl(210, 70, 50 + i * 30 / (C.pfN * C.pfDP), .7), borderWidth: 1, pointRadius: 0, tension: .3 });
   }
   ch2 = new Chart($('cc2').getContext('2d'), { type: 'line', data: { labels: [], datasets: pfDS }, options: { ...copts } });
   const dcDS = [{ label: 'Total', data: [], borderColor: '#3fb950', backgroundColor: '#3fb95033', borderWidth: 2.5, pointRadius: 0, tension: .3, fill: true }];
-  for (let i = 0; i < C.dcN * C.dcD; i++){
-    const gi = Math.floor(i / C.dcD), ri = i % C.dcD;
-    dcDS.push({ label: '_D' + (gi + 1) + '.R' + ri, data: [], borderColor: hsl(130, 50, 40 + i * 30 / (C.dcN * C.dcD), .5), borderWidth: 1, pointRadius: 0, tension: .3 });
+  for (let i = 0; i < C.dcN * C.dcDP; i++){
+    const gi = Math.floor(i / C.dcDP), ri = i % C.dcDP;
+    dcDS.push({ label: '_D' + (gi + 1) + '.R' + ri, data: [], borderColor: hsl(130, 50, 40 + i * 30 / (C.dcN * C.dcDP), .5), borderWidth: 1, pointRadius: 0, tension: .3 });
   }
   ch3 = new Chart($('cc3').getContext('2d'), { type: 'line', data: { labels: [], datasets: dcDS }, options: { ...copts } });
   const hopts = {
@@ -523,12 +539,12 @@ function uSt(){
   $('s6').textContent = txS;
   let dr = 0;
   for (const g of S.dg) for (const rk of g.rk) dr += rk.length;
-  $('s7').textContent = dr + '/' + (C.dcN * C.dcD * C.mrr);
+  $('s7').textContent = dr + '/' + (C.dcN * C.dcDP * C.mrr);
   $('s8').textContent = (T.pTM > 0 ? (T.pBM / T.pTM * 100) : 0).toFixed(1) + '%';
   $('s9').textContent = (T.pT > 0 ? ((1 - T.pU / T.pT) * 100) : 0).toFixed(1) + '%';
   const pfTPS = S.t > 0 ? (T.pfTok / (S.t / 1000)) : 0;
   const dcTPS = S.t > 0 ? (T.dcTok / (S.t / 1000)) : 0;
-  const pfGPU = C.pfN * C.pfD, dcGPU = C.dcN * C.dcD;
+  const pfGPU = C.pfN * C.pfTP, dcGPU = C.dcN * C.dcTP;
   $('sh').textContent = fmtT(pfTPS) + ' / ' + fmtT(pfTPS / pfGPU);
   $('si').textContent = fmtT(dcTPS) + ' / ' + fmtT(dcTPS / dcGPU);
   $('sa').textContent = (T.dTM > 0 ? (T.dAM / T.dTM * 100) : 0).toFixed(1) + '%';
@@ -560,7 +576,7 @@ function uSt(){
     $('sj').textContent = '-'; $('sk').textContent = '-';
     $('sl').textContent = '-'; $('sm').textContent = '-';
   }
-  $('se').textContent = (C.dcN * C.dcD * C.mrr / (C.osl * C.tpot / 1000)).toFixed(1) + ' req/s';
+  $('se').textContent = (C.dcN * C.dcDP * C.mrr / (C.osl * C.tpot / 1000)).toFixed(1) + ' req/s';
 }
 
 // ===================== Reset / Pause =====================

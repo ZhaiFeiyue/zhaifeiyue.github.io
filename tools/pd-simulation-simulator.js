@@ -2,7 +2,7 @@
 // Exposes a Simulator class with: reset(), tick(dt), state, config.
 
 (function(global){
-const SIM_VERSION = '1.0.0';
+const SIM_VERSION = '1.1.0';
 class Simulator {
   constructor(config){
     this.cfg = { ...config };
@@ -40,13 +40,13 @@ class Simulator {
       dg: [],
     };
     for (let ni = 0; ni < C.pfN; ni++){
-      S.pfR.push(Array.from({ length: C.pfD }, () => ({ s: 'FETCH', run: [], con: 0, ce: 0 })));
-      S.pfQ.push(Array.from({ length: C.pfD }, () => []));
+      S.pfR.push(Array.from({ length: C.pfDP }, () => ({ s: 'FETCH', run: [], con: 0, ce: 0 })));
+      S.pfQ.push(Array.from({ length: C.pfDP }, () => []));
       S.pfB.push({ sc: 0, ec: 0, bt: 0, cs: 0 });
-      S.pfOut.push(Array.from({ length: C.pfD }, () => []));
+      S.pfOut.push(Array.from({ length: C.pfDP }, () => []));
     }
     for (let i = 0; i < C.dcN; i++){
-      S.dg.push({ rk: Array.from({ length: C.dcD }, () => []), ls: 0, idle: true });
+      S.dg.push({ rk: Array.from({ length: C.dcDP }, () => []), ls: 0, idle: true });
     }
     this._s = S;
     this._t = {
@@ -81,22 +81,22 @@ class Simulator {
     S.t += dt;
 
     // === Router Actor: assign PF rank + DC rank (independent round-robins) ===
-    const totalPfRanks = C.pfN * C.pfD, totalDcRanks = C.dcN * C.dcD;
+    const totalPfRanks = C.pfN * C.pfDP, totalDcRanks = C.dcN * C.dcDP;
     while (S.pq.length > 0){
       const req = S.pq.shift();
       const pfi = S.ri % totalPfRanks;
-      S.pfQ[Math.floor(pfi / C.pfD)][pfi % C.pfD].push(req);
+      S.pfQ[Math.floor(pfi / C.pfDP)][pfi % C.pfDP].push(req);
       S.ri++;
       const dfi = S.dri % totalDcRanks;
-      req.dcNi = Math.floor(dfi / C.dcD);
-      req.dcRi = dfi % C.dcD;
+      req.dcNi = Math.floor(dfi / C.dcDP);
+      req.dcRi = dfi % C.dcDP;
       S.dri++;
     }
 
     // === Prefill Rank Actors (chunked prefill with barrier per node) ===
     for (let ni = 0; ni < C.pfN; ni++){
       const bar = S.pfB[ni];
-      for (let ri = 0; ri < C.pfD; ri++){
+      for (let ri = 0; ri < C.pfDP; ri++){
         const rk = S.pfR[ni][ri];
         if (rk.s === 'FETCH'){
           const q = S.pfQ[ni][ri];
@@ -130,21 +130,21 @@ class Simulator {
           bar.ec++;
         }
       }
-      if (bar.sc === C.pfD){
+      if (bar.sc === C.pfDP){
         const cons = S.pfR[ni].map(r => r.con);
         const mx = Math.max(0, ...cons);
         const sumC = cons.reduce((a, b) => a + b, 0);
         bar.bt = mx > 0 ? Math.max(20, mx / C.isl * C.pfL) : 0;
         bar.cs = S.t;
         bar.sc = 0;
-        if (mx > 0){ T.pU += sumC; T.pT += mx * C.pfD; }
+        if (mx > 0){ T.pU += sumC; T.pT += mx * C.pfDP; }
         for (const rk of S.pfR[ni]){
           rk.ce = S.t + bar.bt;
           rk.s = bar.bt > 0 ? 'COMPUTING' : 'END_WAIT';
         }
-        if (bar.bt === 0) bar.ec = C.pfD;
+        if (bar.bt === 0) bar.ec = C.pfDP;
       }
-      if (bar.ec === C.pfD){
+      if (bar.ec === C.pfDP){
         bar.ec = 0;
         for (const rk of S.pfR[ni]){
           for (const item of rk.run){ item.rem -= (item.take || 0); item.take = 0; }
@@ -155,7 +155,7 @@ class Simulator {
 
     // === Transfer KV Actor: place into pre-assigned DC rank when transfer done ===
     for (let ni = 0; ni < C.pfN; ni++){
-      for (let ri = 0; ri < C.pfD; ri++){
+      for (let ri = 0; ri < C.pfDP; ri++){
         const oq = S.pfOut[ni][ri];
         while (oq.length > 0 && S.t >= oq[0].te){
           const req = oq[0].r;
@@ -181,7 +181,7 @@ class Simulator {
         g.ls += tp;
         let sum = 0;
         for (const rk of g.rk) sum += rk.length;
-        T.dUS += sum; T.dTS += mrc * C.dcD; T.dcTok += sum;
+        T.dUS += sum; T.dTS += mrc * C.dcDP; T.dcTok += sum;
         for (let ri = 0; ri < g.rk.length; ri++){
           for (let j = g.rk[ri].length - 1; j >= 0; j--){
             const req = g.rk[ri][j];
@@ -203,7 +203,7 @@ class Simulator {
 
     // === Stats accumulators (time-weighted) ===
     for (let ni = 0; ni < C.pfN; ni++){
-      for (let ri = 0; ri < C.pfD; ri++){
+      for (let ri = 0; ri < C.pfDP; ri++){
         T.pTM += dt;
         if (S.pfR[ni][ri].s === 'COMPUTING' && S.pfR[ni][ri].run.some(it => it.take > 0)) T.pBM += dt;
       }
@@ -212,7 +212,7 @@ class Simulator {
       let tot = 0;
       for (const rk of g.rk) tot += rk.length;
       T.dAM += tot * dt;
-      T.dTM += C.dcD * C.mrr * dt;
+      T.dTM += C.dcDP * C.mrr * dt;
     }
   }
 }
