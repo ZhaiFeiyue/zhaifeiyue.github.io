@@ -2,7 +2,7 @@
 // Consumes a PDSimulator instance for read-only state + config.
 
 (function(){
-const UI_VERSION = '1.1.2';
+const UI_VERSION = '1.1.3';
 const $ = id => document.getElementById(id);
 // Show version in header (also cross-check simulator lib version)
 (function showVer(){
@@ -31,7 +31,7 @@ function readConfig(){
   if (+$('c_dcDP').value !== dcDP) $('c_dcDP').value = dcDP;
   if (+$('c_dcEP').value !== dcEP) $('c_dcEP').value = dcEP;
   return {
-    tot: +$('c_total').value, conc: +$('c_conc').value,
+    tot: +$('c_conc').value * 10, conc: +$('c_conc').value,
     isl: +$('c_isl').value, osl: +$('c_osl').value, rng: +$('c_range').value,
     pfN: +$('c_pfN').value, pfTP, pfDP, pfEP, pfL: +$('c_pfL').value,
     pcR: +$('c_pcR').value / 100, chk: +$('c_chk').value, pfMR: +$('c_pfMR').value,
@@ -52,7 +52,7 @@ function loadCfg(){
   try {
     const o = JSON.parse(localStorage.getItem('pd_sim_cfg'));
     if (!o) return;
-    // v1.0.0 -> v1.1.2 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
+    // v1.0.0 -> v1.1.3 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
     if (o.c_pfD != null && o.c_pfDP == null) o.c_pfDP = o.c_pfD;
     if (o.c_dcD != null && o.c_dcDP == null) o.c_dcDP = o.c_dcD;
     for (const id of cfgInputs) if (o[id] != null) $(id).value = o[id];
@@ -594,6 +594,9 @@ function fullReset(){
 // ===================== Events =====================
 loadCfg();
 $('spdL').textContent = $('c_spd').value + 'x';
+function syncTotal(){ $('c_total').value = +$('c_conc').value * 10; }
+syncTotal();
+$('c_conc').addEventListener('input', syncTotal);
 for (const id of cfgInputs) $(id).addEventListener('change', saveCfg);
 $('c_spd').addEventListener('change', () => {
   $('spdL').textContent = $('c_spd').value + 'x';
