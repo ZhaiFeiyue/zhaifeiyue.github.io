@@ -50,6 +50,7 @@ h1{font-size:18px;color:#58a6ff;padding:8px 0;text-align:center;border-bottom:1p
   <label>Nodes<input type="number" id="c_pfN" value="1" min="1" max="20"></label>
   <label>DEP<input type="number" id="c_pfD" value="4" min="1" max="16"></label>
   <label>Latency<input type="number" id="c_pfL" value="600" step="50" min="10"><span class="u">ms@ISL</span></label>
+  <label>TxCost<input type="number" id="c_txP" value="10" step="1" min="0" max="100"><span class="u">%</span></label>
  </div>
  <div class="cg"><div class="ct">Decode (DEP)</div>
   <label>Nodes<input type="number" id="c_dcN" value="2" min="1" max="64"></label>
@@ -98,7 +99,7 @@ const $=id=>document.getElementById(id);
 function rCfg(){return{
   tot:+$('c_total').value,conc:+$('c_conc').value,
   isl:+$('c_isl').value,osl:+$('c_osl').value,rng:+$('c_range').value,
-  pfN:+$('c_pfN').value,pfD:+$('c_pfD').value,pfL:+$('c_pfL').value,
+  pfN:+$('c_pfN').value,pfD:+$('c_pfD').value,pfL:+$('c_pfL').value,txP:+$('c_txP').value/100,
   dcN:+$('c_dcN').value,dcD:+$('c_dcD').value,mrr:+$('c_mrr').value,
   tpot:+$('c_tpot').value,mt:+$('c_mt').value,spd:+$('c_spd').value};}
 let C,S,T,CS,rid=0;
@@ -108,13 +109,15 @@ function mkReq(){return{id:rid++,isl:Math.round(C.isl*(C.rng+Math.random()*(1-C.
 function reset(){
   C=rCfg();rid=0;
   S={t:0,pau:false,done:false,pool:C.tot,inf:0,
-    pq:[],ri:0,tq:[],comp:[],
-    pfR:[], pfQ:[], pfB:[],
+    pq:[],ri:0,comp:[],
+    pfR:[], pfQ:[], pfB:[], pfOut:[], pfDcRI:[],
     dg:[]};
   for(let ni=0;ni<C.pfN;ni++){
     S.pfR.push(Array.from({length:C.pfD},()=>({s:'FETCH',r:null,ce:0})));
     S.pfQ.push(Array.from({length:C.pfD},()=>[]));
     S.pfB.push({sc:0,ec:0,bt:0,cs:0});
+    S.pfOut.push(Array.from({length:C.pfD},()=>[]));
+    S.pfDcRI.push(Array.from({length:C.pfD},()=>0));
   }
   for(let i=0;i<C.dcN;i++)S.dg.push({rk:Array.from({length:C.dcD},()=>[]),ls:0,idle:true});
   const burst=Math.min(C.conc,S.pool);
@@ -127,15 +130,6 @@ function onComp(r){
   T.cc++;T.lS+=r.de-r.ct;T.tS+=r.ds-r.ct;S.comp.push(r);S.inf--;
   if(S.pool>0){S.pq.push(mkReq());S.pool--;S.inf++;}
   if(S.inf===0&&S.pool===0)S.done=true;
-}
-function fillDC(){
-  while(S.tq.length>0){
-    let bg=-1,br=-1,bc=C.mrr;
-    for(let g=0;g<S.dg.length;g++)for(let r=0;r<S.dg[g].rk.length;r++){
-      const c=S.dg[g].rk[r].length;if(c<bc){bc=c;bg=g;br=r;}}
-    if(bg<0||bc>=C.mrr)break;
-    const r=S.tq.shift();r.ds=S.t;r.ot=0;S.dg[bg].rk[br].push(r);
-  }
 }
 function tick(dt){
   if(S.done)return;S.t+=dt;
@@ -182,15 +176,42 @@ function tick(dt){
     }
     if(bar.ec===C.pfD){
       bar.ec=0;
-      for(const rk of S.pfR[ni]){
-        if(rk.r){rk.r.pe=S.t;S.tq.push(rk.r);rk.r=null;}
+      for(let ri=0;ri<C.pfD;ri++){
+        const rk=S.pfR[ni][ri];
+        if(rk.r){
+          const realT=rk.r.isl/C.isl*C.pfL;
+          S.pfOut[ni][ri].push({r:rk.r,te:S.t+realT*C.txP});
+          rk.r=null;
+        }
         rk.s='FETCH';
       }
     }
   }
 
+  // === Transfer KV Actor: per-rank output → decode ranks (each rank round-robins independently) ===
+  const totalDcRanks=C.dcN*C.dcD;
+  for(let ni=0;ni<C.pfN;ni++){
+    for(let ri=0;ri<C.pfD;ri++){
+      const oq=S.pfOut[ni][ri];
+      while(oq.length>0&&S.t>=oq[0].te){
+        let placed=false;
+        for(let a=0;a<totalDcRanks;a++){
+          const fi=(S.pfDcRI[ni][ri]+a)%totalDcRanks;
+          const dN=Math.floor(fi/C.dcD),dR=fi%C.dcD;
+          if(S.dg[dN].rk[dR].length<C.mrr){
+            const req=oq.shift().r;
+            req.pe=S.t;req.ds=S.t;req.ot=0;
+            S.dg[dN].rk[dR].push(req);
+            S.pfDcRI[ni][ri]=(fi+1)%totalDcRanks;
+            placed=true;break;
+          }
+        }
+        if(!placed)break;
+      }
+    }
+  }
+
   // === Decode Node Actors (independent timer per node) ===
-  fillDC();
   for(const g of S.dg){
     let mrc=0;for(const rk of g.rk)if(rk.length>mrc)mrc=rk.length;
     if(mrc===0){g.idle=true;g.ls=S.t;continue;}
@@ -204,7 +225,7 @@ function tick(dt){
         for(let j=g.rk[ri].length-1;j>=0;j--){
           g.rk[ri][j].ot++;
           if(g.rk[ri][j].ot>=g.rk[ri][j].osl){g.rk[ri][j].de=g.ls;onComp(g.rk[ri][j]);g.rk[ri].splice(j,1);}}
-      fillDC();mrc=0;for(const rk of g.rk)if(rk.length>mrc)mrc=rk.length;
+      mrc=0;for(const rk of g.rk)if(rk.length>mrc)mrc=rk.length;
       if(mrc===0){g.idle=true;break;}
       tp=Math.max(C.mt,C.tpot*mrc/C.mrr);}}
 
@@ -219,7 +240,8 @@ function tick(dt){
     let dr=0;for(const g of S.dg)for(const rk of g.rk)dr+=rk.length;
     let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;
     let pfr=0;for(const nr of S.pfR)for(const rk of nr)if(rk.s==='COMPUTING'&&rk.r)pfr++;
-    CS.ts.push(S.t/1000);CS.pq.push(pq);CS.tq.push(S.tq.length);CS.dr.push(dr);CS.inf.push(S.inf);CS.pfr.push(pfr);
+    let txC2=0;for(const no of S.pfOut)for(const ro of no)txC2+=ro.length;
+    CS.ts.push(S.t/1000);CS.pq.push(pq);CS.tq.push(txC2);CS.dr.push(dr);CS.inf.push(S.inf);CS.pfr.push(pfr);
     while(CS.ts.length>300){CS.ts.shift();CS.pq.shift();CS.tq.shift();CS.dr.shift();CS.inf.shift();CS.pfr.shift();}}
 }
 function sim(rdt){
@@ -359,13 +381,14 @@ function draw(){
   const anyPfComp=S.pfR.some(nr=>nr.some(rk=>rk.s==='COMPUTING'));
   dCli(c,clX,ty,cliW,ch2);dQ(c,pq,pqX,ty,qw,ch2,'#58a6ff','PF Queue');
   dRt(c,rtX,ty,rtw,ch2);dPF(c,pgX,ty,pw,ch2);
-  dQ(c,S.tq.length,tqX,ty,qw,ch2,'#d29922','Transfer Q');
+  let txC=0;for(const no of S.pfOut)for(const ro of no)txC+=ro.length;
+  dQ(c,txC,tqX,ty,qw,ch2,'#d29922','KV Xfer');
   dDC(c,dgX,ty,dw,ch2);dOut(c,oX,ty,ow,ch2);
   const my=ty+ch2/2;
   dArr(c,clX+cliW,my,pqX,my,S.inf>0);dArr(c,pqX+qw,my,rtX,my,pq>0);
-  dArr(c,rtX+rtw,my,pgX,my,pq>0);dArr(c,pgX+pw,my,tqX,my,S.tq.length>0||anyPfComp);
+  dArr(c,rtX+rtw,my,pgX,my,pq>0);dArr(c,pgX+pw,my,tqX,my,txC>0||anyPfComp);
   let hd=false;for(const g of S.dg)for(const rk of g.rk)if(rk.length){hd=true;break;}
-  dArr(c,tqX+qw,my,dgX,my,hd||S.tq.length>0);dArr(c,dgX+dw,my,oX,my,T.cc>0);
+  dArr(c,tqX+qw,my,dgX,my,hd||txC>0);dArr(c,dgX+dw,my,oX,my,T.cc>0);
   if(T.cc>0){const fy=ty+ch2+4;c.save();c.strokeStyle='#3fb95033';c.lineWidth=1;
     c.setLineDash([4,4]);c.lineDashOffset=(S.t*.02)%8;c.beginPath();
     c.moveTo(oX+ow/2,ty+ch2);c.lineTo(oX+ow/2,fy);c.lineTo(clX+cliW/2,fy);c.lineTo(clX+cliW/2,ty+ch2);
@@ -382,7 +405,7 @@ function initCh(){
   ch1=new Chart($('cc1').getContext('2d'),{type:'line',data:{labels:[],datasets:[
     {label:'In-Flight',data:[],borderColor:'#bc8cff',backgroundColor:'#bc8cff22',borderWidth:2,pointRadius:0,tension:.3},
     {label:'PF Queue',data:[],borderColor:'#58a6ff',backgroundColor:'#58a6ff22',borderWidth:1.5,pointRadius:0,tension:.3},
-    {label:'Transfer Q',data:[],borderColor:'#d29922',backgroundColor:'#d2992222',borderWidth:1.5,pointRadius:0,tension:.3,borderDash:[4,3]},
+    {label:'KV Xfer',data:[],borderColor:'#d29922',backgroundColor:'#d2992222',borderWidth:1.5,pointRadius:0,tension:.3,borderDash:[4,3]},
   ]},options:{...copts}});
   ch2=new Chart($('cc2').getContext('2d'),{type:'line',data:{labels:[],datasets:[
     {label:'PF Running',data:[],borderColor:'#58a6ff',backgroundColor:'#58a6ff33',borderWidth:2,pointRadius:0,tension:.3,fill:true},
@@ -400,7 +423,8 @@ function uSt(){
   const t=S.t/1000;$('s0').textContent=Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
   $('s1').textContent=S.pool+'/'+C.tot;$('s2').textContent=S.inf+'/'+C.conc;
   $('s3').textContent=T.cc+'/'+C.tot;$('s4').textContent=(S.t>0?(T.cc/(S.t/1000)):0).toFixed(2)+' req/s';
-  let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;$('s5').textContent=pq;$('s6').textContent=S.tq.length;
+  let pq=S.pq.length;for(const nq of S.pfQ)for(const q of nq)pq+=q.length;$('s5').textContent=pq;
+  let txS=0;for(const no of S.pfOut)for(const ro of no)txS+=ro.length;$('s6').textContent=txS;
   let dr=0;for(const g of S.dg)for(const rk of g.rk)dr+=rk.length;
   $('s7').textContent=dr+'/'+(C.dcN*C.dcD*C.mrr);
   $('s8').textContent=(T.pTM>0?(T.pBM/T.pTM*100):0).toFixed(1)+'%';
