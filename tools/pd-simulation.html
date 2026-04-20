@@ -17,7 +17,6 @@ h1{font-size:18px;color:#58a6ff;padding:8px 0;text-align:center;border-bottom:1p
 .ctrl-group input[type="number"]{width:60px;background:#0d1117;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:12px;text-align:right}
 .ctrl-group input[type="range"]{width:100px;accent-color:#58a6ff}
 .ctrl-group input[type="checkbox"]{accent-color:#58a6ff}
-.ctrl-group select{background:#0d1117;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:12px}
 .ctrl-group button{background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;margin:2px 4px}
 .ctrl-group button:hover{background:#30363d}
 .ctrl-group .unit{color:#8b949e;font-size:11px}
@@ -35,7 +34,7 @@ h1{font-size:18px;color:#58a6ff;padding:8px 0;text-align:center;border-bottom:1p
 .stat-value.green{color:#3fb950}
 .stat-value.orange{color:#d29922}
 .stat-value.red{color:#f85149}
-.sim-time{text-align:center;font-size:11px;color:#8b949e;padding:4px}
+.stat-value.purple{color:#bc8cff}
 </style>
 </head>
 <body>
@@ -43,15 +42,15 @@ h1{font-size:18px;color:#58a6ff;padding:8px 0;text-align:center;border-bottom:1p
   <h1>PD Disaggregation Simulator</h1>
   <div class="controls">
     <div class="ctrl-group">
-      <div class="ctrl-title">Request Generator</div>
+      <div class="ctrl-title">Client / Request</div>
+      <label>Total <input type="number" id="c_total" value="100" min="1" step="10"></label>
+      <label>Concurrency <input type="number" id="c_conc" value="16" min="1" step="1"></label>
       <label>ISL <input type="number" id="c_isl" value="8192" step="1024" min="128"></label>
       <label>OSL <input type="number" id="c_osl" value="1024" step="128" min="1"></label>
       <label>Range <input type="number" id="c_range" value="0.8" step="0.05" min="0.1" max="1"></label>
-      <label>Rate <input type="number" id="c_rate" value="1" step="0.1" min="0"> <span class="unit">req/s</span></label>
-      <label><input type="checkbox" id="c_inf"> Infinite</label>
     </div>
     <div class="ctrl-group">
-      <div class="ctrl-title">Prefill (DEP)</div>
+      <div class="ctrl-title">Prefill (DEP) + Router</div>
       <label>Nodes <input type="number" id="c_pfN" value="1" min="1" max="20"></label>
       <label>DEP <input type="number" id="c_pfD" value="4" min="1" max="16"></label>
       <label>Latency <input type="number" id="c_pfL" value="600" step="50" min="10"> <span class="unit">ms@ISL</span></label>
@@ -80,7 +79,8 @@ h1{font-size:18px;color:#58a6ff;padding:8px 0;text-align:center;border-bottom:1p
     <div class="stats-panel">
       <h3>Statistics</h3>
       <div class="stat-row"><span class="stat-label">Sim Time</span><span class="stat-value" id="s_time">0:00</span></div>
-      <div class="stat-row"><span class="stat-label">Generated</span><span class="stat-value" id="s_gen">0</span></div>
+      <div class="stat-row"><span class="stat-label">Client Pool</span><span class="stat-value purple" id="s_pool">0</span></div>
+      <div class="stat-row"><span class="stat-label">Client In-Flight</span><span class="stat-value purple" id="s_inflight">0</span></div>
       <div class="stat-row"><span class="stat-label">Completed</span><span class="stat-value green" id="s_comp">0</span></div>
       <div class="stat-row"><span class="stat-label">Throughput</span><span class="stat-value green" id="s_tput">0</span></div>
       <hr style="border-color:#21262d;margin:4px 0">
@@ -105,11 +105,11 @@ const $ = id => document.getElementById(id);
 
 function readConfig() {
   return {
+    totalReqs: +$('c_total').value,
+    concurrency: +$('c_conc').value,
     isl:       +$('c_isl').value,
     osl:       +$('c_osl').value,
     range:     +$('c_range').value,
-    rate:      +$('c_rate').value,
-    infinite:  $('c_inf').checked,
     pfNodes:   +$('c_pfN').value,
     pfDEP:     +$('c_pfD').value,
     pfLatency: +$('c_pfL').value,
@@ -142,25 +142,43 @@ function createRequest() {
 function resetSim() {
   cfg = readConfig();
   reqIdCounter = 0;
+
   sim = {
-    time: 0, paused: false,
-    pfQueue: [], tfQueue: [], completed: [],
-    pfGroups: [], dcGroups: [],
-    reqAccum: 0, totalGen: 0,
+    time: 0, paused: false, done: false,
+    clientPool: cfg.totalReqs,
+    clientInFlight: 0,
+    pfQueue: [],
+    pfGroupQueues: [],
+    routerIdx: 0,
+    tfQueue: [],
+    completed: [],
+    pfGroups: [],
+    dcGroups: [],
   };
+
   for (let i = 0; i < cfg.pfNodes; i++) {
     sim.pfGroups.push({ id: i, active: false, batch: [], startT: 0, endT: 0, dur: 0 });
+    sim.pfGroupQueues.push([]);
   }
   for (let i = 0; i < cfg.dcNodes; i++) {
     sim.dcGroups.push({ id: i, slots: new Array(cfg.dcDEP).fill(null), lastStep: 0, wasIdle: true });
   }
+
+  // Initial client burst: send `concurrency` requests
+  const initBurst = Math.min(cfg.concurrency, sim.clientPool);
+  for (let i = 0; i < initBurst; i++) {
+    sim.pfQueue.push(createRequest());
+    sim.clientPool--;
+    sim.clientInFlight++;
+  }
+
   stats = {
     pfBusyMs: 0, pfTotalMs: 0,
     pfUseful: 0, pfTotal: 0,
     dcActivMs: 0, dcTotalMs: 0,
     compCount: 0, latSum: 0, ttftSum: 0,
   };
-  chartState = { times: [], pfQ: [], tfQ: [], dcR: [], lastRec: 0 };
+  chartState = { times: [], pfQ: [], tfQ: [], dcR: [], inflight: [], lastRec: 0 };
   if (chart) {
     chart.data.labels = [];
     chart.data.datasets.forEach(ds => ds.data = []);
@@ -169,26 +187,41 @@ function resetSim() {
 }
 
 // ===================== SIMULATION =====================
-function tick(dt) {
-  sim.time += dt;
+function onRequestComplete(req) {
+  stats.compCount++;
+  stats.latSum += req.dcEnd - req.createdAt;
+  stats.ttftSum += req.dcStart - req.createdAt;
+  sim.completed.push(req);
+  sim.clientInFlight--;
 
-  // 1. Generate requests
-  if (cfg.infinite) {
-    while (sim.pfQueue.length < 200) {
-      sim.pfQueue.push(createRequest());
-      sim.totalGen++;
-    }
-  } else if (cfg.rate > 0) {
-    sim.reqAccum += cfg.rate * dt / 1000;
-    while (sim.reqAccum >= 1) {
-      sim.pfQueue.push(createRequest());
-      sim.reqAccum--;
-      sim.totalGen++;
-    }
+  // Client replenishes from pool
+  if (sim.clientPool > 0) {
+    sim.pfQueue.push(createRequest());
+    sim.clientPool--;
+    sim.clientInFlight++;
   }
 
-  // 2. Prefill groups
-  for (const g of sim.pfGroups) {
+  if (sim.clientInFlight === 0 && sim.clientPool === 0) {
+    sim.done = true;
+  }
+}
+
+function tick(dt) {
+  if (sim.done) return;
+  sim.time += dt;
+
+  // 1. Router: distribute pfQueue → per-group queues (round-robin)
+  while (sim.pfQueue.length > 0) {
+    const gIdx = sim.routerIdx % cfg.pfNodes;
+    sim.pfGroupQueues[gIdx].push(sim.pfQueue.shift());
+    sim.routerIdx++;
+  }
+
+  // 2. Prefill groups: pull from per-group queues
+  for (let gi = 0; gi < sim.pfGroups.length; gi++) {
+    const g = sim.pfGroups[gi];
+    const gq = sim.pfGroupQueues[gi];
+
     if (g.active && sim.time >= g.endT) {
       for (const r of g.batch) {
         r.pfEnd = g.endT;
@@ -202,10 +235,10 @@ function tick(dt) {
       g.active = false;
       g.batch = [];
     }
-    if (!g.active && sim.pfQueue.length > 0) {
+    if (!g.active && gq.length > 0) {
       const batch = [];
-      for (let i = 0; i < cfg.pfDEP && sim.pfQueue.length > 0; i++) {
-        batch.push(sim.pfQueue.shift());
+      for (let i = 0; i < cfg.pfDEP && gq.length > 0; i++) {
+        batch.push(gq.shift());
       }
       const maxL = Math.max(...batch.map(r => r.isl));
       const dur = maxL / cfg.isl * cfg.pfLatency;
@@ -243,10 +276,7 @@ function tick(dt) {
           g.slots[i].outputTokens++;
           if (g.slots[i].outputTokens >= g.slots[i].osl) {
             g.slots[i].dcEnd = g.lastStep;
-            stats.compCount++;
-            stats.latSum += g.slots[i].dcEnd - g.slots[i].createdAt;
-            stats.ttftSum += g.slots[i].dcStart - g.slots[i].createdAt;
-            sim.completed.push(g.slots[i]);
+            onRequestComplete(g.slots[i]);
             g.slots[i] = null;
           }
         }
@@ -283,20 +313,24 @@ function tick(dt) {
     chartState.lastRec = sim.time;
     let dcR = 0;
     for (const g of sim.dcGroups) for (const s of g.slots) if (s) dcR++;
+    let pfQTotal = sim.pfQueue.length;
+    for (const gq of sim.pfGroupQueues) pfQTotal += gq.length;
     chartState.times.push(sim.time / 1000);
-    chartState.pfQ.push(sim.pfQueue.length);
+    chartState.pfQ.push(pfQTotal);
     chartState.tfQ.push(sim.tfQueue.length);
     chartState.dcR.push(dcR);
+    chartState.inflight.push(sim.clientInFlight);
     const maxPts = 300;
     while (chartState.times.length > maxPts) {
       chartState.times.shift(); chartState.pfQ.shift();
       chartState.tfQ.shift(); chartState.dcR.shift();
+      chartState.inflight.shift();
     }
   }
 }
 
 function simulate(realDt) {
-  if (sim.paused) return;
+  if (sim.paused || sim.done) return;
   cfg.speed = +$('c_speed').value;
   const simDt = realDt * cfg.speed;
   const steps = Math.min(Math.ceil(simDt), 8000);
@@ -336,81 +370,121 @@ function roundRect(ctx, x, y, w, h, r) {
 function drawArrow(ctx, x1, y1, x2, y2, hasFlow) {
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
+  ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
   if (hasFlow) {
-    ctx.strokeStyle = '#58a6ff55';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([7, 5]);
-    ctx.lineDashOffset = -(sim.time * 0.03) % 12;
+    ctx.strokeStyle = '#58a6ff55'; ctx.lineWidth = 2;
+    ctx.setLineDash([7, 5]); ctx.lineDashOffset = -(sim.time * 0.03) % 12;
   } else {
-    ctx.strokeStyle = '#ffffff15';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([]);
+    ctx.strokeStyle = '#ffffff15'; ctx.lineWidth = 1; ctx.setLineDash([]);
   }
   ctx.stroke();
-  const ang = Math.atan2(y2 - y1, x2 - x1);
-  const aLen = 6;
+  const ang = Math.atan2(y2 - y1, x2 - x1), aL = 6;
   ctx.beginPath();
   ctx.moveTo(x2, y2);
-  ctx.lineTo(x2 - aLen * Math.cos(ang - 0.4), y2 - aLen * Math.sin(ang - 0.4));
-  ctx.lineTo(x2 - aLen * Math.cos(ang + 0.4), y2 - aLen * Math.sin(ang + 0.4));
+  ctx.lineTo(x2 - aL * Math.cos(ang - 0.4), y2 - aL * Math.sin(ang - 0.4));
+  ctx.lineTo(x2 - aL * Math.cos(ang + 0.4), y2 - aL * Math.sin(ang + 0.4));
   ctx.closePath();
   ctx.fillStyle = hasFlow ? '#58a6ff88' : '#ffffff33';
-  ctx.fill();
-  ctx.setLineDash([]);
-  ctx.restore();
+  ctx.fill(); ctx.setLineDash([]); ctx.restore();
 }
 
 function drawQueue(ctx, count, x, y, w, h, color, label) {
   roundRect(ctx, x, y, w, h, 6);
-  ctx.fillStyle = '#161b22';
-  ctx.fill();
-  ctx.strokeStyle = '#30363d';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  const maxVis = 100;
-  const fill = Math.min(1, count / maxVis);
+  ctx.fillStyle = '#161b22'; ctx.fill();
+  ctx.strokeStyle = '#30363d'; ctx.lineWidth = 1; ctx.stroke();
+  const fill = Math.min(1, count / 100);
   if (fill > 0) {
     const fh = (h - 4) * fill;
     roundRect(ctx, x + 2, y + h - fh - 2, w - 4, fh, 4);
-    ctx.fillStyle = color + '33';
-    ctx.fill();
+    ctx.fillStyle = color + '33'; ctx.fill();
   }
-  ctx.fillStyle = '#e6edf3';
-  ctx.font = 'bold 14px system-ui';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#e6edf3'; ctx.font = 'bold 14px system-ui';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(count, x + w / 2, y + h / 2);
-  ctx.font = '9px system-ui';
-  ctx.fillStyle = '#8b949e';
+  ctx.font = '9px system-ui'; ctx.fillStyle = '#8b949e';
+  ctx.textBaseline = 'alphabetic';
   ctx.fillText(label, x + w / 2, y - 6);
+}
+
+function drawClient(ctx, x, y, w, h) {
+  ctx.font = '9px system-ui'; ctx.fillStyle = '#8b949e';
+  ctx.textAlign = 'center'; ctx.fillText('Client', x + w / 2, y - 6);
+  roundRect(ctx, x, y, w, h, 6);
+  ctx.fillStyle = '#161b22'; ctx.fill();
+  ctx.strokeStyle = sim.done ? '#3fb95066' : '#bc8cff44';
+  ctx.lineWidth = 1; ctx.stroke();
+
+  const cy1 = y + 14;
+  ctx.fillStyle = '#bc8cff'; ctx.font = 'bold 11px system-ui';
+  ctx.textAlign = 'center';
+  ctx.fillText(sim.done ? 'DONE' : 'In-Flight', x + w / 2, cy1);
+
+  ctx.fillStyle = '#e6edf3'; ctx.font = 'bold 16px system-ui';
+  ctx.fillText(sim.clientInFlight, x + w / 2, cy1 + 20);
+  ctx.font = '9px system-ui'; ctx.fillStyle = '#8b949e';
+  ctx.fillText('/ ' + cfg.concurrency, x + w / 2, cy1 + 33);
+
+  const barY = cy1 + 42;
+  const barH = 8;
+  ctx.fillStyle = '#1c2333';
+  ctx.fillRect(x + 4, barY, w - 8, barH);
+  const poolPct = cfg.totalReqs > 0 ? sim.clientPool / cfg.totalReqs : 0;
+  if (poolPct > 0) {
+    ctx.fillStyle = '#bc8cff55';
+    ctx.fillRect(x + 4, barY, (w - 8) * poolPct, barH);
+  }
+  ctx.strokeStyle = '#30363d'; ctx.lineWidth = 0.5;
+  ctx.strokeRect(x + 4, barY, w - 8, barH);
+
+  ctx.fillStyle = '#8b949e'; ctx.font = '9px system-ui';
+  ctx.fillText('pool: ' + sim.clientPool + '/' + cfg.totalReqs, x + w / 2, barY + barH + 12);
+  ctx.fillText('done: ' + stats.compCount, x + w / 2, barY + barH + 24);
+}
+
+function drawRouter(ctx, x, y, w, h) {
+  const midY = y + h / 2;
+  const sz = 16;
+  ctx.save();
+  ctx.translate(x + w / 2, midY);
+  ctx.rotate(Math.PI / 4);
+  roundRect(ctx, -sz, -sz, sz * 2, sz * 2, 3);
+  ctx.fillStyle = '#161b22'; ctx.fill();
+  ctx.strokeStyle = '#58a6ff44'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.rotate(-Math.PI / 4);
+  ctx.fillStyle = '#58a6ff'; ctx.font = 'bold 9px system-ui';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('RR', 0, 0);
+  ctx.restore();
+  ctx.fillStyle = '#8b949e'; ctx.font = '9px system-ui';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('Router', x + w / 2, y - 6);
 }
 
 function drawPfGroups(ctx, x, y, w, h) {
   const groups = sim.pfGroups;
   const gH = Math.min(48, (h - 5) / Math.max(1, groups.length) - 4);
-  ctx.font = '9px system-ui';
-  ctx.fillStyle = '#8b949e';
+  ctx.font = '9px system-ui'; ctx.fillStyle = '#8b949e';
   ctx.textAlign = 'center';
   ctx.fillText('Prefill (DEP' + cfg.pfDEP + ')', x + w / 2, y - 6);
 
   for (let gi = 0; gi < groups.length; gi++) {
     const g = groups[gi];
+    const gq = sim.pfGroupQueues[gi];
     const gy = y + gi * (gH + 4);
     roundRect(ctx, x, gy, w, gH, 5);
-    ctx.fillStyle = g.active ? '#0d1926' : '#0d1117';
-    ctx.fill();
+    ctx.fillStyle = g.active ? '#0d1926' : '#0d1117'; ctx.fill();
     ctx.strokeStyle = g.active ? '#58a6ff44' : '#30363d';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    ctx.lineWidth = 1; ctx.stroke();
 
-    ctx.fillStyle = '#8b949e';
-    ctx.font = '9px system-ui';
-    ctx.textAlign = 'left';
+    ctx.fillStyle = '#8b949e'; ctx.font = '9px system-ui'; ctx.textAlign = 'left';
     ctx.fillText('P' + (gi + 1), x + 4, gy + 12);
+    // Per-group queue count
+    if (gq.length > 0) {
+      ctx.fillStyle = '#58a6ff'; ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'left';
+      ctx.fillText('[' + gq.length + ']', x + 18, gy + 12);
+    }
 
-    const cellPad = 24;
+    const cellPad = 34;
     const gap = 2;
     const cellW = Math.max(12, (w - cellPad - gap * (cfg.pfDEP - 1)) / cfg.pfDEP);
     const cellH = gH - 18;
@@ -418,24 +492,20 @@ function drawPfGroups(ctx, x, y, w, h) {
 
     for (let j = 0; j < cfg.pfDEP; j++) {
       const cx = x + cellPad + j * (cellW + gap);
-      ctx.fillStyle = '#1c2333';
-      ctx.fillRect(cx, cellY, cellW, cellH);
+      ctx.fillStyle = '#1c2333'; ctx.fillRect(cx, cellY, cellW, cellH);
       const req = g.batch[j];
       if (req && g.active) {
         const prog = Math.min(1, (sim.time - g.startT) / g.dur);
         ctx.fillStyle = '#58a6ff';
         ctx.fillRect(cx, cellY, cellW * prog, cellH);
       }
-      ctx.strokeStyle = '#30363d';
-      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = '#30363d'; ctx.lineWidth = 0.5;
       ctx.strokeRect(cx, cellY, cellW, cellH);
     }
 
     if (g.active) {
       const prog = Math.min(1, (sim.time - g.startT) / g.dur);
-      ctx.fillStyle = '#58a6ff';
-      ctx.font = '9px system-ui';
-      ctx.textAlign = 'right';
+      ctx.fillStyle = '#58a6ff'; ctx.font = '9px system-ui'; ctx.textAlign = 'right';
       ctx.fillText(Math.round(prog * 100) + '%', x + w - 4, gy + 12);
     }
   }
@@ -448,33 +518,24 @@ function drawDcGroups(ctx, x, y, w, h) {
   const colW = (w - (cols - 1) * 6) / cols;
   const gH = Math.min(48, (h - 5) / rows - 4);
 
-  ctx.font = '9px system-ui';
-  ctx.fillStyle = '#8b949e';
-  ctx.textAlign = 'center';
+  ctx.font = '9px system-ui'; ctx.fillStyle = '#8b949e'; ctx.textAlign = 'center';
   ctx.fillText('Decode (DEP' + cfg.dcDEP + ')', x + w / 2, y - 6);
 
   for (let gi = 0; gi < groups.length; gi++) {
     const g = groups[gi];
-    const col = gi % cols;
-    const row = Math.floor(gi / cols);
-    const gx = x + col * (colW + 6);
-    const gy = y + row * (gH + 4);
+    const col = gi % cols, row = Math.floor(gi / cols);
+    const gx = x + col * (colW + 6), gy = y + row * (gH + 4);
 
     let active = 0;
     for (const s of g.slots) if (s) active++;
 
     roundRect(ctx, gx, gy, colW, gH, 5);
-    ctx.fillStyle = active > 0 ? '#0b1a0b' : '#0d1117';
-    ctx.fill();
+    ctx.fillStyle = active > 0 ? '#0b1a0b' : '#0d1117'; ctx.fill();
     ctx.strokeStyle = active > 0 ? '#3fb95044' : '#30363d';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    ctx.lineWidth = 1; ctx.stroke();
 
-    ctx.fillStyle = '#8b949e';
-    ctx.font = '9px system-ui';
-    ctx.textAlign = 'left';
+    ctx.fillStyle = '#8b949e'; ctx.font = '9px system-ui'; ctx.textAlign = 'left';
     ctx.fillText('D' + (gi + 1), gx + 3, gy + 10);
-
     ctx.textAlign = 'right';
     ctx.fillStyle = active > 0 ? '#3fb950' : '#484f58';
     ctx.fillText(active + '/' + cfg.dcDEP, gx + colW - 3, gy + 10);
@@ -483,149 +544,111 @@ function drawDcGroups(ctx, x, y, w, h) {
     const cellRows = cfg.dcDEP > 4 ? 2 : 1;
     const cellsPerRow = Math.ceil(cfg.dcDEP / cellRows);
     const gap = 1;
-    const cellW = Math.max(8, (colW - 2 * cellPad - gap * (cellsPerRow - 1)) / cellsPerRow);
+    const cellW2 = Math.max(8, (colW - 2 * cellPad - gap * (cellsPerRow - 1)) / cellsPerRow);
     const cellH = (gH - 14 - (cellRows - 1) * gap) / cellRows;
     const cellStartY = gy + 12;
 
     for (let j = 0; j < cfg.dcDEP; j++) {
-      const cr = Math.floor(j / cellsPerRow);
-      const cc = j % cellsPerRow;
-      const cx = gx + cellPad + cc * (cellW + gap);
+      const cr = Math.floor(j / cellsPerRow), cc = j % cellsPerRow;
+      const cx = gx + cellPad + cc * (cellW2 + gap);
       const cy = cellStartY + cr * (cellH + gap);
       const req = g.slots[j];
-
-      ctx.fillStyle = '#1c2333';
-      ctx.fillRect(cx, cy, cellW, cellH);
-
+      ctx.fillStyle = '#1c2333'; ctx.fillRect(cx, cy, cellW2, cellH);
       if (req) {
         const prog = req.outputTokens / req.osl;
-        const hue = 130;
-        const light = 22 + prog * 30;
-        ctx.fillStyle = `hsl(${hue},55%,${light}%)`;
-        ctx.fillRect(cx, cy, cellW * Math.min(1, prog), cellH);
+        ctx.fillStyle = `hsl(130,55%,${22 + prog * 30}%)`;
+        ctx.fillRect(cx, cy, cellW2 * Math.min(1, prog), cellH);
       }
-      ctx.strokeStyle = '#30363d';
-      ctx.lineWidth = 0.5;
-      ctx.strokeRect(cx, cy, cellW, cellH);
+      ctx.strokeStyle = '#30363d'; ctx.lineWidth = 0.5;
+      ctx.strokeRect(cx, cy, cellW2, cellH);
     }
   }
 }
 
-function drawGenerator(ctx, x, y, w, h) {
-  ctx.font = '9px system-ui';
-  ctx.fillStyle = '#8b949e';
-  ctx.textAlign = 'center';
-  ctx.fillText('Generator', x + w / 2, y - 6);
-  roundRect(ctx, x, y, w, h, 6);
-  ctx.fillStyle = '#161b22';
-  ctx.fill();
-  ctx.strokeStyle = '#30363d';
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  const pulse = 0.5 + 0.5 * Math.sin(sim.time * 0.005);
-  const cx = x + w / 2, cy = y + h * 0.35;
-  ctx.beginPath();
-  ctx.arc(cx, cy, 10 + pulse * 4, 0, Math.PI * 2);
-  ctx.fillStyle = `rgba(88,166,255,${0.15 + pulse * 0.15})`;
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-  ctx.fillStyle = '#58a6ff';
-  ctx.fill();
-
-  ctx.fillStyle = '#e6edf3';
-  ctx.font = '11px system-ui';
-  ctx.textAlign = 'center';
-  ctx.fillText(cfg.infinite ? '∞' : cfg.rate + '/s', cx, y + h * 0.65);
-  ctx.font = '9px system-ui';
-  ctx.fillStyle = '#8b949e';
-  ctx.fillText('gen: ' + sim.totalGen, cx, y + h * 0.82);
-}
-
 function drawOutput(ctx, x, y, w, h) {
-  ctx.font = '9px system-ui';
-  ctx.fillStyle = '#8b949e';
-  ctx.textAlign = 'center';
-  ctx.fillText('Output', x + w / 2, y - 6);
+  ctx.font = '9px system-ui'; ctx.fillStyle = '#8b949e';
+  ctx.textAlign = 'center'; ctx.fillText('Output', x + w / 2, y - 6);
   roundRect(ctx, x, y, w, h, 6);
-  ctx.fillStyle = '#161b22';
-  ctx.fill();
-  ctx.strokeStyle = '#30363d';
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  ctx.fillStyle = '#161b22'; ctx.fill();
+  ctx.strokeStyle = '#30363d'; ctx.lineWidth = 1; ctx.stroke();
 
-  ctx.fillStyle = '#3fb950';
-  ctx.font = 'bold 18px system-ui';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(stats.compCount, x + w / 2, y + h * 0.4);
-  ctx.font = '9px system-ui';
-  ctx.fillStyle = '#8b949e';
-  ctx.fillText('completed', x + w / 2, y + h * 0.6);
+  ctx.fillStyle = '#3fb950'; ctx.font = 'bold 18px system-ui';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(stats.compCount, x + w / 2, y + h * 0.35);
+  ctx.font = '9px system-ui'; ctx.fillStyle = '#8b949e';
+  ctx.fillText('completed', x + w / 2, y + h * 0.52);
 
   if (stats.compCount > 0 && sim.time > 0) {
     const tput = (stats.compCount / (sim.time / 1000)).toFixed(2);
-    ctx.fillText(tput + ' req/s', x + w / 2, y + h * 0.78);
+    ctx.fillText(tput + ' req/s', x + w / 2, y + h * 0.68);
   }
+  const pct = cfg.totalReqs > 0 ? (stats.compCount / cfg.totalReqs * 100).toFixed(0) : 0;
+  ctx.fillStyle = '#3fb950'; ctx.font = '10px system-ui';
+  ctx.fillText(pct + '%', x + w / 2, y + h * 0.84);
   ctx.textBaseline = 'alphabetic';
 }
 
 function drawViz() {
   resizeViz();
-  const w = vizCanvas.width / dpr;
-  const h = vizCanvas.height / dpr;
+  const w = vizCanvas.width / dpr, h = vizCanvas.height / dpr;
   const ctx = vizCtx;
-
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#0d1117';
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#0d1117'; ctx.fillRect(0, 0, w, h);
 
-  const pad = 12;
-  const topY = 22;
-  const contentH = h - topY - pad;
-  const gapX = 12;
-
-  const genW = 60;
-  const qW = 55;
-  const outW = 65;
-  const fixedW = genW + qW * 2 + outW + gapX * 5;
+  const pad = 10, topY = 22, contentH = h - topY - pad, gapX = 8;
+  const clientW = 68, qW = 50, routerW = 34, outW = 62;
+  const fixedW = clientW + qW * 2 + routerW + outW + gapX * 6;
   const flexW = w - 2 * pad - fixedW;
-  const pfGW = flexW * 0.35;
-  const dcGW = flexW * 0.65;
+  const pfGW = flexW * 0.32, dcGW = flexW * 0.68;
 
   let cx = pad;
-  const genX = cx; cx += genW + gapX;
+  const clientX = cx; cx += clientW + gapX;
   const pfQX = cx; cx += qW + gapX;
+  const routerX = cx; cx += routerW + gapX;
   const pfGX = cx; cx += pfGW + gapX;
   const tfQX = cx; cx += qW + gapX;
   const dcGX = cx; cx += dcGW + gapX;
   const outX = cx;
 
-  drawGenerator(ctx, genX, topY, genW, contentH);
-  drawQueue(ctx, sim.pfQueue.length, pfQX, topY, qW, contentH, '#58a6ff', 'PF Queue');
+  let pfQTotal = sim.pfQueue.length;
+  for (const gq of sim.pfGroupQueues) pfQTotal += gq.length;
+
+  drawClient(ctx, clientX, topY, clientW, contentH);
+  drawQueue(ctx, pfQTotal, pfQX, topY, qW, contentH, '#58a6ff', 'PF Queue');
+  drawRouter(ctx, routerX, topY, routerW, contentH);
   drawPfGroups(ctx, pfGX, topY, pfGW, contentH);
   drawQueue(ctx, sim.tfQueue.length, tfQX, topY, qW, contentH, '#d29922', 'Transfer Q');
   drawDcGroups(ctx, dcGX, topY, dcGW, contentH);
   drawOutput(ctx, outX, topY, outW, contentH);
 
   const midY = topY + contentH / 2;
-  const hasGenFlow = sim.pfQueue.length > 0 || (cfg.rate > 0 || cfg.infinite);
-  drawArrow(ctx, genX + genW, midY, pfQX, midY, hasGenFlow);
-  const hasPfFlow = sim.pfGroups.some(g => g.active);
-  drawArrow(ctx, pfQX + qW, midY, pfGX, midY, hasPfFlow || sim.pfQueue.length > 0);
-  drawArrow(ctx, pfGX + pfGW, midY, tfQX, midY, sim.tfQueue.length > 0 || hasPfFlow);
+  drawArrow(ctx, clientX + clientW, midY, pfQX, midY, sim.clientInFlight > 0);
+  drawArrow(ctx, pfQX + qW, midY, routerX, midY, pfQTotal > 0);
+  drawArrow(ctx, routerX + routerW, midY, pfGX, midY, pfQTotal > 0);
+  drawArrow(ctx, pfGX + pfGW, midY, tfQX, midY, sim.tfQueue.length > 0 || sim.pfGroups.some(g => g.active));
   const hasDcFlow = sim.dcGroups.some(g => g.slots.some(s => s !== null));
   drawArrow(ctx, tfQX + qW, midY, dcGX, midY, hasDcFlow || sim.tfQueue.length > 0);
   drawArrow(ctx, dcGX + dcGW, midY, outX, midY, stats.compCount > 0);
 
-  ctx.fillStyle = '#484f58';
-  ctx.font = '10px system-ui';
-  ctx.textAlign = 'center';
-  const t = sim.time / 1000;
-  const mm = Math.floor(t / 60);
-  const ss = (t % 60).toFixed(1);
-  ctx.fillText('Sim: ' + mm + ':' + ss.padStart(4, '0') + '  |  Speed: ' + cfg.speed + 'x', w / 2, h - 3);
+  // Feedback arrow: decode completion → client
+  if (stats.compCount > 0) {
+    const fbY = topY + contentH + 4;
+    ctx.save();
+    ctx.strokeStyle = '#3fb95033'; ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]); ctx.lineDashOffset = (sim.time * 0.02) % 8;
+    ctx.beginPath();
+    ctx.moveTo(outX + outW / 2, topY + contentH);
+    ctx.lineTo(outX + outW / 2, fbY);
+    ctx.lineTo(clientX + clientW / 2, fbY);
+    ctx.lineTo(clientX + clientW / 2, topY + contentH);
+    ctx.stroke(); ctx.setLineDash([]); ctx.restore();
+  }
+
+  ctx.fillStyle = '#484f58'; ctx.font = '10px system-ui'; ctx.textAlign = 'center';
+  const t = sim.time / 1000, mm = Math.floor(t / 60), ss = (t % 60).toFixed(1);
+  let statusTxt = 'Sim: ' + mm + ':' + ss.padStart(4, '0') + '  |  Speed: ' + cfg.speed + 'x';
+  if (sim.done) statusTxt += '  |  ALL COMPLETED';
+  ctx.fillText(statusTxt, w / 2, h - 3);
 }
 
 // ===================== CHART =====================
@@ -640,21 +663,20 @@ function initChart() {
     data: {
       labels: [],
       datasets: [
-        { label: 'Prefill Queue', data: [], borderColor: '#58a6ff', backgroundColor: '#58a6ff22', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y' },
+        { label: 'PF Queue', data: [], borderColor: '#58a6ff', backgroundColor: '#58a6ff22', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y' },
         { label: 'Transfer Queue', data: [], borderColor: '#d29922', backgroundColor: '#d2992222', borderWidth: 1.5, pointRadius: 0, tension: 0.3, borderDash: [4, 3], yAxisID: 'y' },
         { label: 'Decode Running', data: [], borderColor: '#3fb950', backgroundColor: '#3fb95022', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'y1' },
+        { label: 'Client In-Flight', data: [], borderColor: '#bc8cff', backgroundColor: '#bc8cff22', borderWidth: 1.5, pointRadius: 0, tension: 0.3, borderDash: [6, 2], yAxisID: 'y1' },
       ],
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
+      responsive: true, maintainAspectRatio: false, animation: false,
       interaction: { mode: 'index', intersect: false },
       plugins: { legend: { labels: { font: { size: 11 }, boxWidth: 14 } } },
       scales: {
-        x: { title: { display: true, text: 'Simulation Time (s)', font: { size: 10 } }, ticks: { font: { size: 9 }, maxTicksLimit: 15 } },
+        x: { title: { display: true, text: 'Sim Time (s)', font: { size: 10 } }, ticks: { font: { size: 9 }, maxTicksLimit: 15 } },
         y: { position: 'left', title: { display: true, text: 'Queue Depth', font: { size: 10 } }, min: 0, ticks: { font: { size: 9 } }, grid: { color: '#21262d' } },
-        y1: { position: 'right', title: { display: true, text: 'Decode Running', font: { size: 10 } }, min: 0, ticks: { font: { size: 9 } }, grid: { drawOnChartArea: false } },
+        y1: { position: 'right', title: { display: true, text: 'Running / In-Flight', font: { size: 10 } }, min: 0, ticks: { font: { size: 9 } }, grid: { drawOnChartArea: false } },
       },
     },
   });
@@ -668,22 +690,24 @@ function updateChart(now) {
   chart.data.datasets[0].data = [...chartState.pfQ];
   chart.data.datasets[1].data = [...chartState.tfQ];
   chart.data.datasets[2].data = [...chartState.dcR];
+  chart.data.datasets[3].data = [...chartState.inflight];
   chart.update('none');
 }
 
-// ===================== STATS DISPLAY =====================
+// ===================== STATS =====================
 function updateStatsDisplay() {
   const t = sim.time / 1000;
-  const mm = Math.floor(t / 60);
-  const ss = Math.floor(t % 60);
-  $('s_time').textContent = mm + ':' + String(ss).padStart(2, '0');
-  $('s_gen').textContent = sim.totalGen;
-  $('s_comp').textContent = stats.compCount;
+  $('s_time').textContent = Math.floor(t / 60) + ':' + String(Math.floor(t % 60)).padStart(2, '0');
+  $('s_pool').textContent = sim.clientPool + ' / ' + cfg.totalReqs;
+  $('s_inflight').textContent = sim.clientInFlight + ' / ' + cfg.concurrency;
+  $('s_comp').textContent = stats.compCount + ' / ' + cfg.totalReqs;
 
   const tput = sim.time > 0 ? (stats.compCount / (sim.time / 1000)) : 0;
   $('s_tput').textContent = tput.toFixed(2) + ' req/s';
 
-  $('s_pfq').textContent = sim.pfQueue.length;
+  let pfQTotal = sim.pfQueue.length;
+  for (const gq of sim.pfGroupQueues) pfQTotal += gq.length;
+  $('s_pfq').textContent = pfQTotal;
   $('s_tfq').textContent = sim.tfQueue.length;
 
   let dcR = 0;
@@ -692,10 +716,8 @@ function updateStatsDisplay() {
 
   const pfUtil = stats.pfTotalMs > 0 ? (stats.pfBusyMs / stats.pfTotalMs * 100) : 0;
   $('s_pfutil').textContent = pfUtil.toFixed(1) + '%';
-
   const pfBub = stats.pfTotal > 0 ? ((1 - stats.pfUseful / stats.pfTotal) * 100) : 0;
   $('s_pfbub').textContent = pfBub.toFixed(1) + '%';
-
   const dcUtil = stats.dcTotalMs > 0 ? (stats.dcActivMs / stats.dcTotalMs * 100) : 0;
   $('s_dcutil').textContent = dcUtil.toFixed(1) + '%';
 
@@ -706,43 +728,31 @@ function updateStatsDisplay() {
     $('s_lat').textContent = '-';
     $('s_ttft').textContent = '-';
   }
-
   const maxCap = cfg.dcNodes * cfg.dcDEP / (cfg.osl * cfg.tpot / 1000);
   $('s_cap').textContent = maxCap.toFixed(2) + ' req/s';
 }
 
-// ===================== UI EVENTS =====================
-$('c_speed').addEventListener('input', () => {
-  $('speedLbl').textContent = $('c_speed').value + 'x';
-});
-
+// ===================== UI =====================
+$('c_speed').addEventListener('input', () => { $('speedLbl').textContent = $('c_speed').value + 'x'; });
 $('btnPause').addEventListener('click', () => {
   sim.paused = !sim.paused;
   $('btnPause').textContent = sim.paused ? 'Resume' : 'Pause';
 });
-
-$('btnReset').addEventListener('click', () => {
-  resetSim();
-  $('btnPause').textContent = 'Pause';
-});
+$('btnReset').addEventListener('click', () => { resetSim(); $('btnPause').textContent = 'Pause'; });
 
 // ===================== MAIN LOOP =====================
 let lastFrameTime = 0;
-
 function loop(ts) {
   if (lastFrameTime === 0) lastFrameTime = ts;
   const realDt = Math.min(ts - lastFrameTime, 100);
   lastFrameTime = ts;
-
   simulate(realDt);
   drawViz();
   updateChart(ts);
   updateStatsDisplay();
-
   requestAnimationFrame(loop);
 }
 
-// ===================== INIT =====================
 resetSim();
 initChart();
 requestAnimationFrame(loop);
