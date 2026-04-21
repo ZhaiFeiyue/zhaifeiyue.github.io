@@ -119,6 +119,59 @@ footer {
   font-family: 'Noto Serif SC', 'Lora', serif;
   font-size: 0.95rem;
 }
+
+/* ---- In-page Table of Contents (TOC) sidebar ---- */
+.paper-layout {
+  max-width: 1280px; margin: 0 auto;
+  display: grid; grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 32px; padding: 0 24px 64px;
+}
+.paper-layout > .content { padding: 0; min-width: 0; }
+.toc-sidebar {
+  position: sticky; top: 64px; align-self: start;
+  max-height: calc(100vh - 96px); overflow-y: auto;
+  padding: 14px 0 14px 18px; border-left: 1px solid var(--bd);
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.82rem;
+}
+.toc-sidebar details { margin: 0; }
+.toc-sidebar summary {
+  cursor: pointer; font-weight: 700; font-size: 0.78rem;
+  color: var(--mt, #6b7280); text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 4px 0 8px; list-style: none;
+}
+.toc-sidebar summary::-webkit-details-marker { display: none; }
+.toc-sidebar summary::before { content: '▾'; margin-right: 6px; font-size: 0.7rem; display: inline-block; transition: transform .15s; }
+.toc-sidebar details:not([open]) summary::before { transform: rotate(-90deg); }
+.toc-list { display: flex; flex-direction: column; gap: 1px; }
+.toc-list a {
+  display: block; padding: 4px 8px; border-radius: 4px;
+  color: var(--mt, #6b7280); text-decoration: none;
+  border-left: 2px solid transparent; line-height: 1.35;
+  transition: color .1s, background .1s, border-color .1s;
+}
+.toc-list a:hover { color: var(--ink, #1b2a4a); background: #f8fafc; }
+.toc-list a.active {
+  color: var(--accent, #2563eb); font-weight: 600;
+  border-left-color: var(--accent, #2563eb); background: #eff6ff;
+}
+.toc-list .toc-lvl-2 { font-weight: 600; font-size: 0.85rem; margin-top: 4px; }
+.toc-list .toc-lvl-3 { padding-left: 20px; font-size: 0.78rem; }
+@media (max-width: 1100px) {
+  .paper-layout { grid-template-columns: 1fr; gap: 0; }
+  .toc-sidebar {
+    position: relative; top: 0; max-height: none; order: -1;
+    margin: 0 0 16px; padding: 10px 14px;
+    background: #f8fafc; border: 1px solid var(--bd); border-radius: 8px;
+    border-left: 1px solid var(--bd);
+  }
+  .toc-sidebar details:not([open]) summary { padding-bottom: 4px; }
+  .toc-list { max-height: 240px; overflow-y: auto; }
+}
+@media (max-width: 640px) {
+  .paper-layout { padding: 0 14px 48px; }
+  .toc-sidebar { font-size: 0.78rem; }
+}
 .content h2 {
   font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
   font-size: 1.2rem; font-weight: 700; margin: 32px 0 12px;
@@ -299,18 +352,19 @@ footer {
   <div class="tldr-label">TL;DR</div>
   <div>Uses FP16-accumulated FP8 MMA instructions with narrowed quantization ranges to achieve 3.9x speedup over FlashAttention2 with no accuracy loss.</div>
 </div>
-<div class="w content">
+<div class="paper-layout">
+<div class="content">
 <h2 id="core-contribution">Core Contribution</h2>
 <p>通过使用 FP16 累加器的 FP8 矩阵乘法指令（mma.f16.f8.f8.f16），将 SageAttention2 的 PV 矩阵乘法加速 2 倍，实现比 FlashAttention2 快 3.9 倍的 attention 加速，且精度无损。</p>
 <h2 id="summary">Summary</h2>
-<h3>核心三问</h3>
+<h3 id="核心三问">核心三问</h3>
 <p><b>Q1: 这篇论文试图解决什么核心痛点/问题？</b></p>
 <p>Attention 的时间复杂度随序列长度二次增长。SageAttention2 已经用 FP8 量化加速了 attention 中的矩阵乘法，但其使用的 <code>mma.f32.f8.f8.f32</code> 指令（FP32 累加器）仅比 FP16 快 2 倍。存在一个 4 倍加速的 FP16 累加器指令未被利用。</p>
 <p><b>Q2: 作者提出了什么新的"杀手锏"方法/架构？</b></p>
 <p>使用更快的 <code>mma.f16.f8.f8.f16</code> 指令（FP8 输入 + FP16 累加器）替代原来的 FP32 累加器指令。核心挑战是 FP16 的表示范围有限（±65504），直接使用会导致累加溢出。解决方案是<b>缩窄 P 和 V 的 FP8 量化范围</b>（$P_r = 224$, $V_r = 4.5$），使得 32 次乘加结果不超过 FP16 范围，并用 <b>Delayed FP32 Buffering</b>（两次 MMA 结果在 FP16 中累加后再转 FP32）减少类型转换开销。</p>
 <p><b>Q3: 最终效果/结论如何？</b></p>
 <p>SageAttention2++(4+8) 在 RTX4090 上相对 FlashAttention2 实现 <b>3.9 倍加速</b>，SageAttention2++(8+8) 实现 <b>3.0 倍加速</b>。在 Llama3.1、CogvideoX、HunyuanVideo、Wan、Flux、StableDiffusion3.5 等多种模型上端到端指标几乎无损。</p>
-<h3>逻辑故事还原</h3>
+<h3 id="逻辑故事还原">逻辑故事还原</h3>
 <p><b>背景 (Context):</b></p>
 <p>SageAttention2 已经实现了对 FlashAttention2 的显著加速，核心思路是将 Q/K 量化为 INT4/INT8、将 P/V 量化为 FP8 来利用 Tensor Core 的低精度计算能力。但在 PV 矩阵乘法中，它使用 FP32 累加器的 MMA 指令 (<code>mma.f32.f8.f8.f32</code>)，该指令仅比 FP16 快 2 倍。</p>
 <p><b>破局 (Insight):</b></p>
@@ -321,13 +375,13 @@ footer {
 <p>2. <b>解决溢出问题</b>：FP16 累加器范围为 $\pm 65504$。<code>mma.m16n8k32</code> 指令累加 32 个 $p \times v$ 乘积，因此需要 $|32 \times pv| \leq 65504$。将 $P$ 的量化范围从 448 缩窄到 $P_r = 224$，$V$ 从 448 缩窄到 $V_r = 4.5$，满足 $P_r \times V_r \leq 2047$</p>
 <p>3. <b>Delayed FP32 Buffering</b>：连续两次 MMA 的 FP16 结果先累加再转 FP32，减半类型转换开销。约束变为 $P_r \times V_r \leq 1023.5$</p>
 <p>4. <b>最优参数选择</b>：通过实验验证 ($P_r = 224$, $V_r = 4.5$) 能保持与 SageAttention2 相同的精度（cosine similarity 99.97%）</p>
-<h3>核心图表</h3>
-<h4>Figure 1: Speed comparison on RTX4090 (headdim=128)</h4>
+<h3 id="核心图表">核心图表</h3>
+<h4 id="figure-1-speed-comparison-on-rtx4090-headdim-128">Figure 1: Speed comparison on RTX4090 (headdim=128)</h4>
 <p>*[图片无法下载 — arXiv HTML 版本不可用]*</p>
 <p><b>What it shows</b>: SageAttention2++ 各变体在不同序列长度（1K-32K）下的 speed (TOPS) 对比</p>
 <p><b>Why it matters</b>: 证明了 SageAttention2++ 的核心性能主张 — 3.9x/3.0x speedup over FlashAttention2</p>
 <p><b>Detailed description</b>: 柱状图展示 6 种方法（FlashAttn, Sage1, Sage2(8+8), Sage2++(8+8), Sage2(4+8), Sage2++(4+8)）在 RTX4090 上 headdim=128 的性能。causal=False 时，32K 序列长度下 FlashAttn 约 574 TOPS，Sage2++(4+8) 达 640 TOPS；causal=True 时，FlashAttn 约 409 TOPS，Sage2++(4+8) 达 619 TOPS。Sage2++ 系列在所有序列长度上均超越对应的 Sage2 变体。</p>
-<h4>Table 1: Matmul instruction speedup comparison</h4>
+<h4 id="table-1-matmul-instruction-speedup-comparison">Table 1: Matmul instruction speedup comparison</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">GPU</th><th style="text-align:left">MM Input</th><th style="text-align:left">MM Accumulator</th><th style="text-align:left">Speedup</th></tr></thead><tbody>
 <tr><td style="text-align:left">RTX4090, RTX5090</td><td style="text-align:left">FP16</td><td style="text-align:left">FP32</td><td style="text-align:left">1x</td></tr>
@@ -336,7 +390,7 @@ footer {
 </tbody>
 </table></div>
 <p><b>Takeaway</b>: FP8 Matmul 配合 FP16 累加器比 FP32 累加器快一倍，这是 SageAttention2++ 的核心硬件洞察。</p>
-<h4>Table 2: Attention accuracy with different quantization ranges</h4>
+<h4 id="table-2-attention-accuracy-with-different-quantization-ranges">Table 2: Attention accuracy with different quantization ranges</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Method</th><th style="text-align:right">$P_r$</th><th style="text-align:right">$V_r$</th><th style="text-align:right">Cossim↑</th><th style="text-align:right">$L_1$↓</th></tr></thead><tbody>
 <tr><td style="text-align:left">SageAttn2</td><td style="text-align:right">448</td><td style="text-align:right">448</td><td style="text-align:right"><b>99.97%</b></td><td style="text-align:right">0.01862</td></tr>
@@ -346,7 +400,7 @@ footer {
 </tbody>
 </table></div>
 <p><b>Takeaway</b>: 缩窄量化范围对精度几乎没有影响，所有组合的 cosine similarity 都保持 99.97%。</p>
-<h4>Table 3: End-to-end metrics across models (key rows)</h4>
+<h4 id="table-3-end-to-end-metrics-across-models-key-rows">Table 3: End-to-end metrics across models (key rows)</h4>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Model</th><th style="text-align:left">Attention</th><th style="text-align:left">Key Metric</th></tr></thead><tbody>
 <tr><td style="text-align:left">Llama3.1</td><td style="text-align:left">Full-Precision</td><td style="text-align:left">Ppl 6.013 / Acc 0.815</td></tr>
@@ -358,7 +412,7 @@ footer {
 </tbody>
 </table></div>
 <p><b>Takeaway</b>: SageAttn2++(8+8) 在所有模型上端到端指标几乎与全精度一致，是安全的 plug-and-play 替代方案。</p>
-<h3>关键细节与启示</h3>
+<h3 id="关键细节与启示">关键细节与启示</h3>
 <p><b>技术细节补充:</b></p>
 <p>1. 核心约束 <code>Pr × Vr ≤ 2047</code> 来自 MMA 指令的 $K = 32$ 累加维度和 FP16 的 65504 上限（$65504 / 32 = 2047$）。Delayed Buffering 将约束收紧为 $\leq 1023.5$。</p>
 <p>2. SageAttention2++ 沿用了 SageAttention2 的 Q/K smoothing 和 INT4/INT8 量化，仅修改 PV Matmul 的指令选择和量化范围，是一个非常 targeted 的优化。</p>
@@ -390,7 +444,7 @@ footer {
 </ul>
 <p>---</p>
 <h2 id="deep-analysis-kernel">Deep Analysis (kernel)</h2>
-<h3>1. Target Operation</h3>
+<h3 id="1-target-operation">1. Target Operation</h3>
 <p><b>Computational primitive</b>: Attention mechanism, specifically the PV matrix multiplication (P×V) in the second half of attention computation.</p>
 <p><b>Input/output shapes and data types</b>:</p>
 <ul>
@@ -406,7 +460,7 @@ footer {
 <li>With FP8 quantization, the byte count per element halves → further improves arithmetic intensity</li>
 </ul>
 <p><b>Roofline position</b>: At long sequences (8K+), attention is compute-bound on the Matmul operations. Using FP8 inputs with 4x instruction throughput shifts the bottleneck further toward memory bandwidth for the quantize/dequantize overhead.</p>
-<h3>2. Hardware Model</h3>
+<h3 id="2-hardware-model">2. Hardware Model</h3>
 <p><b>Target GPU architecture</b>: NVIDIA Ada Lovelace (RTX 4090 — SM89) and Blackwell consumer (RTX 5090).</p>
 <p><b>Hardware units used</b>:</p>
 <ul>
@@ -426,7 +480,7 @@ footer {
 <li>RTX 4090: FP8 with FP32 accumulator = 661 TFLOPS, FP8 with FP16 accumulator = ~1322 TFLOPS (2x)</li>
 <li>The paper achieves up to 640 TOPS at 32K seq_len on RTX4090 (headdim=128, non-causal), which includes the entire attention pipeline not just PV Matmul</li>
 </ul>
-<h3>3. Optimization Techniques</h3>
+<h3 id="3-optimization-techniques">3. Optimization Techniques</h3>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Technique</th><th style="text-align:left">Applied?</th><th style="text-align:left">Details</th></tr></thead><tbody>
 <tr><td style="text-align:left">Tiling / blocking</td><td style="text-align:left">Yes (inherited)</td><td style="text-align:left">FlashAttention-style tiling of Q, K, P, V into blocks; tile sizes not explicitly stated</td></tr>
@@ -441,7 +495,7 @@ footer {
 </table></div>
 <p><b>Novel technique — Delayed FP32 Buffering</b>: Accumulate 2 consecutive <code>mma.m16n8k32</code> results in FP16 before converting to FP32. This halves the number of FP16→FP32 conversion PTX instructions, reducing overhead. The tradeoff is a tighter range constraint ($P_r \times V_r \leq 1023.5$ instead of 2047).</p>
 <p><b>Novel technique — Quantization range narrowing</b>: Instead of using the full E4M3 range ($\pm 448$), use custom scale factors to restrict $P$ to $\pm 224$ and $V$ to $\pm 4.5$. This ensures 32 accumulated products fit in FP16 range.</p>
-<h3>4. Performance Analysis</h3>
+<h3 id="4-performance-analysis">4. Performance Analysis</h3>
 <p><b>% of theoretical peak</b>:</p>
 <ul>
 <li>RTX4090, headdim=128, non-causal, 32K: 640 TOPS achieved. If we estimate FP8+FP16acc peak at ~1322 TFLOPS, but the full attention includes QK^T (INT4/INT8), softmax, quantization overhead — 640 TOPS for the full pipeline is excellent.</li>
@@ -454,7 +508,7 @@ footer {
 <li>SageAttention2: ~1.1-1.5x speedup over corresponding Sage2 variants</li>
 </ul>
 <p><b>Scaling with problem size</b>: Performance improves significantly from 1K to 8K sequence length, then plateaus from 16K-32K. This is expected as longer sequences amortize kernel launch overhead and achieve better Tensor Core utilization. At 1K, the speedup over FlashAttention2 is smaller (~2x for 4+8) because the kernel doesn't fully saturate.</p>
-<h3>5. Numerical Considerations</h3>
+<h3 id="5-numerical-considerations">5. Numerical Considerations</h3>
 <p><b>Accuracy vs baseline</b>:</p>
 <ul>
 <li>Cosine similarity: 99.97% (same as SageAttention2, measured across all attention layers of CogvideoX)</li>
@@ -469,7 +523,7 @@ footer {
 <li><b>Delayed FP32 Buffering</b>: Limits FP16 accumulation to 2 MMA results before promoting to FP32, preventing long-chain FP16 accumulation errors</li>
 </ul>
 <p><b>Edge cases</b>: Not discussed. The narrow quantization range ($V_r = 4.5$) could be problematic for $V$ values with extreme dynamic range, but the per-channel scaling helps mitigate this.</p>
-<h3>6. Portability</h3>
+<h3 id="6-portability">6. Portability</h3>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Dimension</th><th style="text-align:left">Assessment</th></tr></thead><tbody>
 <tr><td style="text-align:left">Cross-GPU within vendor</td><td style="text-align:left">Limited to Ada and newer (RTX 4090, RTX 5090). The <code>mma.f16.f8.f8.f16</code> instruction is not available on Ampere. Hopper has FlashAttention3 with different optimization paths.</td></tr>
@@ -478,15 +532,15 @@ footer {
 <tr><td style="text-align:left">Compiler dependency</td><td style="text-align:left">Requires CUDA toolkit supporting PTX ISA 8.x for Ada FP8 instructions.</td></tr>
 </tbody>
 </table></div>
-<h3>7. Source Code & Repository</h3>
+<h3 id="7-source-code-repository">7. Source Code & Repository</h3>
 <ul>
 <li><b>Repository</b>: https://github.com/thu-ml/SageAttention</li>
 <li><b>Language</b>: CUDA + Python (PyTorch extension)</li>
 <li><b>Build</b>: Standard PyTorch CUDA extension (setup.py / pip install)</li>
 <li><b>Benchmark</b>: Evaluation scripts for multiple models included</li>
 </ul>
-<h3>8. Key Source Code Walkthrough</h3>
-<h4>8b. Pseudocode Annotation</h4>
+<h3 id="8-key-source-code-walkthrough">8. Key Source Code Walkthrough</h3>
+<h4 id="8b-pseudocode-annotation">8b. Pseudocode Annotation</h4>
 <p>The paper doesn't provide explicit pseudocode, but the algorithm can be reconstructed:</p>
 <pre><code>
 # SageAttention2++ PV Matmul (per tile block)
@@ -518,14 +572,14 @@ footer {
 9. Online softmax rescaling + write O_tile to HBM
 </code></pre>
 <p><b>Key performance insight</b>: Step 7 is where the 2x speedup happens. By using <code>mma.f16.f8.f8.f16</code> instead of <code>mma.f32.f8.f8.f32</code>, the Tensor Core throughput doubles. The Delayed FP32 Buffering in Step 7's if-branch reduces FP16→FP32 conversion overhead by 50%.</p>
-<h4>8c. Data Layout & Memory Access Patterns</h4>
+<h4 id="8c-data-layout-memory-access-patterns">8c. Data Layout & Memory Access Patterns</h4>
 <ul>
 <li><b>Input tensors</b>: Standard [batch, heads, seq_len, head_dim] layout (row-major for Q/P, column-major granularity for V scaling)</li>
 <li><b>Memory coalescing</b>: FP8 quantized tensors enable twice the elements per cache line, improving effective bandwidth</li>
 <li><b>Register allocation</b>: FP16 accumulator registers use half the bits of FP32, freeing registers for other uses (potential occupancy improvement)</li>
 <li><b>Bank conflicts</b>: Inherited from SageAttention2's shared memory layout design</li>
 </ul>
-<h3>9. Infrastructure Impact</h3>
+<h3 id="9-infrastructure-impact">9. Infrastructure Impact</h3>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Layer</th><th style="text-align:left">Impact</th></tr></thead><tbody>
 <tr><td style="text-align:left">Algorithm</td><td style="text-align:left">Enables significantly faster attention without changing any model architecture or training algorithm. Makes long-context attention more practical.</td></tr>
@@ -535,8 +589,87 @@ footer {
 </tbody>
 </table></div>
 </div>
+<aside class="toc-sidebar" aria-label="In-page table of contents">
+<details open><summary>📋 目录</summary>
+<nav class="toc-list">
+<a class="toc-lvl-2" href="#core-contribution">Core Contribution</a>
+<a class="toc-lvl-2" href="#summary">Summary</a>
+<a class="toc-lvl-3" href="#核心三问">核心三问</a>
+<a class="toc-lvl-3" href="#逻辑故事还原">逻辑故事还原</a>
+<a class="toc-lvl-3" href="#核心图表">核心图表</a>
+<a class="toc-lvl-3" href="#关键细节与启示">关键细节与启示</a>
+<a class="toc-lvl-2" href="#key-findings">Key Findings</a>
+<a class="toc-lvl-2" href="#limitations">Limitations</a>
+<a class="toc-lvl-2" href="#infrastructure-impact">Infrastructure Impact</a>
+<a class="toc-lvl-2" href="#deep-analysis-kernel">Deep Analysis (kernel)</a>
+<a class="toc-lvl-3" href="#1-target-operation">1. Target Operation</a>
+<a class="toc-lvl-3" href="#2-hardware-model">2. Hardware Model</a>
+<a class="toc-lvl-3" href="#3-optimization-techniques">3. Optimization Techniques</a>
+<a class="toc-lvl-3" href="#4-performance-analysis">4. Performance Analysis</a>
+<a class="toc-lvl-3" href="#5-numerical-considerations">5. Numerical Considerations</a>
+<a class="toc-lvl-3" href="#6-portability">6. Portability</a>
+<a class="toc-lvl-3" href="#7-source-code-repository">7. Source Code &amp; Repository</a>
+<a class="toc-lvl-3" href="#8-key-source-code-walkthrough">8. Key Source Code Walkthrough</a>
+<a class="toc-lvl-3" href="#9-infrastructure-impact">9. Infrastructure Impact</a>
+</nav></details></aside>
+</div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
 
 
+<script>
+// TOC active-section highlighter: update as user scrolls through headings.
+(function() {
+  var toc = document.querySelector('.toc-sidebar');
+  if (!toc) return;
+  var links = Array.from(toc.querySelectorAll('a[href^="#"]'));
+  if (!links.length) return;
+  var targets = links.map(function(a) {
+    var id = decodeURIComponent(a.getAttribute('href').slice(1));
+    return { link: a, el: document.getElementById(id) };
+  }).filter(function(t) { return t.el; });
+  if (!targets.length) return;
+
+  function setActive(anchor) {
+    links.forEach(function(a) { a.classList.remove('active'); });
+    if (anchor) anchor.classList.add('active');
+  }
+
+  if ('IntersectionObserver' in window) {
+    var visible = new Set();
+    var io = new IntersectionObserver(function(entries) {
+      entries.forEach(function(e) {
+        if (e.isIntersecting) visible.add(e.target.id);
+        else visible.delete(e.target.id);
+      });
+      // Pick the visible heading closest to the top
+      var best = null, bestTop = Infinity;
+      targets.forEach(function(t) {
+        if (visible.has(t.el.id)) {
+          var top = t.el.getBoundingClientRect().top;
+          if (top < bestTop) { bestTop = top; best = t.link; }
+        }
+      });
+      // Fallback: if nothing intersecting yet, pick the last heading above viewport
+      if (!best) {
+        var above = targets.filter(function(t) { return t.el.getBoundingClientRect().top < 100; });
+        if (above.length) best = above[above.length - 1].link;
+      }
+      setActive(best);
+    }, { rootMargin: '-80px 0px -70% 0px', threshold: 0 });
+    targets.forEach(function(t) { io.observe(t.el); });
+  } else {
+    // Fallback for old browsers
+    window.addEventListener('scroll', function() {
+      var best = null, bestTop = -Infinity;
+      var limit = 100;
+      targets.forEach(function(t) {
+        var top = t.el.getBoundingClientRect().top;
+        if (top < limit && top > bestTop) { bestTop = top; best = t.link; }
+      });
+      setActive(best);
+    }, { passive: true });
+  }
+})();
+</script>
 </body>
 </html>

@@ -902,8 +902,34 @@ def inline_fmt(text):
     text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
     return restore_math(text, store)
 
+def _slugify(text, existing_slugs):
+    """Generate a URL-safe anchor id from heading text. Preserves CJK
+    characters (so Chinese headings like '架构 1 · Decoder Layer' produce
+    navigable anchors). Dedupes against already-used slugs."""
+    # Strip markdown inline formatting
+    text = re.sub(r'[*_`]', '', text)
+    # Strip leading emoji / symbol chars + zero-width chars
+    text = re.sub(r'^[^\w\u4e00-\u9fff]+', '', text)
+    # Lowercase Latin; keep Latin alphanumeric + CJK + hyphen/underscore; collapse everything else to '-'
+    slug = re.sub(r'[^\w\u4e00-\u9fff]+', '-', text.lower()).strip('-')
+    if not slug:
+        slug = 'section'
+    # Dedupe
+    base = slug
+    i = 2
+    while slug in existing_slugs:
+        slug = f'{base}-{i}'
+        i += 1
+    existing_slugs.add(slug)
+    return slug
+
+
 def md_to_html(md_text, paper_id=""):
-    """Convert markdown to HTML with base64-embedded images."""
+    """Convert markdown to HTML with base64-embedded images.
+
+    Returns (html_string, toc_entries) where toc_entries is a list of
+    dicts [{'level': int, 'text': str, 'anchor': str}, ...] collected
+    from H2/H3 headings (H4+ skipped to keep TOC focused)."""
     lines = md_text.split('\n')
     out = []
     in_table = False
@@ -912,6 +938,9 @@ def md_to_html(md_text, paper_id=""):
     in_code = False
     in_mermaid = False
     in_ul = False
+    # TOC state
+    toc_entries = []
+    used_slugs = set()
 
     def _flush_table():
         """Render the complete buffered table — including auto-detected
@@ -1028,9 +1057,22 @@ def md_to_html(md_text, paper_id=""):
                 out.append('</ul>'); in_ul = False
             level = len(h_match.group(1))
             text_part = h_match.group(2)
-            if level == 2:
-                anchor = re.sub(r'[^a-z0-9]+', '-', text_part.lower()).strip('-')
-                out.append(f'<h2 id="{anchor}">{inline_fmt(text_part)}</h2>')
+            # Generate anchor id for h2..h4 (TOC navigation levels).
+            # H1 is page title; h5/h6 too granular.
+            if 2 <= level <= 4:
+                anchor = _slugify(text_part, used_slugs)
+                # Exclude figure captions (### Figure N: ...) from TOC —
+                # those are inline image captions, not navigable sections.
+                is_figure_caption = bool(re.match(r'Figure\s+\d+\s*[:：]', text_part, re.I))
+                # Include H2 + H3 in TOC; H4 gets id but not TOC entry
+                # (keeps TOC focused).
+                if level <= 3 and not is_figure_caption:
+                    toc_entries.append({
+                        'level': level,
+                        'text': text_part,
+                        'anchor': anchor,
+                    })
+                out.append(f'<h{level} id="{anchor}">{inline_fmt(text_part)}</h{level}>')
             else:
                 out.append(f'<h{level}>{inline_fmt(text_part)}</h{level}>')
             continue
@@ -1053,7 +1095,28 @@ def md_to_html(md_text, paper_id=""):
     if in_table: _flush_table()
     if in_code: out.append('</code></pre>')
     if in_mermaid: out.append('</div>')
-    return '\n'.join(out)
+    return '\n'.join(out), toc_entries
+
+
+def render_toc(toc_entries):
+    """Render the in-page Table of Contents sidebar from collected
+    heading entries. Returns an HTML `<aside>` block or '' if there
+    are too few entries to bother."""
+    # Skip the TOC when there's nothing meaningful to navigate to
+    # (very short / one-section notes).
+    if len(toc_entries) < 3:
+        return ''
+    parts = ['<aside class="toc-sidebar" aria-label="In-page table of contents">']
+    parts.append('<details open><summary>📋 目录</summary>')
+    parts.append('<nav class="toc-list">')
+    for e in toc_entries:
+        cls = f"toc-lvl-{e['level']}"
+        # Escape text for display; keep anchor raw (already slugified)
+        parts.append(
+            f'<a class="{cls}" href="#{e["anchor"]}">{html.escape(e["text"])}</a>'
+        )
+    parts.append('</nav></details></aside>')
+    return '\n'.join(parts)
 
 
 for p in papers:
@@ -1188,7 +1251,9 @@ for p in papers:
     drawio_state = {}
     body_md, body_drawio = extract_drawio(body_md, drawio_state)
 
-    body_html = restore_drawio(sanitize_html(md_to_html(body_md, paper_id=pid)), body_drawio)
+    body_html_raw, toc_entries = md_to_html(body_md, paper_id=pid)
+    body_html = restore_drawio(sanitize_html(body_html_raw), body_drawio)
+    toc_html = render_toc(toc_entries)
 
     # Same-paper dedup: notes commonly reference the same figure in
     # `## Key Figures` AND inside `## Deep Analysis`. Render the binary
@@ -1259,6 +1324,59 @@ for p in papers:
 .content {{
   font-family: 'Noto Serif SC', 'Lora', serif;
   font-size: 0.95rem;
+}}
+
+/* ---- In-page Table of Contents (TOC) sidebar ---- */
+.paper-layout {{
+  max-width: 1280px; margin: 0 auto;
+  display: grid; grid-template-columns: minmax(0, 1fr) 240px;
+  gap: 32px; padding: 0 24px 64px;
+}}
+.paper-layout > .content {{ padding: 0; min-width: 0; }}
+.toc-sidebar {{
+  position: sticky; top: 64px; align-self: start;
+  max-height: calc(100vh - 96px); overflow-y: auto;
+  padding: 14px 0 14px 18px; border-left: 1px solid var(--bd);
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.82rem;
+}}
+.toc-sidebar details {{ margin: 0; }}
+.toc-sidebar summary {{
+  cursor: pointer; font-weight: 700; font-size: 0.78rem;
+  color: var(--mt, #6b7280); text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 4px 0 8px; list-style: none;
+}}
+.toc-sidebar summary::-webkit-details-marker {{ display: none; }}
+.toc-sidebar summary::before {{ content: '▾'; margin-right: 6px; font-size: 0.7rem; display: inline-block; transition: transform .15s; }}
+.toc-sidebar details:not([open]) summary::before {{ transform: rotate(-90deg); }}
+.toc-list {{ display: flex; flex-direction: column; gap: 1px; }}
+.toc-list a {{
+  display: block; padding: 4px 8px; border-radius: 4px;
+  color: var(--mt, #6b7280); text-decoration: none;
+  border-left: 2px solid transparent; line-height: 1.35;
+  transition: color .1s, background .1s, border-color .1s;
+}}
+.toc-list a:hover {{ color: var(--ink, #1b2a4a); background: #f8fafc; }}
+.toc-list a.active {{
+  color: var(--accent, #2563eb); font-weight: 600;
+  border-left-color: var(--accent, #2563eb); background: #eff6ff;
+}}
+.toc-list .toc-lvl-2 {{ font-weight: 600; font-size: 0.85rem; margin-top: 4px; }}
+.toc-list .toc-lvl-3 {{ padding-left: 20px; font-size: 0.78rem; }}
+@media (max-width: 1100px) {{
+  .paper-layout {{ grid-template-columns: 1fr; gap: 0; }}
+  .toc-sidebar {{
+    position: relative; top: 0; max-height: none; order: -1;
+    margin: 0 0 16px; padding: 10px 14px;
+    background: #f8fafc; border: 1px solid var(--bd); border-radius: 8px;
+    border-left: 1px solid var(--bd);
+  }}
+  .toc-sidebar details:not([open]) summary {{ padding-bottom: 4px; }}
+  .toc-list {{ max-height: 240px; overflow-y: auto; }}
+}}
+@media (max-width: 640px) {{
+  .paper-layout {{ padding: 0 14px 48px; }}
+  .toc-sidebar {{ font-size: 0.78rem; }}
 }}
 .content h2 {{
   font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
@@ -1433,12 +1551,70 @@ for p in papers:
   <div class="tldr-label">TL;DR</div>
   <div>{html.escape(tldr_text)}</div>
 </div>
-<div class="w content">
+<div class="paper-layout">
+<div class="content">
 {body_html}
+</div>
+{toc_html}
 </div>
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
 {drawio_script}
 {mermaid_script}
+<script>
+// TOC active-section highlighter: update as user scrolls through headings.
+(function() {{
+  var toc = document.querySelector('.toc-sidebar');
+  if (!toc) return;
+  var links = Array.from(toc.querySelectorAll('a[href^="#"]'));
+  if (!links.length) return;
+  var targets = links.map(function(a) {{
+    var id = decodeURIComponent(a.getAttribute('href').slice(1));
+    return {{ link: a, el: document.getElementById(id) }};
+  }}).filter(function(t) {{ return t.el; }});
+  if (!targets.length) return;
+
+  function setActive(anchor) {{
+    links.forEach(function(a) {{ a.classList.remove('active'); }});
+    if (anchor) anchor.classList.add('active');
+  }}
+
+  if ('IntersectionObserver' in window) {{
+    var visible = new Set();
+    var io = new IntersectionObserver(function(entries) {{
+      entries.forEach(function(e) {{
+        if (e.isIntersecting) visible.add(e.target.id);
+        else visible.delete(e.target.id);
+      }});
+      // Pick the visible heading closest to the top
+      var best = null, bestTop = Infinity;
+      targets.forEach(function(t) {{
+        if (visible.has(t.el.id)) {{
+          var top = t.el.getBoundingClientRect().top;
+          if (top < bestTop) {{ bestTop = top; best = t.link; }}
+        }}
+      }});
+      // Fallback: if nothing intersecting yet, pick the last heading above viewport
+      if (!best) {{
+        var above = targets.filter(function(t) {{ return t.el.getBoundingClientRect().top < 100; }});
+        if (above.length) best = above[above.length - 1].link;
+      }}
+      setActive(best);
+    }}, {{ rootMargin: '-80px 0px -70% 0px', threshold: 0 }});
+    targets.forEach(function(t) {{ io.observe(t.el); }});
+  }} else {{
+    // Fallback for old browsers
+    window.addEventListener('scroll', function() {{
+      var best = null, bestTop = -Infinity;
+      var limit = 100;
+      targets.forEach(function(t) {{
+        var top = t.el.getBoundingClientRect().top;
+        if (top < limit && top > bestTop) {{ bestTop = top; best = t.link; }}
+      }});
+      setActive(best);
+    }}, {{ passive: true }});
+  }}
+}})();
+</script>
 </body>
 </html>"""
 
