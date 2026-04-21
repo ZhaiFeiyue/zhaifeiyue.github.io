@@ -1249,6 +1249,60 @@ for p in papers:
 
     body_html_raw, toc_entries = md_to_html(body_md, paper_id=pid)
     body_html = restore_drawio(sanitize_html(body_html_raw), body_drawio)
+
+    # ---- Optional: inline synthesis (Stage 4) if a synthesis MD exists ----
+    # Merges cross-paper synthesis into the paper page for continuous deep-
+    # read flow (Flow 2). Synthesis is also rendered as standalone
+    # /knowledge/synthesis-{id}.html for library-level browsing (Flow 3).
+    synth_md_path = os.path.join(DB_DIR, "knowledge", f"synthesis-{pid}.md")
+    synth_inline_html = ""
+    if os.path.exists(synth_md_path):
+        with open(synth_md_path) as f:
+            synth_md_src = f.read()
+        # Strip leading `# title` + `> meta` block (we render our own banner)
+        synth_lines = synth_md_src.split('\n')
+        synth_skip = 0
+        for i, l in enumerate(synth_lines):
+            if l.startswith('# '):
+                synth_skip = i + 1
+                continue
+            if l.startswith('>') and i <= synth_skip + 5:
+                synth_skip = i + 1
+                continue
+            if l.strip() == '---' and i <= synth_skip + 6:
+                synth_skip = i + 1
+                continue
+            break
+        synth_body_md = '\n'.join(synth_lines[synth_skip:])
+        synth_body_raw, synth_toc = md_to_html(synth_body_md, paper_id=pid)
+        synth_body_html = sanitize_html(synth_body_raw)
+        # Append a separator entry + synthesis TOC entries to paper's TOC.
+        # Use a marker anchor so render_toc can style it as a section break.
+        toc_entries.append({
+            'level': 2,
+            'text': '🔗 Synthesis (Stage 4 — cross-paper)',
+            'anchor': 'synthesis-inline'
+        })
+        for e in synth_toc:
+            # Keep level as-is; add subtle "S." prefix so user knows they're
+            # synthesis entries even without visual grouping
+            toc_entries.append({
+                'level': e['level'],
+                'text': f'S · {e["text"]}',
+                'anchor': e['anchor']
+            })
+        synth_inline_html = f"""<div class="synth-inline">
+  <h2 id="synthesis-inline" class="synth-inline-header">
+    <span class="synth-badge">🔗 SYNTHESIS</span>
+    <span class="synth-inline-title">跨篇综合分析 · Stage 4</span>
+    <a class="synth-standalone-link" href="/knowledge/synthesis-{pid}.html" target="_blank">独立页 ↗</a>
+  </h2>
+  <div class="synth-inline-body">
+{synth_body_html}
+  </div>
+</div>
+"""
+
     toc_html = render_toc(toc_entries)
 
     # Same-paper dedup: notes commonly reference the same figure in
@@ -1489,6 +1543,95 @@ for p in papers:
 }}
 .back {{ display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }}
 
+/* ---- Inline synthesis (Stage 4 cross-paper) ---- */
+.synth-inline {{
+  max-width: 960px; margin: 40px auto 24px; padding: 0 24px;
+  border-top: 3px solid #e9d5ff;
+  padding-top: 24px;
+}}
+.synth-inline-header {{
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif !important;
+  font-size: 1.15rem !important; font-weight: 700 !important;
+  margin: 0 0 16px !important; padding: 14px 18px !important;
+  border: none !important; border-left: 4px solid #7c3aed !important;
+  border-radius: 0 8px 8px 0 !important;
+  background: linear-gradient(135deg, #faf5ff 0%, #f3e8ff 100%) !important;
+  color: #1e293b !important;
+}}
+.synth-badge {{
+  display: inline-block; background: #7c3aed; color: #fff;
+  padding: 3px 10px; border-radius: 4px; font-size: 0.68rem;
+  font-weight: 700; letter-spacing: 0.05em;
+}}
+.synth-inline-title {{
+  flex: 1 1 auto; font-size: 1rem; color: #475569; font-weight: 600;
+}}
+.synth-standalone-link {{
+  font-size: 0.8rem; font-weight: 600; color: #7c3aed !important;
+  padding: 4px 10px; background: #fff; border: 1px solid #e9d5ff;
+  border-radius: 6px; text-decoration: none !important;
+}}
+.synth-standalone-link:hover {{
+  background: #faf5ff; border-color: #7c3aed;
+}}
+.synth-inline-body {{
+  background: #fefbff;
+  border-left: 3px solid #e9d5ff;
+  padding: 12px 20px 20px;
+  border-radius: 0 8px 8px 0;
+  font-family: 'Noto Serif SC', 'Lora', serif;
+  font-size: 0.95rem;
+}}
+.synth-inline-body h2 {{
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1.1rem; font-weight: 700;
+  margin: 24px 0 12px; padding-bottom: 6px;
+  border-bottom: 1px dashed #d8b4fe;
+  color: #6b21a8;
+}}
+.synth-inline-body h3 {{
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1rem; font-weight: 700;
+  margin: 20px 0 8px; color: #7c3aed;
+}}
+.synth-inline-body h4 {{
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 0.92rem; font-weight: 700;
+  margin: 14px 0 6px; color: #6b7280;
+}}
+.synth-inline-body p {{ margin: 8px 0; }}
+.synth-inline-body blockquote {{
+  border-left: 4px solid #7c3aed;
+  background: #faf5ff;
+  padding: 8px 16px; margin: 12px 0;
+  border-radius: 0 8px 8px 0;
+  font-style: italic;
+}}
+.synth-inline-body .md-table td b,
+.synth-inline-body .md-table td strong {{
+  color: #7c3aed;
+}}
+.synth-inline-body code {{
+  font-family: 'JetBrains Mono', monospace; font-size: 0.85em;
+  background: #f3e8ff; padding: 1px 5px; border-radius: 4px;
+  color: #6b21a8;
+}}
+.synth-inline-body ul, .synth-inline-body ol {{
+  margin: 8px 0 8px 0; padding-left: 28px;
+}}
+.synth-inline-body ul {{ list-style-type: disc; }}
+.synth-inline-body ol {{ list-style-type: decimal; }}
+.synth-inline-body li {{ margin: 4px 0; line-height: 1.7; }}
+@media (max-width: 768px) {{
+  .synth-inline {{ padding: 0 14px; margin: 32px auto 20px; padding-top: 20px; }}
+  .synth-inline-header {{ font-size: 1rem !important; padding: 12px 14px !important; }}
+  .synth-inline-title {{ font-size: 0.88rem; }}
+  .synth-inline-body {{ padding: 10px 14px 16px; font-size: 0.88rem; }}
+  .synth-inline-body h2 {{ font-size: 1rem; margin: 18px 0 8px; }}
+  .synth-inline-body h3 {{ font-size: 0.94rem; }}
+}}
+
 /* ---- Per-paper page responsive ---- */
 @media (max-width: 1024px) {{
   .paper-header {{ padding: 32px 18px 20px; }}
@@ -1552,6 +1695,7 @@ for p in papers:
 <div class="w content">
 {body_html}
 </div>
+{synth_inline_html}
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
 {drawio_script}
 {mermaid_script}
