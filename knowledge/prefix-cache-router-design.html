@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Prefix-Cache-Aware Router 设计：从现有方案到 Tier-Aware Cost Model</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body, {
+          delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '$',  right: '$',  display: false}
+          ],
+          throwOnError: false
+        })"></script>
+<style>
+:root { --bg:#faf8f3; --sf:#fff; --tx:#1a1a2e; --mt:#6b7280;
+        --bd:#e5e7eb; --accent:#2563eb; --nav:#1b2a4a; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'IBM Plex Sans','Noto Sans SC',system-ui,sans-serif;
+       background:var(--bg); color:var(--tx); line-height:1.8; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+nav { background:var(--nav); color:#fff; padding:0 24px;
+       height:52px; display:flex; align-items:center; gap:28px;
+       position:sticky; top:0; z-index:100;
+       box-shadow:0 2px 12px rgba(0,0,0,0.15); }
+nav .logo { font-weight:700; font-size:1.05rem; }
+nav a { color:#cbd5e1; font-size:0.88rem; font-weight:500; }
+nav a:hover { color:#fff; text-decoration:none; }
+.w { max-width:960px; margin:0 auto; padding:0 24px 64px; }
+footer { text-align:center; padding:28px 24px; color:var(--mt);
+          font-size:0.8rem; border-top:1px solid var(--bd);
+          max-width:960px; margin:0 auto; }
+.article-header { max-width:960px; margin:0 auto; padding:40px 24px 20px; }
+.article-header h1 { font-size:1.7rem; font-weight:800; letter-spacing:-0.02em;
+                       margin-bottom:12px; line-height:1.3; }
+.article-meta { font-size:0.85rem; color:var(--mt); margin-bottom:8px; line-height:1.8; }
+.article-meta a { font-size:0.85rem; }
+.tags { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.tag { font-size:0.72rem; padding:2px 10px; border-radius:999px;
+        background:#f1f5f9; color:var(--mt); font-weight:600; }
+.content { font-family:'Noto Serif SC','Lora',serif; font-size:0.95rem; }
+.content h2 { font-family:'IBM Plex Sans','Noto Sans SC',sans-serif;
+               font-size:1.25rem; font-weight:700; margin:36px 0 14px;
+               padding-bottom:6px; border-bottom:2px solid var(--accent);
+               color:var(--accent); }
+.content h3 { font-family:'IBM Plex Sans','Noto Sans SC',sans-serif;
+               font-size:1.08rem; font-weight:700; margin:28px 0 10px;
+               color:#334155; }
+.content h4 { font-family:'IBM Plex Sans','Noto Sans SC',sans-serif;
+               font-size:0.98rem; font-weight:700; margin:20px 0 8px;
+               color:#475569; }
+.content p { margin:8px 0; }
+.content ul, .content ol { margin:8px 0 8px 20px; }
+.content li { margin:4px 0; }
+.content blockquote { border-left:4px solid var(--accent); padding:8px 16px;
+                       margin:12px 0; background:#f8fafc; border-radius:0 8px 8px 0;
+                       font-style:italic; }
+.content pre { background:#1e293b; color:#e2e8f0; padding:16px 20px;
+                border-radius:8px; overflow-x:auto; margin:12px 0;
+                font-family:'JetBrains Mono',monospace; font-size:0.82rem;
+                line-height:1.65; white-space:pre; word-wrap:normal; }
+.content code { font-family:'JetBrains Mono',monospace; font-size:0.85em;
+                 background:#f1f5f9; padding:1px 5px; border-radius:4px; }
+.content pre code { background:none; padding:0; }
+.content hr { border:none; border-top:1px solid var(--bd); margin:32px 0; }
+.table-wrap { margin:16px 0; overflow-x:auto; border-radius:8px;
+               border:1px solid var(--bd); background:#fff; }
+.md-table { width:100%; border-collapse:collapse; font-size:0.85rem; min-width:100%; }
+.md-table th, .md-table td { border-bottom:1px solid #f1f5f9;
+                              padding:8px 14px; }
+.md-table th { background:#f8fafc; font-weight:700; color:#475569;
+                position:sticky; top:0; z-index:1;
+                border-bottom:2px solid var(--bd);
+                font-family:'IBM Plex Sans','Noto Sans SC',sans-serif;
+                font-size:0.78rem; text-transform:uppercase; letter-spacing:0.04em; }
+.md-table tbody tr:nth-child(even) td { background:#fafbfc; }
+.md-table tbody tr:hover td { background:#eff6ff; }
+.back { display:inline-block; margin:24px; font-size:0.9rem; font-weight:600; }
+.toc { background:#fff; border:1px solid var(--bd); border-radius:12px;
+        padding:20px 24px; margin:0 0 32px; }
+.toc h3 { font-family:'IBM Plex Sans',sans-serif; font-size:0.9rem;
+           font-weight:700; margin:0 0 12px; color:var(--accent);
+           border:none; padding:0; }
+.toc ul { list-style:none; margin:0; padding:0; }
+.toc li { margin:4px 0; }
+.toc a { font-size:0.88rem; color:#334155; font-weight:500;
+          display:block; padding:2px 0; }
+.toc a:hover { color:var(--accent); text-decoration:none; }
+.katex-block { display:block; text-align:center; margin:14px 0;
+                font-size:1.05rem; overflow-x:auto; }
+.katex-inline { font-size:1em; }
+@media (max-width: 768px) {
+  .article-header { padding:24px 14px 16px; }
+  .article-header h1 { font-size:1.3rem; }
+  .content { font-size:0.9rem; }
+  .content h2 { font-size:1.1rem; }
+  .content h3 { font-size:0.98rem; }
+  .content pre { padding:12px; font-size:0.76rem; }
+  .md-table { font-size:0.78rem; }
+  .md-table th, .md-table td { padding:6px 10px; }
+}
+</style>
+</head>
+<body>
+<nav>
+  <a class="logo" href="/">Feiyue Zhai</a>
+  <a href="/">Papers</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/float.html">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+<div class="article-header">
+  <a class="back" href="/knowledge/">&larr; Knowledge Base</a>
+  <h1>Prefix-Cache-Aware Router 设计：从现有方案到 Tier-Aware Cost Model</h1>
+  <div class="article-meta">
+    <b>Feiyue Zhai</b> &middot; 2026-04-21
+  </div>
+  <div class="tags">
+    <span class="tag">LLM Serving</span>
+    <span class="tag">Router</span>
+    <span class="tag">Prefix Cache</span>
+    <span class="tag">KV Cache</span>
+    <span class="tag">Cost Model</span>
+    <span class="tag">Tier-Aware</span>
+    <span class="tag">Agent</span>
+  </div>
+</div>
+<div class="w content">
+<div class="toc"><h3>目录</h3><ul><li><a href="#0-tl-dr">0. TL;DR</a></li><li><a href="#1-三家现有方案的核心架构-cost-model-视角">1. 三家现有方案的核心架构（cost-model 视角）</a></li><li><a href="#2-cost-model-的现有学术结论-精确公式">2. Cost Model 的现有学术结论（精确公式）</a></li><li><a href="#3-缺什么-现有-cost-model-的六个-gap">3. 缺什么：现有 cost model 的六个 gap</a></li><li><a href="#4-提出-一个-tier-aware-agent-aware-统一-cost-model">4. 提出：一个 Tier-Aware + Agent-Aware 统一 Cost Model</a></li><li><a href="#5-参数估计与在线学习">5. 参数估计与在线学习</a></li><li><a href="#6-与现有项目的实现对接">6. 与现有项目的实现对接</a></li><li><a href="#7-一个具体的数值例子">7. 一个具体的数值例子</a></li><li><a href="#8-调度层和-cost-model-的耦合">8. 调度层和 cost model 的耦合</a></li><li><a href="#9-还没解决的问题-open-questions">9. 还没解决的问题（Open Questions）</a></li><li><a href="#10-参考资料">10. 参考资料</a></li><li><a href="#11-修订历史">11. 修订历史</a></li></ul></div>
+<blockquote><b>作者</b>: Feiyue Zhai</blockquote>
+<blockquote><b>日期</b>: 2026-04-21</blockquote>
+<blockquote><b>标签</b>: LLM serving, router, prefix cache, KV cache, scheduler, cost model, agent serving</blockquote>
+<hr>
+<h2 id="0-tl-dr">0. TL;DR</h2>
+<p>调研了三大开源 router 的实现（NVIDIA Dynamo <code>kv-router</code> / SGLang <code>sgl-model-gateway</code> / llm-d GAIE-EPP），把 prefix-cache-aware 路由的设计空间拆成 <b>索引 / 信号 / 决策（cost model）/ 工程形态</b> 四层。</p>
+<p><b>结论</b>：</p>
+<p>1. 三家在<b>索引层</b>（radix tree / positional indexer / KV-events）已经卷得很充分，工程基本可复用。</p>
+<p>2. 在<b>决策层（cost model）</b>——尤其是「prefix 命中收益 × in-flight load 代价 × tier 感知 × workflow 感知」的统一建模——<b>全部不完整</b>。Dynamo 最系统但只用线性项；SGLang 只看 char 长度比；llm-d 是加权 scorer 拼接，无法表达非线性耦合。</p>
+<p>3. 学术界已经给了所有需要的元素：Justitia 的 <span class="katex-inline">$c = pd + d^2/2$</span> 给了正确的 KV-time cost；ThunderAgent 的 recompute <span class="katex-inline">$\propto c^2$</span> + Cauchy 函数式方程证明指数衰减是唯一 admissible decay；Pancake/Concur/KVFlow 给了 tier 之间应该如何切换的实证；PrfaaS 把 cost model 推到了跨 DC。</p>
+<p>4. 把这些拼起来，我提出一个 6 项 cost model：</p>
+<p><div class="katex-block">$$ 
+   \text{Logit}(w, r) = \underbrace{\alpha_p \cdot p_{\text{eff}}(w,r)}_{\text{prefill}} \;+\; \underbrace{\alpha_d \cdot d(r) + \alpha_{d^2} \cdot \tfrac{d(r)^2}{2}}_{\text{decode + KV time}} \;+\; \underbrace{\sum_{t \in \text{tiers}} \alpha_t \cdot \text{LoadFromTier}(w, r, t)}_{\text{tier-aware}} \;+\; \underbrace{\alpha_{ho}\cdot HO(w)}_{\text{head-of-line}} \;-\; \underbrace{\alpha_{wf}\cdot \text{Affinity}_{wf}(w, r)}_{\text{workflow}}
+    $$</div></p>
+<p>每一项都是可在线 fit 的标量，参数会随 engine 类型（vLLM/SGLang/TRT-LLM）和硬件（HBM/PCIe/NVLink/RDMA 带宽）自适应。</p>
+<p>5. 实现路径：在 Dynamo <code>kv-router</code> 的 <code>DefaultWorkerSelector</code> 上替换 logit 函数，是工程量最小、收益最高的切入点。</p>
+<hr>
+<h2 id="1-三家现有方案的核心架构-cost-model-视角">1. 三家现有方案的核心架构（cost-model 视角）</h2>
+<h3>1.1 SGLang <code>sgl-model-gateway</code>（approximate 派）</h3>
+<p><b>索引</b>：每 model 一棵 char-level radix tree，存请求 raw text；DashMap per-model；后台 LRU eviction（<code>max_tree_size=10000</code> 节点，<code>eviction_interval=30s</code>）；多 router 实例通过 mesh <code>TreeOperation::{Insert, Remove}</code> 事件同步。</p>
+<p><b>信号</b>：纯<b>观察</b>——router 看到什么 text 就插入哪棵 tree，<b>不和 engine 通讯</b>。</p>
+<p><b>决策函数</b>（<code>policies/cache_aware.rs::select_worker</code>）：</p>
+<pre><code>
+is_imbalanced = (max_load - min_load) &gt; abs_thr  AND  max_load &gt; min_load * rel_thr
+if is_imbalanced:
+    selected = argmin_w  worker.load()                    # shortest queue
+else:
+    match_rate = matched_chars / input_chars
+    if match_rate &gt; cache_threshold (=0.5):
+        selected = the worker holding the longest matching tenant
+    else:
+        selected = argmin_w  tree.size(w)                  # 最空闲 cache
+</code></pre>
+<p><b>cost-model 角度的特点</b>：</p>
+<ul>
+<li><b>没有真正的 cost function</b>——只是两条规则的开关。</li>
+<li>用 <code>worker.load()</code>（pending 计数）代表 "load"，<b>完全不区分 prefill 还是 decode、不感知 token / block</b>。</li>
+<li>"match_rate" 是 <b>char 级</b>比例，和真实 KV block hit 之间有显著漂移。</li>
+<li>没有 queueing 模型，没有 head-of-line 惩罚。</li>
+</ul>
+<h3>1.2 NVIDIA Dynamo <code>lib/kv-router</code>（precise 派 + 完整 cost）</h3>
+<p><b>索引</b>（<code>indexer/</code>）：四元组 <code>(LocalBlockHash, ExternalSequenceBlockHash, WorkerId, Position)</code>；四种实现可选——<code>RadixTree</code> / <code>ConcurrentRadixTree</code>（read 并发 + sticky 写线程）/ <code>PositionalIndexer</code>（DashMap + jump 优化 O(D/J)）/ <code>ThreadPoolIndexer</code>（写 sticky 读 inline）；声称 >10M events+requests/s、p99 <10µs。</p>
+<p><b>信号</b>：engine 通过 KV events <code>RouterEvent::{Stored, Removed}</code> 推送，block hash 由 engine 给定（含 LoRA id、multimodal hash）。Router 维护 "which worker has which block"。<code>PruneManager</code> 做 TTL + 2^20 size + 0.8 ratio 三重 pruning。</p>
+<p><b>决策函数</b>（<code>scheduling/selector.rs::DefaultWorkerSelector</code>）：</p>
+<p><div class="katex-block">$$ 
+\text{logit}(w) = \alpha \cdot \frac{p_{\text{new}}(w)}{B} + d(w)
+ $$</div></p>
+<p>其中：</p>
+<ul>
+<li><span class="katex-inline">$\alpha = $</span> <code>overlap_score_weight</code>（默认 1.0），可按请求 override；</li>
+<li><span class="katex-inline">$p_{\text{new}}(w) = \max(0, \text{ISL} - \text{overlap}(w) \cdot B)$</span>，<b>新需要 prefill 的 token 数</b>；</li>
+<li><span class="katex-inline">$B = $</span> block size（如 64 token/block）；</li>
+<li><span class="katex-inline">$d(w) = $</span> <code>decode_blocks(w)</code>——<b><code>ActiveSequences</code> 跟踪在飞请求 KV 占用</b>（这是 Dynamo 和 SGLang 最大差别），由 <code>sequences/multi_worker.rs</code> 维护，per dp_rank。</li>
+</ul>
+<p><b>Selector 行为</b>：</p>
+<ul>
+<li><code>temperature == 0</code>：<span class="katex-inline">$w^* = \arg\min_w \text{logit}(w)$</span>；</li>
+<li><code>temperature > 0</code>：softmax 抽样，<code>P(w) \propto \exp(-\text{logit}(w) / (\tau \cdot \text{range}))</code>，<b>显式抗羊群</b>；</li>
+<li>Tie-break: <code>tree_size</code> 最小者；</li>
+<li>支持 per dp_rank 粒度。</li>
+</ul>
+<p><b>Queue policy</b>（<code>scheduling/policy.rs</code>，与 selector 解耦）：</p>
+<ul>
+<li><code>FcfsPolicy</code>: <span class="katex-inline">$\text{key} = \text{priority\_jump} - \text{arrival\_offset}$</span>（优化 tail TTFT）；</li>
+<li><code>WsptPolicy</code>（Smith 1956）: <span class="katex-inline">$\text{key} = \dfrac{1 + \text{priority\_jump}}{\max(1, \text{ISL} - \max_w \text{overlap}(w) \cdot B)}$</span> —— <b>隐含 cache-aware</b>，命中越多有效 ISL 越短，越早调度。</li>
+<li><code>router_queue_threshold</code>=2.0：所有 worker 超过 <code>max_num_batched_tokens · threshold_frac</code> 才排队，否则 ready 直发。</li>
+</ul>
+<p><b>cost-model 角度的特点</b>：</p>
+<ul>
+<li><b>全开源里最系统</b>：把 prefill cost 和 in-flight decode cost 加在一起，并用 ActiveSequences 追踪。</li>
+<li><b>但只到一阶</b>——decode 项是 <code>decode_blocks</code> 的<b>线性</b>函数。Justitia 论文已经证明，对 vLLM-类引擎正确的形式应该是 <span class="katex-inline">$c = pd + d^2/2$</span>，二次项主导。</li>
+<li><b>没有 tier</b>——所有 cache 默认在 HBM，没办法表达 "在 CPU RAM"、"在 NVMe"、"已迁出"。</li>
+<li><b>没有 workflow</b> —— agent 多轮 / tool return 之后路由不能利用 STE 类信号。</li>
+</ul>
+<h3>1.3 llm-d / GAIE-EPP（K8s 插件派）</h3>
+<p><b>形态</b>：Istio / agentgateway → EPP (Endpoint Picker Plugin)→ vLLM pod。EPP 实现可选 upstream 标准镜像或 <code>llm-d-inference-scheduler</code>（扩展 GAIE）。</p>
+<p><b>索引（两条路径）</b>：</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">路径</th><th style="text-align:left">scorer</th><th style="text-align:left">数据来源</th></tr></thead><tbody>
+<tr><td style="text-align:left">Inference-scheduling（默认）</td><td style="text-align:left"><code>approximate-prefix-cache-scorer</code></td><td style="text-align:left">观察流量</td></tr>
+<tr><td style="text-align:left">Precise-prefix-cache-aware</td><td style="text-align:left"><code>precise-prefix-cache-scorer</code></td><td style="text-align:left">vLLM <b>ZMQ KV events</b> + <b>UDS tokenizer sidecar</b> + <b>speculative indexing</b>（engine confirm 前 optimistic 插入）</td></tr>
+</tbody>
+</table></div>
+<p><b>决策函数</b>（典型 precise profile，见 <code>gaie-kv-events/values.yaml</code>）：</p>
+<p><div class="katex-block">$$ 
+\text{score}(w) = 3.0 \cdot s_{\text{prefix}}(w) + 2.0 \cdot s_{\text{kv-util}}(w) + 2.0 \cdot s_{\text{queue}}(w)
+ $$</div></p>
+<p><span class="katex-inline">$\rightarrow$</span> <code>max-score-picker</code> argmax。</p>
+<p>其中：</p>
+<ul>
+<li><span class="katex-inline">$s_{\text{prefix}} \in [0, 1]$</span>：精确前缀命中比例；</li>
+<li><span class="katex-inline">$s_{\text{kv-util}}$</span>：vLLM 自报 KV cache 利用率（间接 in-flight load）；</li>
+<li><span class="katex-inline">$s_{\text{queue}}$</span>：vLLM 自报 pending 队列长度。</li>
+</ul>
+<p><b>其它 profile handlers</b>：<code>pd-profile-handler</code>（PD-disagg 路由 + selective PD 阈值）、<code>predicted-latency-based-scheduling</code>、<code>tiered-prefix-cache</code>（HBM→CPU→盘→共享存储 via NIXL/CephFS/Lustre）。</p>
+<p><b>cost-model 角度的特点</b>：</p>
+<ul>
+<li>加权和便于调参，但<b>无法表达非线性耦合</b>（如二次项、tier 切换的非凸性）。</li>
+<li><code>kv-cache-utilization-scorer</code> 的粒度是<b>百分比</b>，比 Dynamo 的 <code>decode_blocks</code> 计数粗。</li>
+<li>有 <code>tiered-prefix-cache</code> 在存储侧，<b>但 router 的决策函数里完全没有 tier 项</b>——只是 vLLM engine 内部决定从哪一层拉，对外 router 看起来还是 "命中 / 未命中"。</li>
+<li>speculative indexing 的 reconcile 协议未公开（请求被拒/失败时索引会 stale）。</li>
+</ul>
+<h3>1.4 三家横向对比（聚焦 cost model）</h3>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">维度</th><th style="text-align:left">SGLang</th><th style="text-align:left">Dynamo</th><th style="text-align:left">llm-d</th></tr></thead><tbody>
+<tr><td style="text-align:left">Cost form</td><td style="text-align:left">规则切换</td><td style="text-align:left">单 logit 线性</td><td style="text-align:left">加权和</td></tr>
+<tr><td style="text-align:left">Prefill term</td><td style="text-align:left">无</td><td style="text-align:left"><span class="katex-inline">$\alpha\cdot p_{\text{new}}/B$</span></td><td style="text-align:left"><span class="katex-inline">$w_p \cdot s_{\text{prefix}}$</span></td></tr>
+<tr><td style="text-align:left">Decode in-flight</td><td style="text-align:left"><code>worker.load()</code> 计数</td><td style="text-align:left"><code>decode_blocks(w)</code> 精确</td><td style="text-align:left">KV util 百分比</td></tr>
+<tr><td style="text-align:left">Quadratic decode?</td><td style="text-align:left">❌</td><td style="text-align:left">❌（应有）</td><td style="text-align:left">❌</td></tr>
+<tr><td style="text-align:left">Queue penalty</td><td style="text-align:left">无</td><td style="text-align:left"><span class="katex-inline">$w_q\cdot s_{\text{queue}}$</span></td><td style="text-align:left"></td></tr>
+<tr><td style="text-align:left">Tier 感知</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">tiered storage 但 router 不感知</td></tr>
+<tr><td style="text-align:left">Workflow / agent</td><td style="text-align:left">❌</td><td style="text-align:left"><code>priority_jump</code> 字段</td><td style="text-align:left">❌</td></tr>
+<tr><td style="text-align:left">抗羊群</td><td style="text-align:left">imbalance fallback</td><td style="text-align:left">softmax temperature</td><td style="text-align:left">❌</td></tr>
+<tr><td style="text-align:left">LoRA</td><td style="text-align:left">❌</td><td style="text-align:left">engine block hash 含 LoRA id</td><td style="text-align:left">engine 决定</td></tr>
+</tbody>
+</table></div>
+<hr>
+<h2 id="2-cost-model-的现有学术结论-精确公式">2. Cost Model 的现有学术结论（精确公式）</h2>
+<p>下面整理我们 paper-db 里<b>直接给出 cost model 数学形式</b>的工作，按建模维度分类。</p>
+<h3>2.1 KV token-time cost（Justitia, arXiv 2510.17015）</h3>
+<p>Justitia 严格论证了 <b>vLLM-类引擎（paged attention）的真实瓶颈是 KV memory，不是 compute</b>。它给出的请求级 cost：</p>
+<p><div class="katex-block">$$ 
+c = p \cdot d + \frac{d^2}{2}
+ $$</div></p>
+<ul>
+<li><span class="katex-inline">$p$</span>: prompt（prefill）token 数；</li>
+<li><span class="katex-inline">$d$</span>: decode token 数（output length）。</li>
+</ul>
+<p><b>推导直觉</b>：把 KV "占着 memory 但还在生成" 的时间积分。每个 decode step <span class="katex-inline">$i$</span> 释放给 batch 用的 KV slots 是已经生成的 <span class="katex-inline">$p + i$</span>，整个 decode 阶段 KV 占用对时间的积分是 <span class="katex-inline">$\int_0^d (p + i) \, di = pd + d^2/2$</span>。</p>
+<p><b>ablation</b>：把它换回 VTC 的 <span class="katex-inline">$p + 2d$</span> 线性 cost，<b>JCT 退化 42.3%</b>。</p>
+<p><b>对 router 的意义</b>：Dynamo 当前的 <code>logit = α·p_new/B + decode_blocks</code> 的 decode 项<b>应该是二次的</b>。一个简单替换是：</p>
+<p><div class="katex-block">$$ 
+\text{logit}_{\text{Justitia-aware}}(w, r) = \alpha \cdot p_{\text{new}}(w, r) + \sum_{r' \in \text{active}(w)} \big[ p(r') \cdot \hat{d}_{\text{rem}}(r') + \tfrac{1}{2}\hat{d}_{\text{rem}}(r')^2 \big]
+ $$</div></p>
+<p>其中 <span class="katex-inline">$\hat{d}_{\text{rem}}(r')$</span> 是 active 请求 <span class="katex-inline">$r'$</span> <b>剩余</b> decode token 的预估（用 JITServe 的 QRF 或 agent hints）。</p>
+<h3>2.2 Recompute cost（ThunderAgent, arXiv 2602.13692）</h3>
+<p>ThunderAgent 把 STP（serving-time-product）拆成 productive vs wasted：</p>
+<p><div class="katex-block">$$ 
+\text{STP} = \underbrace{T_{\text{decode}} + T_{\text{prefill}}}_{\text{productive}} + \underbrace{T_{\text{recompute}} + T_{\text{unused}} + T_{\text{caching}}}_{\text{wasted}}
+ $$</div></p>
+<p>关键论断：当 KV 被 evict 后再 prefill，<b>recompute cost 与上下文长度 <span class="katex-inline">$c$</span> 平方成正比</b>：</p>
+<p><div class="katex-block">$$ 
+\text{Cost}_{\text{recompute}}(c) \propto c^2
+ $$</div></p>
+<p>证明 shortest-first eviction 是 strictly optimal —— 因为 cost function 是 convex super-additive，按短 program 先清正好最小化总和。</p>
+<p>进一步，证明在 memoryless tool latency 假设下，"discount KV 占用" 的最优函数形式<b>只能是指数衰减</b>（用 Cauchy 函数式方程 <span class="katex-inline">$f(t+\delta) = f(t) f(\delta)$</span>）：</p>
+<p><div class="katex-block">$$ 
+f(t) = e^{-\lambda t}
+ $$</div></p>
+<p><b>对 router 的意义</b>：当 router 知道<b>这台 worker 的 KV 已经被 evict，但还在 CPU RAM 里</b>，重路由它的 cost 不是 0（线性 fetch），也不是 <span class="katex-inline">$p_{\text{new}}$</span>（完全重算），而是<b>取决于上次访问到现在的时间衰减后的剩余概率</b>。</p>
+<h3>2.3 KVFlow STE: workflow-aware priority</h3>
+<p>KVFlow 把 <b>Steps-To-Execution</b> 概念引入 KV 优先级。每个 agent 节点 <span class="katex-inline">$v$</span> 在 step graph 上有一个 STE 值（用 max+1 / min+1 聚合，统一 DAG / cycle / branch），然后<b>下推到 KV 节点</b>：</p>
+<p><div class="katex-block">$$ 
+\text{STE}_{\text{kv-node}} = \min_{v \in \text{users}(\text{node})} \text{STE}(v)
+ $$</div></p>
+<p>对 prefix tree 节点，<b>取所有 share 它的 agent 中最小 STE</b>。</p>
+<p><b>对 router 的意义</b>：传统 LRU 在 cyclic / sequential agent 中<b>结构性错误</b>——刚被使用的 agent 正是下一个要被调用的，按 LRU 把它的 KV 踢掉等于自残。Router 在选 worker 时也该用同样信号——<b>优先把请求送到当前 STE 较小的 prefix 持有者</b>。</p>
+<h3>2.4 Tier latency model（Pancake / Concur / ThunderAgent / PrfaaS）</h3>
+<p><b>Pancake</b> 给出了 GPU vs CPU 的一个具体实测 cross-over：每 cluster <b>256–512 vectors</b> 是 CPU↔GPU 的盈亏点，Pancake 用 <span class="katex-inline">$B_{\text{insert}}=128$</span> 来让 CPU buffer 完全 hide 在 GPU compute 后。这是 ANN memory 的数字，但<b>逻辑可以平移</b>——存在一个 <b>block 数阈值</b>，在阈值以下 CPU→GPU 拉回比重算便宜，以上反过来。</p>
+<p><b>Concur</b> 给了一个反直觉但很硬的实证：<b>在 agentic batch inference 高并发下</b>，HiCache 类 CPU offload <b>比 baseline 慢 3×</b>（可降到 0.34× speed），原因是 PCIe 在大并发下根本饱和不住。这意味着 tier cost <b>不是常数</b>，而是<b>带宽争用的函数</b>：</p>
+<p><div class="katex-block">$$ 
+T_{\text{load-from-CPU}}(\text{size}) = \frac{\text{size}}{\text{BW}_{\text{PCIe}}^{\text{eff}}(\text{concurrency})}
+ $$</div></p>
+<p>且 <span class="katex-inline">$\text{BW}^{\text{eff}}$</span> <b>随 concurrency 显著退化</b>。</p>
+<p><b>ThunderAgent</b> 进一步给出一个<b>否定结论</b>：对 agent 工作负载，<b>KV offload 到 CPU/SSD 拯救不了</b> —— "PCIe bandwidth is insufficient for high-frequency context switches"。同时 PD-disagg 在 agent 上反而 trigger thrashing（prefill-only / decode-only 池都只有部分 HBM）。</p>
+<p><b>PrfaaS</b> 把 tier 推到跨 DC：hybrid attention 把 KV throughput 缩到 3-8 Gbps 后，commodity Ethernet 跨 DC 也能做 PD。它给的 throughput 模型是：</p>
+<p><div class="katex-block">$$ 
+\Lambda_{\max} = \min\Big(\frac{\Theta_{\text{prfaas}}}{p}, \frac{\Theta_{\text{pdp}}}{1 - p}, \Theta_{\text{pdd}}\Big)
+ $$</div></p>
+<p><span class="katex-inline">$p$</span> 是被路由到 PrfaaS 集群的请求比例。<b>最优 <span class="katex-inline">$p$</span> 满足路径平衡</b>（Eq.7），最优 <span class="katex-inline">$N_p / N_d$</span> 满足产消平衡（Eq.8）。</p>
+<p><b>对 router 的意义</b>：tier-aware cost 不是简单的加项，而是要建模带宽<b>争用</b>：</p>
+<p><div class="katex-block">$$ 
+\text{LoadCost}(t, w, \text{size}) = \frac{\text{size}}{\text{BW}_t \cdot \rho_t(w)}
+ $$</div></p>
+<p>其中 <span class="katex-inline">$\rho_t(w) = $</span> 当前 tier <span class="katex-inline">$t$</span> 在 worker <span class="katex-inline">$w$</span> 的链路上的有效带宽利用率（≤1，越高越拥塞）。</p>
+<h3>2.5 Halo: 工作流编译态 cost（arXiv 2603.16104）</h3>
+<p>Halo 把 batch agentic 看成数据库查询计划，cost decompose 成 <span class="katex-inline">$T_{\text{prep}} + T_{\text{model}} + T_{\text{infer}}$</span>，用 epoch DP solver 全局优化（<b>plan pruning 单项贡献 -23.35%</b>，比所有 cache 机制都大）。它的 Templated Radix Tree 同时编码 prompt prefix 和 operator dependency，可以做 <b>dual-prefix reuse</b>（system prompt 外层 + per-query context 内层）。</p>
+<p><b>对 router 的意义</b>：在线 router 难以做 Halo 那样的全局 DP，但<b>可以引入"短窗口 coalescing"</b>——把相同 prefix 的请求在 50ms 窗口内 batch prefill 一次（缺口 cost = <span class="katex-inline">$T_{\text{prefill}}(N \cdot \text{ISL})$</span> 而不是 <span class="katex-inline">$N \cdot T_{\text{prefill}}(\text{ISL})$</span>，前者远小）。</p>
+<hr>
+<h2 id="3-缺什么-现有-cost-model-的六个-gap">3. 缺什么：现有 cost model 的六个 gap</h2>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Gap</th><th style="text-align:left">现状</th><th style="text-align:left">应有</th><th style="text-align:left">对应论文</th></tr></thead><tbody>
+<tr><td style="text-align:left">G1. 二次 decode 项</td><td style="text-align:left">三家都线性</td><td style="text-align:left"><span class="katex-inline">$pd + d^2/2$</span></td><td style="text-align:left">Justitia</td></tr>
+<tr><td style="text-align:left">G2. Tier-aware</td><td style="text-align:left">全没有</td><td style="text-align:left">按 tier 的带宽争用 cost</td><td style="text-align:left">Pancake / Concur / ThunderAgent / PrfaaS</td></tr>
+<tr><td style="text-align:left">G3. Workflow / STE</td><td style="text-align:left">全没有</td><td style="text-align:left">按 STE 折扣 KV 占用</td><td style="text-align:left">KVFlow</td></tr>
+<tr><td style="text-align:left">G4. Recompute 平方惩罚</td><td style="text-align:left">全没有</td><td style="text-align:left"><span class="katex-inline">$\propto c^2$</span></td><td style="text-align:left">ThunderAgent</td></tr>
+<tr><td style="text-align:left">G5. 长度不确定性</td><td style="text-align:left">全假设 ISL 已知，OSL 不估</td><td style="text-align:left">QRF 上分位预测</td><td style="text-align:left">JITServe</td></tr>
+<tr><td style="text-align:left">G6. 跨请求 coalescing</td><td style="text-align:left">全没有</td><td style="text-align:left">短窗口聚合</td><td style="text-align:left">Halo / Scepsy</td></tr>
+</tbody>
+</table></div>
+<hr>
+<h2 id="4-提出-一个-tier-aware-agent-aware-统一-cost-model">4. 提出：一个 Tier-Aware + Agent-Aware 统一 Cost Model</h2>
+<h3>4.1 总形式</h3>
+<p>对每个候选 worker <span class="katex-inline">$w$</span> 和到达请求 <span class="katex-inline">$r$</span>，cost（越小越优）：</p>
+<p><div class="katex-block">$$ 
+\boxed{
+\text{Cost}(w, r) = C_{\text{prefill}} + C_{\text{decode}} + C_{\text{tier}} + C_{\text{HOL}} - B_{\text{workflow}}
+}
+ $$</div></p>
+<p>其中各项的具体形式如下，所有 <span class="katex-inline">$\alpha_*$</span> 是可在线 fit 的标量。</p>
+<h3>4.2 Prefill 项</h3>
+<p><div class="katex-block">$$ 
+C_{\text{prefill}}(w, r) = \alpha_p \cdot p_{\text{eff}}(w, r), \quad
+p_{\text{eff}}(w, r) = \text{ISL}(r) - \text{HitTokens}(w, r)
+ $$</div></p>
+<p>其中 <code>HitTokens</code> 是 router 索引（radix / positional）查出的 worker <span class="katex-inline">$w$</span> 上<b>HBM 命中</b>的 token 数。注意：<b>不算 CPU/SSD 的 cache 命中</b>，因为那部分要走 tier-loading 路径。<span class="katex-inline">$\alpha_p \approx \frac{1}{\text{prefill\_tput}_w}$</span>（每 token 的实测 prefill 时延）。</p>
+<h3>4.3 Decode 项（Justitia 二次形式）</h3>
+<p><div class="katex-block">$$ 
+C_{\text{decode}}(w) = \alpha_d \sum_{r' \in \text{active}(w)} \hat{d}_{\text{rem}}(r')
+\;+\; \alpha_{d^2} \sum_{r' \in \text{active}(w)} \frac{\hat{d}_{\text{rem}}(r')^2}{2}
+ $$</div></p>
+<ul>
+<li><span class="katex-inline">$\hat{d}_{\text{rem}}(r')$</span> 来自三种来源（按可用性回退）：</li>
+</ul>
+<p>1. agent hints（<code>expected_output_tokens</code> 字段）</p>
+<p>2. JITServe QRF 上分位预测（7ms inference）</p>
+<p>3. 默认 <code>max_new_tokens</code> / 2 的保守上界</p>
+<ul>
+<li><span class="katex-inline">$\alpha_d \approx \frac{1}{\text{decode\_tput}_w}$</span>；<span class="katex-inline">$\alpha_{d^2} \approx \frac{1}{2 \cdot \text{KV\_capacity}_w}$</span>（KV 占用对吞吐的二阶反馈）。</li>
+</ul>
+<h3>4.4 Tier 项（核心新增）</h3>
+<p>每个 worker 维护一个<b>tier 状态</b>：</p>
+<p><div class="katex-block">$$ 
+\text{Tier}(w, r) \in \{\text{HBM}, \text{CPU}, \text{NVMe}, \text{Remote}, \text{Miss}\}
+ $$</div></p>
+<p>Router 索引除了 HBM hit，还要订阅 CPU/盘 tier 的事件（vLLM hicache、SGLang HiCache、LMCache 都开始有这类事件）。Tier loading cost：</p>
+<p><div class="katex-block">$$ 
+C_{\text{tier}}(w, r) = \sum_{t \neq \text{HBM}} \alpha_t \cdot \frac{\text{HitTokens}_t(w, r) \cdot \text{KV\_bytes\_per\_token}}{\text{BW}_t(w) \cdot \rho_t(w)}
+ $$</div></p>
+<p>其中：</p>
+<ul>
+<li><span class="katex-inline">$\text{BW}_t(w)$</span>：tier <span class="katex-inline">$t$</span> 到 worker <span class="katex-inline">$w$</span> HBM 的标称带宽（PCIe Gen5 ≈ 64 GB/s, NVLink ≈ 900 GB/s, RDMA ≈ 50 GB/s, etc.）；</li>
+<li><span class="katex-inline">$\rho_t(w) \in (0, 1]$</span>：当前 tier 链路有效利用率，<b>这是 Concur 教给我们的关键变量</b>——offload 在大并发下吞吐塌陷；</li>
+<li>对 Miss（即 cache 完全无）—— 不进入 <span class="katex-inline">$C_{\text{tier}}$</span>，自然落到 <span class="katex-inline">$C_{\text{prefill}}$</span> 全量 prefill 路径。</li>
+</ul>
+<p><b>关键决策</b>：tier-aware cost model 让 router 在三个选项间正确选择：</p>
+<p>1. 选 worker A：HBM 全命中，但 in-flight load 高 → <span class="katex-inline">$C_{\text{prefill}} = 0$</span>，<span class="katex-inline">$C_{\text{decode}}$</span> 大；</p>
+<p>2. 选 worker B：CPU RAM 命中，PCIe 空闲 → <span class="katex-inline">$C_{\text{prefill}} = 0$</span>，<span class="katex-inline">$C_{\text{tier}}$</span> 中等；</p>
+<p>3. 选 worker C：完全未命中，但 in-flight load 最低 → <span class="katex-inline">$C_{\text{prefill}}$</span> 大，<span class="katex-inline">$C_{\text{decode}}$</span> 小。</p>
+<p>线性加权和（llm-d 形态）<b>做不到这一点</b>——三个选项的得分差异主要靠 <code>kv-cache-utilization-scorer</code>，但它感知不了 PCIe 拥塞。</p>
+<h4>4.4.1 <span class="katex-inline">$\rho_t$</span> 怎么估</h4>
+<p>每个 worker 上报：</p>
+<ul>
+<li><code>tier_bw_used[t]</code>：最近 <span class="katex-inline">$\Delta t$</span> 窗口内 tier <span class="katex-inline">$t$</span> 实际传输字节数</li>
+<li><code>tier_concurrency[t]</code>：当前 tier <span class="katex-inline">$t$</span> 上的并发 load 操作数</li>
+</ul>
+<p>Router 维护 EWMA：</p>
+<p><div class="katex-block">$$ 
+\rho_t(w) \leftarrow \beta \cdot \rho_t(w) + (1 - \beta) \cdot \frac{\text{tier\_bw\_used}}{\text{BW}_t \cdot \Delta t}
+ $$</div></p>
+<p>进一步，可用 Concur 启发的 <b>AIMD 阈值</b>：当 <span class="katex-inline">$\rho_t > \rho_{\text{thr}}$</span>（如 0.85）时，<b>禁用</b> tier <span class="katex-inline">$t$</span> 的 cache hit 信号，强制 router 落到其它 worker。</p>
+<h3>4.5 Head-of-line / Queue 项</h3>
+<p><div class="katex-block">$$ 
+C_{\text{HOL}}(w) = \alpha_{ho} \cdot \max\big(0, Q(w) - Q_{\text{slack}}\big)^2
+ $$</div></p>
+<p>二次 penalty 抑制极端拥塞 worker。<span class="katex-inline">$Q(w)$</span> 是 worker pending 请求数，<span class="katex-inline">$Q_{\text{slack}}$</span> 是允许的"缓冲队列"长度（如 4）。这个项是<b>球化</b>了 Dynamo 的 <code>router_queue_threshold</code>——硬切换换成 soft penalty。</p>
+<h3>4.6 Workflow / Agent 收益项</h3>
+<p>引入 <code>AgentContext</code>：</p>
+<pre><code>
+AgentContext {
+    workflow_id:        u64,
+    step_id:            u32,
+    expected_next_tools: Vec&lt;ToolName&gt;,
+    ste:                u32,        # 来自 KVFlow Step Graph
+    last_worker_hint:   Option&lt;WorkerId&gt;,
+    paused_kv_age:      Option&lt;Duration&gt;,
+}
+</code></pre>
+<p>定义 affinity bonus：</p>
+<p><div class="katex-block">$$ 
+B_{\text{workflow}}(w, r) = \alpha_{wf} \cdot \mathbb{1}[\text{last\_worker}(r) = w] \cdot e^{-\lambda \cdot t_{\text{since\_last}}(r)}
+ $$</div></p>
+<p>这就是<b>ThunderAgent 的指数衰减直接搬到 router 层</b>——同一 workflow 在同一 worker 的复用收益随 idle 时间指数衰减（因为 KV 可能已被 evict）。<span class="katex-inline">$\lambda$</span> 由 worker engine 的 cache pressure 决定。</p>
+<p>进一步：当 <code>expected_next_tools</code> 非空且某 worker 已有这些 tool 对应的 hot prefix（如 system prompt + tool catalog），加二阶 bonus：</p>
+<p><div class="katex-block">$$ 
+B_{\text{wf}}^{(2)}(w, r) = \alpha_{wf}^{(2)} \cdot \frac{|\text{ExpectedHits}(w, r)|}{|\text{expected\_next\_tools}|}
+ $$</div></p>
+<h3>4.7 总公式（再写一次，全展开）</h3>
+<p><div class="katex-block">$$ 
+\begin{aligned}
+\text{Cost}(w, r) =\;& \alpha_p \cdot p_{\text{eff}}(w, r) \\
+&+ \alpha_d \sum_{r' \in \text{active}(w)} \hat{d}_{\text{rem}}(r') + \frac{\alpha_{d^2}}{2} \sum_{r' \in \text{active}(w)} \hat{d}_{\text{rem}}(r')^2 \\
+&+ \sum_{t \neq \text{HBM}} \alpha_t \cdot \frac{\text{HitBytes}_t(w, r)}{\text{BW}_t(w) \cdot \rho_t(w)} \\
+&+ \alpha_{ho} \cdot \max(0, Q(w) - Q_{\text{slack}})^2 \\
+&- \alpha_{wf} \cdot \mathbb{1}[\text{last\_worker}(r) = w] \cdot e^{-\lambda t_{\text{since\_last}}} \\
+&- \alpha_{wf}^{(2)} \cdot \frac{|\text{ExpectedHits}(w, r)|}{|\text{expected\_tools}|}
+\end{aligned}
+ $$</div></p>
+<p>Selector：<span class="katex-inline">$w^* = \arg\min_w \text{Cost}(w, r)$</span>，可加 softmax temperature 抗羊群（Dynamo 已有机制直接复用）。</p>
+<hr>
+<h2 id="5-参数估计与在线学习">5. 参数估计与在线学习</h2>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">参数</th><th style="text-align:left">物理含义</th><th style="text-align:left">估计方式</th></tr></thead><tbody>
+<tr><td style="text-align:left"><span class="katex-inline">$\alpha_p$</span></td><td style="text-align:left">per-token prefill 时延</td><td style="text-align:left">EWMA over engine 上报的 prefill rate; engine-specific</td></tr>
+<tr><td style="text-align:left"><span class="katex-inline">$\alpha_d$</span></td><td style="text-align:left">per-token decode 时延</td><td style="text-align:left">同上，decode rate</td></tr>
+<tr><td style="text-align:left"><span class="katex-inline">$\alpha_{d^2}$</span></td><td style="text-align:left">KV 占用的二阶 penalty</td><td style="text-align:left">拟合 active KV pressure → throughput 退化曲线</td></tr>
+<tr><td style="text-align:left"><span class="katex-inline">$\alpha_t$</span> (per tier)</td><td style="text-align:left">1.0 默认，主要让 BW 起作用</td><td style="text-align:left">标称值即可，靠 <span class="katex-inline">$\rho_t$</span> 反映拥塞</td></tr>
+<tr><td style="text-align:left"><span class="katex-inline">$\text{BW}_t$</span></td><td style="text-align:left">tier 标称带宽</td><td style="text-align:left">配置常数（PCIe / NVLink / RDMA）</td></tr>
+<tr><td style="text-align:left"><span class="katex-inline">$\rho_t(w)$</span></td><td style="text-align:left">tier 链路 EWMA 利用率</td><td style="text-align:left">per-worker 在线 EWMA</td></tr>
+<tr><td style="text-align:left"><span class="katex-inline">$\alpha_{ho}, Q_{\text{slack}}$</span></td><td style="text-align:left">队列 penalty</td><td style="text-align:left">grid search 或 SLO-aware 调整</td></tr>
+<tr><td style="text-align:left"><span class="katex-inline">$\alpha_{wf}, \lambda$</span></td><td style="text-align:left">workflow affinity</td><td style="text-align:left">per-engine 拟合 cache hit rate vs idle time 曲线</td></tr>
+</tbody>
+</table></div>
+<p><b>在线学习思路</b>（参考 JITServe 的做法）：</p>
+<ul>
+<li>把 <span class="katex-inline">$(C_{\text{predicted}}(w, r), \text{TTFT}_{\text{actual}}(r), \text{TPOT}_{\text{actual}}(r))$</span> 入 sliding window；</li>
+<li>每 <span class="katex-inline">$N$</span> 个完成的请求，做一次 ridge regression 更新 <span class="katex-inline">$(\alpha_p, \alpha_d, \alpha_{d^2})$</span>；</li>
+<li>用 conformal prediction 给 <span class="katex-inline">$\hat{d}_{\text{rem}}$</span> 上限，避免 underprediction（JITServe 已证明 BERT/Llama3 systematically underpredict）。</li>
+</ul>
+<hr>
+<h2 id="6-与现有项目的实现对接">6. 与现有项目的实现对接</h2>
+<h3>6.1 在 Dynamo <code>kv-router</code> 上落地（推荐路径）</h3>
+<p>最小侵入：<b>只替换 <code>selector.rs::DefaultWorkerSelector::select_worker</code> 的 logit 函数</b>。其它（indexer / queue / softmax / per-dp-rank）原封不动。</p>
+<pre><code>
+// 当前（lib/kv-router/src/scheduling/selector.rs）：
+let logit = overlap_weight * potential_prefill_block + decode_block;
+
+// 替换为：
+let logit = alpha_p * prefill_tokens(w, r)
+          + alpha_d  * sum_active_d(w)
+          + alpha_d2 * 0.5 * sum_active_d2(w)
+          + tier_cost(w, r, &amp;tier_bw)
+          + queue_penalty(w)
+          - workflow_bonus(w, r, &amp;agent_ctx);
+</code></pre>
+<p>需要新增的数据流：</p>
+<p>1. <b>Tier events</b>：在 <code>protocols.rs</code> 增加 <code>RouterEvent::TieredStored { tier, ... }</code> / <code>Migrated { from_tier, to_tier, ... }</code>。Engine 侧 vLLM hicache 已经可以发，SGLang HiCache 同理。</p>
+<p>2. <b><code>AgentContext</code></b>：作为 HTTP header（<code>x-agent-workflow-id</code> / <code>x-agent-step-id</code> / <code>x-agent-expected-tools</code>）从 frontend 传入；<code>SchedulingRequest</code> 已经有 <code>expected_output_tokens</code> 字段，扩展即可。</p>
+<p>3. <b>Tier BW telemetry</b>：worker 通过 <code>WorkerConfigLike</code> trait 上报 <code>tier_bw_used[]</code> 和 <code>tier_concurrency[]</code>，router 维护 EWMA。</p>
+<h3>6.2 在 SGLang sgl-router 上落地</h3>
+<p>需要重构（当前是规则切换不是 cost）：</p>
+<ul>
+<li>把 char tree 换成 token-level radix tree（参考 SGLang RadixAttention 的实现）；</li>
+<li>加上 <code>WorkerLoadInfo</code>（pending、prefill rate、decode rate、tier_bw）的拉取（policies 已有 <code>update_loads</code> 钩子）；</li>
+<li>把 <code>select_worker</code> 换成 cost-min 实现。</li>
+</ul>
+<h3>6.3 在 llm-d EPP 上落地</h3>
+<p>最自然——加一个新 scorer：<code>unified-cost-scorer</code>，<b>返回 logit 的相反数</b>（picker 用 <code>max-score-picker</code>）。和现有 weighted scorers 共存，权重设大即可"接管"。Tier 信号通过 EPP 订阅 vLLM 的 hicache events 取得（已有 ZMQ KV events 通路，扩展 topic 即可）。</p>
+<hr>
+<h2 id="7-一个具体的数值例子">7. 一个具体的数值例子</h2>
+<p>设有 3 个 worker，处理一个新请求 <span class="katex-inline">$r$</span>（ISL=8000, expected OSL=500）：</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Worker</th><th style="text-align:left">HBM hit</th><th style="text-align:left">CPU hit</th><th style="text-align:left">active 请求</th><th style="text-align:left">active <span class="katex-inline">$\sum d$</span></th><th style="text-align:left">active <span class="katex-inline">$\sum d^2$</span></th><th style="text-align:left"><span class="katex-inline">$Q$</span></th><th style="text-align:left">last_worker_for <span class="katex-inline">$r$</span>?</th></tr></thead><tbody>
+<tr><td style="text-align:left">W1</td><td style="text-align:left">7500 tok</td><td style="text-align:left">0</td><td style="text-align:left">4</td><td style="text-align:left">800</td><td style="text-align:left">200000</td><td style="text-align:left">2</td><td style="text-align:left">yes (last 30s)</td></tr>
+<tr><td style="text-align:left">W2</td><td style="text-align:left">0</td><td style="text-align:left">7500 tok</td><td style="text-align:left">1</td><td style="text-align:left">200</td><td style="text-align:left">50000</td><td style="text-align:left">0</td><td style="text-align:left">no</td></tr>
+<tr><td style="text-align:left">W3</td><td style="text-align:left">0</td><td style="text-align:left">0</td><td style="text-align:left">0</td><td style="text-align:left">0</td><td style="text-align:left">0</td><td style="text-align:left">0</td><td style="text-align:left">no</td></tr>
+</tbody>
+</table></div>
+<p>参数：<span class="katex-inline">$\alpha_p = 1.0$</span> μs/tok，<span class="katex-inline">$\alpha_d = 50$</span> μs/tok，<span class="katex-inline">$\alpha_{d^2} = 0.001$</span>，BW(PCIe) = 64 GB/s，KV bytes/tok = 0.5 KB（GQA），<span class="katex-inline">$\rho_{\text{PCIe}}(W2) = 0.3$</span> (空闲)，<span class="katex-inline">$\alpha_{wf} = 5000$</span> μs，<span class="katex-inline">$\lambda = 1/120s$</span>，<span class="katex-inline">$\alpha_{ho} = 100$</span>，<span class="katex-inline">$Q_{\text{slack}} = 4$</span>。</p>
+<p><b>W1</b>:</p>
+<ul>
+<li><span class="katex-inline">$C_p = 1.0 \cdot 500 = 500$</span> μs</li>
+<li><span class="katex-inline">$C_d = 50 \cdot 800 + 0.001 \cdot 100000 = 40000 + 100 = 40100$</span> μs</li>
+<li><span class="katex-inline">$C_t = 0$</span></li>
+<li><span class="katex-inline">$C_{HOL} = 100 \cdot 0 = 0$</span></li>
+<li><span class="katex-inline">$B_{wf} = 5000 \cdot e^{-30/120} = 5000 \cdot 0.78 = 3900$</span></li>
+<li><b>Cost = 500 + 40100 - 3900 = 36700 μs</b></li>
+</ul>
+<p><b>W2</b>:</p>
+<ul>
+<li><span class="katex-inline">$C_p = 0$</span></li>
+<li><span class="katex-inline">$C_d = 50 \cdot 200 + 0.001 \cdot 25000 = 10025$</span> μs</li>
+<li><span class="katex-inline">$C_t = 1.0 \cdot \frac{7500 \cdot 512 \text{ B}}{64 \cdot 10^9 \cdot 0.3} = \frac{3.84 \times 10^6}{1.92\times 10^{10}} \approx 200$</span> μs</li>
+<li><span class="katex-inline">$C_{HOL} = 0$</span></li>
+<li><span class="katex-inline">$B_{wf} = 0$</span></li>
+<li><b>Cost = 10225 μs</b></li>
+</ul>
+<p><b>W3</b>:</p>
+<ul>
+<li><span class="katex-inline">$C_p = 1.0 \cdot 8000 = 8000$</span> μs</li>
+<li><span class="katex-inline">$C_d = 0$</span></li>
+<li><span class="katex-inline">$C_t = 0$</span></li>
+<li><span class="katex-inline">$C_{HOL} = 0$</span></li>
+<li><span class="katex-inline">$B_{wf} = 0$</span></li>
+<li><b>Cost = 8000 μs</b></li>
+</ul>
+<p><b>Selector 选 W3</b>（重算最便宜）。</p>
+<p>如果把 PCIe ρ 改成 0.95（W2 拥塞）：</p>
+<ul>
+<li>W2 的 <span class="katex-inline">$C_t = 200 / (0.3/0.95) \approx 633$</span> μs，cost = 10658 μs。</li>
+<li>W3 仍最低。</li>
+</ul>
+<p>如果再把 W3 设为没有空 KV（要 evict 才能塞）—— <code>expected output 500</code> 撑不下，进入 W3 的 <span class="katex-inline">$\alpha_{d^2}$</span> 会反映出来；选择会回到 W2（CPU loading）。</p>
+<p>如果换成 Dynamo 当前的线性 logit（block size B=64）：</p>
+<ul>
+<li>W1: <span class="katex-inline">$1.0 \cdot 500/64 + 800/64 = 7.8 + 12.5 = 20.3$</span></li>
+<li>W2: <span class="katex-inline">$0 + 200/64 = 3.1$</span></li>
+<li>W3: <span class="katex-inline">$1.0 \cdot 8000/64 + 0 = 125$</span></li>
+</ul>
+<p>Dynamo 会选 W2，<b>没看到 PCIe 拥塞 → 错路由</b>。这就是 tier-awareness 的实际价值。</p>
+<hr>
+<h2 id="8-调度层和-cost-model-的耦合">8. 调度层和 cost model 的耦合</h2>
+<p>cost model 只是 selector 的事。<b>Queue 排序</b>也应该用同一套 cost：</p>
+<p><div class="katex-block">$$ 
+\text{Priority}(r) = \frac{1}{\min_w \text{Cost}(w, r)}
+ $$</div></p>
+<p>这是 Dynamo <code>WsptPolicy</code> 的自然推广——把 "<span class="katex-inline">$1 / p_{\text{new}}$</span>" 换成 "<span class="katex-inline">$1 / \text{Cost}_{\min}$</span>"，同时考虑 cache 命中、tier、in-flight load。</p>
+<hr>
+<h2 id="9-还没解决的问题-open-questions">9. 还没解决的问题（Open Questions）</h2>
+<p>下面列的是即使 §4 的 cost model 全部实现，仍需要进一步研究的：</p>
+<p>1. <b>Cold-start agent</b>：第一次见到的 workflow，没有 STE，没有 expected_next_tools。是否能从 prompt 文本特征零样本预测？</p>
+<p>2. <b>Speculative indexing 的一致性</b>：llm-d 已经 ship 了 <code>speculativeIndexing: true</code>，但 reconcile 协议没公开。如果 engine 拒了请求，我们错插的索引何时清？</p>
+<p>3. <b>Router 替换 / migrate 的 cost</b>：当前所有方案都假设 "一次路由定终身"。Tool return 时如果有更好的 worker，要不要把 sequence 迁过去（LMCache 类 KV transfer）？这件事的 cost 模型是 PrfaaS Eq.7 的简化版。</p>
+<p>4. <b>Multi-tenant fairness × locality</b>：Justitia 给了 WFQ 公平 cost，但和 cache-affinity 完全冲突。能否用 priority 注入到 <span class="katex-inline">$\alpha_*$</span> 的乘子？</p>
+<p>5. <b>MoE 模型的 cost</b>：MoE 的 prefill / decode 时延和 expert 分布相关，单 worker 内部还有 expert imbalance，会进一步影响 <span class="katex-inline">$\alpha_p, \alpha_d$</span> 的拟合稳定性。</p>
+<p>6. <b>跨 DC（PrfaaS）扩展</b>：WAN bandwidth 计费按 95th percentile，cost 还要加上"出口带宽 percentile 感知"项。</p>
+<p>7. <b>强化学习直接优化 cost</b>：参数太多，能否用 PPO + simulator（如 Mooncake trace）端到端学 <span class="katex-inline">$\boldsymbol{\alpha}$</span>？</p>
+<hr>
+<h2 id="10-参考资料">10. 参考资料</h2>
+<p><b>代码库</b>:</p>
+<ul>
+<li>NVIDIA Dynamo <code>kv-router</code>: <code>/apps/feiyue/upstream/dynamo/lib/kv-router/</code>，重点看 <code>scheduling/selector.rs</code>、<code>scheduling/policy.rs</code>、<code>indexer/README.md</code></li>
+<li>SGLang <code>sgl-model-gateway</code>: <code>/apps/feiyue/upstream/sglang/sgl-model-gateway/src/policies/cache_aware.rs</code></li>
+<li>llm-d: <code>/apps/feiyue/upstream/llm-d/guides/precise-prefix-cache-aware/</code>, <code>/apps/feiyue/upstream/llm-d/guides/tiered-prefix-cache/</code></li>
+<li>真正的 EPP scheduler 实现: github.com/llm-d/llm-d-inference-scheduler、github.com/kubernetes-sigs/gateway-api-inference-extension</li>
+</ul>
+<p><b>Paper</b>（来自 ~/.cursor/paper-db/papers.json，已读）:</p>
+<ul>
+<li><b>Justitia</b> (2510.17015): KV token-time cost <span class="katex-inline">$c = pd + d^2/2$</span>，WFQ 公平</li>
+<li><b>ThunderAgent</b> (2602.13692): Agentic Program tuple，recompute <span class="katex-inline">$\propto c^2$</span>，指数衰减必然性</li>
+<li><b>KVFlow</b> (2507.07400): Agent Step Graph + STE-aware eviction</li>
+<li><b>Pancake</b> (2602.21477): 多层 ANN memory，CPU-GPU cross-over 256-512 vectors</li>
+<li><b>Concur</b>: middle-phase thrashing，HiCache 在并发下退化 3×</li>
+<li><b>Halo / Helium</b> (2603.16104): batch agentic 的 query optimizer，dual-prefix reuse</li>
+<li><b>PrfaaS</b> (2604.15039): cross-DC PD-disagg + dual-timescale scheduling</li>
+<li><b>JITServe</b>: QRF 长度上分位预测，GMAX 调度</li>
+<li><b>HEXGEN-FLOW</b>: 两层 workflow scheduler + SLO budget propagation</li>
+<li><b>DualPath</b>: PD-disagg 中 dual-path KV loading</li>
+<li><b>DynaServe</b>: micro-request abstraction</li>
+<li><b>PASTE</b> (2603.18897): pattern-aware speculative tool execution</li>
+</ul>
+<hr>
+<h2 id="11-修订历史">11. 修订历史</h2>
+<ul>
+<li><b>2026-04-21</b> v1：初版，覆盖三家 router 调查、cost model 现状、tier-aware + agent-aware 统一公式与 Dynamo 落地路径。</li>
+</ul>
+</div>
+<footer>
+  <p>&copy; 2026 Feiyue Zhai &middot; AI Infrastructure Knowledge Base</p>
+</footer>
+</body>
+</html>
