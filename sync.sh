@@ -1295,7 +1295,6 @@ for p in papers:
   <h2 id="synthesis-inline" class="synth-inline-header">
     <span class="synth-badge">🔗 SYNTHESIS</span>
     <span class="synth-inline-title">跨篇综合分析 · Stage 4</span>
-    <a class="synth-standalone-link" href="/knowledge/synthesis-{pid}.html" target="_blank">独立页 ↗</a>
   </h2>
   <div class="synth-inline-body">
 {synth_body_html}
@@ -1567,14 +1566,6 @@ for p in papers:
 .synth-inline-title {{
   flex: 1 1 auto; font-size: 1rem; color: #475569; font-weight: 600;
 }}
-.synth-standalone-link {{
-  font-size: 0.8rem; font-weight: 600; color: #7c3aed !important;
-  padding: 4px 10px; background: #fff; border: 1px solid #e9d5ff;
-  border-radius: 6px; text-decoration: none !important;
-}}
-.synth-standalone-link:hover {{
-  background: #faf5ff; border-color: #7c3aed;
-}}
 .synth-inline-body {{
   background: #fefbff;
   border-left: 3px solid #e9d5ff;
@@ -1683,7 +1674,6 @@ for p in papers:
     &nbsp; {authors} &nbsp;·&nbsp; {date}
     {"&nbsp;·&nbsp; <a href='" + url + "' target='_blank'>arXiv ↗</a>" if url else ""}
     {"&nbsp;·&nbsp; <a href='/readers/" + pid + "-reader.html' style='background:#1b2a4a;color:#fff;padding:3px 10px;border-radius:6px;text-decoration:none;font-weight:600'>📖 导读 Reader ↗</a>" if os.path.exists(os.path.join(SITE_DIR, 'readers', f'{pid}-reader.html')) else ""}
-    {"&nbsp;·&nbsp; <a href='/knowledge/synthesis-" + pid + ".html' style='background:#7c3aed;color:#fff;padding:3px 10px;border-radius:6px;text-decoration:none;font-weight:600'>🔗 Synthesis ↗</a>" if os.path.exists(os.path.join(DB_DIR, 'knowledge', f'synthesis-{pid}.md')) else ""}
   </div>
   <div class="tags">{tags_html}</div>
 </div>
@@ -1764,159 +1754,8 @@ for p in papers:
         f.write(page)
     print(f"  Wrote papers/{pid}.html")
 
-# ---- Render knowledge/synthesis-*.md → knowledge/synthesis-*.html ----
-# Cross-paper synthesis docs from paper-synthesis skill Stage 4 (Per-Paper
-# Synthesis mode). Each paper N may have a synthesis-N.md in ~/.cursor/
-# paper-db/knowledge/; render it to SITE_DIR/knowledge/synthesis-N.html
-# reusing the md_to_html renderer, with a simpler synthesis-styled template.
-synth_src_dir = os.path.join(DB_DIR, "knowledge")
-synth_out_dir = os.path.join(SITE_DIR, "knowledge")
-os.makedirs(synth_out_dir, exist_ok=True)
-if os.path.isdir(synth_src_dir):
-    for fn in sorted(os.listdir(synth_src_dir)):
-        if not fn.startswith("synthesis-") or not fn.endswith(".md"):
-            continue
-        src_path = os.path.join(synth_src_dir, fn)
-        out_name = fn[:-3] + ".html"
-        out_path = os.path.join(synth_out_dir, out_name)
-        with open(src_path) as f:
-            synth_md = f.read()
-        synth_pid = fn[len("synthesis-"):-3]  # strip prefix + .md
-        synth_title_match = re.search(r'^# (.+)$', synth_md, re.MULTILINE)
-        synth_title = synth_title_match.group(1).strip() if synth_title_match else synth_pid
-
-        body_html_raw, toc_entries = md_to_html(synth_md, paper_id=synth_pid)
-        body_html = sanitize_html(body_html_raw)
-        has_mermaid = bool(re.search(r'<div class="mermaid">', body_html))
-        mermaid_script = MERMAID_BOOTSTRAP_JS if has_mermaid else ""
-
-        synth_page = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>{html.escape(synth_title)}</title>
-{FONTS}
-{KATEX_CDN}
-<style>
-{SHARED_CSS}
-.synth-header {{
-  max-width: 960px; margin: 0 auto; padding: 40px 24px 16px;
-}}
-.synth-header h1 {{
-  font-size: 1.4rem; font-weight: 800; letter-spacing: -0.02em;
-  margin-bottom: 10px; line-height: 1.35;
-}}
-.synth-header .synth-meta {{
-  font-size: 0.85rem; color: var(--mt); margin-bottom: 8px;
-}}
-.synth-header .synth-meta a {{ color: var(--accent); font-weight: 600; }}
-.synth-badge {{
-  display: inline-block; background: #7c3aed; color: #fff;
-  padding: 2px 10px; border-radius: 4px; font-size: 0.72rem;
-  font-weight: 700; margin-right: 8px; letter-spacing: 0.03em;
-}}
-.content {{
-  font-family: 'Noto Serif SC', 'Lora', serif;
-  font-size: 0.95rem;
-  max-width: 960px; margin: 0 auto; padding: 0 24px 64px;
-}}
-.content h2 {{
-  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
-  font-size: 1.2rem; font-weight: 700; margin: 32px 0 12px;
-  padding-bottom: 6px; border-bottom: 1px solid var(--bd);
-}}
-.content h3 {{
-  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
-  font-size: 1.02rem; font-weight: 700; margin: 20px 0 8px;
-}}
-.content h4 {{
-  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
-  font-size: 0.95rem; font-weight: 700; margin: 16px 0 6px;
-  color: #475569;
-}}
-.content p {{ margin: 8px 0; }}
-.content ul, .content ol {{ margin: 8px 0 8px 0; padding-left: 28px; }}
-.content ul {{ list-style-type: disc; }}
-.content ul ul {{ list-style-type: circle; margin: 4px 0; }}
-.content ol {{ list-style-type: decimal; }}
-.content li {{ margin: 4px 0; line-height: 1.7; }}
-.content blockquote {{
-  border-left: 4px solid #7c3aed; padding: 8px 16px;
-  margin: 12px 0; background: #f5f3ff; border-radius: 0 8px 8px 0;
-  font-style: italic;
-}}
-.content code {{
-  font-family: 'JetBrains Mono', monospace; font-size: 0.85em;
-  background: #f1f5f9; padding: 1px 5px; border-radius: 4px;
-}}
-.content pre {{
-  background: #1e293b; color: #e2e8f0; padding: 16px;
-  border-radius: 8px; overflow-x: auto; margin: 12px 0;
-  font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;
-  line-height: 1.6;
-}}
-.content pre code {{ background: none; padding: 0; }}
-.table-wrap {{
-  margin: 16px 0; overflow-x: auto; border-radius: 8px;
-  border: 1px solid var(--bd); background: #fff;
-}}
-.md-table {{
-  width: 100%; border-collapse: collapse;
-  font-size: 0.85rem; min-width: 100%;
-}}
-.md-table th, .md-table td {{
-  border-bottom: 1px solid #f1f5f9; padding: 8px 14px;
-}}
-.md-table th {{
-  background: #f8fafc; font-weight: 700; color: #475569;
-  border-bottom: 2px solid var(--bd);
-  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
-  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
-}}
-.md-table tbody tr:nth-child(even) td {{ background: #fafbfc; }}
-.md-table td b, .md-table td strong {{ color: #7c3aed; font-weight: 700; }}
-.mermaid {{
-  margin: 20px 0; padding: 16px;
-  background: #fff; border: 1px solid var(--bd);
-  border-radius: 8px; text-align: center;
-  overflow-x: auto;
-}}
-.content .katex-display {{
-  overflow-x: auto; overflow-y: hidden;
-  padding: 4px 0; margin: 16px 0;
-}}
-.back {{ display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }}
-@media (max-width: 768px) {{
-  .synth-header {{ padding: 24px 14px 12px; }}
-  .synth-header h1 {{ font-size: 1.15rem; line-height: 1.3; }}
-  .content {{ padding: 0 14px 36px; font-size: 0.9rem; }}
-  .content h2 {{ font-size: 1.05rem; margin: 24px 0 8px; }}
-  .md-table {{ font-size: 0.78rem; }}
-  .md-table th, .md-table td {{ padding: 6px 10px; }}
-  .back {{ margin: 14px; font-size: 0.84rem; }}
-}}
-</style>
-</head>
-<body>
-{NAV_HTML}
-<div class="synth-header">
-  <a class="back" href="/papers/{synth_pid}.html">← Paper notes</a>
-  <h1><span class="synth-badge">SYNTHESIS</span>{html.escape(synth_title)}</h1>
-  <div class="synth-meta">
-    跨篇综合笔记 (Stage 4) · 基于 <a href="/papers/{synth_pid}.html">{synth_pid} paper notes</a>
-  </div>
-</div>
-<div class="content">
-{body_html}
-</div>
-<footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a> · <a href="/knowledge/">Knowledge</a></footer>
-{mermaid_script}
-</body>
-</html>"""
-        synth_page = sanitize_html(synth_page)
-        with open(out_path, "w") as f:
-            f.write(synth_page)
-        print(f"  Wrote knowledge/{out_name}")
+# synthesis docs are inlined into each paper page above (see synth_inline_html).
+# No standalone synthesis HTML produced.
 
 print("Sync complete.")
 PYEOF
