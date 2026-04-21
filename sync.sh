@@ -1057,16 +1057,13 @@ def md_to_html(md_text, paper_id=""):
                 out.append('</ul>'); in_ul = False
             level = len(h_match.group(1))
             text_part = h_match.group(2)
-            # Generate anchor id for h2..h4 (TOC navigation levels).
-            # H1 is page title; h5/h6 too granular.
+            # Generate anchor id for h2..h4 (so deep-link URLs work at all
+            # sub-section levels). But TOC only gets H2 entries — keeps the
+            # sidebar focused on paragraph-level navigation, not
+            # every sub-header.
             if 2 <= level <= 4:
                 anchor = _slugify(text_part, used_slugs)
-                # Exclude figure captions (### Figure N: ...) from TOC —
-                # those are inline image captions, not navigable sections.
-                is_figure_caption = bool(re.match(r'Figure\s+\d+\s*[:：]', text_part, re.I))
-                # Include H2 + H3 in TOC; H4 gets id but not TOC entry
-                # (keeps TOC focused).
-                if level <= 3 and not is_figure_caption:
+                if level == 2:
                     toc_entries.append({
                         'level': level,
                         'text': text_part,
@@ -1361,8 +1358,7 @@ for p in papers:
   color: var(--accent, #2563eb); font-weight: 600;
   border-left-color: var(--accent, #2563eb); background: #eff6ff;
 }}
-.toc-list .toc-lvl-2 {{ font-weight: 600; font-size: 0.85rem; margin-top: 4px; }}
-.toc-list .toc-lvl-3 {{ padding-left: 20px; font-size: 0.78rem; }}
+.toc-list .toc-lvl-2 {{ font-weight: 500; font-size: 0.85rem; }}
 @media (max-width: 1100px) {{
   .paper-layout {{ grid-template-columns: 1fr; gap: 0; }}
   .toc-sidebar {{
@@ -1388,8 +1384,20 @@ for p in papers:
   font-size: 1.05rem; font-weight: 700; margin: 24px 0 8px;
 }}
 .content p {{ margin: 8px 0; }}
-.content ul {{ margin: 8px 0 8px 20px; }}
-.content li {{ margin: 4px 0; }}
+/* Restore list markers stripped by the global `* {{ padding: 0 }}` reset
+   on line ~108: without padding-left, the browser draws bullets outside
+   the box and they get clipped, making lists look like flowing paragraphs. */
+.content ul, .content ol {{
+  margin: 8px 0 8px 0;
+  padding-left: 28px;
+}}
+.content ul {{ list-style-type: disc; }}
+.content ul ul {{ list-style-type: circle; margin: 4px 0; }}
+.content ul ul ul {{ list-style-type: square; }}
+.content ol {{ list-style-type: decimal; }}
+.content ol ol {{ list-style-type: lower-alpha; margin: 4px 0; }}
+.content li {{ margin: 4px 0; line-height: 1.7; }}
+.content li > ul, .content li > ol {{ margin-top: 4px; margin-bottom: 4px; }}
 .content blockquote {{
   border-left: 4px solid var(--accent); padding: 8px 16px;
   margin: 12px 0; background: #f8fafc; border-radius: 0 8px 8px 0;
