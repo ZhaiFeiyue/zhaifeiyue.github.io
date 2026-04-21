@@ -281,7 +281,7 @@ footer {
   <a href="/">Papers</a>
   <a href="/knowledge/">Knowledge</a>
   <a href="/knowledge-graph.html">Graph</a>
-  <a href="/float.html">Tools</a>
+  <a href="/tools/">Tools</a>
   <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
 </nav>
 <div class="paper-header">
@@ -1025,6 +1025,105 @@ vLLM: launch-bound (250×) + memory-bound → Mirage MPK: memory-bound (16% L2 h
 <tr><td style="text-align:left">Open source</td><td style="text-align:left">未披露</td><td style="text-align:left">✓</td><td style="text-align:left">✓</td><td style="text-align:left">blog post</td><td style="text-align:left">✓</td><td style="text-align:left">✓</td><td style="text-align:left">✓</td></tr>
 </tbody>
 </table></div>
+<h3>11a. Code Cross-reference — Mirage MPK upstream (AMD 端实现不在 upstream)</h3>
+<blockquote>🚨 <b>Inherited universal rule "如果 paper 或文章中有对应代码实现，必须结合代码解读"</b>.</blockquote>
+<blockquote>Fleet 自己的代码 <b>未公开</b>；但它宣称基于 Mirage MPK 并 port 到 MI350X。</blockquote>
+<blockquote>Mirage MPK 是 <b>open source</b> (https://github.com/mirage-project/mirage)，</blockquote>
+<blockquote>所以必须至少对照 upstream MPK 的相关代码路径。</blockquote>
+<p>Shallow-cloned 到 <code>[path]</code>，版本 2026-04 HEAD。</p>
+<p>走查 <code>include/mirage/persistent_kernel/persistent_kernel.cuh</code> (1,496 行) +</p>
+<p><code>runtime_header.h</code> (335 行) + <code>python/mirage/mpk/persistent_kernel.py</code> (2,225 行)。</p>
+<h4>Finding 1 — Upstream Mirage 完全没有 AMD / HIP / CDNA / XCD 代码</h4>
+<pre><code>
+ls include/mirage/persistent_kernel/tasks/
+# ampere  blackwell  common  cute  deprecated  hopper  speculative_decoding
+grep -rn &quot;XCD\|chiplet\|MI300\|MI350\|CDNA\|gfx9\|HIP_&quot; include/mirage/persistent_kernel/
+# (no matches)
+</code></pre>
+<p><b>含义</b>：Fleet 论文里 "Mirage MPK ported to AMD MI350X, serving as internal baseline"</p>
+<p>一句话轻描淡写 —— 实际上 upstream Mirage 只有 Ampere/Hopper/Blackwell 后端，</p>
+<p>没有任何 AMD path。Fleet 团队除了论文主贡献（Chiplet-task 抽象），**还隐式完成了</p>
+<p>一次完整的 Mirage HIP/CDNA 后端移植**，这部分工作量在论文中完全未量化。对读者</p>
+<p>的启示：Fleet 的工程投入 ≠ 论文 §3–§5 描述的内容，真实投入远大于此。</p>
+<h4>Finding 2 — Mirage upstream <b>已有</b> 两层 scheduler/worker 架构，但假设 device scope</h4>
+<pre><code>
+// persistent_kernel.cuh L454-L525 核心分派逻辑
+int const num_schedulers =
+    config.num_local_schedulers + config.num_remote_schedulers;
+int const num_schedulers_per_sm = std::min((int)blockDim.x / 32, 4);
+int const sched_id = blockIdx.x * num_schedulers_per_sm + warp_id + offset;
+</code></pre>
+<ul>
+<li><b>Mirage 的 scheduler 是 warp 级别</b> (<code>threadIdx.x % 32 == 0</code>，每 SM 最多 4 个 scheduler warp)</li>
+<li><b>Fleet 的 scheduler 是 workgroup 级别</b>（1 workgroup/XCD = 1 CU 被占，3.1% on MI350）</li>
+<li>粒度差别的原因：Mirage NV 端假设 L2 monolithic，worker/sched 共享 L2 无损；Fleet 必须把 sched 绑在 XCD-local L2，最小单位是 workgroup</li>
+</ul>
+<pre><code>
+// event 分派：Mirage 用 random scheduler id
+int sched_id = get_rand_sched_id(event_index, worker_id,
+                                  config.num_workers,
+                                  config.num_local_schedulers);
+</code></pre>
+<ul>
+<li><b>Mirage 随机路由 event → scheduler</b></li>
+<li><b>Fleet 按 HW_ID（XCD id）亲和路由</b>，让 event 保持在 L2-local 边界内</li>
+<li>Fleet 的 "per-chiplet scheduling" 本质是把这行 <code>get_rand_sched_id</code> 替换成 <code>get_xcd_local_sched_id(HW_ID)</code></li>
+</ul>
+<h4>Finding 3 — Event counter + trigger 机制在 upstream <b>已存在</b></h4>
+<pre><code>
+// runtime_header.h
+EventCounter *all_event_counters;
+int *all_event_num_triggers;  // 每 event 的触发阈值
+
+// persistent_kernel.cuh: 典型 trigger 逻辑
+atom_cas_release_gpu_u64(&amp;config.sched_queue_last_ready_event_id[sched_id],
+                          last_event_pos, last_event_pos + 1);
+</code></pre>
+<ul>
+<li><b>Mirage 已有</b> <code>num_triggers</code> 阈值 + "最后一人触发"模式</li>
+<li>Fleet 的 "两级事件计数"复用了这个骨架，<b>但把 outer counter 从 <code>device-scope atomic</code> 换成 <code>L2-local atomic</code></b>（intra-XCD 免 fence），inner counter 维持 device-scope</li>
+<li>论文 §5.2 描述的 "last worker issues buffer_wbl2 + flat_atomic_add sc0|sc1" 实际是把</li>
+</ul>
+<p>Mirage 的 <code>atom_cas_release_gpu_u64</code>（NV <code>release</code> 语义）改写为 AMD 等价语义</p>
+<p><b>等价性验证</b>：Mirage NV 端 <code>atom_cas_release_gpu_u64</code> = <code>atomicCAS_block</code> + membar.sys；</p>
+<p>Fleet AMD 端需要 <code>s_waitcnt lgkmcnt(0)</code> + <code>buffer_wbl2</code> + <code>flat_atomic_add sc0|sc1</code>。</p>
+<p>粒度不同但语义对齐。</p>
+<h4>Finding 4 — per-worker queue 结构 upstream <b>已存在</b>，Fleet 未改动</h4>
+<pre><code>
+// persistent_kernel.cuh prepare_kernel
+for (int i = blockIdx.x * blockDim.x + threadIdx.x;
+     i &lt; 2 * config.num_workers; i += ...)
+  config.worker_queue_last_ready_task_id[i] = 0;
+//         ^^^^^ 2 × num_workers = local + remote queue pair per worker
+</code></pre>
+<ul>
+<li><b>每 worker 一对 queue（local + remote）已是 Mirage 标配</b></li>
+<li>Fleet 只是把 local queue 的读写限制在同 XCD 内（通过 scheduler 的 HW_ID 路由）</li>
+<li>这解释了为什么 Fleet §5.1 只有 "extends Mirage Persistent Kernel system with chiplet-aware concepts" 一句话 — 数据结构没变，<b>变化全在分派策略</b></li>
+</ul>
+<h4>Summary — Fleet 相对 upstream Mirage 的 delta（从代码角度）</h4>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">维度</th><th style="text-align:left">Upstream Mirage</th><th style="text-align:left">Fleet (paper)</th><th style="text-align:left">Fleet 工程投入</th></tr></thead><tbody>
+<tr><td style="text-align:left">后端</td><td style="text-align:left">ampere / hopper / blackwell</td><td style="text-align:left">+ AMD CDNA (MI350)</td><td style="text-align:left"><b>完整新后端移植（论文未量化）</b></td></tr>
+<tr><td style="text-align:left">Scheduler 粒度</td><td style="text-align:left">warp-level (4/SM)</td><td style="text-align:left">workgroup-level (1/XCD)</td><td style="text-align:left">架构微调</td></tr>
+<tr><td style="text-align:left">Event routing</td><td style="text-align:left"><code>get_rand_sched_id</code></td><td style="text-align:left"><code>get_xcd_local_sched_id(HW_ID)</code></td><td style="text-align:left">1 函数改写</td></tr>
+<tr><td style="text-align:left">Event atomic</td><td style="text-align:left"><code>atom_cas_release_gpu_u64</code> (NV <code>release</code>)</td><td style="text-align:left">`buffer_wbl2 + flat_atomic_add sc0\</td><td style="text-align:left">sc1` (AMD)</td></tr>
+<tr><td style="text-align:left">Task 抽象</td><td style="text-align:left">wavefront / CU / device (3 层)</td><td style="text-align:left">+ Chiplet (新增 1 层)</td><td style="text-align:left">任务模型扩展</td></tr>
+<tr><td style="text-align:left">Per-worker queue</td><td style="text-align:left">local + remote pair</td><td style="text-align:left"><b>完全复用</b></td><td style="text-align:left">0</td></tr>
+<tr><td style="text-align:left">Task graph 生成</td><td style="text-align:left">Mirage muGraph 超优化</td><td style="text-align:left">Fleet 手写 input task graph</td><td style="text-align:left"><b>退步</b>（作者承认 §5.3 future work）</td></tr>
+</tbody>
+</table></div>
+<h4>诚实承认：本次 cross-reference 的局限</h4>
+<ul>
+<li>Fleet 的 <b>AMD 后端源码</b>完全未公开（论文未给 repo link）。我们只能看到 Mirage <b>upstream (NV 端)</b> 来推断差异。</li>
+<li>无法验证 Fleet 论文里 "8 schedulers × 1 CU" 的精确 SM/CU 占用数据——需要 AMD backend 源码才能确认。</li>
+<li>Eq.(1) <code>(R-1)/R</code> 的实际实现在 HIP kernel 中如何保证 worker 按 M-major 顺序执行，无法从 upstream 代码推断（Mirage upstream 的 traversal pattern 是通过 task graph 编码，不走 kernel-level loop）。</li>
+<li>MI350 CDNA3/4 的 <code>buffer_wbl2</code> 和 <code>sc0|sc1</code> atomic 语义只能依赖 AMD ISA 手册（<code>[path]</code>）交叉验证。</li>
+</ul>
+<p><b>结论</b>：Fleet 的实际工程体量比论文暗示的大得多（完整 AMD 后端移植被省略没提），</p>
+<p>paper 的 "extends Mirage with chiplet-aware concepts" 不能字面理解 —— 正确理解是</p>
+<p>"把 Mirage 的 device-scope 假设在 AMD 8-die 架构上彻底解构重写"。这是代码</p>
+<p>cross-reference 最有价值的输出：<b>paper 的轻描淡写 vs 代码揭示的真实工程量</b>。</p>
 <h3>11. Adoption, Maturity & Ecosystem Influence</h3>
 <ul>
 <li><b>开源状态</b>：预印本 2026-04-15 submitted；代码未公开链接；可能会通过 Mirage MPK 下游以 PR 形式 upstream。</li>
