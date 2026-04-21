@@ -37,6 +37,7 @@ fi
 python3 - "$PAPER_DB" "$SITE_DIR" << 'PYEOF'
 import json, os, sys, re, html, base64, mimetypes, shutil, hashlib
 from pathlib import Path
+import mistune
 
 DB_DIR = sys.argv[1]
 SITE_DIR = sys.argv[2]
@@ -895,20 +896,6 @@ def restore_math(text, store):
         return store[int(m.group(1))]
     return re.sub(r'\x00MATH(\d+)\x00', _restore, text)
 
-def inline_fmt(text):
-    """Apply bold/italic/code inline transforms while preserving LaTeX."""
-    text, store = protect_math(text)
-    # Bold first (double-asterisk) — after this pass no `**` remain
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    # Italic (single-asterisk). Content must not be whitespace-only;
-    # boundary assertions prevent matching within identifiers or around
-    # solo `*`. Since bold is already stripped, no `**` confusion here.
-    text = re.sub(
-        r'(?<![*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])',
-        r'<em>\1</em>', text)
-    text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
-    return restore_math(text, store)
-
 def _slugify(text, existing_slugs):
     """Generate a URL-safe anchor id from heading text. Preserves CJK
     characters (so Chinese headings like '架构 1 · Decoder Layer' produce
@@ -932,174 +919,149 @@ def _slugify(text, existing_slugs):
 
 
 def md_to_html(md_text, paper_id=""):
-    """Convert markdown to HTML with base64-embedded images.
+    """Convert markdown to HTML via mistune 3, with site-specific behavior:
+    - Image base64 inlining + cross-section dedup
+    - Heading slugify (CJK-safe) + TOC collection
+    - Table numeric-column auto-right-align
+    - Mermaid fence → raw <div class="mermaid"> pass-through
+    - Math ($...$ / $$...$$) protected externally via protect_math
 
-    Returns (html_string, toc_entries) where toc_entries is a list of
-    dicts [{'level': int, 'text': str, 'anchor': str}, ...] collected
-    from H2/H3 headings (H4+ skipped to keep TOC focused)."""
-    lines = md_text.split('\n')
-    out = []
-    in_table = False
-    table_aligns = []          # per-column: 'left' / 'right' / 'center'
-    table_pending_rows = []    # buffered until separator row decides alignments
-    in_code = False
-    in_mermaid = False
-    in_ul = False
-    # TOC state
-    toc_entries = []
-    used_slugs = set()
+    Returns (html_string, toc_entries).
+    """
 
-    def _flush_table():
-        """Render the complete buffered table — including auto-detected
-        column alignments — and reset state. Called at end-of-table OR
-        end-of-document.
-        """
-        nonlocal in_table, table_aligns, table_pending_rows
-        if not in_table:
-            return
-        rows = table_pending_rows
-        if rows:
-            header = rows[0]
-            n = len(header)
-            aligns = (table_aligns + ['left'] * n)[:n]
-            # Heuristic: detect numeric columns from first 5 data rows
-            for ci in range(n):
-                vals = []
-                for r in rows[1:6]:
-                    if ci < len(r):
-                        cell = re.sub(r'<[^>]+>', '', r[ci]).strip().replace(',', '')
-                        vals.append(cell)
-                numeric = sum(1 for v in vals if re.fullmatch(r'-?\d+(\.\d+)?%?\*?', v or 'X'))
-                if vals and numeric == len(vals) and aligns[ci] == 'left':
-                    aligns[ci] = 'right'
-            # Render header
-            ths = ''.join(f'<th style="text-align:{aligns[i]}">{header[i]}</th>'
-                          for i in range(n))
-            out.append(f'<thead><tr>{ths}</tr></thead><tbody>')
-            for row in rows[1:]:
-                cells = (row + [''] * n)[:n]
-                tds = ''.join(f'<td style="text-align:{aligns[i]}">{cells[i]}</td>'
-                              for i in range(n))
-                out.append(f'<tr>{tds}</tr>')
-            out.append('</tbody>')
-        out.append('</table></div>')
-        in_table = False
-        table_aligns = []
-        table_pending_rows = []
+    class SiteRenderer(mistune.HTMLRenderer):
+        def __init__(self, current_pid):
+            super().__init__(escape=False)
+            self.toc = []
+            self.used_slugs = set()
+            self.seen_imgs = {}  # hash → first id
+            self.current_pid = current_pid
 
-    for line in lines:
-        stripped = line.strip()
-
-        # Code/diagram fences: special-case mermaid
-        if stripped.startswith('```'):
-            lang = stripped[3:].strip().lower()
-            if in_code or in_mermaid:
-                if in_mermaid:
-                    out.append('</div>')
-                    in_mermaid = False
-                else:
-                    out.append('</code></pre>')
-                    in_code = False
-            else:
-                if lang == 'mermaid':
-                    out.append('<div class="mermaid">')
-                    in_mermaid = True
-                else:
-                    out.append('<pre><code>')
-                    in_code = True
-            continue
-        if in_mermaid:
-            # Mermaid needs raw text content, no escape for &/</> needed —
-            # mermaid.js parses the textContent directly.
-            out.append(line)
-            continue
-        if in_code:
-            out.append(html.escape(line))
-            continue
-
-        if in_table and not stripped.startswith('|'):
-            _flush_table()
-
-        if stripped.startswith('|') and '|' in stripped[1:]:
-            cells = [c.strip() for c in stripped.split('|')[1:-1]]
-            # Separator row: `:---:` / `:---` / `---:` / `---`
-            if all(re.fullmatch(r':?-+:?', c) for c in cells if c):
-                table_aligns = []
-                for c in cells:
-                    if c.startswith(':') and c.endswith(':'):
-                        table_aligns.append('center')
-                    elif c.endswith(':'):
-                        table_aligns.append('right')
-                    else:
-                        table_aligns.append('left')
-                continue
-            rendered = [inline_fmt(c) for c in cells]
-            if not in_table:
-                out.append('<div class="table-wrap"><table class="md-table">')
-                in_table = True
-            table_pending_rows.append(rendered)
-            continue
-
-        if stripped.startswith('!['):
-            m = re.match(r'!\[([^\]]*)\]\(([^)]+)\)', stripped)
+        def image(self, text, url, title=None):
+            # Two image reference forms in our notes:
+            #   1. ![alt](../images/{pid}/fig.ext) — user-written explicit
+            #   2. ![alt](fig.ext) — inject_images_inline adds filename-only
+            #      (resolves to current paper's images dir)
+            # Accept any common raster / vector image extension.
+            ext_re = r'\.(png|jpg|jpeg|gif|webp|svg)$'
+            m = re.match(r'\.\.?/?images/([^/]+)/(.+' + ext_re + ')', url, re.IGNORECASE)
             if m:
-                alt, src = m.group(1), m.group(2)
-                data_uri = resolve_img_src(paper_id, src) if paper_id else None
-                if data_uri:
-                    out.append(f'<figure><img src="{data_uri}" alt="{html.escape(alt)}" style="max-width:100%;border-radius:8px"><figcaption>{html.escape(alt)}</figcaption></figure>')
-                else:
-                    out.append(f'<div style="background:#f1f5f9;padding:16px;border-radius:8px;text-align:center;color:var(--mt);margin:12px 0"><i>{html.escape(alt)}</i></div>')
-                continue
-
-        if stripped.startswith('> '):
-            out.append(f'<blockquote>{inline_fmt(stripped[2:])}</blockquote>')
-            continue
-
-        # Headings: support # through ###### (markdown spec).
-        # Order matters — match longer prefixes first so '#### ' isn't
-        # mis-classified as '### '.
-        h_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
-        if h_match:
-            if in_ul:
-                out.append('</ul>'); in_ul = False
-            level = len(h_match.group(1))
-            text_part = h_match.group(2)
-            # Generate anchor id for h2..h4 (so deep-link URLs work at all
-            # sub-section levels). But TOC only gets H2 entries — keeps the
-            # sidebar focused on paragraph-level navigation, not
-            # every sub-header.
-            if 2 <= level <= 4:
-                anchor = _slugify(text_part, used_slugs)
-                if level == 2:
-                    toc_entries.append({
-                        'level': level,
-                        'text': text_part,
-                        'anchor': anchor,
-                    })
-                out.append(f'<h{level} id="{anchor}">{inline_fmt(text_part)}</h{level}>')
+                pid, fn = m.group(1), m.group(2)
+            elif re.match(r'^[^/]+' + ext_re, url, re.IGNORECASE):
+                pid, fn = self.current_pid, url
             else:
-                out.append(f'<h{level}>{inline_fmt(text_part)}</h{level}>')
-            continue
+                return super().image(text, url, title)
+            data, fig_hash = img_to_base64_with_hash(pid, fn)
+            if not data:
+                return f'<span class="missing-img">[missing: {fn}]</span>'
+            alt = text or fn
+            if fig_hash in self.seen_imgs:
+                first_id = self.seen_imgs[fig_hash]
+                return (f'<a class="fig-ref" href="#fig-{first_id}">'
+                        f'<span class="fig-ref-arrow">↑</span> {html.escape(alt)} '
+                        f'<span class="fig-ref-note">(see above)</span></a>')
+            fig_id = fig_hash[:12]
+            self.seen_imgs[fig_hash] = fig_id
+            return (f'<figure id="fig-{fig_id}">'
+                    f'<img src="{data}" alt="{html.escape(alt)}"></figure>')
 
-        if stripped.startswith('- '):
-            if not in_ul:
-                out.append('<ul>'); in_ul = True
-            out.append(f'<li>{inline_fmt(stripped[2:])}</li>')
-            continue
-        else:
-            if in_ul:
-                out.append('</ul>'); in_ul = False
+        def heading(self, text, level, **attrs):
+            text_plain = re.sub(r'<[^>]+>', '', text)
+            slug = _slugify(text_plain, self.used_slugs)
+            if level in (2, 3):
+                self.toc.append({'level': level, 'text': text_plain, 'anchor': slug})
+            return f'<h{level} id="{slug}">{text}</h{level}>\n'
 
-        stripped = inline_fmt(stripped)
+        def block_code(self, code, info=None):
+            if info and info.strip().lower() == 'mermaid':
+                # Mermaid needs raw textContent, no HTML escape
+                return f'<div class="mermaid">\n{code}</div>\n'
+            return f'<pre><code>{html.escape(code)}</code></pre>\n'
 
-        if stripped:
-            out.append(f'<p>{stripped}</p>')
+        def table(self, content):
+            # Post-process the rendered table HTML to auto-right-align numeric columns
+            return _finalize_table(content)
 
-    if in_ul: out.append('</ul>')
-    if in_table: _flush_table()
-    if in_code: out.append('</code></pre>')
-    if in_mermaid: out.append('</div>')
-    return '\n'.join(out), toc_entries
+        def paragraph(self, text):
+            # If paragraph is ONLY a math/drawio placeholder, don't wrap in <p>
+            t = text.strip()
+            if re.fullmatch(r'\x00(?:MATH|DRAWIO)\d+\x00', t):
+                return text + '\n'
+            return f'<p>{text}</p>\n'
+
+    def img_to_base64_with_hash(pid, fn):
+        """Load PNG → (data_uri, md5_hash) or (None, None).
+        Matches img_to_base64 semantics: size limit 2 MB (huge images would
+        bloat HTML unreasonably; use external hosting / reference instead).
+        """
+        png = os.path.join(DB_DIR, "images", pid, fn)
+        if not os.path.exists(png):
+            return None, None
+        fsize = os.path.getsize(png)
+        if fsize > 2 * 1024 * 1024:
+            return None, None
+        with open(png, 'rb') as f:
+            raw = f.read()
+        h = hashlib.md5(raw).hexdigest()
+        mime, _ = mimetypes.guess_type(fn)
+        mime = mime or 'image/png'
+        b64 = base64.b64encode(raw).decode()
+        return f'data:{mime};base64,{b64}', h
+
+    def _finalize_table(content):
+        """Wrap in .table-wrap, apply md-table class, auto-right-align
+        numeric columns by inspecting first few <td> rows."""
+        # Parse header columns and body rows from mistune's table HTML.
+        # mistune outputs: <table><thead><tr><th>...</th></tr></thead>
+        #                  <tbody><tr><td>...</td></tr>...</tbody></table>
+        # (without <table> wrapper — content starts with <thead>)
+        m_head = re.search(r'<thead>(.*?)</thead>', content, re.DOTALL)
+        m_body = re.search(r'<tbody>(.*?)</tbody>', content, re.DOTALL)
+        if not m_head or not m_body:
+            return f'<div class="table-wrap"><table class="md-table">{content}</table></div>'
+        ths = re.findall(r'<th[^>]*>(.*?)</th>', m_head.group(1), re.DOTALL)
+        n = len(ths)
+        body_rows = re.findall(r'<tr>(.*?)</tr>', m_body.group(1), re.DOTALL)
+        aligns = ['left'] * n
+        # Heuristic: numeric column if first 5 rows are all numeric-looking
+        for ci in range(n):
+            vals = []
+            for r in body_rows[:5]:
+                cells = re.findall(r'<td[^>]*>(.*?)</td>', r, re.DOTALL)
+                if ci < len(cells):
+                    val = re.sub(r'<[^>]+>', '', cells[ci]).strip().replace(',', '')
+                    vals.append(val)
+            if vals and all(re.fullmatch(r'-?\d+(\.\d+)?%?\*?', v or 'X') for v in vals):
+                aligns[ci] = 'right'
+        # Rebuild with align styles
+        new_head_cells = ''.join(
+            f'<th style="text-align:{aligns[i]}">{ths[i]}</th>' for i in range(n))
+        new_head = f'<thead><tr>{new_head_cells}</tr></thead>'
+        new_body_rows = []
+        for r in body_rows:
+            cells = re.findall(r'<td[^>]*>(.*?)</td>', r, re.DOTALL)
+            cells = (cells + [''] * n)[:n]
+            tds = ''.join(f'<td style="text-align:{aligns[i]}">{cells[i]}</td>'
+                          for i in range(n))
+            new_body_rows.append(f'<tr>{tds}</tr>')
+        new_body = '<tbody>' + ''.join(new_body_rows) + '</tbody>'
+        return f'<div class="table-wrap"><table class="md-table">{new_head}{new_body}</table></div>'
+
+    # Protect math externally — mistune's math plugin only handles
+    # multi-line $$\n...\n$$ blocks, but our MD uses single-line $$...$$.
+    # Stashing as placeholders also protects $ vs currency false-positives.
+    md_text, math_store = protect_math(md_text)
+
+    renderer = SiteRenderer(paper_id)
+    parser = mistune.create_markdown(
+        renderer=renderer,
+        plugins=['table', 'strikethrough', 'footnotes', 'task_lists']
+    )
+    html_out = parser(md_text)
+
+    # Restore math spans (KaTeX auto-render picks up $...$ / $$...$$)
+    html_out = restore_math(html_out, math_store)
+    return html_out, renderer.toc
 
 
 def render_toc(toc_entries):

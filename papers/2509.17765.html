@@ -439,6 +439,19 @@ footer {
 <a class="toc-lvl-2" href="#limitations">Limitations</a>
 <a class="toc-lvl-2" href="#infrastructure-impact">Infrastructure Impact</a>
 <a class="toc-lvl-2" href="#deep-analysis-llm-extends-phase-2">Deep Analysis (llm, extends Phase 2)</a>
+<a class="toc-lvl-3" href="#0-顶层流水线-top-level-pipeline">0. 顶层流水线 (Top-level Pipeline)</a>
+<a class="toc-lvl-3" href="#1-audio-encoder-aut-attention-based-audio-transformer">1. Audio Encoder — AuT (Attention-based Audio Transformer)</a>
+<a class="toc-lvl-3" href="#2-vision-encoder-vit-deepstack-继承自-qwen3-vl-siglip2">2. Vision Encoder — ViT + DeepStack (继承自 Qwen3-VL / SigLIP2)</a>
+<a class="toc-lvl-3" href="#3-thinker-语言推理主干-moe-ar-28-层">3. Thinker — 语言推理主干（MoE AR, 28 层）</a>
+<a class="toc-lvl-3" href="#4-talker-语音主干-moe-shared-expert-ar-20-层">4. Talker — 语音主干（MoE+Shared Expert AR, 20 层）</a>
+<a class="toc-lvl-3" href="#5-code-predictor-论文中的-mtp-module-残差精修器">5. Code Predictor (论文中的 MTP Module) — 残差精修器</a>
+<a class="toc-lvl-3" href="#6-code2wav-波形渲染器-causal-convnet-200m">6. Code2Wav — 波形渲染器（Causal ConvNet, 200M）</a>
+<a class="toc-lvl-3" href="#7-设计拓扑总览-各模块维度与参数对比">7. 设计拓扑总览 — 各模块维度与参数对比</a>
+<a class="toc-lvl-3" href="#8-training-如何训出这个模型-核心章节">8. Training — 如何训出这个模型 (核心章节)</a>
+<a class="toc-lvl-3" href="#9-performance-保留原分析">9. Performance (保留原分析)</a>
+<a class="toc-lvl-3" href="#10-首包延迟路径分析-1-concurrency-audio">10. 首包延迟路径分析（1 concurrency, audio）</a>
+<a class="toc-lvl-3" href="#11-架构决策-vs-竞品">11. 架构决策 vs 竞品</a>
+<a class="toc-lvl-3" href="#12-position-in-model-landscape">12. Position in Model Landscape</a>
 <a class="toc-lvl-2" href="#open-questions">Open Questions</a>
 </nav></details></div>
 <div class="w content">
@@ -1448,374 +1461,224 @@ footer {
   &lt;/diagram&gt;
 
 &lt;/mxfile&gt;</div><div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="0" style="display:block;width:100%;aspect-ratio: 1330 / 540;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>图的 7 个页签</b>：</p>
-<p>1. <b>Top-level Pipeline</b> — 文本/音频/图像/视频 → encoders → Thinker → Talker → Code Predictor → Code2Wav 的全链路</p>
-<p>2. <b>Audio Encoder (AuT)</b> — Conv1D 下采样 + 32 层 encoder + downsample/temporal-merge/output-proj</p>
-<p>3. <b>Vision Encoder (ViT)</b> — Patch projection + 27 层 encoder + DeepStack + Group 2×2 + MLP</p>
-<p>4. <b>Thinker</b> — 28 层 MoE AR，内部展开 GQA Self-Attention 和 MoE FFN (128E top-8)</p>
-<p>5. <b>Talker</b> — 20 层 MoE+Shared AR，内部展开 GQA 和 MoE+Shared Expert (128E top-6)</p>
-<p>6. <b>Code Predictor</b> — 5 层 Dense Transformer 的单层细节 + 15 次 AR 迭代外循环</p>
-<p>7. <b>Code2Wav</b> — RVQ 嵌入 → TransposedConv upsample → Residual Blocks → Causal 输出</p>
+<p><strong>图的 7 个页签</strong>：</p>
+<ol>
+<li><strong>Top-level Pipeline</strong> — 文本/音频/图像/视频 → encoders → Thinker → Talker → Code Predictor → Code2Wav 的全链路</li>
+<li><strong>Audio Encoder (AuT)</strong> — Conv1D 下采样 + 32 层 encoder + downsample/temporal-merge/output-proj</li>
+<li><strong>Vision Encoder (ViT)</strong> — Patch projection + 27 层 encoder + DeepStack + Group 2×2 + MLP</li>
+<li><strong>Thinker</strong> — 28 层 MoE AR，内部展开 GQA Self-Attention 和 MoE FFN (128E top-8)</li>
+<li><strong>Talker</strong> — 20 层 MoE+Shared AR，内部展开 GQA 和 MoE+Shared Expert (128E top-6)</li>
+<li><strong>Code Predictor</strong> — 5 层 Dense Transformer 的单层细节 + 15 次 AR 迭代外循环</li>
+<li><strong>Code2Wav</strong> — RVQ 嵌入 → TransposedConv upsample → Residual Blocks → Causal 输出</li>
+</ol>
 <h2 id="core-contribution">Core Contribution</h2>
-<p>Qwen3-Omni 在 Thinker–Talker 架构上做了"<b>端到端把全模态流水线彻底拆分为 6 个可独立调优的专门化子模型</b>"，每个子模型的结构、维度、注意力形状、expert 数量都针对自己的角色精心定制。核心技术价值不在于"又一个多模态模型"，而在于<b>第一次把"文本推理主干 / 语音主干 / 语音残差精修器 / 波形合成器"的职责彻底解耦</b>，并在 30B-A3B 的总预算下让每个组件都恰好能在 vLLM + CUDA Graph 上跑到 RTF < 1，端到端首包延迟仅 234 ms。</p>
+<p>Qwen3-Omni 在 Thinker–Talker 架构上做了&quot;<strong>端到端把全模态流水线彻底拆分为 6 个可独立调优的专门化子模型</strong>&quot;，每个子模型的结构、维度、注意力形状、expert 数量都针对自己的角色精心定制。核心技术价值不在于&quot;又一个多模态模型&quot;，而在于<strong>第一次把&quot;文本推理主干 / 语音主干 / 语音残差精修器 / 波形合成器&quot;的职责彻底解耦</strong>，并在 30B-A3B 的总预算下让每个组件都恰好能在 vLLM + CUDA Graph 上跑到 RTF &lt; 1，端到端首包延迟仅 234 ms。</p>
 <h2 id="summary">Summary</h2>
-<p>Qwen3-Omni 的模型结构把一次 omni 推理拆成一条<b>六段流水线</b>，每段的 Transformer 骨架完全不同，维度从 2048→1024→1024 逐步收敛，token rate 从 context 级一路降到 codec 级 (12.5 Hz) 再升到音频采样率 (24 kHz)。</p>
-<p>数据流如顶部架构图第 1 页 <code>Top-level Pipeline</code> 所示：<b>Text / Audio / Image / Video 四路输入 → Tokenizer / AuT Encoder / ViT+DeepStack → Aggregate → Thinker (28L MoE AR, d=2048, 128E top-8) → Talker (20L MoE+Shared AR, d=1024, 128E top-6+Shared) → Code Predictor (5L Dense × 15 AR iters) → Code2Wav (Causal ConvNet) → Audio Output @24 kHz</b>。同时 Thinker 产出的 text token 直接对外输出。</p>
+<p>Qwen3-Omni 的模型结构把一次 omni 推理拆成一条<strong>六段流水线</strong>，每段的 Transformer 骨架完全不同，维度从 2048→1024→1024 逐步收敛，token rate 从 context 级一路降到 codec 级 (12.5 Hz) 再升到音频采样率 (24 kHz)。</p>
+<p>数据流如顶部架构图第 1 页 <code>Top-level Pipeline</code> 所示：<strong>Text / Audio / Image / Video 四路输入 → Tokenizer / AuT Encoder / ViT+DeepStack → Aggregate → Thinker (28L MoE AR, d=2048, 128E top-8) → Talker (20L MoE+Shared AR, d=1024, 128E top-6+Shared) → Code Predictor (5L Dense × 15 AR iters) → Code2Wav (Causal ConvNet) → Audio Output @24 kHz</strong>。同时 Thinker 产出的 text token 直接对外输出。</p>
 <p>六段结构分别解决：多模态感知 (AuT/ViT) → 语言推理 (Thinker) → 声学粗粒度 (Talker) → 声学细粒度残差 (Code Predictor) → 波形渲染 (Code2Wav)。每一段都写死了自己的 hidden size、head 数、GQA ratio、expert 数，使得运行时的 memory-bandwidth 占用最小，且可以在 vLLM 下用不同的批次策略独立调度。</p>
 <p>训练：S1 锁定 LLM 只训 encoder alignment；S2 全参 ~2T tokens；S3 长序列 32K。Post-training = SFT → Strong-to-Weak Distillation → GSPO。</p>
 <p>关键结果：text 超越 GPT-4o 和同规模 text-only Qwen3；36 个 audio benchmark 中 32 个开源 SOTA、22 个总体 SOTA；audio 首包 234 ms，video 首包 547 ms，1→6 并发 TPS 仅降 29%。</p>
 <h2 id="key-findings">Key Findings</h2>
 <ul>
-<li><b>六段专门化</b> — 每个子模块都有独立的 (layers, d_model, heads, kv_heads, experts) 配置，精心匹配自己的角色</li>
-<li><b>Thinker 的 GQA 比例 7:1 (28Q/4KV) + head_dim=128</b>，是本模型 KV cache 小的关键：每 token 仅 4×128×2 = 1024 个参数 vs dense 28 heads × 128 × 2 = 7168 → 节省 7×</li>
-<li><b>Talker 用 MoE + Shared-Expert 的罕见组合</b>，routed 走 128E top-6 (expert hidden=384)，shared expert (hidden=768) 始终激活并用一个 sigmoid gate 做门控，参考 DeepSeek-V2 但加入了 per-token gate</li>
-<li><b>Code Predictor 不是 MoE 也不是"一次出全部"</b> — 而是 5-layer dense transformer + 15 AR 迭代 + 15 套独立 LM head / Embedding，每轮产出一个 residual codebook token 并 append 到序列；15 套独立 head 相当于 "每层残差一个专门 classifier"</li>
-<li><b>AuT 的 Conv1D × 2 (k=3, s=2) + Temporal Merge = 8× 下采样</b> 把 100 Hz 的 mel 降到 12.5 Hz 的 token rate，恰好对齐 codec rate</li>
-<li><b>ViT 的 DeepStack</b> — 从 8/16/24 三层取出中间特征、投影到 3584 维追加给 Thinker，等于在浅、中、深三个层次都给 Thinker "看了一眼"</li>
-<li><b>无退化</b>：同 FLOPs 下，Omni-Base 在 text/vision 都 ≥ 单模态 base；audio 数据反而 +2.11 MMMU</li>
-<li><b>MoE "免疫效应"</b>：1→6 并发 TPS 仅降 29% (75→53)</li>
+<li><strong>六段专门化</strong> — 每个子模块都有独立的 (layers, d_model, heads, kv_heads, experts) 配置，精心匹配自己的角色</li>
+<li><strong>Thinker 的 GQA 比例 7:1 (28Q/4KV) + head_dim=128</strong>，是本模型 KV cache 小的关键：每 token 仅 4×128×2 = 1024 个参数 vs dense 28 heads × 128 × 2 = 7168 → 节省 7×</li>
+<li><strong>Talker 用 MoE + Shared-Expert 的罕见组合</strong>，routed 走 128E top-6 (expert hidden=384)，shared expert (hidden=768) 始终激活并用一个 sigmoid gate 做门控，参考 DeepSeek-V2 但加入了 per-token gate</li>
+<li><strong>Code Predictor 不是 MoE 也不是&quot;一次出全部&quot;</strong> — 而是 5-layer dense transformer + 15 AR 迭代 + 15 套独立 LM head / Embedding，每轮产出一个 residual codebook token 并 append 到序列；15 套独立 head 相当于 &quot;每层残差一个专门 classifier&quot;</li>
+<li><strong>AuT 的 Conv1D × 2 (k=3, s=2) + Temporal Merge = 8× 下采样</strong> 把 100 Hz 的 mel 降到 12.5 Hz 的 token rate，恰好对齐 codec rate</li>
+<li><strong>ViT 的 DeepStack</strong> — 从 8/16/24 三层取出中间特征、投影到 3584 维追加给 Thinker，等于在浅、中、深三个层次都给 Thinker &quot;看了一眼&quot;</li>
+<li><strong>无退化</strong>：同 FLOPs 下，Omni-Base 在 text/vision 都 ≥ 单模态 base；audio 数据反而 +2.11 MMMU</li>
+<li><strong>MoE &quot;免疫效应&quot;</strong>：1→6 并发 TPS 仅降 29% (75→53)</li>
 </ul>
 <h2 id="limitations">Limitations</h2>
 <ul>
 <li>Vision 长视频受限于位置外推和 context length</li>
 <li>Thinking 在 ASR/music 感知任务上反而不如 Instruct</li>
 <li>语音输出仅 10 种语言（而文本 119 种）</li>
-<li>"无退化"仅在 30B-A3B 规模验证</li>
+<li>&quot;无退化&quot;仅在 30B-A3B 规模验证</li>
 <li>Code Predictor 的 15 套 head/embed 带来一定参数冗余，未尝试 tied weights</li>
 </ul>
 <h2 id="infrastructure-impact">Infrastructure Impact</h2>
 <ul>
-<li>Algorithm: "S1 adapter-first / encoder-second" + S2W Distillation + GSPO</li>
+<li>Algorithm: &quot;S1 adapter-first / encoder-second&quot; + S2W Distillation + GSPO</li>
 <li>Kernel: GQA with QK-Norm, MoE routing (128E top-8 / top-6+shared)，Conv1D streaming, causal ConvNet</li>
 <li>Framework: vLLM chunked prefill + Thinker/Talker 异步 pipeline；CUDA Graph 加速 MTP+Code2Wav</li>
-<li>LLM: 证明 "六段专门化" 比 "一个大 backbone" 在 omni 场景下更省算力</li>
+<li>LLM: 证明 &quot;六段专门化&quot; 比 &quot;一个大 backbone&quot; 在 omni 场景下更省算力</li>
 <li>Agent: 119/19/10 语言的多语 voice agent；Thinker-Talker 解耦使 tool-call / RAG 能介入 text 路径</li>
 </ul>
-<p>---</p>
+<hr />
 <h2 id="deep-analysis-llm-extends-phase-2">Deep Analysis (llm, extends Phase 2)</h2>
-<p>本节<b>以模型结构为核心</b>展开，每个子模块按 "输入/输出维度 → 内部拓扑 → 关键设计点 → 设计初衷 (为什么这么设计)" 的四段式讨论。所有数值与 drawio (<code>[path]</code>) 严格一致，并与论文 Table 1 / Section 3 / Section 4 互相印证。</p>
+<p>本节<strong>以模型结构为核心</strong>展开，每个子模块按 &quot;输入/输出维度 → 内部拓扑 → 关键设计点 → 设计初衷 (为什么这么设计)&quot; 的四段式讨论。所有数值与 drawio (<code>[path]</code>) 严格一致，并与论文 Table 1 / Section 3 / Section 4 互相印证。</p>
 <h3 id="0-顶层流水线-top-level-pipeline">0. 顶层流水线 (Top-level Pipeline)</h3>
 <div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="0" style="display:block;width:100%;aspect-ratio: 1330 / 540;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>设计初衷</b>：传统 "单一大 LM 端到端出音频" 的做法（如 VALL-E）在高并发场景下会把 "文本推理 + 声学细节" 塞进同一个 KV cache，memory-bandwidth 立刻爆掉。Qwen3-Omni 的解法是把四个<b>计算特征截然不同的子任务</b>物理拆开：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">子任务</th><th style="text-align:left">计算形状</th><th style="text-align:left">单独调优的维度</th></tr></thead><tbody>
-<tr><td style="text-align:left">文本推理（长 context, 稀疏访存）</td><td style="text-align:left">长序列 AR</td><td style="text-align:left">Thinker: 大 d=2048, MoE 128E, GQA 7:1</td></tr>
-<tr><td style="text-align:left">声学粗粒度（短 context, 实时性强）</td><td style="text-align:left">短序列 AR, 12.5 Hz</td><td style="text-align:left">Talker: 小 d=1024, MoE+Shared, GQA 8:1</td></tr>
-<tr><td style="text-align:left">声学残差（固定 15 步，可 CUDA Graph）</td><td style="text-align:left">固定步长 AR</td><td style="text-align:left">Code Predictor: 5L dense, GQA 2:1</td></tr>
-<tr><td style="text-align:left">波形渲染（流式卷积）</td><td style="text-align:left">数据并行</td><td style="text-align:left">Code2Wav: causal ConvNet, 无 attention</td></tr>
-</tbody>
-</table></div>
-<p>这四种形状无法被同一套 hyperparameter 同时优化。六段专门化就是工程化的必然选择。</p>
-<p>---</p>
+<p><strong>设计初衷</strong>：传统 &quot;单一大 LM 端到端出音频&quot; 的做法（如 VALL-E）在高并发场景下会把 &quot;文本推理 + 声学细节&quot; 塞进同一个 KV cache，memory-bandwidth 立刻爆掉。Qwen3-Omni 的解法是把四个<strong>计算特征截然不同的子任务</strong>物理拆开：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">子任务</th><th style="text-align:left">计算形状</th><th style="text-align:left">单独调优的维度</th></tr></thead><tbody><tr><td style="text-align:left">文本推理（长 context, 稀疏访存）</td><td style="text-align:left">长序列 AR</td><td style="text-align:left">Thinker: 大 d=2048, MoE 128E, GQA 7:1</td></tr><tr><td style="text-align:left">声学粗粒度（短 context, 实时性强）</td><td style="text-align:left">短序列 AR, 12.5 Hz</td><td style="text-align:left">Talker: 小 d=1024, MoE+Shared, GQA 8:1</td></tr><tr><td style="text-align:left">声学残差（固定 15 步，可 CUDA Graph）</td><td style="text-align:left">固定步长 AR</td><td style="text-align:left">Code Predictor: 5L dense, GQA 2:1</td></tr><tr><td style="text-align:left">波形渲染（流式卷积）</td><td style="text-align:left">数据并行</td><td style="text-align:left">Code2Wav: causal ConvNet, 无 attention</td></tr></tbody></table></div><p>这四种形状无法被同一套 hyperparameter 同时优化。六段专门化就是工程化的必然选择。</p>
+<hr />
 <h3 id="1-audio-encoder-aut-attention-based-audio-transformer">1. Audio Encoder — AuT (Attention-based Audio Transformer)</h3>
-<p><b>目标</b>：把 16 kHz 原始波形 → 128 维 mel (hop 10ms → 100 Hz) → 12.5 Hz 的 token 流，每 token 3584 维，直接 concat 进 Thinker 的 input 流。</p>
+<p><strong>目标</strong>：把 16 kHz 原始波形 → 128 维 mel (hop 10ms → 100 Hz) → 12.5 Hz 的 token 流，每 token 3584 维，直接 concat 进 Thinker 的 input 流。</p>
 <div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="1" style="display:block;width:100%;aspect-ratio: 680 / 965;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>关键设计点 + 初衷</b>：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody>
-<tr><td style="text-align:left">替换 Whisper</td><td style="text-align:left">自研 AuT, 0.6B, 20M 小时</td><td style="text-align:left">Whisper 只优化 ASR 表征；AuT 训 10% audio-understanding 数据，通用音频 (音乐/环境音/情感) 更强</td></tr>
-<tr><td style="text-align:left">Conv1D×2 + Temporal Merge 下采样</td><td style="text-align:left">100 Hz → 12.5 Hz (8×)</td><td style="text-align:left">必须对齐 codec token rate 12.5 Hz，让 audio 输入和输出在同一时间粒度上，Thinker-Talker 时序对齐不需要额外转换</td></tr>
-<tr><td style="text-align:left">d=1280, heads=20, head_dim=64</td><td style="text-align:left">—</td><td style="text-align:left">Whisper-large 同配置，利于迁移现成 kernel；head_dim=64 让 flash-attn 友好</td></tr>
-<tr><td style="text-align:left">Dynamic window attention 1-8s</td><td style="text-align:left">—</td><td style="text-align:left"><b>实时 prefill cache 的必需</b>：全局 attn 无法做 block-wise streaming；固定窗口 attn 又在 offline 长音频上掉点。dynamic window 让同一组权重服务两种场景</td></tr>
-<tr><td style="text-align:left">FC expansion 4× (1280→5120)</td><td style="text-align:left">标准 FFN</td><td style="text-align:left">沿袭 Whisper encoder，不改结构以便热启动</td></tr>
-<tr><td style="text-align:left">GELU 而非 SwiGLU</td><td style="text-align:left">—</td><td style="text-align:left">音频 encoder 传统使用 GELU，Whisper 预训数据也是 GELU；换成 SwiGLU 需要重新预训，收益不匹配</td></tr>
-<tr><td style="text-align:left">Output proj 到 3584</td><td style="text-align:left">1280→480→960→3584</td><td style="text-align:left">3584 = Thinker 的"视觉-音频对齐隐层"，Thinker 在接收多模态时把所有外部模态都投到 3584 再下投到 2048</td></tr>
-</tbody>
-</table></div>
-<blockquote><b>设计初衷一句话</b>：AuT 的结构是 "Whisper-style encoder 骨架 + 12.5 Hz 强制下采样 + dynamic window attention"，每一处看起来保守的地方都是为了<b>让同一组权重既能实时 streaming 又能做 40 分钟长音频</b>。</blockquote>
-<p>---</p>
+<p><strong>关键设计点 + 初衷</strong>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody><tr><td style="text-align:left">替换 Whisper</td><td style="text-align:left">自研 AuT, 0.6B, 20M 小时</td><td style="text-align:left">Whisper 只优化 ASR 表征；AuT 训 10% audio-understanding 数据，通用音频 (音乐/环境音/情感) 更强</td></tr><tr><td style="text-align:left">Conv1D×2 + Temporal Merge 下采样</td><td style="text-align:left">100 Hz → 12.5 Hz (8×)</td><td style="text-align:left">必须对齐 codec token rate 12.5 Hz，让 audio 输入和输出在同一时间粒度上，Thinker-Talker 时序对齐不需要额外转换</td></tr><tr><td style="text-align:left">d=1280, heads=20, head_dim=64</td><td style="text-align:left">—</td><td style="text-align:left">Whisper-large 同配置，利于迁移现成 kernel；head_dim=64 让 flash-attn 友好</td></tr><tr><td style="text-align:left">Dynamic window attention 1-8s</td><td style="text-align:left">—</td><td style="text-align:left"><strong>实时 prefill cache 的必需</strong>：全局 attn 无法做 block-wise streaming；固定窗口 attn 又在 offline 长音频上掉点。dynamic window 让同一组权重服务两种场景</td></tr><tr><td style="text-align:left">FC expansion 4× (1280→5120)</td><td style="text-align:left">标准 FFN</td><td style="text-align:left">沿袭 Whisper encoder，不改结构以便热启动</td></tr><tr><td style="text-align:left">GELU 而非 SwiGLU</td><td style="text-align:left">—</td><td style="text-align:left">音频 encoder 传统使用 GELU，Whisper 预训数据也是 GELU；换成 SwiGLU 需要重新预训，收益不匹配</td></tr><tr><td style="text-align:left">Output proj 到 3584</td><td style="text-align:left">1280→480→960→3584</td><td style="text-align:left">3584 = Thinker 的&quot;视觉-音频对齐隐层&quot;，Thinker 在接收多模态时把所有外部模态都投到 3584 再下投到 2048</td></tr></tbody></table></div><blockquote>
+<p><strong>设计初衷一句话</strong>：AuT 的结构是 &quot;Whisper-style encoder 骨架 + 12.5 Hz 强制下采样 + dynamic window attention&quot;，每一处看起来保守的地方都是为了<strong>让同一组权重既能实时 streaming 又能做 40 分钟长音频</strong>。</p>
+</blockquote>
+<hr />
 <h3 id="2-vision-encoder-vit-deepstack-继承自-qwen3-vl-siglip2">2. Vision Encoder — ViT + DeepStack (继承自 Qwen3-VL / SigLIP2)</h3>
 <div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="2" style="display:block;width:100%;aspect-ratio: 710 / 770;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>关键设计点 + 初衷</b>：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody>
-<tr><td style="text-align:left">Patch dim 1536 → 工作 dim 1152</td><td style="text-align:left">约 0.75× 收缩</td><td style="text-align:left">SigLIP2 原生 dim 1152，但 patch 层输出 1536 (为跨 SigLIP1/2 兼容)；一次性投到 1152 便于沿用 SigLIP 权重</td></tr>
-<tr><td style="text-align:left"><b>head_dim = 72</b></td><td style="text-align:left">非 2 幂</td><td style="text-align:left">SigLIP2 原设计；72 = 1152/16，保留 16 heads。72 对 flash-attn 需要特殊 kernel 但已被 Triton 覆盖</td></tr>
-<tr><td style="text-align:left">FFN 4304 (不是 4608)</td><td style="text-align:left">≈ 3.74× expansion</td><td style="text-align:left">SigLIP2 原设计；非标准比例是为了让总参数落在 400M So400M 规模</td></tr>
-<tr><td style="text-align:left">SwiGLU 而非 GELU</td><td style="text-align:left">—</td><td style="text-align:left">视觉 encoder 更受益于 gated FFN；而 audio encoder 用 GELU 是热启动考虑</td></tr>
-<tr><td style="text-align:left"><b>DeepStack</b>（层 8/16/24）</td><td style="text-align:left">3 组 extra tokens</td><td style="text-align:left">不让 Thinker 只看最终层输出。浅层 (边缘/纹理) + 中层 (物体部件) + 深层 (语义) 三路信号同时喂给 Thinker，相当于 "跨层 skip 到 LM"。每组 token 独立投到 3584</td></tr>
-<tr><td style="text-align:left">Group 2×2 空间合并</td><td style="text-align:left">4× 下采样</td><td style="text-align:left">ViT 输出的 patch 数太多 (1k+)，直接塞 Thinker 会让 LM attention 成本暴涨。2×2 concat 到 4608 再投到 3584，相当于 "每 4 个 patch 合成一个 Thinker token"</td></tr>
-<tr><td style="text-align:left">同一 ViT 处理 image/video</td><td style="text-align:left">—</td><td style="text-align:left">Video 用 3D RoPE 把时间轴折叠到 2D RoPE 上，同一组权重；实现 image/video 统一</td></tr>
-</tbody>
-</table></div>
-<blockquote><b>设计初衷一句话</b>：Vision Encoder 故意保留 SigLIP2 的"奇怪维度" (head_dim=72, FFN=4304) 换来权重可以直接复用，然后通过 <b>DeepStack + 2×2 Group</b> 两个独立机制控制 "给 Thinker 的信息量" 和 "给 Thinker 的 token 数"，相当于把"表征质量"和"序列长度"两个旋钮解耦。</blockquote>
-<p>---</p>
+<p><strong>关键设计点 + 初衷</strong>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody><tr><td style="text-align:left">Patch dim 1536 → 工作 dim 1152</td><td style="text-align:left">约 0.75× 收缩</td><td style="text-align:left">SigLIP2 原生 dim 1152，但 patch 层输出 1536 (为跨 SigLIP1/2 兼容)；一次性投到 1152 便于沿用 SigLIP 权重</td></tr><tr><td style="text-align:left"><strong>head_dim = 72</strong></td><td style="text-align:left">非 2 幂</td><td style="text-align:left">SigLIP2 原设计；72 = 1152/16，保留 16 heads。72 对 flash-attn 需要特殊 kernel 但已被 Triton 覆盖</td></tr><tr><td style="text-align:left">FFN 4304 (不是 4608)</td><td style="text-align:left">≈ 3.74× expansion</td><td style="text-align:left">SigLIP2 原设计；非标准比例是为了让总参数落在 400M So400M 规模</td></tr><tr><td style="text-align:left">SwiGLU 而非 GELU</td><td style="text-align:left">—</td><td style="text-align:left">视觉 encoder 更受益于 gated FFN；而 audio encoder 用 GELU 是热启动考虑</td></tr><tr><td style="text-align:left"><strong>DeepStack</strong>（层 8/16/24）</td><td style="text-align:left">3 组 extra tokens</td><td style="text-align:left">不让 Thinker 只看最终层输出。浅层 (边缘/纹理) + 中层 (物体部件) + 深层 (语义) 三路信号同时喂给 Thinker，相当于 &quot;跨层 skip 到 LM&quot;。每组 token 独立投到 3584</td></tr><tr><td style="text-align:left">Group 2×2 空间合并</td><td style="text-align:left">4× 下采样</td><td style="text-align:left">ViT 输出的 patch 数太多 (1k+)，直接塞 Thinker 会让 LM attention 成本暴涨。2×2 concat 到 4608 再投到 3584，相当于 &quot;每 4 个 patch 合成一个 Thinker token&quot;</td></tr><tr><td style="text-align:left">同一 ViT 处理 image/video</td><td style="text-align:left">—</td><td style="text-align:left">Video 用 3D RoPE 把时间轴折叠到 2D RoPE 上，同一组权重；实现 image/video 统一</td></tr></tbody></table></div><blockquote>
+<p><strong>设计初衷一句话</strong>：Vision Encoder 故意保留 SigLIP2 的&quot;奇怪维度&quot; (head_dim=72, FFN=4304) 换来权重可以直接复用，然后通过 <strong>DeepStack + 2×2 Group</strong> 两个独立机制控制 &quot;给 Thinker 的信息量&quot; 和 &quot;给 Thinker 的 token 数&quot;，相当于把&quot;表征质量&quot;和&quot;序列长度&quot;两个旋钮解耦。</p>
+</blockquote>
+<hr />
 <h3 id="3-thinker-语言推理主干-moe-ar-28-层">3. Thinker — 语言推理主干（MoE AR, 28 层）</h3>
-<p><b>这是整个模型的"大脑"，结构最大，设计最精细</b>。drawio 的 Thinker 页包含三张子图：4.1 顶层 forward pass / 4.2 GQA Self-Attention 内部 / 4.3 MoE FFN (128E top-8) 内部，滚轮缩放可同时看到所有维度标注。</p>
+<p><strong>这是整个模型的&quot;大脑&quot;，结构最大，设计最精细</strong>。drawio 的 Thinker 页包含三张子图：4.1 顶层 forward pass / 4.2 GQA Self-Attention 内部 / 4.3 MoE FFN (128E top-8) 内部，滚轮缩放可同时看到所有维度标注。</p>
 <div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="3" style="display:block;width:100%;aspect-ratio: 750 / 970;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>关键设计点 + 初衷</b>：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody>
-<tr><td style="text-align:left"><b>28 层, d=2048</b></td><td style="text-align:left">总激活 3B</td><td style="text-align:left">保持与 Qwen3-30B-A3B dense checkpoint 同骨架，便于权重热启动；d=2048 而非 d=3584 是为了 MoE 版本能通过加 expert 横向扩展</td></tr>
-<tr><td style="text-align:left"><b>GQA 28Q / 4 KV, head_dim=128</b></td><td style="text-align:left">KV cache = 4·128·2 = 1024 / tok</td><td style="text-align:left">关键数字。若改 dense MHA 28 heads，则 KV cache = 28·128·2 = 7168，在 4K 序列下内存带宽瞬间爆炸。<b>7:1 的 GQA 比例</b> 是实验选出的 "质量-带宽" 最佳点（DeepSeek-V3 用 1:1 MLA 更激进但 kernel 复杂度高）</td></tr>
-<tr><td style="text-align:left"><b>QK-Norm</b> per head</td><td style="text-align:left">RMSNorm(128) on Q, K</td><td style="text-align:left">Qwen3 引入。训练 30B+ 模型时 attention logits 容易发散；在 softmax 前对 Q, K 各自 RMS 归一，相当于把 attention score 限制到稳定范围。代价：多一次 per-head RMSNorm，但 fused kernel 下可忽略</td></tr>
-<tr><td style="text-align:left"><b>vocab 152 064</b></td><td style="text-align:left">多语 BPE</td><td style="text-align:left">151 643 regular + ~400 special (包含 audio/image/video 分隔符 token)，与 Qwen3 同</td></tr>
-<tr><td style="text-align:left"><b>MoE 128E, top-8</b></td><td style="text-align:left">稀疏 6.25%</td><td style="text-align:left">128E 提供足够表达力；top-8 比 top-2 更稳 (8 个专家加权投票)；实测和 dense 30B 性能持平</td></tr>
-<tr><td style="text-align:left"><b>Expert hidden=768</b>（非 2 幂）</td><td style="text-align:left">expert FFN = 2048·768·3 ≈ 4.7M</td><td style="text-align:left">128 个 expert × 4.7M = 600M per MoE FFN，28 层 × 600M ≈ 17B (MoE FFN 总参)。若 expert hidden 更大则总参爆炸。<b>选 768 是"在 30B 总预算下能放下 128 个 expert 的最大单 expert 尺寸"</b></td></tr>
-<tr><td style="text-align:left"><b>layer-24 hidden → Talker</b></td><td style="text-align:left">tap 在倒数第 4 层</td><td style="text-align:left">不是最后一层而是 layer 24 (倒数第 4 层)。直觉：最后几层专注 text logits，倒数第 4 层的 hidden 保留更多语义丰富度，更适合作 Talker 的语义 conditioning</td></tr>
-<tr><td style="text-align:left"><b>"早期多模态混入"训练</b></td><td style="text-align:left">S2 起就混 text/audio/image/vid</td><td style="text-align:left">不是后期 fine-tuning 加多模态，而是 pretraining 阶段就混。这让 Thinker 的 representation space 天然支持多模态，也是 "无退化" 的关键</td></tr>
-</tbody>
-</table></div>
-<blockquote><b>设计初衷一句话</b>：Thinker 的每一个维度选择都指向同一个目标——<b>让一个 30B 的 MoE 模型在 vLLM 下处理 4K-32K context 时，KV cache IO 不超过 dense 3B 的水平，同时用 top-8 稀疏激活抵消 dense-MoE 的质量损失</b>。</blockquote>
-<p>---</p>
+<p><strong>关键设计点 + 初衷</strong>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody><tr><td style="text-align:left"><strong>28 层, d=2048</strong></td><td style="text-align:left">总激活 3B</td><td style="text-align:left">保持与 Qwen3-30B-A3B dense checkpoint 同骨架，便于权重热启动；d=2048 而非 d=3584 是为了 MoE 版本能通过加 expert 横向扩展</td></tr><tr><td style="text-align:left"><strong>GQA 28Q / 4 KV, head_dim=128</strong></td><td style="text-align:left">KV cache = 4·128·2 = 1024 / tok</td><td style="text-align:left">关键数字。若改 dense MHA 28 heads，则 KV cache = 28·128·2 = 7168，在 4K 序列下内存带宽瞬间爆炸。<strong>7:1 的 GQA 比例</strong> 是实验选出的 &quot;质量-带宽&quot; 最佳点（DeepSeek-V3 用 1:1 MLA 更激进但 kernel 复杂度高）</td></tr><tr><td style="text-align:left"><strong>QK-Norm</strong> per head</td><td style="text-align:left">RMSNorm(128) on Q, K</td><td style="text-align:left">Qwen3 引入。训练 30B+ 模型时 attention logits 容易发散；在 softmax 前对 Q, K 各自 RMS 归一，相当于把 attention score 限制到稳定范围。代价：多一次 per-head RMSNorm，但 fused kernel 下可忽略</td></tr><tr><td style="text-align:left"><strong>vocab 152 064</strong></td><td style="text-align:left">多语 BPE</td><td style="text-align:left">151 643 regular + ~400 special (包含 audio/image/video 分隔符 token)，与 Qwen3 同</td></tr><tr><td style="text-align:left"><strong>MoE 128E, top-8</strong></td><td style="text-align:left">稀疏 6.25%</td><td style="text-align:left">128E 提供足够表达力；top-8 比 top-2 更稳 (8 个专家加权投票)；实测和 dense 30B 性能持平</td></tr><tr><td style="text-align:left"><strong>Expert hidden=768</strong>（非 2 幂）</td><td style="text-align:left">expert FFN = 2048·768·3 ≈ 4.7M</td><td style="text-align:left">128 个 expert × 4.7M = 600M per MoE FFN，28 层 × 600M ≈ 17B (MoE FFN 总参)。若 expert hidden 更大则总参爆炸。<strong>选 768 是&quot;在 30B 总预算下能放下 128 个 expert 的最大单 expert 尺寸&quot;</strong></td></tr><tr><td style="text-align:left"><strong>layer-24 hidden → Talker</strong></td><td style="text-align:left">tap 在倒数第 4 层</td><td style="text-align:left">不是最后一层而是 layer 24 (倒数第 4 层)。直觉：最后几层专注 text logits，倒数第 4 层的 hidden 保留更多语义丰富度，更适合作 Talker 的语义 conditioning</td></tr><tr><td style="text-align:left"><strong>&quot;早期多模态混入&quot;训练</strong></td><td style="text-align:left">S2 起就混 text/audio/image/vid</td><td style="text-align:left">不是后期 fine-tuning 加多模态，而是 pretraining 阶段就混。这让 Thinker 的 representation space 天然支持多模态，也是 &quot;无退化&quot; 的关键</td></tr></tbody></table></div><blockquote>
+<p><strong>设计初衷一句话</strong>：Thinker 的每一个维度选择都指向同一个目标——<strong>让一个 30B 的 MoE 模型在 vLLM 下处理 4K-32K context 时，KV cache IO 不超过 dense 3B 的水平，同时用 top-8 稀疏激活抵消 dense-MoE 的质量损失</strong>。</p>
+</blockquote>
+<hr />
 <h3 id="4-talker-语音主干-moe-shared-expert-ar-20-层">4. Talker — 语音主干（MoE+Shared Expert AR, 20 层）</h3>
-<p><b>Talker 只预测 RVQ 的 zeroth codebook 和流式 hidden，其他 15 个 residual codebook 交给 Code Predictor</b>。这是 Qwen3-Omni 和 VALL-E / Moshi 最根本的区别——Talker 只做"粗粒度声学语义"，不负责全频带细节。drawio 的 Talker 页包含三张子图：5.1 顶层数据流（三路输入融合 + 20 层 + Codec Head）/ 5.2 GQA Self-Attention (16Q/2KV) / 5.3 MoE + Shared Expert (routed 128E top-6 + shared + sigmoid gate)。</p>
+<p><strong>Talker 只预测 RVQ 的 zeroth codebook 和流式 hidden，其他 15 个 residual codebook 交给 Code Predictor</strong>。这是 Qwen3-Omni 和 VALL-E / Moshi 最根本的区别——Talker 只做&quot;粗粒度声学语义&quot;，不负责全频带细节。drawio 的 Talker 页包含三张子图：5.1 顶层数据流（三路输入融合 + 20 层 + Codec Head）/ 5.2 GQA Self-Attention (16Q/2KV) / 5.3 MoE + Shared Expert (routed 128E top-6 + shared + sigmoid gate)。</p>
 <div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="4" style="display:block;width:100%;aspect-ratio: 790 / 1155;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>关键设计点 + 初衷</b>：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody>
-<tr><td style="text-align:left"><b>d=1024（Thinker 的一半）</b></td><td style="text-align:left">激活参数 ~0.3B</td><td style="text-align:left">语音粗粒度 token 只需要覆盖韵律/情感/说话人，维度需求远小于语言推理。把 d 降一半意味着 KV cache/FLOPs 都降 4×</td></tr>
-<tr><td style="text-align:left"><b>GQA 16Q / 2 KV</b></td><td style="text-align:left">KV cache = 2·128·2 = 512 / tok</td><td style="text-align:left">比 Thinker 的 GQA 还激进 (8:1)。原因：Talker 的 context 短 (单次对话几秒钟语音), KV cache IO 对质量影响小，激进 GQA 换来吞吐</td></tr>
-<tr><td style="text-align:left"><b>三路输入加性融合</b>（text / hidden / codec_embed）</td><td style="text-align:left">都投到 1024 后求和</td><td style="text-align:left">text 项提供语义；hidden 项提供语义 + 韵律连续性；codec_embed 项提供自回归上下文 (上一个 code)。<b>不用 concat 而用 sum 是为了固定 context 宽度</b> (concat 会让 d=3072)</td></tr>
-<tr><td style="text-align:left"><b>文本路径先经 SiLU</b> 再投到 1024</td><td style="text-align:left">Lin→SiLU→Lin</td><td style="text-align:left">先非线性再投影，避免 text hidden 的分布直接污染 codec 空间</td></tr>
-<tr><td style="text-align:left"><b>Codec Embedding vocab=3072</b></td><td style="text-align:left">16 codebook × 192 index?</td><td style="text-align:left">每个 codec 层可能有 192 or 3072/16=192 codes (多 codebook 共享 embedding table)。Embed dim 1024 直接对齐主干</td></tr>
-<tr><td style="text-align:left"><b>MoE 128E top-6</b></td><td style="text-align:left">激进 6/128=4.7% 稀疏</td><td style="text-align:left">top-6 比 Thinker 的 top-8 更稀：语音生成对 expert 多样性需求低，6 已足够</td></tr>
-<tr><td style="text-align:left"><b>Routed expert hidden=384, Shared expert hidden=768</b></td><td style="text-align:left">shared 2× 大</td><td style="text-align:left">routed expert 专注 "高频变化" (说话人切换、语气剧烈波动)，数量多但每个小；shared expert 承担 "总是要做的基础声学变换"（RMSNorm-style baseline），一个就够但要大</td></tr>
-<tr><td style="text-align:left"><b>Shared Gate 用 sigmoid 而非恒 1</b></td><td style="text-align:left">per-token</td><td style="text-align:left">DeepSeek-V2 的 shared expert 恒定权重；Qwen3-Omni 加 learnable per-token sigmoid gate。<b>初衷</b>：在某些 token (如 padding, silence) 让 shared 也被部分关闭，省 FLOPs；同时给模型一个 "我现在需不需要 baseline 修正" 的选择权</td></tr>
-<tr><td style="text-align:left"><b>Codec Head 1024→3072</b></td><td style="text-align:left">输出 zeroth codebook logits</td><td style="text-align:left">3072 = codec codebook size (每个 codebook 的 code 数)。<b>只预测 codebook 0</b>，其余 1-15 交给 Code Predictor</td></tr>
-</tbody>
-</table></div>
-<blockquote><b>设计初衷一句话</b>：Talker 是"<b>为 12.5 Hz streaming 定制的迷你 MoE</b>" — 激进的 GQA 8:1 + 三路输入求和 + MoE+Shared 组合让它既能以 140 tok/s 的速度生成 zeroth code，又能对 Thinker 语义保持忠实。</blockquote>
-<p>---</p>
+<p><strong>关键设计点 + 初衷</strong>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody><tr><td style="text-align:left"><strong>d=1024（Thinker 的一半）</strong></td><td style="text-align:left">激活参数 ~0.3B</td><td style="text-align:left">语音粗粒度 token 只需要覆盖韵律/情感/说话人，维度需求远小于语言推理。把 d 降一半意味着 KV cache/FLOPs 都降 4×</td></tr><tr><td style="text-align:left"><strong>GQA 16Q / 2 KV</strong></td><td style="text-align:left">KV cache = 2·128·2 = 512 / tok</td><td style="text-align:left">比 Thinker 的 GQA 还激进 (8:1)。原因：Talker 的 context 短 (单次对话几秒钟语音), KV cache IO 对质量影响小，激进 GQA 换来吞吐</td></tr><tr><td style="text-align:left"><strong>三路输入加性融合</strong>（text / hidden / codec_embed）</td><td style="text-align:left">都投到 1024 后求和</td><td style="text-align:left">text 项提供语义；hidden 项提供语义 + 韵律连续性；codec_embed 项提供自回归上下文 (上一个 code)。<strong>不用 concat 而用 sum 是为了固定 context 宽度</strong> (concat 会让 d=3072)</td></tr><tr><td style="text-align:left"><strong>文本路径先经 SiLU</strong> 再投到 1024</td><td style="text-align:left">Lin→SiLU→Lin</td><td style="text-align:left">先非线性再投影，避免 text hidden 的分布直接污染 codec 空间</td></tr><tr><td style="text-align:left"><strong>Codec Embedding vocab=3072</strong></td><td style="text-align:left">16 codebook × 192 index?</td><td style="text-align:left">每个 codec 层可能有 192 or 3072/16=192 codes (多 codebook 共享 embedding table)。Embed dim 1024 直接对齐主干</td></tr><tr><td style="text-align:left"><strong>MoE 128E top-6</strong></td><td style="text-align:left">激进 6/128=4.7% 稀疏</td><td style="text-align:left">top-6 比 Thinker 的 top-8 更稀：语音生成对 expert 多样性需求低，6 已足够</td></tr><tr><td style="text-align:left"><strong>Routed expert hidden=384, Shared expert hidden=768</strong></td><td style="text-align:left">shared 2× 大</td><td style="text-align:left">routed expert 专注 &quot;高频变化&quot; (说话人切换、语气剧烈波动)，数量多但每个小；shared expert 承担 &quot;总是要做的基础声学变换&quot;（RMSNorm-style baseline），一个就够但要大</td></tr><tr><td style="text-align:left"><strong>Shared Gate 用 sigmoid 而非恒 1</strong></td><td style="text-align:left">per-token</td><td style="text-align:left">DeepSeek-V2 的 shared expert 恒定权重；Qwen3-Omni 加 learnable per-token sigmoid gate。<strong>初衷</strong>：在某些 token (如 padding, silence) 让 shared 也被部分关闭，省 FLOPs；同时给模型一个 &quot;我现在需不需要 baseline 修正&quot; 的选择权</td></tr><tr><td style="text-align:left"><strong>Codec Head 1024→3072</strong></td><td style="text-align:left">输出 zeroth codebook logits</td><td style="text-align:left">3072 = codec codebook size (每个 codebook 的 code 数)。<strong>只预测 codebook 0</strong>，其余 1-15 交给 Code Predictor</td></tr></tbody></table></div><blockquote>
+<p><strong>设计初衷一句话</strong>：Talker 是&quot;<strong>为 12.5 Hz streaming 定制的迷你 MoE</strong>&quot; — 激进的 GQA 8:1 + 三路输入求和 + MoE+Shared 组合让它既能以 140 tok/s 的速度生成 zeroth code，又能对 Thinker 语义保持忠实。</p>
+</blockquote>
+<hr />
 <h3 id="5-code-predictor-论文中的-mtp-module-残差精修器">5. Code Predictor (论文中的 MTP Module) — 残差精修器</h3>
-<p><b>这是最容易被误解的模块</b>。论文叫 "MTP" (Multi-Token Prediction)，但它既不是 DeepSeek-V3 的 MTP（那是训练 trick），也不是"一次出全部 residuals"的并行 head，而是一个<b>5 层 dense transformer 跑 15 次 AR 迭代、每次用一套独立的 head/embed 预测一个 residual codebook 的模块</b>。这个设计在 drawio 里命名得更准确，叫 "Code Predictor"。drawio 的 Code Predictor 页包含两张子图：6.1 外循环（15 AR 迭代 + 15 套独立 LM head / embed）/ 6.2 单层 Dense Transformer 内部 (GQA 16Q/8KV + SwiGLU FFN 1024→3072)。</p>
+<p><strong>这是最容易被误解的模块</strong>。论文叫 &quot;MTP&quot; (Multi-Token Prediction)，但它既不是 DeepSeek-V3 的 MTP（那是训练 trick），也不是&quot;一次出全部 residuals&quot;的并行 head，而是一个<strong>5 层 dense transformer 跑 15 次 AR 迭代、每次用一套独立的 head/embed 预测一个 residual codebook 的模块</strong>。这个设计在 drawio 里命名得更准确，叫 &quot;Code Predictor&quot;。drawio 的 Code Predictor 页包含两张子图：6.1 外循环（15 AR 迭代 + 15 套独立 LM head / embed）/ 6.2 单层 Dense Transformer 内部 (GQA 16Q/8KV + SwiGLU FFN 1024→3072)。</p>
 <div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="5" style="display:block;width:100%;aspect-ratio: 750 / 1125;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>关键设计点 + 初衷</b>：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody>
-<tr><td style="text-align:left"><b>5 层 dense (不是 MoE)</b></td><td style="text-align:left">总参 ~80M</td><td style="text-align:left"><b>残差精修不需要 expert 多样性</b> — 每一步都是"把上一个 residual 细化一点"，属于高度结构化的任务；dense 简单、fixed KV cache 可 CUDA Graph，单帧 14ms</td></tr>
-<tr><td style="text-align:left"><b>GQA 16Q / 8 KV</b></td><td style="text-align:left">2:1</td><td style="text-align:left">序列极短 (最多 17 = 1 talker_hidden + 16 codes)，KV cache 不是瓶颈；GQA 2:1 换来每 head 的 K,V 更丰富，提升质量</td></tr>
-<tr><td style="text-align:left"><b>15 套独立 LM Head / Embedding</b></td><td style="text-align:left">共 15×(1024×2048 + 2048×1024) ≈ 63M</td><td style="text-align:left">每个 residual codebook 的分布不同（codebook 1 编码大尺度声学细节，codebook 15 编码最细粒度噪声纹理）。<b>共享 head 会导致靠后 codebook 质量塌陷</b>；独立 head + 独立 embed table 是必需的</td></tr>
-<tr><td style="text-align:left"><b>15 次 AR 迭代 (固定步长)</b></td><td style="text-align:left">每次输入长度 = 2 + i</td><td style="text-align:left">固定步长 → 可以 CUDA Graph 优化 → 实测 14ms/frame；若并行预测所有 15 个 codebook（如 SoundStream），质量大幅下降因为 codebook 间存在强依赖</td></tr>
-<tr><td style="text-align:left"><b>summed_embed 反馈给 Talker</b></td><td style="text-align:left">16 codebook embed 加和</td><td style="text-align:left">Talker 下一步需要完整的"上一帧 codec 全貌"才能继续 AR；从 Code Predictor 把 16 个 code 的 embedding 求和后送回 Talker，闭环</td></tr>
-<tr><td style="text-align:left"><b>KV cache 完全内部使用</b></td><td style="text-align:left">每帧重置</td><td style="text-align:left">Code Predictor 的 KV cache 只在单帧 15 轮 AR 内有效，每帧结束清空；因此可以用 CUDA Graph 固定 shape，完全没有动态内存分配</td></tr>
-</tbody>
-</table></div>
-<blockquote><b>设计初衷一句话</b>：Code Predictor 是一个<b>"为 fixed-step CUDA Graph 定制的残差 AR 模块"</b> — 5 层 dense + 15 套独立 head + 每帧 reset KV cache，这三个设计的共同目标就是让单帧 residual 生成的延迟控制在 20 ms 以内、且可以用 batch_size=N_concurrent 批处理。</blockquote>
-<p><b>关于"MTP"的命名</b>：论文使用 "Multi-Token Prediction" 的说法，但这里的 "multi-token" 指"一帧内多个 codebook token"（而非 DeepSeek-V3 MTP 中的"跨时间步多 token"），含义截然不同，初读时极易混淆。drawio 用 "Code Predictor" 更准确。</p>
-<p>---</p>
+<p><strong>关键设计点 + 初衷</strong>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody><tr><td style="text-align:left"><strong>5 层 dense (不是 MoE)</strong></td><td style="text-align:left">总参 ~80M</td><td style="text-align:left"><strong>残差精修不需要 expert 多样性</strong> — 每一步都是&quot;把上一个 residual 细化一点&quot;，属于高度结构化的任务；dense 简单、fixed KV cache 可 CUDA Graph，单帧 14ms</td></tr><tr><td style="text-align:left"><strong>GQA 16Q / 8 KV</strong></td><td style="text-align:left">2:1</td><td style="text-align:left">序列极短 (最多 17 = 1 talker_hidden + 16 codes)，KV cache 不是瓶颈；GQA 2:1 换来每 head 的 K,V 更丰富，提升质量</td></tr><tr><td style="text-align:left"><strong>15 套独立 LM Head / Embedding</strong></td><td style="text-align:left">共 15×(1024×2048 + 2048×1024) ≈ 63M</td><td style="text-align:left">每个 residual codebook 的分布不同（codebook 1 编码大尺度声学细节，codebook 15 编码最细粒度噪声纹理）。<strong>共享 head 会导致靠后 codebook 质量塌陷</strong>；独立 head + 独立 embed table 是必需的</td></tr><tr><td style="text-align:left"><strong>15 次 AR 迭代 (固定步长)</strong></td><td style="text-align:left">每次输入长度 = 2 + i</td><td style="text-align:left">固定步长 → 可以 CUDA Graph 优化 → 实测 14ms/frame；若并行预测所有 15 个 codebook（如 SoundStream），质量大幅下降因为 codebook 间存在强依赖</td></tr><tr><td style="text-align:left"><strong>summed_embed 反馈给 Talker</strong></td><td style="text-align:left">16 codebook embed 加和</td><td style="text-align:left">Talker 下一步需要完整的&quot;上一帧 codec 全貌&quot;才能继续 AR；从 Code Predictor 把 16 个 code 的 embedding 求和后送回 Talker，闭环</td></tr><tr><td style="text-align:left"><strong>KV cache 完全内部使用</strong></td><td style="text-align:left">每帧重置</td><td style="text-align:left">Code Predictor 的 KV cache 只在单帧 15 轮 AR 内有效，每帧结束清空；因此可以用 CUDA Graph 固定 shape，完全没有动态内存分配</td></tr></tbody></table></div><blockquote>
+<p><strong>设计初衷一句话</strong>：Code Predictor 是一个<strong>&quot;为 fixed-step CUDA Graph 定制的残差 AR 模块&quot;</strong> — 5 层 dense + 15 套独立 head + 每帧 reset KV cache，这三个设计的共同目标就是让单帧 residual 生成的延迟控制在 20 ms 以内、且可以用 batch_size=N_concurrent 批处理。</p>
+</blockquote>
+<p><strong>关于&quot;MTP&quot;的命名</strong>：论文使用 &quot;Multi-Token Prediction&quot; 的说法，但这里的 &quot;multi-token&quot; 指&quot;一帧内多个 codebook token&quot;（而非 DeepSeek-V3 MTP 中的&quot;跨时间步多 token&quot;），含义截然不同，初读时极易混淆。drawio 用 &quot;Code Predictor&quot; 更准确。</p>
+<hr />
 <h3 id="6-code2wav-波形渲染器-causal-convnet-200m">6. Code2Wav — 波形渲染器（Causal ConvNet, 200M）</h3>
 <div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-qwen3-omni-model-arch-drawio" data-page="6" style="display:block;width:100%;aspect-ratio: 270 / 580;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/qwen3_omni_model_arch.drawio" download>下载 .drawio</a></p></div>
-<p><b>关键设计点 + 初衷</b>：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody>
-<tr><td style="text-align:left"><b>Causal ConvNet 替代 DiT</b></td><td style="text-align:left">200M</td><td style="text-align:left">DiT vocoder 需要 block context (e.g. 8 帧=640 ms) 才能开始合成；Causal Conv 只需 1 帧即可产生输出。<b>首包延迟从 640ms+ 降到 ~3ms</b></td></tr>
-<tr><td style="text-align:left"><b>16 个 embedding 加和</b></td><td style="text-align:left">不是 concat</td><td style="text-align:left">concat 会让后续 conv 通道数爆炸；加和使 conv 看到的通道始终固定</td></tr>
-<tr><td style="text-align:left"><b>多阶段 TransposedConv</b></td><td style="text-align:left">~6 stages</td><td style="text-align:left">12.5 Hz → 24 kHz 需要 1920× 上采样；分多阶段 (2× 2× 2× 3× 5× 4×=480× 或类似) 让每阶段只做温和放大，避免棋盘伪影</td></tr>
-<tr><td style="text-align:left"><b>Residual Blocks (HiFi-GAN style)</b></td><td style="text-align:left">Conv1d + activation + skip</td><td style="text-align:left">成熟的 vocoder 结构，hardware-accelerated 在各平台都可跑</td></tr>
-<tr><td style="text-align:left"><b>Left-context-only (25 帧)</b></td><td style="text-align:left">仅左向依赖</td><td style="text-align:left">streaming 时不能依赖未来，每次多算 25 帧作为 "causal padding"，输出时裁掉这 25 帧</td></tr>
-<tr><td style="text-align:left"><b>chunk_size = 10</b></td><td style="text-align:left">每 10 frame (~800ms) 输出</td><td style="text-align:left">不是每帧立刻输出 PCM（会让 IO 碎片化），而是累积 10 帧后打包；同时保持"首包仍 234ms"（首包只输出 1 chunk）</td></tr>
-</tbody>
-</table></div>
-<blockquote><b>设计初衷一句话</b>：Code2Wav 的本质是"<b>用 ConvNet 的 streaming 友好性换掉 DiT 的质量优势</b>"— 论文承认音质略逊，但论文强调延迟收益远超质量代价。</blockquote>
-<p>---</p>
+<p><strong>关键设计点 + 初衷</strong>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">设计点</th><th style="text-align:left">数值</th><th style="text-align:left">为什么这么设计</th></tr></thead><tbody><tr><td style="text-align:left"><strong>Causal ConvNet 替代 DiT</strong></td><td style="text-align:left">200M</td><td style="text-align:left">DiT vocoder 需要 block context (e.g. 8 帧=640 ms) 才能开始合成；Causal Conv 只需 1 帧即可产生输出。<strong>首包延迟从 640ms+ 降到 ~3ms</strong></td></tr><tr><td style="text-align:left"><strong>16 个 embedding 加和</strong></td><td style="text-align:left">不是 concat</td><td style="text-align:left">concat 会让后续 conv 通道数爆炸；加和使 conv 看到的通道始终固定</td></tr><tr><td style="text-align:left"><strong>多阶段 TransposedConv</strong></td><td style="text-align:left">~6 stages</td><td style="text-align:left">12.5 Hz → 24 kHz 需要 1920× 上采样；分多阶段 (2× 2× 2× 3× 5× 4×=480× 或类似) 让每阶段只做温和放大，避免棋盘伪影</td></tr><tr><td style="text-align:left"><strong>Residual Blocks (HiFi-GAN style)</strong></td><td style="text-align:left">Conv1d + activation + skip</td><td style="text-align:left">成熟的 vocoder 结构，hardware-accelerated 在各平台都可跑</td></tr><tr><td style="text-align:left"><strong>Left-context-only (25 帧)</strong></td><td style="text-align:left">仅左向依赖</td><td style="text-align:left">streaming 时不能依赖未来，每次多算 25 帧作为 &quot;causal padding&quot;，输出时裁掉这 25 帧</td></tr><tr><td style="text-align:left"><strong>chunk_size = 10</strong></td><td style="text-align:left">每 10 frame (~800ms) 输出</td><td style="text-align:left">不是每帧立刻输出 PCM（会让 IO 碎片化），而是累积 10 帧后打包；同时保持&quot;首包仍 234ms&quot;（首包只输出 1 chunk）</td></tr></tbody></table></div><blockquote>
+<p><strong>设计初衷一句话</strong>：Code2Wav 的本质是&quot;<strong>用 ConvNet 的 streaming 友好性换掉 DiT 的质量优势</strong>&quot;— 论文承认音质略逊，但论文强调延迟收益远超质量代价。</p>
+</blockquote>
+<hr />
 <h3 id="7-设计拓扑总览-各模块维度与参数对比">7. 设计拓扑总览 — 各模块维度与参数对比</h3>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">模块</th><th style="text-align:right">层数</th><th style="text-align:right">d_model</th><th style="text-align:right">heads</th><th style="text-align:left">kv_heads</th><th style="text-align:right">head_dim</th><th style="text-align:left">FFN / Expert</th><th style="text-align:left">专家</th><th style="text-align:left">参数量 (估)</th><th style="text-align:left">KV cache / token</th></tr></thead><tbody>
-<tr><td style="text-align:left">AuT Encoder</td><td style="text-align:right">32</td><td style="text-align:right">1280</td><td style="text-align:right">20</td><td style="text-align:left">20 (MHA)</td><td style="text-align:right">64</td><td style="text-align:left">5120 (GELU)</td><td style="text-align:left">—</td><td style="text-align:left">0.6B</td><td style="text-align:left">20·64·2 = 2560</td></tr>
-<tr><td style="text-align:left">Vision ViT</td><td style="text-align:right">27</td><td style="text-align:right">1152</td><td style="text-align:right">16</td><td style="text-align:left">16 (MHA)</td><td style="text-align:right">72</td><td style="text-align:left">4304 (SwiGLU)</td><td style="text-align:left">—</td><td style="text-align:left">0.54B</td><td style="text-align:left">16·72·2 = 2304</td></tr>
-<tr><td style="text-align:left"><b>Thinker</b></td><td style="text-align:right"><b>28</b></td><td style="text-align:right"><b>2048</b></td><td style="text-align:right"><b>28</b></td><td style="text-align:left"><b>4</b></td><td style="text-align:right"><b>128</b></td><td style="text-align:left"><b>768 (SwiGLU)</b></td><td style="text-align:left"><b>128E top-8</b></td><td style="text-align:left"><b>30B (3B active)</b></td><td style="text-align:left"><b>4·128·2 = 1024</b></td></tr>
-<tr><td style="text-align:left"><b>Talker</b></td><td style="text-align:right"><b>20</b></td><td style="text-align:right"><b>1024</b></td><td style="text-align:right"><b>16</b></td><td style="text-align:left"><b>2</b></td><td style="text-align:right"><b>128</b></td><td style="text-align:left"><b>routed 384 / shared 768</b></td><td style="text-align:left"><b>128E top-6 + Shared</b></td><td style="text-align:left"><b>3B (0.3B active)</b></td><td style="text-align:left"><b>2·128·2 = 512</b></td></tr>
-<tr><td style="text-align:left">Code Predictor</td><td style="text-align:right">5</td><td style="text-align:right">1024</td><td style="text-align:right">16</td><td style="text-align:left">8</td><td style="text-align:right">128</td><td style="text-align:left">3072 (SwiGLU)</td><td style="text-align:left">—</td><td style="text-align:left">80M</td><td style="text-align:left">8·128·2 = 2048</td></tr>
-<tr><td style="text-align:left">Code2Wav</td><td style="text-align:right">—</td><td style="text-align:right">Conv</td><td style="text-align:right">—</td><td style="text-align:left">—</td><td style="text-align:right">—</td><td style="text-align:left">—</td><td style="text-align:left">—</td><td style="text-align:left">200M</td><td style="text-align:left">—</td></tr>
-</tbody>
-</table></div>
-<p><b>跨模块规律</b>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">模块</th><th style="text-align:right">层数</th><th style="text-align:right">d_model</th><th style="text-align:right">heads</th><th style="text-align:left">kv_heads</th><th style="text-align:right">head_dim</th><th style="text-align:left">FFN / Expert</th><th style="text-align:left">专家</th><th style="text-align:left">参数量 (估)</th><th style="text-align:left">KV cache / token</th></tr></thead><tbody><tr><td style="text-align:left">AuT Encoder</td><td style="text-align:right">32</td><td style="text-align:right">1280</td><td style="text-align:right">20</td><td style="text-align:left">20 (MHA)</td><td style="text-align:right">64</td><td style="text-align:left">5120 (GELU)</td><td style="text-align:left">—</td><td style="text-align:left">0.6B</td><td style="text-align:left">20·64·2 = 2560</td></tr><tr><td style="text-align:left">Vision ViT</td><td style="text-align:right">27</td><td style="text-align:right">1152</td><td style="text-align:right">16</td><td style="text-align:left">16 (MHA)</td><td style="text-align:right">72</td><td style="text-align:left">4304 (SwiGLU)</td><td style="text-align:left">—</td><td style="text-align:left">0.54B</td><td style="text-align:left">16·72·2 = 2304</td></tr><tr><td style="text-align:left"><strong>Thinker</strong></td><td style="text-align:right"><strong>28</strong></td><td style="text-align:right"><strong>2048</strong></td><td style="text-align:right"><strong>28</strong></td><td style="text-align:left"><strong>4</strong></td><td style="text-align:right"><strong>128</strong></td><td style="text-align:left"><strong>768 (SwiGLU)</strong></td><td style="text-align:left"><strong>128E top-8</strong></td><td style="text-align:left"><strong>30B (3B active)</strong></td><td style="text-align:left"><strong>4·128·2 = 1024</strong></td></tr><tr><td style="text-align:left"><strong>Talker</strong></td><td style="text-align:right"><strong>20</strong></td><td style="text-align:right"><strong>1024</strong></td><td style="text-align:right"><strong>16</strong></td><td style="text-align:left"><strong>2</strong></td><td style="text-align:right"><strong>128</strong></td><td style="text-align:left"><strong>routed 384 / shared 768</strong></td><td style="text-align:left"><strong>128E top-6 + Shared</strong></td><td style="text-align:left"><strong>3B (0.3B active)</strong></td><td style="text-align:left"><strong>2·128·2 = 512</strong></td></tr><tr><td style="text-align:left">Code Predictor</td><td style="text-align:right">5</td><td style="text-align:right">1024</td><td style="text-align:right">16</td><td style="text-align:left">8</td><td style="text-align:right">128</td><td style="text-align:left">3072 (SwiGLU)</td><td style="text-align:left">—</td><td style="text-align:left">80M</td><td style="text-align:left">8·128·2 = 2048</td></tr><tr><td style="text-align:left">Code2Wav</td><td style="text-align:right">—</td><td style="text-align:right">Conv</td><td style="text-align:right">—</td><td style="text-align:left">—</td><td style="text-align:right">—</td><td style="text-align:left">—</td><td style="text-align:left">—</td><td style="text-align:left">200M</td><td style="text-align:left">—</td></tr></tbody></table></div><p><strong>跨模块规律</strong>：</p>
 <ul>
-<li><b>head_dim 统一为 128</b>（视觉 encoder 72 除外，因为继承 SigLIP2）— 因为 NVIDIA / AMD flash-attn kernel 都最优化 head_dim=64/128；其他维度会降速 2-5×</li>
-<li><b>Thinker GQA 7:1 最保守，Talker GQA 8:1 更激进</b> — 因为 context 长度和 KV cache 敏感度不同</li>
-<li><b>Code Predictor 的 KV cache (2048) 反而最大</b> — 因为它层数最少，不能牺牲每 head 的 K/V 容量；但由于序列超短（≤17），总 KV footprint 仍很小</li>
-<li><b>FFN expansion 差异显著</b>：Thinker expert 只 1.5× (2048→768×2 via gate×up)；Talker routed 2× (1024→384×2)；Code Predictor 3× (1024→3072)。<b>原因：MoE 的 expert 数量本身提供"FFN 容量"，单 expert 不需大；dense 层必须通过扩展 FFN 换容量</b></li>
+<li><strong>head_dim 统一为 128</strong>（视觉 encoder 72 除外，因为继承 SigLIP2）— 因为 NVIDIA / AMD flash-attn kernel 都最优化 head_dim=64/128；其他维度会降速 2-5×</li>
+<li><strong>Thinker GQA 7:1 最保守，Talker GQA 8:1 更激进</strong> — 因为 context 长度和 KV cache 敏感度不同</li>
+<li><strong>Code Predictor 的 KV cache (2048) 反而最大</strong> — 因为它层数最少，不能牺牲每 head 的 K/V 容量；但由于序列超短（≤17），总 KV footprint 仍很小</li>
+<li><strong>FFN expansion 差异显著</strong>：Thinker expert 只 1.5× (2048→768×2 via gate×up)；Talker routed 2× (1024→384×2)；Code Predictor 3× (1024→3072)。<strong>原因：MoE 的 expert 数量本身提供&quot;FFN 容量&quot;，单 expert 不需大；dense 层必须通过扩展 FFN 换容量</strong></li>
 </ul>
-<p>---</p>
+<hr />
 <h3 id="8-training-如何训出这个模型-核心章节">8. Training — 如何训出这个模型 (核心章节)</h3>
-<p>训练方案是 Qwen3-Omni 和架构<b>同等重要</b>的另一半工作。Omni 模型的"无退化"</p>
-<p>结论不是靠架构保障的——同架构不同训练方案可能得到完全不同的结果。以下</p>
-<p>按 "规模 → 数据 → 算力 → 三阶段预训练 → 后训练 (Thinker/Talker) → 技术清单</p>
-<p>→ 核心壁垒" 的顺序展开。</p>
+<p>训练方案是 Qwen3-Omni 和架构<strong>同等重要</strong>的另一半工作。Omni 模型的&quot;无退化&quot;
+结论不是靠架构保障的——同架构不同训练方案可能得到完全不同的结果。以下
+按 &quot;规模 → 数据 → 算力 → 三阶段预训练 → 后训练 (Thinker/Talker) → 技术清单
+→ 核心壁垒&quot; 的顺序展开。</p>
 <h4 id="8a-规模清单">8a. 规模清单</h4>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">维度</th><th style="text-align:left">数值</th></tr></thead><tbody>
-<tr><td style="text-align:left">总参数</td><td style="text-align:left">~32B (Thinker 30B + Talker 3B + AuT 0.6B + Vision 0.5B + Code Predictor 80M + Code2Wav 200M)</td></tr>
-<tr><td style="text-align:left">激活参数 (MoE)</td><td style="text-align:left">~4.5B (Thinker 3B + Talker 0.3B + 其余 dense 模块)</td></tr>
-<tr><td style="text-align:left">Thinker</td><td style="text-align:left">28L × d=2048, 128E top-8</td></tr>
-<tr><td style="text-align:left">Talker</td><td style="text-align:left">20L × d=1024, 128E top-6 + Shared</td></tr>
-<tr><td style="text-align:left">AuT 从头训数据</td><td style="text-align:left">20M 小时监督音频</td></tr>
-<tr><td style="text-align:left">Thinker/Talker vocab</td><td style="text-align:left">151 643 regular (+ multimodal special tokens)</td></tr>
-<tr><td style="text-align:left">Context (S2)</td><td style="text-align:left">8 192</td></tr>
-<tr><td style="text-align:left">Context (S3)</td><td style="text-align:left">32 768</td></tr>
-<tr><td style="text-align:left">支持语言</td><td style="text-align:left">text 119 · speech-in 19 · speech-out 10</td></tr>
-</tbody>
-</table></div>
-<h4 id="8b-数据配方-data-mix">8b. 数据配方 (Data Mix)</h4>
-<p><b>AuT encoder (独立预训)</b>: 20M 小时监督音频</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">维度</th><th style="text-align:left">数值</th></tr></thead><tbody><tr><td style="text-align:left">总参数</td><td style="text-align:left">~32B (Thinker 30B + Talker 3B + AuT 0.6B + Vision 0.5B + Code Predictor 80M + Code2Wav 200M)</td></tr><tr><td style="text-align:left">激活参数 (MoE)</td><td style="text-align:left">~4.5B (Thinker 3B + Talker 0.3B + 其余 dense 模块)</td></tr><tr><td style="text-align:left">Thinker</td><td style="text-align:left">28L × d=2048, 128E top-8</td></tr><tr><td style="text-align:left">Talker</td><td style="text-align:left">20L × d=1024, 128E top-6 + Shared</td></tr><tr><td style="text-align:left">AuT 从头训数据</td><td style="text-align:left">20M 小时监督音频</td></tr><tr><td style="text-align:left">Thinker/Talker vocab</td><td style="text-align:left">151 643 regular (+ multimodal special tokens)</td></tr><tr><td style="text-align:left">Context (S2)</td><td style="text-align:left">8 192</td></tr><tr><td style="text-align:left">Context (S3)</td><td style="text-align:left">32 768</td></tr><tr><td style="text-align:left">支持语言</td><td style="text-align:left">text 119 · speech-in 19 · speech-out 10</td></tr></tbody></table></div><h4 id="8b-数据配方-data-mix">8b. 数据配方 (Data Mix)</h4>
+<p><strong>AuT encoder (独立预训)</strong>: 20M 小时监督音频</p>
 <ul>
 <li>80% 中/英 pseudo-labeled ASR</li>
 <li>10% 其他语言 ASR</li>
 <li>10% audio understanding (音乐、环境音、情感等)</li>
 </ul>
-<p><b>Thinker + Talker 主预训 S2</b> (约 <b>2T tokens</b>，明确 breakdown):</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">模态</th><th style="text-align:left">Tokens</th><th style="text-align:right">占比</th></tr></thead><tbody>
-<tr><td style="text-align:left">Text</td><td style="text-align:left">0.57 T</td><td style="text-align:right">28.5%</td></tr>
-<tr><td style="text-align:left">Audio</td><td style="text-align:left">0.77 T</td><td style="text-align:right">38.5%</td></tr>
-<tr><td style="text-align:left">Image</td><td style="text-align:left">0.82 T</td><td style="text-align:right">41.0%</td></tr>
-<tr><td style="text-align:left">Video</td><td style="text-align:left">0.05 T</td><td style="text-align:right">2.5%</td></tr>
-<tr><td style="text-align:left">Video-Audio</td><td style="text-align:left">0.05 T</td><td style="text-align:right">2.5%</td></tr>
-<tr><td style="text-align:left"><b>合计</b></td><td style="text-align:left"><b>≈2.0 T</b></td><td style="text-align:right">100%</td></tr>
-</tbody>
-</table></div>
-<ul>
-<li><b>语言分布</b>: text 覆盖 Qwen3 的 119 种；audio ASR 以中/英为主；speech 生成只覆盖 10 种（目标语言裁剪以保音色稳定）</li>
-<li><b>Prompt 多样化</b>: 对比 Qwen2.5-Omni 的"每任务单一 prompt"，Qwen3-Omni 对每个任务用多套自然语言 prompt 以提升泛化</li>
-<li><b>"早期多模态混入"</b> (核心 know-how)：<b>从 S2 一开始就混 unimodal + cross-modal</b>，而非常见的"先纯文本预训再补多模态"。论文将此列为"无退化"的关键</li>
-<li><b>过滤 / 合成 / 去重流程</b>: <code>[论文未披露详细数字]</code> — 只说了"pseudo-labeled" 意味着依赖 self-labeling 或 teacher 模型生成标签</li>
+<p><strong>Thinker + Talker 主预训 S2</strong> (约 <strong>2T tokens</strong>，明确 breakdown):</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">模态</th><th style="text-align:left">Tokens</th><th style="text-align:right">占比</th></tr></thead><tbody><tr><td style="text-align:left">Text</td><td style="text-align:left">0.57 T</td><td style="text-align:right">28.5%</td></tr><tr><td style="text-align:left">Audio</td><td style="text-align:left">0.77 T</td><td style="text-align:right">38.5%</td></tr><tr><td style="text-align:left">Image</td><td style="text-align:left">0.82 T</td><td style="text-align:right">41.0%</td></tr><tr><td style="text-align:left">Video</td><td style="text-align:left">0.05 T</td><td style="text-align:right">2.5%</td></tr><tr><td style="text-align:left">Video-Audio</td><td style="text-align:left">0.05 T</td><td style="text-align:right">2.5%</td></tr><tr><td style="text-align:left"><strong>合计</strong></td><td style="text-align:left"><strong>≈2.0 T</strong></td><td style="text-align:right">100%</td></tr></tbody></table></div><ul>
+<li><strong>语言分布</strong>: text 覆盖 Qwen3 的 119 种；audio ASR 以中/英为主；speech 生成只覆盖 10 种（目标语言裁剪以保音色稳定）</li>
+<li><strong>Prompt 多样化</strong>: 对比 Qwen2.5-Omni 的&quot;每任务单一 prompt&quot;，Qwen3-Omni 对每个任务用多套自然语言 prompt 以提升泛化</li>
+<li><strong>&quot;早期多模态混入&quot;</strong> (核心 know-how)：<strong>从 S2 一开始就混 unimodal + cross-modal</strong>，而非常见的&quot;先纯文本预训再补多模态&quot;。论文将此列为&quot;无退化&quot;的关键</li>
+<li><strong>过滤 / 合成 / 去重流程</strong>: <code>[论文未披露详细数字]</code> — 只说了&quot;pseudo-labeled&quot; 意味着依赖 self-labeling 或 teacher 模型生成标签</li>
 </ul>
 <h4 id="8c-算力账单">8c. 算力账单</h4>
 <ul>
-<li><b>GPU 型号 / 节点数 / 互联</b>: <code>[论文未披露]</code></li>
-<li><b>总 GPU-hours</b>: <code>[论文未披露]</code></li>
-<li><b>MFU / HFU</b>: <code>[论文未披露]</code></li>
-<li><b>推理硬件</b> (可对照训练规模估): vLLM + CUDA Graph 在 "typical computational resources" 上测 Table 2，论文未注明 GPU 型号（从 latency 数据和 30B-A3B MoE 规模反推，大概率 H100-80G 或 H200）</li>
+<li><strong>GPU 型号 / 节点数 / 互联</strong>: <code>[论文未披露]</code></li>
+<li><strong>总 GPU-hours</strong>: <code>[论文未披露]</code></li>
+<li><strong>MFU / HFU</strong>: <code>[论文未披露]</code></li>
+<li><strong>推理硬件</strong> (可对照训练规模估): vLLM + CUDA Graph 在 &quot;typical computational resources&quot; 上测 Table 2，论文未注明 GPU 型号（从 latency 数据和 30B-A3B MoE 规模反推，大概率 H100-80G 或 H200）</li>
 </ul>
-<blockquote>这是论文的一大遗憾：完全没有公开训练 infra。Qwen 团队在 Qwen3 系列中也</blockquote>
-<blockquote>有类似风格（用 MindSpore/自研 + 公司私有 infra，不对外披露）。</blockquote>
+<blockquote>
+<p>这是论文的一大遗憾：完全没有公开训练 infra。Qwen 团队在 Qwen3 系列中也
+有类似风格（用 MindSpore/自研 + 公司私有 infra，不对外披露）。</p>
+</blockquote>
 <h4 id="8d-三阶段预训练-pretraining-pipeline">8d. 三阶段预训练 (Pretraining Pipeline)</h4>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">Stage</th><th style="text-align:left">目标</th><th style="text-align:left">数据量</th><th style="text-align:left">Context</th><th style="text-align:left">可训练参数</th><th style="text-align:left">关键技术</th></tr></thead><tbody>
-<tr><td style="text-align:left"><b>S1 Encoder Alignment</b></td><td style="text-align:left">encoder ↔ LLM 对齐</td><td style="text-align:left">Audio-text + Image-text 大规模对</td><td style="text-align:left">4K? (未披露)</td><td style="text-align:left">vision encoder + audio encoder + adapters (LLM 冻结)</td><td style="text-align:left"><b>adapter-first, encoder-second 两步</b>：先只训 adapter，再打开 encoder，两者都在 LLM 冻结下分别进行</td></tr>
-<tr><td style="text-align:left"><b>S2 General</b></td><td style="text-align:left">多模态联合预训练主阶段</td><td style="text-align:left"><b>~2 T tokens</b> (见 8b)</td><td style="text-align:left">8 192</td><td style="text-align:left">全参数解冻</td><td style="text-align:left">早期多模态混入；多 prompt 多样化；跨模态任务同 batch 混合</td></tr>
-<tr><td style="text-align:left"><b>S3 Long Context</b></td><td style="text-align:left">扩展长序列能力</td><td style="text-align:left">长音频 + 长视频比例上调</td><td style="text-align:left"><b>8 192 → 32 768</b></td><td style="text-align:left">全参数</td><td style="text-align:left">RoPE θ 扩展（具体值论文未披露）；TM-RoPE 绝对时间 ID 保证音视频对齐可外推</td></tr>
-</tbody>
-</table></div>
-<p><b>S1 的关键决策 (与 Qwen2.5-VL / Qwen2.5-Omni 的对比)</b>：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">Stage</th><th style="text-align:left">目标</th><th style="text-align:left">数据量</th><th style="text-align:left">Context</th><th style="text-align:left">可训练参数</th><th style="text-align:left">关键技术</th></tr></thead><tbody><tr><td style="text-align:left"><strong>S1 Encoder Alignment</strong></td><td style="text-align:left">encoder ↔ LLM 对齐</td><td style="text-align:left">Audio-text + Image-text 大规模对</td><td style="text-align:left">4K? (未披露)</td><td style="text-align:left">vision encoder + audio encoder + adapters (LLM 冻结)</td><td style="text-align:left"><strong>adapter-first, encoder-second 两步</strong>：先只训 adapter，再打开 encoder，两者都在 LLM 冻结下分别进行</td></tr><tr><td style="text-align:left"><strong>S2 General</strong></td><td style="text-align:left">多模态联合预训练主阶段</td><td style="text-align:left"><strong>~2 T tokens</strong> (见 8b)</td><td style="text-align:left">8 192</td><td style="text-align:left">全参数解冻</td><td style="text-align:left">早期多模态混入；多 prompt 多样化；跨模态任务同 batch 混合</td></tr><tr><td style="text-align:left"><strong>S3 Long Context</strong></td><td style="text-align:left">扩展长序列能力</td><td style="text-align:left">长音频 + 长视频比例上调</td><td style="text-align:left"><strong>8 192 → 32 768</strong></td><td style="text-align:left">全参数</td><td style="text-align:left">RoPE θ 扩展（具体值论文未披露）；TM-RoPE 绝对时间 ID 保证音视频对齐可外推</td></tr></tbody></table></div><p><strong>S1 的关键决策 (与 Qwen2.5-VL / Qwen2.5-Omni 的对比)</strong>：</p>
 <ul>
-<li><b>旧方案</b> (Bai et al. 2025; Xu et al. 2025): encoder + adapter 联合训练, LLM 冻结</li>
-<li><b>新方案</b> (本文): encoder 和 adapter 分两步训 — <b>先 adapter, 再 encoder</b>, LLM 冻结</li>
-<li><b>动机</b>: 联合训练时 "encoder 会补偿 frozen LLM 的局限"，这会在 unfreeze LLM 后造成感知退化。两步分训让 encoder 专注 "把模态映射到 LLM 能读的语义空间"，不去补偿 LLM 缺陷</li>
+<li><strong>旧方案</strong> (Bai et al. 2025; Xu et al. 2025): encoder + adapter 联合训练, LLM 冻结</li>
+<li><strong>新方案</strong> (本文): encoder 和 adapter 分两步训 — <strong>先 adapter, 再 encoder</strong>, LLM 冻结</li>
+<li><strong>动机</strong>: 联合训练时 &quot;encoder 会补偿 frozen LLM 的局限&quot;，这会在 unfreeze LLM 后造成感知退化。两步分训让 encoder 专注 &quot;把模态映射到 LLM 能读的语义空间&quot;，不去补偿 LLM 缺陷</li>
 </ul>
 <h4 id="8e-后训练-thinker-三阶段">8e. 后训练 — Thinker (三阶段)</h4>
-<pre><code>
-SFT  ─▶  Strong-to-Weak Distillation  ─▶  GSPO (RL)
+<pre><code>SFT  ─▶  Strong-to-Weak Distillation  ─▶  GSPO (RL)
           ├─ Off-policy Distillation
           └─ On-policy Distillation (KL to teacher)
 </code></pre>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">阶段</th><th style="text-align:left">数据 / Teacher</th><th style="text-align:left">目标 / Loss</th><th style="text-align:left">要点</th></tr></thead><tbody>
-<tr><td style="text-align:left"><b>SFT</b></td><td style="text-align:left">ChatML 格式多模态对话 (text/image/audio/mixed)</td><td style="text-align:left">标准 NLL</td><td style="text-align:left"><b>lightweight SFT</b>: 刻意不重用预训数据 schema，避免 overfit；保持架构一致以便迁移</td></tr>
-<tr><td style="text-align:left"><b>Off-policy Distillation</b></td><td style="text-align:left">Teacher 生成的 response</td><td style="text-align:left">teacher-response fitting</td><td style="text-align:left">给 student 一个 "会推理" 的起点</td></tr>
-<tr><td style="text-align:left"><b>On-policy Distillation</b></td><td style="text-align:left">Student 生成 + teacher logits</td><td style="text-align:left">**KL(student \</td><td style="text-align:left">\</td></tr>
-<tr><td style="text-align:left"><b>GSPO (RL)</b></td><td style="text-align:left">rule-based + model-based reward</td><td style="text-align:left"><b>GSPO</b> (Zheng et al. 2025 — Qwen 自研的 RL 算法)</td><td style="text-align:left">覆盖 text/image/video/audio 全模态；rule reward 用于可验证任务 (数学/代码/指令遵循)，避免 reward hacking；model reward 用 <b>LLM-as-judge</b> (通用用 Qwen3, 视觉用 Qwen2.5-VL), 并在 prompt 中提供 ground-truth reference 以缓解 judge 漂移</td></tr>
-</tbody>
-</table></div>
-<h4 id="8f-后训练-talker-四阶段">8f. 后训练 — Talker (四阶段)</h4>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">阶段</th><th style="text-align:left">数据</th><th style="text-align:left">目标</th></tr></thead><tbody>
-<tr><td style="text-align:left"><b>① Large-scale Speech Mapping</b></td><td style="text-align:left"><b>数亿条</b> multimodal-context speech</td><td style="text-align:left">建立 multimodal representation → speech 的单调映射（Talker 学会"听到什么说什么"）</td></tr>
-<tr><td style="text-align:left"><b>② CPT (Continual Pretraining)</b></td><td style="text-align:left"><b>高质量精选</b> speech</td><td style="text-align:left">减少第 ① 阶段噪声数据引起的幻觉；同时做 <b>long-context training</b> 让 Talker 能处理长对话</td></tr>
-<tr><td style="text-align:left"><b>③ Multilingual DPO</b></td><td style="text-align:left">从多语种 speech 样本构造 <b>preference pairs</b></td><td style="text-align:left"><b>DPO</b> 提升多语稳定性和生成一致性</td></tr>
-<tr><td style="text-align:left"><b>④ Speaker Fine-tuning</b></td><td style="text-align:left">特定 speaker 的少量数据</td><td style="text-align:left">固定音色；同时精修自然度 / 表现力 / 可控性</td></tr>
-</tbody>
-</table></div>
-<h4 id="8g-captioner-变体-次要">8g. Captioner 变体 (次要)</h4>
-<p>Qwen3-Omni-30B-A3B-Captioner = 在 Qwen3-Omni base 上用 **大规模详细 audio</p>
-<p>caption 数据集** 做 SFT 得到的专门 audio captioning 模型。填补了学术界仅有</p>
-<p>visual captioning 数据集的空白。</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">阶段</th><th style="text-align:left">数据 / Teacher</th><th style="text-align:left">目标 / Loss</th><th style="text-align:left">要点</th></tr></thead><tbody><tr><td style="text-align:left"><strong>SFT</strong></td><td style="text-align:left">ChatML 格式多模态对话 (text/image/audio/mixed)</td><td style="text-align:left">标准 NLL</td><td style="text-align:left"><strong>lightweight SFT</strong>: 刻意不重用预训数据 schema，避免 overfit；保持架构一致以便迁移</td></tr><tr><td style="text-align:left"><strong>Off-policy Distillation</strong></td><td style="text-align:left">Teacher 生成的 response</td><td style="text-align:left">teacher-response fitting</td><td style="text-align:left">给 student 一个 &quot;会推理&quot; 的起点</td></tr><tr><td style="text-align:left"><strong>On-policy Distillation</strong></td><td style="text-align:left">Student 生成 + teacher logits</td><td style="text-align:left"><strong>KL(student || teacher) on sampled prompts</strong></td><td style="text-align:left">Teacher = <strong>Qwen3-32B</strong> 或 <strong>Qwen3-235B-A22B</strong>（两个选择，具体用哪一个未细分）；student 实时采样自己的 response，更贴合在线推理分布</td></tr><tr><td style="text-align:left"><strong>GSPO (RL)</strong></td><td style="text-align:left">rule-based + model-based reward</td><td style="text-align:left"><strong>GSPO</strong> (Zheng et al. 2025 — Qwen 自研的 RL 算法)</td><td style="text-align:left">覆盖 text/image/video/audio 全模态；rule reward 用于可验证任务 (数学/代码/指令遵循)，避免 reward hacking；model reward 用 <strong>LLM-as-judge</strong> (通用用 Qwen3, 视觉用 Qwen2.5-VL), 并在 prompt 中提供 ground-truth reference 以缓解 judge 漂移</td></tr></tbody></table></div><h4 id="8f-后训练-talker-四阶段">8f. 后训练 — Talker (四阶段)</h4>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">阶段</th><th style="text-align:left">数据</th><th style="text-align:left">目标</th></tr></thead><tbody><tr><td style="text-align:left"><strong>① Large-scale Speech Mapping</strong></td><td style="text-align:left"><strong>数亿条</strong> multimodal-context speech</td><td style="text-align:left">建立 multimodal representation → speech 的单调映射（Talker 学会&quot;听到什么说什么&quot;）</td></tr><tr><td style="text-align:left"><strong>② CPT (Continual Pretraining)</strong></td><td style="text-align:left"><strong>高质量精选</strong> speech</td><td style="text-align:left">减少第 ① 阶段噪声数据引起的幻觉；同时做 <strong>long-context training</strong> 让 Talker 能处理长对话</td></tr><tr><td style="text-align:left"><strong>③ Multilingual DPO</strong></td><td style="text-align:left">从多语种 speech 样本构造 <strong>preference pairs</strong></td><td style="text-align:left"><strong>DPO</strong> 提升多语稳定性和生成一致性</td></tr><tr><td style="text-align:left"><strong>④ Speaker Fine-tuning</strong></td><td style="text-align:left">特定 speaker 的少量数据</td><td style="text-align:left">固定音色；同时精修自然度 / 表现力 / 可控性</td></tr></tbody></table></div><h4 id="8g-captioner-变体-次要">8g. Captioner 变体 (次要)</h4>
+<p>Qwen3-Omni-30B-A3B-Captioner = 在 Qwen3-Omni base 上用 <strong>大规模详细 audio
+caption 数据集</strong> 做 SFT 得到的专门 audio captioning 模型。填补了学术界仅有
+visual captioning 数据集的空白。</p>
 <h4 id="8h-训练技术清单">8h. 训练技术清单</h4>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">类别</th><th style="text-align:left">本文使用</th><th style="text-align:left">备注</th></tr></thead><tbody>
-<tr><td style="text-align:left">并行策略 (TP/PP/EP/DP)</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测基于 Qwen 内部训练栈</td></tr>
-<tr><td style="text-align:left">数值精度</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测 BF16 + 可能 FP8 (Qwen3 已使用 FP8)</td></tr>
-<tr><td style="text-align:left">Optimizer</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测 AdamW (Qwen 系列传统)</td></tr>
-<tr><td style="text-align:left">LR schedule</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测 cosine + warmup</td></tr>
-<tr><td style="text-align:left">稳定性</td><td style="text-align:left"><b>QK-Norm</b> (已在 Thinker 架构中)</td><td style="text-align:left">Qwen3 引入，Omni 继承</td></tr>
-<tr><td style="text-align:left">MoE routing</td><td style="text-align:left"><b>128E top-8 (Thinker) / top-6 (Talker)</b></td><td style="text-align:left">未披露 aux-loss 权重</td></tr>
-<tr><td style="text-align:left">Load balancing</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">通常是 aux-loss + bias tuning</td></tr>
-<tr><td style="text-align:left">Long-context</td><td style="text-align:left"><b>TM-RoPE 绝对时间 ID (80ms/ID)</b></td><td style="text-align:left">本文自研；S3 阶段上调长数据比例</td></tr>
-<tr><td style="text-align:left">Sequence packing</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left"></td></tr>
-<tr><td style="text-align:left">蒸馏</td><td style="text-align:left"><b>Off-policy + On-policy</b>, teacher = Qwen3-32B / Qwen3-235B-A22B, <b>KL loss</b></td><td style="text-align:left">两阶段管线，业界常用</td></tr>
-<tr><td style="text-align:left">RL 算法</td><td style="text-align:left"><b>GSPO</b> (Group Sampling Policy Opt, Qwen 自研)</td><td style="text-align:left">替代 PPO/DPO/GRPO；论文引 Zheng et al. 2025</td></tr>
-<tr><td style="text-align:left">Reward 设计</td><td style="text-align:left">Rule-based (math/code/IF) + Model-based (LLM-as-judge w/ reference)</td><td style="text-align:left">双路混合</td></tr>
-<tr><td style="text-align:left">Preference pairs (Talker)</td><td style="text-align:left"><b>DPO</b></td><td style="text-align:left">标准 Rafailov 2023 实现</td></tr>
-<tr><td style="text-align:left">Vocoder 训练</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">Code2Wav 可能独立训（类似 HiFi-GAN 的对抗训练）</td></tr>
-</tbody>
-</table></div>
-<h4 id="8i-scaling-law-消融">8i. Scaling Law & 消融</h4>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">类别</th><th style="text-align:left">本文使用</th><th style="text-align:left">备注</th></tr></thead><tbody><tr><td style="text-align:left">并行策略 (TP/PP/EP/DP)</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测基于 Qwen 内部训练栈</td></tr><tr><td style="text-align:left">数值精度</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测 BF16 + 可能 FP8 (Qwen3 已使用 FP8)</td></tr><tr><td style="text-align:left">Optimizer</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测 AdamW (Qwen 系列传统)</td></tr><tr><td style="text-align:left">LR schedule</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">推测 cosine + warmup</td></tr><tr><td style="text-align:left">稳定性</td><td style="text-align:left"><strong>QK-Norm</strong> (已在 Thinker 架构中)</td><td style="text-align:left">Qwen3 引入，Omni 继承</td></tr><tr><td style="text-align:left">MoE routing</td><td style="text-align:left"><strong>128E top-8 (Thinker) / top-6 (Talker)</strong></td><td style="text-align:left">未披露 aux-loss 权重</td></tr><tr><td style="text-align:left">Load balancing</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">通常是 aux-loss + bias tuning</td></tr><tr><td style="text-align:left">Long-context</td><td style="text-align:left"><strong>TM-RoPE 绝对时间 ID (80ms/ID)</strong></td><td style="text-align:left">本文自研；S3 阶段上调长数据比例</td></tr><tr><td style="text-align:left">Sequence packing</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left"></td></tr><tr><td style="text-align:left">蒸馏</td><td style="text-align:left"><strong>Off-policy + On-policy</strong>, teacher = Qwen3-32B / Qwen3-235B-A22B, <strong>KL loss</strong></td><td style="text-align:left">两阶段管线，业界常用</td></tr><tr><td style="text-align:left">RL 算法</td><td style="text-align:left"><strong>GSPO</strong> (Group Sampling Policy Opt, Qwen 自研)</td><td style="text-align:left">替代 PPO/DPO/GRPO；论文引 Zheng et al. 2025</td></tr><tr><td style="text-align:left">Reward 设计</td><td style="text-align:left">Rule-based (math/code/IF) + Model-based (LLM-as-judge w/ reference)</td><td style="text-align:left">双路混合</td></tr><tr><td style="text-align:left">Preference pairs (Talker)</td><td style="text-align:left"><strong>DPO</strong></td><td style="text-align:left">标准 Rafailov 2023 实现</td></tr><tr><td style="text-align:left">Vocoder 训练</td><td style="text-align:left"><code>[论文未披露]</code></td><td style="text-align:left">Code2Wav 可能独立训（类似 HiFi-GAN 的对抗训练）</td></tr></tbody></table></div><h4 id="8i-scaling-law-amp-消融">8i. Scaling Law &amp; 消融</h4>
 <ul>
-<li><b>Table 16 (无退化证据)</b>: 同 FLOPs 下 Omni-Base vs 单模态 base — MMLU 81.69 vs 81.24, MMMU 59.33 vs 57.22, Video-MME 69.25 vs 69.22。说明 "多模态联合训练不损失单模态" 在 30B-A3B scale 成立</li>
-<li><b>论文坦诚局限</b>: "由于实验成本过高，无法在所有规模上验证" — 7B / 100B+ 能否复现"无退化"是 open question</li>
-<li><b>失败尝试</b>: 论文几乎没写 "what didn't work"（遗憾）</li>
+<li><strong>Table 16 (无退化证据)</strong>: 同 FLOPs 下 Omni-Base vs 单模态 base — MMLU 81.69 vs 81.24, MMMU 59.33 vs 57.22, Video-MME 69.25 vs 69.22。说明 &quot;多模态联合训练不损失单模态&quot; 在 30B-A3B scale 成立</li>
+<li><strong>论文坦诚局限</strong>: &quot;由于实验成本过高，无法在所有规模上验证&quot; — 7B / 100B+ 能否复现&quot;无退化&quot;是 open question</li>
+<li><strong>失败尝试</strong>: 论文几乎没写 &quot;what didn't work&quot;（遗憾）</li>
 </ul>
 <h4 id="8j-核心训练壁垒-最难复现的一件事">8j. 核心训练壁垒（最难复现的一件事）</h4>
-<p>**"S1 的 adapter-first / encoder-second 两步 + S2 起就混入 cross-modal data"</p>
-<p>这对组合是整个 "无退化" 结论的工程命脉**。</p>
+<p><strong>&quot;S1 的 adapter-first / encoder-second 两步 + S2 起就混入 cross-modal data&quot;
+这对组合是整个 &quot;无退化&quot; 结论的工程命脉</strong>。</p>
 <ul>
 <li>S1 两步分训决定了 encoder 不去补偿 frozen LLM 的缺陷 → unfreeze 后不退化</li>
-<li>S2 从头就混多模态数据，而非"先纯文本预训再补 VL/audio" → 让 LLM</li>
+<li>S2 从头就混多模态数据，而非&quot;先纯文本预训再补 VL/audio&quot; → 让 LLM
+表征空间天然容纳多模态，避免后期生硬适配</li>
 </ul>
-<p>表征空间天然容纳多模态，避免后期生硬适配</p>
-<p>论文没有公开：S1 每步的训练轮数、LR、数据配比；S2 不同模态的 batch 内比例</p>
-<p>调度；长音频数据的具体构造（segment 长度、overlap）。**这些才是真正的</p>
-<p>know-how 壁垒**。</p>
+<p>论文没有公开：S1 每步的训练轮数、LR、数据配比；S2 不同模态的 batch 内比例
+调度；长音频数据的具体构造（segment 长度、overlap）。<strong>这些才是真正的
+know-how 壁垒</strong>。</p>
 <h3 id="9-performance-保留原分析">9. Performance (保留原分析)</h3>
 <ul>
-<li><b>Text</b>: MMLU-Redux 89.3, GPQA 70.4 (>GPT-4o 69.7), AIME25 61.3, ZebraLogic 90.0</li>
-<li><b>Audio</b>: Librispeech WER 1.22 (>Seed-ASR 1.58), MMAU 77.5 (>Gemini-2.5-Pro)</li>
-<li><b>Vision</b>: MathVista 75.9, 与 Qwen2.5-VL-72B 相当</li>
-<li><b>Speech Gen</b>: Seed TTS test-en WER 1.39, 10 语言</li>
-<li><b>Latency</b>: Audio 首包 234 ms, Video 547 ms, RTF 0.47-0.66</li>
+<li><strong>Text</strong>: MMLU-Redux 89.3, GPQA 70.4 (&gt;GPT-4o 69.7), AIME25 61.3, ZebraLogic 90.0</li>
+<li><strong>Audio</strong>: Librispeech WER 1.22 (&gt;Seed-ASR 1.58), MMAU 77.5 (&gt;Gemini-2.5-Pro)</li>
+<li><strong>Vision</strong>: MathVista 75.9, 与 Qwen2.5-VL-72B 相当</li>
+<li><strong>Speech Gen</strong>: Seed TTS test-en WER 1.39, 10 语言</li>
+<li><strong>Latency</strong>: Audio 首包 234 ms, Video 547 ms, RTF 0.47-0.66</li>
 </ul>
 <h3 id="10-首包延迟路径分析-1-concurrency-audio">10. 首包延迟路径分析（1 concurrency, audio）</h3>
-<pre><code>
-AuT preprocessing: 72ms
+<pre><code>AuT preprocessing: 72ms
   → Thinker TTFT: 88ms   (占 38%, MoE 的 KV cache IO 仍是主矛盾)
   → Talker TTFT: 57ms
   → Code Predictor: 14ms (15 iter × ~1ms, CUDA Graph)
   → Code2Wav: 3ms        (1 帧 causal conv)
   Total: 234ms
 </code></pre>
-<p><b>并发扩展</b>（1 → 6）：</p>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:right">Concurrency</th><th style="text-align:left">Thinker TTFT</th><th style="text-align:left">Total</th><th style="text-align:right">Thinker TPS</th><th style="text-align:left">瓶颈</th></tr></thead><tbody>
-<tr><td style="text-align:right">1</td><td style="text-align:left">88ms</td><td style="text-align:left">234ms</td><td style="text-align:right">75</td><td style="text-align:left">Thinker TTFT (38%)</td></tr>
-<tr><td style="text-align:right">4</td><td style="text-align:left">468ms</td><td style="text-align:left">728ms</td><td style="text-align:right">63</td><td style="text-align:left">Thinker TTFT (64%)</td></tr>
-<tr><td style="text-align:right">6</td><td style="text-align:left">673ms</td><td style="text-align:left">1172ms</td><td style="text-align:right">53</td><td style="text-align:left">Thinker TTFT (57%)</td></tr>
-</tbody>
-</table></div>
-<p><b>关键观察</b>：Code Predictor 和 Code2Wav 几乎不受 concurrency 影响 (14→18ms, 3→5ms)，这两个模块的<b>固定步长 + CUDA Graph + ConvNet</b>设计完美达成了 "批处理不增加延迟" 的工程目标。</p>
-<p>---</p>
+<p><strong>并发扩展</strong>（1 → 6）：</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:right">Concurrency</th><th style="text-align:left">Thinker TTFT</th><th style="text-align:left">Total</th><th style="text-align:right">Thinker TPS</th><th style="text-align:left">瓶颈</th></tr></thead><tbody><tr><td style="text-align:right">1</td><td style="text-align:left">88ms</td><td style="text-align:left">234ms</td><td style="text-align:right">75</td><td style="text-align:left">Thinker TTFT (38%)</td></tr><tr><td style="text-align:right">4</td><td style="text-align:left">468ms</td><td style="text-align:left">728ms</td><td style="text-align:right">63</td><td style="text-align:left">Thinker TTFT (64%)</td></tr><tr><td style="text-align:right">6</td><td style="text-align:left">673ms</td><td style="text-align:left">1172ms</td><td style="text-align:right">53</td><td style="text-align:left">Thinker TTFT (57%)</td></tr></tbody></table></div><p><strong>关键观察</strong>：Code Predictor 和 Code2Wav 几乎不受 concurrency 影响 (14→18ms, 3→5ms)，这两个模块的<strong>固定步长 + CUDA Graph + ConvNet</strong>设计完美达成了 &quot;批处理不增加延迟&quot; 的工程目标。</p>
+<hr />
 <h3 id="11-架构决策-vs-竞品">11. 架构决策 vs 竞品</h3>
-<div class="table-wrap"><table class="md-table">
-<thead><tr><th style="text-align:left">组件</th><th style="text-align:left"><b>Qwen3-Omni</b></th><th style="text-align:left">Qwen2.5-Omni</th><th style="text-align:left">GPT-4o</th><th style="text-align:left">Gemini-2.5-Pro</th><th style="text-align:left">Moshi</th></tr></thead><tbody>
-<tr><td style="text-align:left">Audio Encoder</td><td style="text-align:left">AuT 0.6B</td><td style="text-align:left">Whisper</td><td style="text-align:left">Unknown</td><td style="text-align:left">Gemini native</td><td style="text-align:left">Mimi</td></tr>
-<tr><td style="text-align:left">LLM 主干</td><td style="text-align:left">MoE 30B-A3B (Thinker)</td><td style="text-align:left">Dense 7B</td><td style="text-align:left">Dense (~200B 传)</td><td style="text-align:left">MoE</td><td style="text-align:left">Helium 7B</td></tr>
-<tr><td style="text-align:left">第二阶段语音</td><td style="text-align:left">Talker MoE+Shared 3B</td><td style="text-align:left">Talker Dense</td><td style="text-align:left">Native TTS</td><td style="text-align:left">Native TTS</td><td style="text-align:left">Depth Transformer</td></tr>
-<tr><td style="text-align:left">Residual 预测</td><td style="text-align:left"><b>Code Predictor 5L dense AR×15</b></td><td style="text-align:left">—</td><td style="text-align:left">—</td><td style="text-align:left">—</td><td style="text-align:left">Depth Transformer</td></tr>
-<tr><td style="text-align:left">Vocoder</td><td style="text-align:left"><b>Causal ConvNet 200M</b></td><td style="text-align:left">Block-wise DiT</td><td style="text-align:left">Unknown</td><td style="text-align:left">Unknown</td><td style="text-align:left">Mimi decoder</td></tr>
-<tr><td style="text-align:left">Codebook 层数</td><td style="text-align:left">16 RVQ</td><td style="text-align:left">1</td><td style="text-align:left">Unknown</td><td style="text-align:left">Unknown</td><td style="text-align:left">8 RVQ</td></tr>
-<tr><td style="text-align:left">Token rate</td><td style="text-align:left">12.5 Hz</td><td style="text-align:left">50 Hz</td><td style="text-align:left">Unknown</td><td style="text-align:left">Unknown</td><td style="text-align:left">12.5 Hz</td></tr>
-<tr><td style="text-align:left">首包延迟</td><td style="text-align:left"><b>234 ms</b></td><td style="text-align:left">~640 ms+</td><td style="text-align:left">~300 ms</td><td style="text-align:left">Unknown</td><td style="text-align:left">~200 ms</td></tr>
-<tr><td style="text-align:left">开源</td><td style="text-align:left">✅ Apache 2.0</td><td style="text-align:left">✅</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">✅</td></tr>
-</tbody>
-</table></div>
-<p><b>Qwen3-Omni 相对前代和竞品的结构创新</b>：</p>
-<p>1. 把 Talker 拆成 Talker + Code Predictor + Code2Wav 三段（2.5-Omni 只有 Talker+DiT）</p>
-<p>2. Talker 引入 Shared Expert + sigmoid gate（2.5 是纯 dense）</p>
-<p>3. 残差预测从 "单 codebook + DiT 补细节" 改为 "16 codebook + AR 残差"</p>
-<p>4. Vocoder 从 DiT 改为 Causal ConvNet，首包降 2-3×</p>
+<div class="table-wrap"><table class="md-table"><thead><tr><th style="text-align:left">组件</th><th style="text-align:left"><strong>Qwen3-Omni</strong></th><th style="text-align:left">Qwen2.5-Omni</th><th style="text-align:left">GPT-4o</th><th style="text-align:left">Gemini-2.5-Pro</th><th style="text-align:left">Moshi</th></tr></thead><tbody><tr><td style="text-align:left">Audio Encoder</td><td style="text-align:left">AuT 0.6B</td><td style="text-align:left">Whisper</td><td style="text-align:left">Unknown</td><td style="text-align:left">Gemini native</td><td style="text-align:left">Mimi</td></tr><tr><td style="text-align:left">LLM 主干</td><td style="text-align:left">MoE 30B-A3B (Thinker)</td><td style="text-align:left">Dense 7B</td><td style="text-align:left">Dense (~200B 传)</td><td style="text-align:left">MoE</td><td style="text-align:left">Helium 7B</td></tr><tr><td style="text-align:left">第二阶段语音</td><td style="text-align:left">Talker MoE+Shared 3B</td><td style="text-align:left">Talker Dense</td><td style="text-align:left">Native TTS</td><td style="text-align:left">Native TTS</td><td style="text-align:left">Depth Transformer</td></tr><tr><td style="text-align:left">Residual 预测</td><td style="text-align:left"><strong>Code Predictor 5L dense AR×15</strong></td><td style="text-align:left">—</td><td style="text-align:left">—</td><td style="text-align:left">—</td><td style="text-align:left">Depth Transformer</td></tr><tr><td style="text-align:left">Vocoder</td><td style="text-align:left"><strong>Causal ConvNet 200M</strong></td><td style="text-align:left">Block-wise DiT</td><td style="text-align:left">Unknown</td><td style="text-align:left">Unknown</td><td style="text-align:left">Mimi decoder</td></tr><tr><td style="text-align:left">Codebook 层数</td><td style="text-align:left">16 RVQ</td><td style="text-align:left">1</td><td style="text-align:left">Unknown</td><td style="text-align:left">Unknown</td><td style="text-align:left">8 RVQ</td></tr><tr><td style="text-align:left">Token rate</td><td style="text-align:left">12.5 Hz</td><td style="text-align:left">50 Hz</td><td style="text-align:left">Unknown</td><td style="text-align:left">Unknown</td><td style="text-align:left">12.5 Hz</td></tr><tr><td style="text-align:left">首包延迟</td><td style="text-align:left"><strong>234 ms</strong></td><td style="text-align:left">~640 ms+</td><td style="text-align:left">~300 ms</td><td style="text-align:left">Unknown</td><td style="text-align:left">~200 ms</td></tr><tr><td style="text-align:left">开源</td><td style="text-align:left">✅ Apache 2.0</td><td style="text-align:left">✅</td><td style="text-align:left">❌</td><td style="text-align:left">❌</td><td style="text-align:left">✅</td></tr></tbody></table></div><p><strong>Qwen3-Omni 相对前代和竞品的结构创新</strong>：</p>
+<ol>
+<li>把 Talker 拆成 Talker + Code Predictor + Code2Wav 三段（2.5-Omni 只有 Talker+DiT）</li>
+<li>Talker 引入 Shared Expert + sigmoid gate（2.5 是纯 dense）</li>
+<li>残差预测从 &quot;单 codebook + DiT 补细节&quot; 改为 &quot;16 codebook + AR 残差&quot;</li>
+<li>Vocoder 从 DiT 改为 Causal ConvNet，首包降 2-3×</li>
+</ol>
 <h3 id="12-position-in-model-landscape">12. Position in Model Landscape</h3>
 <ul>
-<li><b>里程碑</b>：把 "全模态无退化" 从 closed-source 的 GPT-4o 独有推广到 open-source</li>
-<li><b>结构影响</b>：证明 "六段专门化 + 每段为自己角色定制维度" 比 "一个巨大 backbone" 在 omni 场景下更经济</li>
-<li><b>下一步</b>：多说话人 ASR、video OCR、audio-visual proactive learning、Thinker-Talker 并行化（当前串行）</li>
+<li><strong>里程碑</strong>：把 &quot;全模态无退化&quot; 从 closed-source 的 GPT-4o 独有推广到 open-source</li>
+<li><strong>结构影响</strong>：证明 &quot;六段专门化 + 每段为自己角色定制维度&quot; 比 &quot;一个巨大 backbone&quot; 在 omni 场景下更经济</li>
+<li><strong>下一步</strong>：多说话人 ASR、video OCR、audio-visual proactive learning、Thinker-Talker 并行化（当前串行）</li>
 </ul>
-<p>---</p>
+<hr />
 <h2 id="open-questions">Open Questions</h2>
-<p>1. Code Predictor 的 15 套 head/embedding 是否真的必要？实验 tied weights 的效果如何？</p>
-<p>2. Talker 的 Shared Gate sigmoid 若恒为 1（退化到 DeepSeek-V2 shared expert）性能损失多少？</p>
-<p>3. DeepStack 三个分支 (层 8/16/24) 分别贡献多少？如只保留最深一层如何？</p>
-<p>4. Thinker 的 layer-24 hidden 作为 Talker 条件为什么是 24 而不是 20 或 28？缺消融</p>
-<p>5. "无退化" 在 100B+ 或 7B 规模是否成立？30B-A3B 是否刚好在 sweet spot？</p>
+<ol>
+<li>Code Predictor 的 15 套 head/embedding 是否真的必要？实验 tied weights 的效果如何？</li>
+<li>Talker 的 Shared Gate sigmoid 若恒为 1（退化到 DeepSeek-V2 shared expert）性能损失多少？</li>
+<li>DeepStack 三个分支 (层 8/16/24) 分别贡献多少？如只保留最深一层如何？</li>
+<li>Thinker 的 layer-24 hidden 作为 Talker 条件为什么是 24 而不是 20 或 28？缺消融</li>
+<li>&quot;无退化&quot; 在 100B+ 或 7B 规模是否成立？30B-A3B 是否刚好在 sweet spot？</li>
+</ol>
+
 </div>
 
 <footer>Built with Claude Opus 4.6 · <a href="/">Back to index</a></footer>
