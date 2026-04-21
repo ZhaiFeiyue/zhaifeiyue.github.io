@@ -1425,7 +1425,7 @@ for p in papers:
     <span class="cat-tag" style="background:{color}">{cat}</span>
     &nbsp; {authors} &nbsp;·&nbsp; {date}
     {"&nbsp;·&nbsp; <a href='" + url + "' target='_blank'>arXiv ↗</a>" if url else ""}
-    {"&nbsp;·&nbsp; <a href='/readers/" + pid + "-reader.html' style='background:#1b2a4a;color:#fff;padding:3px 10px;border-radius:6px;text-decoration:none;font-weight:600'>📖 精读 Reader ↗</a>" if os.path.exists(os.path.join(SITE_DIR, 'readers', f'{pid}-reader.html')) else ""}
+    {"&nbsp;·&nbsp; <a href='/readers/" + pid + "-reader.html' style='background:#1b2a4a;color:#fff;padding:3px 10px;border-radius:6px;text-decoration:none;font-weight:600'>📖 导读 Reader ↗</a>" if os.path.exists(os.path.join(SITE_DIR, 'readers', f'{pid}-reader.html')) else ""}
   </div>
   <div class="tags">{tags_html}</div>
 </div>
