@@ -500,22 +500,27 @@ footer {
 </ul>
 <h3 id="2-architecture-data-flow">2. Architecture & Data Flow</h3>
 <h4 id="2a-end-to-end-data-flow">2a. End-to-End Data Flow</h4>
-<p><!-- Source: former drawio page "3. Hybrid Prefix Cache Pool" (10 nodes, 2 edges) --></p>
 <div class="mermaid">
 flowchart TB
- title["Hybrid Prefix Cache Pool — heterogeneous KV (linear req-state vs full-attn block) sharing one block pool, two block roles (prefix vs transfer)"]
- grp_lin["KVCache Group A — Linear-attention layers (KDA / SWA / Lightning / GDN) • Recurrent state, fixed size • REQUEST-LEVEL granularity • Reusable only on EXACT length match"]
- grp_full["KVCache Group B — Full-attention layers (MLA / GQA, the &quot;1&quot; in 3:1 / 5:1 / 7:1 hybrid stacks) • Linear in seq-length, paged blocks • BLOCK-LEVEL granularity • Supports partial PREFIX matching"]
- grp_groups["Group 0 / 1 / 2 (per linear-attn type)"]
- grp_group3["Group 3 (full-attn KV)"]
- pool["Unified Hybrid Block Pool (aligned block sizes — every group allocates/frees from the SAME backing pool)"]
- pc_box["Prefix-Cache Blocks • reusable across requests • MUST be fully populated • block-aligned, intra-cluster only • evictable by LRU/length policies"]
- tc_box["Transfer-Cache Blocks • tail-of-prefill output • cross-cluster transport over Ethernet • ANY length (not block-aligned) • DISCARDED on transfer completion"]
- free_box["Free Blocks available for next allocation (any group)"]
- note["Why split prefix vs transfer? Cross-cluster cache transfer is expensive — only worth it for the request's INCREMENTAL output (transfer-cache). Long-term reuse (prefix-cache) stays cluster-local; the global manager red..."]
- grp_lin -->|" "| pool
- grp_full -->|" "| pool
+    client["Client / API gateway<br/>(tokenize text → List[int], 平均 ~27K tokens)"]
+    router["Global Router + KVCache Manager<br/>(prefix match on each cluster;<br/>decide PrfaaS vs local PD based on<br/>l_total vs threshold t, BW util, cache affinity)"]
+    prfaas["PrfaaS cluster — 32×H200<br/>(prefill only, compute-dense)<br/>输出: linear states + paged full-attn blocks<br/>32K: 0.72 s, 128K: 7.40 s, ~2.3 GiB @128K"]
+    pdp["PD-P: local prefill nodes — 3×8 H20<br/>(延迟远小于 PrfaaS long path)"]
+    xfer["Cross-DC Ethernet 100 Gbps VPC<br/>Layer-wise pipelined transfer<br/>~3 Gbps per instance, ~13 Gbps avg<br/>(与 prefill 计算 overlap)"]
+    rdma["Intra-cluster RDMA 800 Gbps<br/>(几 ms, never-bottleneck 假设)"]
+    pdd["PD-D: decode nodes — 5×8 H20<br/>(25 ms/token, 40 tok/s SLO)"]
+    out["Detokenize + stream<br/>(logits → text chunks)"]
+
+    client --> router
+    router -->|"long path: l > t (~50%)"| prfaas
+    router -->|"short path: l ≤ t"| pdp
+    prfaas -->|"transfer-cache blocks"| xfer
+    xfer --> pdd
+    pdp -->|"paged KV"| rdma
+    rdma --> pdd
+    pdd --> out
 </div>
+<blockquote><b>Two paths, one decode tier.</b> Long requests take the PrfaaS path (cross-DC Ethernet, overlapped with prefill); short requests stay local (RDMA). The global manager's routing decision is the only point where latency/cache/bandwidth trade-offs are resolved.</blockquote>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">Stage</th><th style="text-align:left">Input → Output</th><th style="text-align:left">Location</th><th style="text-align:left">Latency (case study)</th><th style="text-align:left">Data format & size</th></tr></thead><tbody>
 <tr><td style="text-align:left">Tokenize</td><td style="text-align:left">text → tokens</td><td style="text-align:left">Client / API gateway</td><td style="text-align:left">几 ms</td><td style="text-align:left">List[int], 平均 ~27K tokens</td></tr>
