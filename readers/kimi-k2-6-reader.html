@@ -9,8 +9,26 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
   onload="renderMathInElement(document.body, {delimiters:[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'$',right:'$',display:false},{left:'\\(',right:'\\)',display:false}],throwOnError:false  });"></script>
-<!-- drawio lazy-load bootstrap (same pattern as sync.sh DRAWIO_BOOTSTRAP_JS).
-     Put script BEFORE viewer-static.min.js so bootstrap runs first. -->
+<!-- Mermaid (primary arch tool since 2026-04-21E Mermaid-first policy) -->
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    fontFamily: "'IBM Plex Sans', 'Noto Sans SC', sans-serif",
+    fontSize: '14px',
+    primaryColor: '#eff6ff', primaryTextColor: '#1e293b',
+    primaryBorderColor: '#2563eb', lineColor: '#475569',
+    secondaryColor: '#fef3c7', tertiaryColor: '#f0fdf4',
+    background: '#ffffff'
+  },
+  flowchart: { htmlLabels: true, curve: 'basis' },
+  securityLevel: 'loose'
+});
+mermaid.run({ querySelector: '.mermaid' });
+</script>
+<!-- drawio lazy-load bootstrap (fallback for multi-page ladder view) -->
 <script defer>
 document.addEventListener('DOMContentLoaded', function () {
   document.querySelectorAll('.mxgraph.mxg-lazy').forEach(function (el) {
@@ -223,9 +241,244 @@ section.ch h2{font-family:'Noto Serif SC',serif;font-size:24px;color:var(--ink);
 </section>
 
 <section class="ch" id="s5">
-<h2>🏗 核心架构图解 (drawio · 可缩放 · 多页)</h2>
+<h2>🏗 核心架构图解 (Mermaid 首选 · drawio 多页 ladder 备份)</h2>
+<p style="font-size:13.5px;color:var(--mt);font-family:'Noto Sans SC',sans-serif;margin-bottom:16px">
+工具选择说明: 2026-04-21 起改用 Mermaid 作为架构图首选 (见
+<a href="https://github.com/ZhaiFeiyue" target="_blank">skill policy 更新</a>)。
+原因: drawio 大文件 embed 不稳、LLM 手写 XML 易错、diff 不友好。
+Mermaid 原生 SVG, 客户端稳定, 文本 diff 友好, LLM 生成准确率高。
+</p>
+
+<h3 style="font-family:'Noto Serif SC',serif;color:var(--ink);margin:20px 0 10px">架构 1 · Top-level Multimodal Pipeline</h3>
+<div class="arch-mermaid" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:18px;margin:12px 0;overflow-x:auto;">
+<pre class="mermaid">
+flowchart TB
+    classDef input fill:#e0f2fe,stroke:#0284c7,color:#082f49
+    classDef vision fill:#fef3c7,stroke:#ca8a04,color:#713f12
+    classDef text fill:#eef2ff,stroke:#4338ca,color:#1e1b4b
+    classDef fuse fill:#f5f3ff,stroke:#7c3aed,color:#2e1065
+    classDef lm fill:#dcfce7,stroke:#16a34a,color:#052e16
+    classDef out fill:#fce7f3,stroke:#db2777,color:#500724
+
+    pix["pixel_values + grid_thws<br/>[N_patches, 3, 14, 14]<br/>NaViT packed, T=1 image, T=4 video"]:::input
+    ids["input_ids<br/>[B, S_text]"]:::input
+
+    subgraph VIS["vision_tower = MoonViT3dPretrainedModel (vllm kimi_k25_vit.py:548)"]
+        direction TB
+        pe["patch_embed<br/>Conv2d(3, 1152, k=14, s=14)<br/>+ pos_emb 64×64×4 divided_fixed"]:::vision
+        enc["encoder<br/>27× MoonViTEncoderLayer<br/>d=1152, 16 heads × 72 head_dim<br/>FFN=4304, GELU_tanh, attn_bias=True"]:::vision
+        merge["tpool_patch_merger sd2_tpool<br/>[T,H,W,1152] → [T,H/2,W/2,4608]<br/>+ temporal pool over T"]:::vision
+        pe --> enc --> merge
+    end
+
+    mmp["mm_projector = K2VLMultiModalProjector<br/>(sglang kimi_k25.py:572)<br/>pre_norm 1152 / Linear 4608→4608 / GELU / Linear 4608→<b>7168</b>"]:::vision
+
+    emb["embed_tokens<br/>Embedding(163840 → 7168)"]:::text
+
+    fuse["general_mm_embed_routine<br/>scatter image embeds into text stream<br/>at &lt;pipe;kimi_k25_video_placeholder&vert;> (id=163605)"]:::fuse
+
+    subgraph LM["language_model = DeepseekV3ForCausalLM (sglang kimi_k25.py:711)"]
+        direction TB
+        l0["Layer 0 (dense):<br/>MLA + DeepseekV2MLP(7168→18432→7168, SwiGLU)"]:::lm
+        lN["Layers 1-60 (sparse MoE):<br/>MLA + DeepseekV2MoE<br/>384 routed top-8 + 1 shared expert"]:::lm
+        norm["final RMSNorm(7168)"]:::lm
+        head["lm_head Linear(7168 → 163840)"]:::lm
+        l0 --> lN --> norm --> head
+    end
+
+    logits["logits [B, S, 163840]<br/>next-token / tool-call / text"]:::out
+
+    pix --> pe
+    merge --> mmp
+    ids --> emb
+    mmp --> fuse
+    emb --> fuse
+    fuse -->|"[B, S, 7168]"| l0
+    head --> logits
+</pre>
+</div>
+
+<h3 style="font-family:'Noto Serif SC',serif;color:var(--ink);margin:24px 0 10px">架构 2 · Decoder Layer (MLA + MoE)</h3>
+<div class="arch-mermaid" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:18px;margin:12px 0;overflow-x:auto;">
+<pre class="mermaid">
+flowchart TB
+    classDef input fill:#e0f2fe,stroke:#0284c7
+    classDef norm fill:#f1f5f9,stroke:#475569
+    classDef q fill:#dbeafe,stroke:#1e3a8a
+    classDef kv fill:#dcfce7,stroke:#16a34a
+    classDef rope fill:#ffe4e6,stroke:#e11d48
+    classDef attn fill:#f5f3ff,stroke:#7c3aed
+    classDef moe_routed fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+    classDef moe_shared fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+    classDef gate fill:#fef3c7,stroke:#ca8a04
+    classDef res fill:#ecfccb,stroke:#65a30d
+
+    x["x ∈ ℝ [B, S, 7168]"]:::input
+    ln1["input_layernorm<br/>RMSNorm(7168, eps=1e-5)"]:::norm
+
+    subgraph MLA["self_attn = DeepseekV2AttentionMLA (deepseek_v2.py:1130)"]
+        direction TB
+
+        subgraph QPATH["Q path"]
+            direction TB
+            qa["q_a_proj<br/>Linear(7168 → 1536)<br/>q_lora_rank"]:::q
+            qan["q_a_layernorm RMSNorm(1536)"]:::q
+            qb["q_b_proj<br/>Linear(1536 → 12288)<br/>ColumnParallel, = 64 × (128+64)"]:::q
+            qs["split + reshape → <br/>Q_nope [64, 128] + Q_rope [64, 64]"]:::q
+            qr["RoPE(Q_rope)<br/>rotary_dim=64, θ=50000<br/>YaRN factor=64"]:::rope
+            qa --> qan --> qb --> qs --> qr
+        end
+
+        subgraph KVPATH["KV path"]
+            direction TB
+            kva["kv_a_proj_with_mqa<br/>Replicated Linear(7168 → 576)<br/>= kv_lora(512) + qk_rope(64)"]:::kv
+            kvs["split: c_kv [..,512] + k_pe [..,64]"]:::kv
+            kvan["kv_a_layernorm RMSNorm(512)"]:::kv
+            kvb["kv_b_proj<br/>Linear(512 → 16384)<br/>ColumnParallel, = 64 × (128+128)"]:::kv
+            kvout["K_nope[64,128] + V[64,128] + K_rope[1,64 shared]<br/><b>KV cache = c_kv + k_pe = 576 fp/token</b>"]:::kv
+            kva --> kvs --> kvan --> kvb --> kvout
+        end
+
+        attn_core["Attention core<br/>softmax(Q · K^T / √192) · V<br/>qk_head_dim=192, v_head_dim=128, heads=64"]:::attn
+        op["o_proj<br/>RowParallel Linear(8192 → 7168)"]:::q
+
+        qr --> attn_core
+        kvout --> attn_core
+        attn_core --> op
+    end
+
+    res1["x + attn(x)"]:::res
+    ln2["post_attention_layernorm<br/>RMSNorm(7168, eps=1e-5)"]:::norm
+
+    subgraph MOE["mlp (layer 1-60) = DeepseekV2MoE (deepseek_v2.py:354)"]
+        direction LR
+        gate_m["MoEGate (deepseek_v2.py:268)<br/>F.linear(x, W[384, 7168])<br/>+ sigmoid + noaux_tc top-8<br/>+ e_score_correction_bias<br/>🟢 FP16 kept"]:::gate
+        routed["384 routed experts (top-8 active)<br/>each = DeepseekV2MLP(7168→2048→7168, SwiGLU)<br/>routed_scaling_factor = 2.827<br/>🔴 INT4 compressed-tensors<br/>(group_size=32, symmetric, pack-quantized)"]:::moe_routed
+        shared["1 shared expert (always active)<br/>DeepseekV2MLP(7168→2048→7168, SwiGLU)<br/>🟢 FP16 kept<br/>(matches ignore regex)"]:::moe_shared
+        combine["combine<br/>topk · routed(x) + α · shared(x)"]:::attn
+        gate_m --> routed --> combine
+        shared --> combine
+    end
+
+    dense0["(ONLY layer 0) mlp = DeepseekV2MLP<br/>Linear(7168→18432) / SwiGLU / Linear(18432→7168)<br/>🟢 FP16 kept"]:::moe_shared
+
+    res2["x + MoE(x)  or  x + MLP(x) at layer 0"]:::res
+
+    x --> ln1 --> qa
+    ln1 --> kva
+    op --> res1 --> ln2
+    ln2 --> gate_m
+    ln2 --> shared
+    ln2 -.-> dense0
+    combine --> res2
+    dense0 -.-> res2
+</pre>
+</div>
+
+<h3 style="font-family:'Noto Serif SC',serif;color:var(--ink);margin:24px 0 10px">架构 3 · MoonViT-3D Vision Tower</h3>
+<div class="arch-mermaid" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:18px;margin:12px 0;overflow-x:auto;">
+<pre class="mermaid">
+flowchart LR
+    classDef input fill:#ffe4e6,stroke:#e11d48
+    classDef vit fill:#fef3c7,stroke:#ca8a04
+    classDef merge fill:#fde68a,stroke:#ca8a04
+    classDef proj fill:#dcfce7,stroke:#16a34a
+    classDef out fill:#eef2ff,stroke:#4338ca
+
+    vin["pixel_values + grid_thws<br/>(T, H, W) packed<br/>T=1 image, T=4 video"]:::input
+
+    subgraph PE["Patch Embedding (vllm kimi_k25_vit.py:183)"]
+        direction TB
+        conv["Conv2d(3, 1152, k=14, s=14, bias=True)"]:::vit
+        pos["Learnable2DInterp PosEmb divided_fixed<br/>64×64 spatial × 4 time bins"]:::vit
+        conv --> pos
+    end
+
+    subgraph ENC["MoonViT3dEncoder · 27× layer (vllm kimi_k25_vit.py:463)"]
+        direction TB
+        att["Attention: qkv_proj 1152→3456 / 2D RoPE / spatial_temporal / o_proj 1152→1152<br/>16 heads × 72 head_dim, attn_bias=True"]:::vit
+        mlp["MLP2: Linear 1152→4304 / gelu_pytorch_tanh / Linear 4304→1152"]:::vit
+        att -->|residual| mlp
+    end
+
+    subgraph MERGE["tpool_patch_merger sd2_tpool (kimi_k25_vit.py:523)"]
+        direction TB
+        s2["spatial 2×2 merge<br/>[T, H, W, 1152] → [T, H/2, W/2, <b>4608</b>]"]:::merge
+        tp["temporal pool over T<br/>(video: 4 frames → 1 token)"]:::merge
+        s2 --> tp
+    end
+
+    subgraph PROJ["K2VLMultiModalProjector (sglang kimi_k25.py:572)"]
+        direction TB
+        pn["pre_norm LayerNorm(1152, eps=1e-5)<br/>⚠ applied BEFORE reshape"]:::proj
+        reshape["view(-1, 4608)"]:::proj
+        l1["Linear(4608 → 4608, bias=True)"]:::proj
+        act["GELU"]:::proj
+        l2["Linear(4608 → <b>7168</b>)<br/>= text_hidden_size"]:::proj
+        pn --> reshape --> l1 --> act --> l2
+    end
+
+    vout["image/video embeds<br/>[N_tok, 7168]<br/>→ fused into text stream"]:::out
+
+    vin --> conv
+    pos --> att
+    mlp --> s2
+    tp --> pn
+    l2 --> vout
+</pre>
+</div>
+
+<h3 style="font-family:'Noto Serif SC',serif;color:var(--ink);margin:24px 0 10px">架构 4 · INT4 Quantization Layout</h3>
+<div class="arch-mermaid" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:18px;margin:12px 0;overflow-x:auto;">
+<pre class="mermaid">
+flowchart LR
+    classDef fp16 fill:#dcfce7,stroke:#16a34a,color:#052e16
+    classDef int4 fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:3px
+    classDef ignore fill:#dbeafe,stroke:#2563eb
+
+    subgraph CFG["quantization_config (HF config.json 新增)"]
+        direction TB
+        qmethod["quant_method: compressed-tensors<br/>format: pack-quantized<br/>status: compressed"]:::ignore
+        qgroup["group_0.targets: [Linear]<br/>num_bits=4, type=int, symmetric=true,<br/>strategy=group, group_size=32"]:::int4
+        qignore["ignore:<br/>• lm_head<br/>• re:.*self_attn.*<br/>• re:.*shared_experts.*<br/>• re:.*mlp\\.(gate&vert;up&vert;gate_up&vert;down)_proj.*"]:::fp16
+        qkv["kv_cache_scheme: null<br/>→ KV cache 保 FP16"]:::fp16
+    end
+
+    subgraph INT4_Z["🔴 真正 INT4 的参数 (~92% 参数)"]
+        direction TB
+        routed["model.layers.[1-60].mlp.experts.[0-383].(gate&vert;up&vert;down)_proj<br/>60 × 384 × 3 = 69,120 个 Linear<br/>FP16 原始 ≈ 925 GB<br/><b>INT4 压缩后 ≈ 245 GB</b><br/>(3.77× shrink)"]:::int4
+    end
+
+    subgraph FP16_Z["🟢 FP16 保留 (~53 GB)"]
+        direction TB
+        fp_attn["self_attn (MLA 所有投影)<br/>61L × (q_a + q_b + kv_a + kv_b + o)<br/>≈ 44 GB"]:::fp16
+        fp_shared["shared_experts<br/>60L × 1 × 3 投影 ≈ 2.5 GB"]:::fp16
+        fp_dense["Layer 0 dense mlp<br/>3 × (7168×18432)/2 ≈ 0.8 GB"]:::fp16
+        fp_head["lm_head + embed_tokens<br/>2 × (7168 × 163840) ≈ 4.7 GB"]:::fp16
+        fp_vision["MoonViT-3D + mm_projector<br/>≈ 1 GB (not Linear targets)"]:::fp16
+        fp_misc["MoEGate + RMSNorm + biases ≈ 0.5 GB"]:::fp16
+    end
+
+    total["<b>Total deployed ≈ 298 GB</b><br/>单 8×H200 (1128 GB HBM) 舒适<br/>262K KV cache / seq ≈ 290 MB (MLA latent)"]:::ignore
+
+    qgroup --> routed
+    qignore --> fp_attn
+    qignore --> fp_shared
+    qignore --> fp_dense
+    qignore --> fp_head
+    qkv --> fp_vision
+    routed --> total
+    fp_attn --> total
+    fp_shared --> total
+</pre>
+</div>
+
+<details style="margin-top:28px;padding:14px 18px;background:#f1f5f9;border:1px solid var(--border);border-radius:8px">
+<summary style="cursor:pointer;font-family:'IBM Plex Sans',sans-serif;font-weight:600;color:var(--ink)">📁 多页 drawio ladder (备份 · 含 Release Overview / Agent Swarm / Claw Groups / RL loop 4 页 delta)</summary>
+<p style="margin:12px 0;font-size:13px;color:var(--mt);font-family:'Noto Sans SC',sans-serif">
+同样 4 页架构内容 + 4 页 release delta 的 drawio 多页版本, 保留作为 tab 切换导航。
+</p>
 <div class="arch">
-  <!-- hidden XML source; lazy-load bootstrap picks it up at DOMContentLoaded -->
   <div id="drawio-xml-kimi-k2-6-arch" class="drawio-xml-source" style="display:none !important;" aria-hidden="true">&lt;mxfile host="app.diagrams.net" modified="2026-04-21T13:00:00.000Z" agent="paper-reader" version="24.0.0"&gt;
   &lt;diagram id="p0-pipeline" name="1. Top-level Multimodal Pipeline"&gt;
     &lt;mxGraphModel dx="1600" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900" math="0" shadow="0"&gt;
@@ -721,8 +974,9 @@ section.ch h2{font-family:'Noto Serif SC',serif;font-size:24px;color:var(--ink);
 &lt;/mxfile&gt;
 </div>
   <div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-kimi-k2-6-arch" data-page="0" style="width:100%;aspect-ratio:1500/900;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div>
-  <div class="arch-hint">⬆ 滚轮缩放 · 拖动平移 · 顶部切换 <b>8 页</b>：①Top-level Pipeline · ②Decoder MLA+MoE · ③MoonViT-3D · ④INT4 量化布局 · ⑤Release Overview · ⑥Agent Swarm · ⑦Claw Groups · ⑧长程 RL loop · <a href="/assets/kimi-k2-6_arch.drawio" download>下载 .drawio</a></div>
+  <div class="arch-hint">⬆ 滚轮缩放 · 顶部切换 8 页 · <a href="/assets/kimi-k2-6_arch.drawio" download>下载 .drawio</a></div>
 </div>
+</details>
 
 <div class="arch-expl">
   <div class="e"><h4>Page 1 · Top-level pipeline</h4><p>三件套 + 合流: <code>MoonViT3dPretrainedModel</code>（视觉塔）+ <code>K2VLMultiModalProjector</code>（1152×4=4608 → 7168）+ <code>DeepseekV3ForCausalLM</code>（MLA+MoE 文本主干）, 用 <code>general_mm_embed_routine</code> 按 <code>&lt;|kimi_k25_video_placeholder|&gt;</code> (id=163605) 把图像 embed 插入文本流。代码: <code>sglang/kimi_k25.py:678-793</code>。</p></div>
