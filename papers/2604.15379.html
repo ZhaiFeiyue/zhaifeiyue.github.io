@@ -1143,6 +1143,87 @@ for (int i = blockIdx.x * blockDim.x + threadIdx.x;
 <p>5. scheduler 3.1% CU 开销在 MI400 这类 16 XCD 架构下会线性放大（bigger chiplet count），能否用 wavefront-level scheduler 降开销？</p>
 <p>6. long-context（seq ≥ 32K）时 attention 成本相对上升到 40–50%，Fleet 的 linear-only 优化是否需要延伸到 attention 的协作式 L2 策略？</p>
 <p>7. Fleet 的 SJM（Eq.(1)）在 streaming 修饰符下 bs=64 residual 13.6 pp，能否给出 streaming eviction 的解析模型（e.g. LRU window × allocation rate）？</p>
+<h2 id="review">第二轮批判审视（外部 review 交叉校验）</h2>
+<blockquote>本节由 2026-04 NeuralTalk Fleet 解读（微信公众号）触发。对比该独立</blockquote>
+<blockquote>解读与本笔记，surface 了若干原始笔记没覆盖的批判视角。这些视角已经</blockquote>
+<blockquote>沉淀为 SKILL.md Phase 2b 的新规则（根本性 vs 缓解性 / Trade-off 轴 /</blockquote>
+<blockquote>对立观点 / 软件→硬件反推 / 范式演进 / multi-tenancy）。按 Skill-</blockquote>
+<blockquote>Modification Protocol 回溯补入本笔记。</blockquote>
+<h3>A. 根本性 vs 缓解性审视</h3>
+<p><b>Fleet 对"内存墙"的根本性突破仅存在于批处理场景 (bs ≥ 32)</b>。</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">场景</th><th style="text-align:left">加速来源</th><th style="text-align:left">是否根本性</th></tr></thead><tbody>
+<tr><td style="text-align:left">bs = 1 (agent / chatbot 延迟敏感)</td><td style="text-align:left">dispatch 压缩 (543 vs 1407 task)</td><td style="text-align:left">❌ <b>非根本性</b>。L2 hit 16.9% ≈ Mirage 的 16.4%，权重复用完全未发生。Fleet 在此 regime 下只是"launch overhead eliminator"，和 CUDA Graph + hipBLASLt 的组合效果差距有限</td></tr>
+<tr><td style="text-align:left">bs = 8-16</td><td style="text-align:left">dispatch 压缩</td><td style="text-align:left">❌ <b>非根本性</b>。同上。M-tile 和 M-split 变体打平（Table 4 L2 hit 20–24% 几乎一致）印证没有 L2 复用发生</td></tr>
+<tr><td style="text-align:left">bs = 32 (m_tiles=2, R=2)</td><td style="text-align:left">dispatch 压缩 + L2 协作 (预测 50% / 实测 51%)</td><td style="text-align:left">✅ <b>根本性</b>。L2 复用是 Fleet 独门贡献</td></tr>
+<tr><td style="text-align:left">bs = 64 (m_tiles=4, R=4)</td><td style="text-align:left">L2 协作 (预测 75% / 实测 61.4%)</td><td style="text-align:left">✅ <b>根本性</b>但 compute-bound 区让位 hipBLASLt</td></tr>
+</tbody>
+</table></div>
+<p><b>前提 (condition)</b>: Fleet 的"根本性"L2 突破要求 <code>m_tiles ≥ 2 ⇔ B ≥ 2 · T_M = 32</code>（T_M=16）。</p>
+<p><b>前提失效时的效果归零</b>：bs < 32 时 Eq.(1) 的 R=1 → 预测 0% L2 reuse，完全不产生权重复用加速；仅剩 dispatch 开销压缩（约 1.15× vs Mirage）。</p>
+<p><b>论证的结构性结论</b>：Fleet 对 "内存墙"的<b>根本性</b>解决仅在 batched serving。对 chatbot / agent / voice agent 这类 bs=1 延迟敏感场景，"内存墙"本身需要硬件层面变革（跨 chiplet L2 共享、一致性协议改写），软件方案的天花板已经被 Fleet 打到了。外部 review 的原话值得引用：<b>"真正根本性的解决方案可能需要硬件层面的变革"</b>。</p>
+<h3>B. Trade-off 轴识别 + 未探索 Hybrid</h3>
+<p><b>bs=64 Fleet 被 vLLM 反超不是 "K-split 未实现" 那么简单</b> —— 论文把它归因为"实现未完善"是一种<b>规避真相的叙事</b>。真相是存在一根结构性 trade-off 轴：</p>
+<p>$$\text{Trade-off 轴:}\quad \underbrace{\text{跨算子持久化复用}}_{\text{Fleet 方向}} \ \longleftrightarrow\ \underbrace{\text{单 kernel 极致调优}}_{\text{hipBLASLt 方向}}$$</p>
+<ul>
+<li><b>Fleet 方向 必须</b>: 所有 task 类型编译进单函数 → register budget 取并集 → 只能跑 1 wave/SIMD → 放弃 wave-switching latency hiding → compute-bound 区必然劣于 kernel-per-op baseline</li>
+<li><b>hipBLASLt 方向 必须</b>: 每 kernel 独立 register 预算 + 自动调优 tile + 支持 K-split/stream-K/tensor-core 动态组合 → compute-bound 区饱和 MFMA → 但每个 kernel 边界都会 flush L2，memory-bound 区被 HBM 带宽限死</li>
+</ul>
+<p><b>两个方向在 compute-bound vs memory-bound 谱上天然互斥</b>，不是"Fleet 补上 K-split 就能两全"。</p>
+<p><b>未探索的 Hybrid 方向（Fleet 论文完全没讨论）</b>：</p>
+<blockquote><b>Adaptive Fusion Granularity Switch</b> — persistent megakernel 内部携带一个轻量级性能预测器，每次迭代开始时根据 <code>(batch_size, sequence_length, hit_rate_last_step)</code> 决定：</blockquote>
+<blockquote>- 当 B · T_M ≥ L2_capacity_threshold (≈ bs ≥ 32 on MI350) → 走 Fleet megakernel 路径</blockquote>
+<blockquote>- 否则 → <b>切换到 hipBLASLt K-split GEMM + 独立 kernel</b></blockquote>
+<p>></p>
+<blockquote>具体实现：megakernel 留出一个 "bypass task" 类型，任务描述符里指向 hipBLASLt 的 handle；scheduler 看到 bypass 类型就把对应 GEMM 委托出去。代价是每次切换约 1 次 kernel launch，但在 bs ≥ 64 能吃到 hipBLASLt 的 compute-bound 极值。</blockquote>
+<p><b>这条 hybrid 方向是一个完整的独立研究问题</b>，值得放进 Open Questions。</p>
+<h3>C. 对立观点主动搜索 —— MoE 其实可能<b>比 dense 更契合</b> Fleet</h3>
+<p>原本 §3e 的 Binding 3 写的是 "MoE 不适用（最严重）"，因为"每 token 路由不同 expert，M-major 协作假设破坏"。但<b>对立观点审视</b>发现：</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">我们原本视角</th><th style="text-align:left">对立视角 (NeuralTalk review)</th></tr></thead><tbody>
+<tr><td style="text-align:left">视角起点：Fleet 现行设计的 M-major 协作</td><td style="text-align:left">视角起点：重新设计 Fleet 给 MoE 用</td></tr>
+<tr><td style="text-align:left">结论：MoE binding 3 最严重</td><td style="text-align:left">结论：<b>MoE 天然契合 Fleet</b></td></tr>
+<tr><td style="text-align:left">理由：token 之间不共享 expert 权重 → 协作失效</td><td style="text-align:left">理由：<b>不同 expert 驻留不同 XCD 的 L2</b>，gating network 做 expert→XCD affinity routing，expert 权重从此 XCD-local，比 dense 的 N-split 更自然</td></tr>
+</tbody>
+</table></div>
+<p><b>重要观察</b>：MI350 有 8 颗 XCD —— 这个数字恰好对应典型 MoE 的 <code>num_routed_experts</code>（Mixtral 8×7B 精确对齐；DeepSeek-V2 的 64 routed + 2 shared 可以做 8 个 XCD 各 8 expert；Qwen3-Next 80B-MoE 的 128 routed 可 16 expert / XCD）。<b>Expert ↔ XCD 映射是 MoE 专属的 chiplet-affinity opportunity，Fleet 的 Chiplet-task 抽象原则上可以直接表达</b>（需要把 Chiplet-task 类型扩展出 Expert-Chiplet-task 变体）。</p>
+<p><b>结论</b>：我们原本的 Binding 3 critique <b>在 Fleet 的 M-major 现行设计下成立</b>，但<b>作为研究方向是误导性的</b>。正确表述应该是：</p>
+<blockquote>Binding 3（精修版）: <b>Fleet 的 M-major GEMM 协作设计</b>不直接适用 MoE，但 MoE 的 expert 稀疏激活与 chiplet 私有 L2 天然亲和——<b>将 Chiplet-task 从"XCD-local weight partition"语义扩展到"XCD-local expert affinity"是论文未探索但价值很高的方向</b>。chain step 3 的 premise 需从 "dense-only" 放宽到 "partition 可沿 expert 或 token 维度"。</blockquote>
+<h3>D. 软件 → 硬件反向推演</h3>
+<p>Fleet 的纯软件方案给以下未来硬件特性提供了<b>存在性证明 + 量化依据</b>：</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">未来硬件特性</th><th style="text-align:left">Fleet 证明其价值的数据</th><th style="text-align:left">硬件支持后软件开销预计降低</th></tr></thead><tbody>
+<tr><td style="text-align:left"><b>硬件管理的 XCD-local 任务队列</b></td><td style="text-align:left">Fleet 用 8 workgroup（3.1% CU）做 scheduler，<code>workers rarely stall waiting for task assignment</code> (§5.1)</td><td style="text-align:left">scheduler CU 开销从 3.1% → 0%；MI400 类 16 XCD 架构尤其显著（当前 6.25% → 0%）</td></tr>
+<tr><td style="text-align:left"><b>跨 chiplet 轻量级 fence</b> (SC + atomic 的单周期版本)</td><td style="text-align:left">Fleet 两级计数把每事件 fence 从 248 降到 8，量化了 fabric fence 的代价主导</td><td style="text-align:left">每事件 fence 继续降到 0（硬件直通 counter），持久化 megakernel scheduling throughput 再涨 20-30%</td></tr>
+<tr><td style="text-align:left"><b>可编程 cache scope 分区</b> (per-stream LRU class)</td><td style="text-align:left">Fleet 用 3 档 cache modifier 隔离 weight/activation/sched 流量</td><td style="text-align:left">动态 partition 无需 paper §4 描述的静态 modifier hint；能适应 MoE expert 切换的突发访问</td></tr>
+<tr><td style="text-align:left"><b>HW-accelerated HW_ID routing</b></td><td style="text-align:left">Fleet scheduler 通过 HW_ID 寄存器读 + software routing 决策</td><td style="text-align:left">硬件实现 scheduler-local queue 会让"每 XCD 一个 scheduler"变成免费</td></tr>
+</tbody>
+</table></div>
+<p><b>推论</b>：AMD MI400 / MI500 代际的 CDNA 5/6 架构应当考虑将上述 4 项从 ISA 扩展到 microarchitecture；这是 Fleet 论文给 AMD 架构路线图贡献的<b>隐式 design wishlist</b>。NVIDIA Blackwell Ultra / Rubin 代也可借鉴——Blackwell 的 thread-block cluster 已经向 "硬件 chiplet 感知同步原语" 迈了一步但粒度不对 L2 层级，Fleet 的证明给 Rubin 代做到 "chiplet-scope cluster" 提供了量化论据。</p>
+<h3>E. 范式演进定位</h3>
+<p>Fleet 的真实贡献不只是 "1.5× vLLM decode 加速"，而是把一个<b>"隐式硬件约束 → 显式软件资源"</b>的抽象模板补完了：</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">Paper</th><th style="text-align:left">隐式硬件约束</th><th style="text-align:left">变成显式软件资源</th></tr></thead><tbody>
+<tr><td style="text-align:left">vLLM PagedAttention (2023)</td><td style="text-align:left">KV cache 必须连续分配</td><td style="text-align:left"><code>page</code> 显式资源（paged memory manager）</td></tr>
+<tr><td style="text-align:left">FlashAttention (2022)</td><td style="text-align:left">HBM 访问是瓶颈</td><td style="text-align:left"><code>tile in SRAM</code> 显式资源（IO-aware scheduling）</td></tr>
+<tr><td style="text-align:left"><b>Fleet (2026)</b></td><td style="text-align:left"><b>L2 物理分区（chiplet）</b></td><td style="text-align:left"><b><code>Chiplet-task</code> 显式资源</b></td></tr>
+<tr><td style="text-align:left">(hypothetical next)</td><td style="text-align:left">MALL Infinity Cache 分层</td><td style="text-align:left"><code>LLC-task</code> ?</td></tr>
+<tr><td style="text-align:left">(hypothetical next)</td><td style="text-align:left">跨 GPU NVLink bandwidth</td><td style="text-align:left"><code>Island-task</code> ?</td></tr>
+</tbody>
+</table></div>
+<p><b>这是一条可以推广的范式演进主线</b>：每当硬件引入一种新的隐式拓扑约束，软件抽象就需要把它变成显式一等公民。Fleet 在这条主线上的贡献不是最大的（PagedAttn / FlashAttn 更有影响力），但<b>是这条主线被外推到芯粒层级的第一个严肃实现</b>。下一篇类似工作很可能处理 Infinity Cache 或跨 GPU L2 —— 这是值得关注的方向。</p>
+<h3>F. Multi-tenancy & 侧信道审计</h3>
+<p>Fleet 论文完全未讨论云多租户场景。但持久化 megakernel + 分区 L2 引入了<b>至少 3 类侧信道攻击面</b>：</p>
+<p>1. <b>L2 contention fingerprinting</b>：co-tenant 的 Fleet 实例占用同一 XCD 时，L2 cache 替换率泄露对方 Chiplet-task 的 working set size → <b>模型架构指纹</b>（通过周期性 L2 miss 模式识别对方是 MoE 还是 dense）</p>
+<p>2. <b>Scheduler queue depth side-channel</b>：全局 G[e] event counter 的 atomic 竞争延迟可被对方 poll 到 → <b>batch 到达率/并发度泄露</b></p>
+<p>3. <b>buffer_wbl2 timing channel</b>：每次跨 XCD flush 的延迟和 dirty-line 数量成正比 → <b>对方 working set 变化率泄露</b>，进而推出 sequence length / layer depth 特征</p>
+<p><b>Fleet 当前适用范围（基于安全视角）</b>：</p>
+<ul>
+<li>✅ 单租户 inference（个人 / 企业专用 serving）</li>
+<li>✅ 受信任 multi-tenancy（同一 organization 内部）</li>
+<li>❌ 不受信任 multi-tenancy（公有云跨租户直接共享单 GPU）—— 需要加上 XCD-level hardware isolation + L2 scrubbing between requests 才能进入此场景</li>
+</ul>
+<p><b>结论</b>：Fleet 走向生产需要一整块 multi-tenancy security 补课。这是论文的"盲区 limitation"，论文未列、我们原笔记也没列。</p>
 <h2 id="">设计哲学摘要</h2>
 <p><b>一句话总结</b>：Fleet 是"给 persistent megakernel 补上 chiplet 这一层的 OS kernel"——把 CUDA 的 hw dispatcher 换成软件 per-XCD scheduler，把 L2 分区从编程模型 bug 变成显式资源。</p>
 <p><b>技术细节彩蛋</b>：</p>
