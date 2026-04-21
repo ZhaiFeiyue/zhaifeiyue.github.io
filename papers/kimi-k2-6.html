@@ -281,7 +281,7 @@ footer {
   <a href="/">Papers</a>
   <a href="/knowledge/">Knowledge</a>
   <a href="/knowledge-graph.html">Graph</a>
-  <a href="/float.html">Tools</a>
+  <a href="/tools/">Tools</a>
   <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
 </nav>
 <div class="paper-header">
@@ -291,6 +291,7 @@ footer {
     <span class="cat-tag" style="background:#9333ea">LLM</span>
     &nbsp; Moonshot AI / Kimi Team &nbsp;·&nbsp; 2026-04
     &nbsp;·&nbsp; <a href='https://www.kimi.com/blog/kimi-k2-6' target='_blank'>arXiv ↗</a>
+    &nbsp;·&nbsp; <a href='/readers/kimi-k2-6-reader.html' style='background:#1b2a4a;color:#fff;padding:3px 10px;border-radius:6px;text-decoration:none;font-weight:600'>📖 精读 Reader ↗</a>
   </div>
   <div class="tags"><span class="tag">agent</span><span class="tag">coding</span><span class="tag">agent-swarm</span><span class="tag">MoE</span><span class="tag">quantization</span></div>
 </div>
@@ -855,127 +856,93 @@ footer {
 &lt;/mxfile&gt;</div><div class="drawio-embed" style="margin:12px 0;line-height:0;"><div class="mxgraph mxg-lazy" data-xml-source="drawio-xml-kimi-k2-6-arch-drawio" data-page="0" style="display:block;width:100%;aspect-ratio: 1470 / 810;border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"></div><p style="font-size:0.8rem;color:#6b7280;text-align:center;margin:6px 0 0 0;line-height:1.4;">💡 滚轮缩放 · 拖动平移 · 顶部页签切换 · <a href="/assets/kimi-k2-6_arch.drawio" download>下载 .drawio</a></p></div>
 <p><b>下面 §1 详细走代码, drawio 是可视化辅助, 不是替代品。</b></p>
 <h3>1. Architecture (code-verified walkthrough)</h3>
-<h4>1a. Top-level wiring (sglang kimi_k25.py + vllm kimi_k25_vit.py)</h4>
-<p>K2.6 的模型类仍是 <code>KimiK25ForConditionalGeneration</code>（这是 K2.6 没换代码路径的最强证据, HF auto_map 明确映射到 <code>modeling_kimi_k25.KimiK25ForConditionalGeneration</code>）。sglang <code>kimi_k25.py:678-793</code> 显示三件套 + 一个 <code>general_mm_embed_routine</code> 合流：</p>
-<pre><code>
-class KimiK25ForConditionalGeneration(nn.Module):
-    def __init__(self, config: KimiK25Config, quant_config=None, ...):
-        # 1. Vision tower (SigLIP-SO-400M 风格, 27L × 1152)
-        self.vision_tower = MoonViT3dPretrainedModel(config.vision_config, ...)
-
-        # 2. MM projector (patchmerger: 1152×4 → 4608 → 7168)
-        self.mm_projector = K2VLMultiModalProjector(config.vision_config)
-
-        # 3. Language model (DeepSeek-V3 架构: MLA + MoE)
-        self.language_model = DeepseekV3ForCausalLM(config.text_config, quant_config, ...)
-
-    def forward(self, input_ids, positions, forward_batch, ...):
-        return general_mm_embed_routine(
-            input_ids=input_ids,
-            language_model=self.language_model,
-            data_embedding_funcs={Modality.IMAGE: self.get_image_feature},
-            ...
-        )
-</code></pre>
-<p>图像路径 (<code>get_image_feature</code>, sglang <code>kimi_k25.py:728</code>): <code>pixel_values → vision_tower → mm_projector → image_features</code>, 然后 <code>general_mm_embed_routine</code> 按 <code><|kimi_k25_video_placeholder|></code> token id (163605) 插进文本 embedding 流。</p>
-<p><b>K2.6 vs K2.5 deep-check</b>（对照 HF config）：code path <code>KimiK25*</code> 类名完全不变; 只是 <code>quant_config</code> 在加载 K2.6 权重时会传入 <code>compressed-tensors</code> 分支, MoE experts 走 INT4 dequant。<b>forward() 图形状逐字节相同</b>。</p>
-<h4>1b. Text decoder layer (MLA + MoE internals)</h4>
-<p>从 sglang <code>deepseek_v2.py:1596</code> 开始:</p>
-<pre><code>
-class DeepseekV2DecoderLayer(nn.Module):
-    def __init__(self, config, layer_id, quant_config, ..., moe_quant_config_override=None):
-        # MLA 部分 (unconditional)
-        self.self_attn = DeepseekV2AttentionMLA(
-            config=config,
-            hidden_size=7168,
-            num_heads=64,
-            qk_nope_head_dim=128, qk_rope_head_dim=64, v_head_dim=128,
-            q_lora_rank=1536, kv_lora_rank=512,
-            rope_theta=50000, rope_scaling={&#x27;type&#x27;: &#x27;yarn&#x27;, &#x27;factor&#x27;: 64, ...},
-            ...
-        )
-
-        # MLP 部分: layer_id &lt; first_k_dense_replace(1) 走 dense, 否则 MoE
-        self.is_layer_sparse = (layer_id &gt;= 1)  # 即 layer 0 = dense
-        if self.is_layer_sparse:
-            self.mlp = DeepseekV2MoE(config, quant_config=moe_quant_config_override or quant_config, ...)
-        else:
-            self.mlp = DeepseekV2MLP(
-                hidden_size=7168, intermediate_size=18432,  # ← dense FFN only at layer 0
-                hidden_act=&#x27;silu&#x27;, quant_config=quant_config,
-            )
-
-        self.input_layernorm = RMSNorm(7168, eps=1e-5)
-        self.post_attention_layernorm = RMSNorm(7168, eps=1e-5)
-</code></pre>
-<p><b>MLA 内部展开</b> (sglang <code>deepseek_v2.py:1130</code>)：Q 路径是 <code>q_a_proj (7168→1536) → q_a_layernorm RMSNorm(1536) → q_b_proj (1536→12288, ColumnParallel)</code>, 然后 reshape 到 <code>[64, 192]</code> 并 split 成 <code>Q_nope[64,128]</code> + <code>Q_rope[64,64]</code>; RoPE 只施加在 <code>Q_rope</code> 上。KV 路径是 <code>kv_a_proj_with_mqa (7168→576, Replicated)</code>, split 为 <code>c_kv[..,512]</code> 和 <code>k_pe[..,64]</code>; <code>c_kv</code> 走 <code>kv_a_layernorm RMSNorm(512) → kv_b_proj (512→16384, ColumnParallel)</code> 展开成 <code>K_nope[64,128] + V[64,128]</code>; <code>k_pe</code> 直接作为 <code>K_rope[1,64]</code> 跨所有 64 个 head 共享。最终 attention 核心用 <code>qk_head_dim = 128+64 = 192</code> 计算, output <code>v_head_dim = 128</code> 经 <code>o_proj (8192→7168, RowParallel)</code> 投回。</p>
-<p><b>KV cache 细节</b>（这是 MLA 的关键价值）: 只存 <code>c_kv + k_pe = 512 + 64 = 576 floats/token</code>。K2.6 的 <code>kv_cache_scheme = null</code> 确认 KV cache 保 FP16 → 1.15 KB/token, 262K context ≈ 290 MB/seq, 单节点 8×H200 下完全不是 bottleneck。</p>
-<p><b>MoE 内部展开</b> (sglang <code>deepseek_v2.py:354 DeepseekV2MoE</code> + <code>:268 MoEGate</code>):</p>
-<pre><code>
-class DeepseekV2MoE(nn.Module):
-    def __init__(self, config, ...):
-        self.gate = MoEGate(config, ...)  # 路由 sigmoid + noaux_tc + top-8
-        self.experts = FusedMoE(
-            num_experts=384,  # n_routed_experts
-            top_k=8,           # num_experts_per_tok
-            hidden_size=7168, intermediate_size=2048,  # moe_intermediate_size
-            routed_scaling_factor=2.827,
-            ...
-        )
-        # Shared expert (1 个, 每 token 必经)
-        if config.n_shared_experts:
-            self.shared_experts = DeepseekV2MLP(
-                hidden_size=7168,
-                intermediate_size=2048,  # moe_intermediate_size × n_shared_experts = 2048
-                hidden_act=&#x27;silu&#x27;,
-            )
-
-class MoEGate(nn.Module):  # :268
-    # weight[384, 7168], e_score_correction_bias[384]
-    # forward: logits = F.linear(x, weight, None)  — **FP16 kept (not INT4)**
-    # 然后 noaux_tc: sigmoid(logits + bias) → top-8
-</code></pre>
-<p>此图在 drawio page 2 中展开为：<b>input → input_layernorm → MLA（9 个 proj）→ o_proj → residual → post_attention_layernorm → (MoE gate → 384 routed + 1 shared → combine) → residual</b>。</p>
-<p><b>INT4 量化边界</b> (code-precise)：K2.6 的 <code>quantization_config.ignore</code> 用正则 <code>re:.*mlp\.(gate|up|gate_up|down)_proj.*</code> 匹配 <code>DeepseekV2MLP</code> 里的 <code>gate_proj/up_proj/down_proj</code> 属性名——这精确覆盖 <b>layer 0 的 dense FFN</b> 以及 <b>shared expert</b>（其内部同样是 <code>DeepseekV2MLP</code>）。未被 ignore 的 <code>model.layers.[1-60].mlp.experts.[0-383].(gate_proj|up_proj|down_proj)</code> 才是真正走 INT4 compressed-tensors pack-quantized 的路径。</p>
-<h4>1c. Vision tower (MoonViT-3D internals)</h4>
-<p>从 vllm <code>kimi_k25_vit.py:548</code> + <code>:183</code>：</p>
-<pre><code>
-class MoonVision3dPatchEmbed(nn.Module):  # :183
-    def __init__(self, patch_size=14, out_dim=1152, ...):
-        self.proj = nn.Conv2d(3, 1152, kernel_size=(14,14), stride=(14,14))
-        self.pos_emb = Learnable2DInterpPosEmbDivided_fixed(  # :126
-            init_pos_emb_height=64, init_pos_emb_width=64, init_pos_emb_time=4
-        )
-
-class MoonViT3dEncoder(nn.Module):  # :463
-    def __init__(self, hidden_dim=1152, num_layers=27, ...):
-        self.layers = [MoonViTEncoderLayer(
-            num_heads=16, hidden_dim=1152, mlp_dim=4304,
-            activation=get_act_fn(&#x27;gelu_pytorch_tanh&#x27;),
-            attn_bias=True,
-        ) for _ in range(27)]
-        # video_attn_type=&quot;spatial_temporal&quot;  → 注意力沿 T, H, W 三轴
-</code></pre>
-<p>Merge 阶段 (<code>vllm/kimi_k25_vit.py:523 tpool_patch_merger</code>)：当 <code>merge_type == "sd2_tpool"</code> 时, 先做 spatial 2×2 merge（<code>reshape [T, H, W, 1152] → [T, H/2, W/2, 4608]</code>）, 再把 T 维 mean pooling（对 T=4 的视频 帧求平均）得到 <code>[1, H/2, W/2, 4608]</code>。</p>
-<p>Projector (<code>sglang/kimi_k25.py:572 K2VLMultiModalProjector</code>)：</p>
-<pre><code>
-class K2VLMultiModalProjector(nn.Module):
-    def __init__(self, config):
-        merge_h, merge_w = (2, 2)  # merge_kernel_size
-        self.hidden_size = 1152 * 2 * 2 = 4608
-        self.pre_norm = LayerNorm(1152, eps=1e-5)
-        self.linear_1 = ReplicatedLinear(4608, 4608, bias=True)
-        self.act = nn.GELU()
-        self.linear_2 = ReplicatedLinear(4608, 7168, bias=True)  # → text_hidden_size!
-
-    def forward(self, x):
-        x = self.pre_norm(x).view(-1, 4608)  # ← reshape 在 pre_norm 之后
-        x = self.act(self.linear_1(x)[0])
-        x = self.linear_2(x)[0]  # [N_tok, 7168]
-        return x
-</code></pre>
-<p>注意这里一个<b>容易读错的点</b>: <code>pre_norm</code> 先在 <code>[N_patches, 1152]</code> 上做 norm, <b>然后</b>才 <code>view(-1, 4608)</code> merge 到 patchmerger 结构。LayerNorm 是 per-patch, 不是 per-merged-token。这和 "先 merge 再 norm" 的天真实现不同, 保留了每个 source patch 的归一化独立性。</p>
-<h4>1d. Paper × Implementation Cross-reference</h4>
+<blockquote><b>文字说明 = drawio 的 caption, 不是 drawio 的替代</b>. 结构请看 drawio page 1-4;</blockquote>
+<blockquote>本节只写 "drawio 画不出的东西": 代码路径、关键常量、易错点。</blockquote>
+<blockquote><b>不贴大段 Python 代码块</b>——原则是"图里有的不写字、字里有的不贴码", 代码请通过 file:line 打开源文件。</blockquote>
+<h4>1a. Top-level wiring</h4>
+<p>📐 <b>结构图 → drawio Page 1</b> "Top-level Multimodal Pipeline" (上方互动图第 1 页)</p>
+<p><b>关键代码锚点</b> (走读时在你本地编辑器打开):</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">代码锚点</th><th style="text-align:left">做什么</th></tr></thead><tbody>
+<tr><td style="text-align:left"><code>sglang/kimi_k25.py:678</code></td><td style="text-align:left"><code>class KimiK25ForConditionalGeneration</code> — 三件套顶层构造器</td></tr>
+<tr><td style="text-align:left"><code>sglang/kimi_k25.py:700-717</code></td><td style="text-align:left">构造 vision_tower / mm_projector / language_model 三件套的位置</td></tr>
+<tr><td style="text-align:left"><code>sglang/kimi_k25.py:728</code></td><td style="text-align:left"><code>get_image_feature</code> — 图像路径入口</td></tr>
+<tr><td style="text-align:left"><code>sglang/kimi_k25.py:774</code></td><td style="text-align:left"><code>forward</code> → <code>general_mm_embed_routine</code> 合流</td></tr>
+</tbody>
+</table></div>
+<p><b>关键易错点</b>:</p>
+<p>1. 模型类名在 K2.6 仍是 <code>KimiK25ForConditionalGeneration</code> — HF auto_map 未变, 代码路径 100% 复用 K2.5</p>
+<p>2. <code><|kimi_k25_video_placeholder|></code> token id = <b>163605</b> (HF config.json) — 图像 embed 合流的锚点 token</p>
+<p>3. 区分 "图像路径" 与 "视频路径": 二者走同一 <code>vision_tower + mm_projector</code>, 只是 <code>grid_thws</code> 的 T 维不同 (image T=1, video T=4)</p>
+<h4>1b. Text decoder layer (MLA + MoE)</h4>
+<p>📐 <b>结构图 → drawio Page 2</b> "K2.6 Decoder Layer (MLA + MoE)"</p>
+<p><b>关键代码锚点</b>:</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">代码锚点</th><th style="text-align:left">做什么</th></tr></thead><tbody>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:1596</code></td><td style="text-align:left"><code>class DeepseekV2DecoderLayer</code> — 单层构造, 判 MoE vs dense</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:1732-1736</code></td><td style="text-align:left"><code>_is_layer_sparse</code> = <code>layer_id >= first_k_dense_replace(1)</code> — layer 0 走 dense, layer 1-60 走 MoE</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:1130</code></td><td style="text-align:left"><code>class DeepseekV2AttentionMLA</code> — MLA 的 q_a/q_b/kv_a/kv_b/o 投影构造</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:1191-1239</code></td><td style="text-align:left"><code>q_a_proj + q_a_layernorm + q_b_proj</code> 的构造逻辑 (有 <code>fused_qkv_a_proj_with_mqa</code> 融合路径)</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:1219-1290</code></td><td style="text-align:left"><code>kv_a_proj_with_mqa + kv_a_layernorm + kv_b_proj</code> 构造</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:1556-1582</code></td><td style="text-align:left"><code>prepare_qkv_latent</code> + <code>rebuild_cp_kv_cache</code> — KV cache 的 576 float 布局位置</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:354</code></td><td style="text-align:left"><code>class DeepseekV2MoE</code> — gate + routed + shared + combine</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:268</code></td><td style="text-align:left"><code>class MoEGate</code> — sigmoid + <code>noaux_tc</code> top-8 路由</td></tr>
+<tr><td style="text-align:left"><code>sglang/deepseek_v2.py:189</code></td><td style="text-align:left"><code>class DeepseekV2MLP</code> — routed expert / shared expert / layer 0 dense FFN 都是这个类</td></tr>
+</tbody>
+</table></div>
+<p><b>关键常量 (来自 config.json, 已被 drawio Page 2 每个框框 ingested)</b>:</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">config 字段</th><th style="text-align:left">值</th><th style="text-align:left">drawio 位置</th></tr></thead><tbody>
+<tr><td style="text-align:left"><code>hidden_size</code></td><td style="text-align:left">7168</td><td style="text-align:left">所有 x.shape[-1] 标注</td></tr>
+<tr><td style="text-align:left"><code>q_lora_rank</code> / <code>kv_lora_rank</code></td><td style="text-align:left">1536 / 512</td><td style="text-align:left">q_a_proj / kv_a_proj_with_mqa 的输出维</td></tr>
+<tr><td style="text-align:left"><code>qk_nope_head_dim</code> / <code>qk_rope_head_dim</code> / <code>v_head_dim</code></td><td style="text-align:left">128 / 64 / 128</td><td style="text-align:left">Q/K/V split 之后的每 head 维度</td></tr>
+<tr><td style="text-align:left"><code>num_attention_heads</code></td><td style="text-align:left">64</td><td style="text-align:left">heads 数 (MLA 不做 GQA)</td></tr>
+<tr><td style="text-align:left"><code>n_routed_experts</code> / <code>num_experts_per_tok</code></td><td style="text-align:left">384 / 8</td><td style="text-align:left">MoE page 的 routed experts 盒子</td></tr>
+<tr><td style="text-align:left"><code>moe_intermediate_size</code></td><td style="text-align:left">2048</td><td style="text-align:left">每个 expert 的 FFN 中间维</td></tr>
+<tr><td style="text-align:left"><code>routed_scaling_factor</code></td><td style="text-align:left">2.827</td><td style="text-align:left">combine 阶段的乘性放大</td></tr>
+<tr><td style="text-align:left"><code>first_k_dense_replace</code></td><td style="text-align:left">1</td><td style="text-align:left">决定 layer 0 走 <code>DeepseekV2MLP</code> 而非 MoE</td></tr>
+</tbody>
+</table></div>
+<p><b>易错点</b>:</p>
+<p>1. <b>MLA heads 数 = 64, 不是 GQA</b> — config 的 <code>num_key_value_heads=64</code> 看似 "同 MHA", 实际是 MLA 用 latent 压缩代替 GQA, 两种机制不同</p>
+<p>2. <b>K_rope 跨所有 64 heads 共享</b> — <code>kv_a_proj_with_mqa</code> 输出里的 64-dim <code>k_pe</code> 段是<b>单份</b>, 不是 64 份 per-head</p>
+<p>3. <b>KV cache 只存 576 float/token</b> = <code>kv_lora_rank(512) + qk_rope_head_dim(64)</code>; <code>K_nope</code> 和 <code>V</code> 通过 <code>kv_b_proj</code> 运行时展开, 不进 cache</p>
+<p>4. <b>INT4 quant 边界的正则陷阱</b>: <code>re:.*mlp\.(gate|up|gate_up|down)_proj.*</code> 匹配的是 <code>DeepseekV2MLP</code> 内部的属性名 <code>gate_proj</code> / <code>up_proj</code> / <code>down_proj</code>. 因为 layer 0 dense 和 shared expert 都是 <code>DeepseekV2MLP</code> 实例, 它们的 proj <b>同时命中</b> ignore pattern → FP16 保留。真正走 INT4 的是 <code>mlp.experts.N.*</code> (<code>FusedMoE</code> 的 routed experts)。详见 drawio Page 4</p>
+<h4>1c. Vision tower (MoonViT-3D)</h4>
+<p>📐 <b>结构图 → drawio Page 3</b> "MoonViT-3D Vision Tower"</p>
+<p><b>关键代码锚点</b>:</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">代码锚点</th><th style="text-align:left">做什么</th></tr></thead><tbody>
+<tr><td style="text-align:left"><code>vllm/kimi_k25_vit.py:183</code></td><td style="text-align:left"><code>class MoonVision3dPatchEmbed</code> — <code>Conv2d(3,1152,k=14,s=14)</code> + pos emb</td></tr>
+<tr><td style="text-align:left"><code>vllm/kimi_k25_vit.py:126</code></td><td style="text-align:left"><code>class Learnable2DInterpPosEmbDivided_fixed</code> — 64×64×4 divided_fixed grid</td></tr>
+<tr><td style="text-align:left"><code>vllm/kimi_k25_vit.py:340</code></td><td style="text-align:left"><code>class MoonViTEncoderLayer</code> — 单层 encoder (attention + MLP2)</td></tr>
+<tr><td style="text-align:left"><code>vllm/kimi_k25_vit.py:463</code></td><td style="text-align:left"><code>class MoonViT3dEncoder</code> — 27 层堆叠, <code>video_attn_type="spatial_temporal"</code></td></tr>
+<tr><td style="text-align:left"><code>vllm/kimi_k25_vit.py:523</code></td><td style="text-align:left"><code>tpool_patch_merger</code> — <code>sd2_tpool</code> 合并: spatial 2×2 merge + temporal pool</td></tr>
+<tr><td style="text-align:left"><code>sglang/kimi_k25.py:572</code></td><td style="text-align:left"><code>class K2VLMultiModalProjector</code> — 4608 → 4608 GELU → 7168 (= text_hidden_size)</td></tr>
+</tbody>
+</table></div>
+<p><b>关键常量</b>:</p>
+<div class="table-wrap"><table class="md-table">
+<thead><tr><th style="text-align:left">config 字段</th><th style="text-align:left">值</th></tr></thead><tbody>
+<tr><td style="text-align:left"><code>vt_num_hidden_layers</code></td><td style="text-align:left">27</td></tr>
+<tr><td style="text-align:left"><code>vt_hidden_size</code></td><td style="text-align:left">1152 (= 16 heads × 72 head_dim)</td></tr>
+<tr><td style="text-align:left"><code>vt_intermediate_size</code></td><td style="text-align:left">4304</td></tr>
+<tr><td style="text-align:left"><code>patch_size</code></td><td style="text-align:left">14</td></tr>
+<tr><td style="text-align:left"><code>merge_kernel_size</code></td><td style="text-align:left">[2, 2]</td></tr>
+<tr><td style="text-align:left"><code>merge_type</code></td><td style="text-align:left"><code>sd2_tpool</code></td></tr>
+<tr><td style="text-align:left"><code>init_pos_emb_height/width/time</code></td><td style="text-align:left">64 / 64 / 4</td></tr>
+<tr><td style="text-align:left"><code>mm_hidden_size</code> / <code>text_hidden_size</code></td><td style="text-align:left">1152 / 7168</td></tr>
+</tbody>
+</table></div>
+<p><b>易错点 (容易看 paper 看错的地方)</b>:</p>
+<p>1. <b>head_dim = 72 是 "非 2 幂"</b> — 继承自 SigLIP-SO-400M, 不是 Kimi 独创</p>
+<p>2. <b><code>pre_norm</code> 在 reshape 之前</b> — <code>K2VLMultiModalProjector.forward</code> 先对 <code>[N_patches, 1152]</code> 做 LayerNorm, 再 <code>view(-1, 4608)</code> merge。"先 merge 再 norm" 是天真实现, <b>K2.x 不是这样</b></p>
+<p>3. <b><code>linear_2</code> 输出是 7168, 不是 1152</b> — sglang 的 <code>K2VLMultiModalProjector</code> 用 <code>text_hidden_size</code> (7168). 注意 vLLM 的同名类用 <code>mm_hidden_size</code> (1152) 是<b>旧路径</b>, K2.5/K2.6 走 sglang 路径</p>
+<p>4. <b>temporal pool 对 T=4 取均值, 不是拼接</b> — 视频 4 帧打包后经 <code>sd2_tpool</code> 只保留 1 帧的 H×W×4608 等效</p>
+<h4>1d. INT4 Quantization Layout</h4>
+<p>📐 <b>结构图 → drawio Page 4</b> "INT4 Quantization Layout"</p>
+<p>详见 §1b 最后一段 + §3 Quantization & Compression。Page 4 把 <code>quantization_config.ignore</code> 正则<b>精确</b> mapping 到 forward 图里的具体 nn.Module, 用红框标 INT4 区, 绿框标 FP16 保留区, 附每个区的 GB 估算。</p>
+<h4>1e. Paper × Implementation Cross-reference</h4>
 <p><b>因为 K2.6 和 K2.5 架构完全一样，本节重点是"证明等价"和"指出 config 的唯一增量"。</b></p>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">来源</th><th style="text-align:left">URL / 路径</th><th style="text-align:left">K2.5</th><th style="text-align:left">K2.6</th><th style="text-align:left">结论</th></tr></thead><tbody>
@@ -1020,7 +987,7 @@ class K2VLMultiModalProjector(nn.Module):
 </tbody>
 </table></div>
 <blockquote><b>结论</b>：从 HF 配置文件判断，K2.6 <b>不是新模型</b>，而是 K2.5 的<b>权重更新 + 默认量化发布</b>。架构诊断深度分析 → 直接沿用 [K2.5 notes](./2602.02276.md) 的 §1a / §1c 的 MLA / MoE / MoonViT 展开，本笔记不再重复。</blockquote>
-<h4>1b. Quantization Layout (唯一的架构级新增)</h4>
+<h4>1f. Quantization Layout (唯一的架构级新增)</h4>
 <p>K2.6 的 <code>quantization_config</code> 结构：</p>
 <pre><code>
 &quot;quantization_config&quot;: {
@@ -1060,7 +1027,7 @@ class K2VLMultiModalProjector(nn.Module):
 <li><b>routed experts only</b> 的策略反映了一个 empirical fact：MLA / shared expert / lm_head 的量化对精度更敏感（activation magnitude 更大、梯度更集中），routed experts 由于路由 sparsity 使每个权重看到的训练信号更分散、更能承受低比特；</li>
 <li>该策略与 DeepSeek-V3 / Qwen3-MoE 社区的部署配方一致，是 MoE INT4 的"standard practice"。</li>
 </ul>
-<h4>1c. 计算规模推算</h4>
+<h4>1g. 计算规模推算</h4>
 <p>1.04T total / 32B active 的分布（推算自 config.json）：</p>
 <div class="table-wrap"><table class="md-table">
 <thead><tr><th style="text-align:left">参数块</th><th style="text-align:left">每 token 激活</th><th style="text-align:left">FP16 总大小 (GB)</th><th style="text-align:left">K2.6 quant</th></tr></thead><tbody>
