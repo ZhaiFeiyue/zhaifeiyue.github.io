@@ -1316,16 +1316,9 @@ for p in papers:
     has_mermaid = bool(re.search(r'<div class="mermaid">', body_html))
     mermaid_script = MERMAID_BOOTSTRAP_JS if has_mermaid else ""
 
-    # ---- TL;DR — LLM-authored content, NEVER script-derived ----
-    # Architectural rule: scripts handle format; LLM owns all user-visible
-    # prose. We READ from papers.json fields the LLM wrote, never compose
-    # / truncate / summarise.
-    #
-    # Priority:
-    #   1. papers.json `tldr` field (added during v2 migration; LLM-written)
-    #   2. fallback: full `core_contribution` (already an LLM 1-sentence
-    #      summary per skill guidance — use as-is, no truncation)
-    tldr_text = (p.get('tldr') or p.get('core_contribution') or '').strip()
+    # TL;DR is now rendered inside body as notes' §1 (no separate page-top
+    # card). papers.json `core_contribution` / `tldr` fields are still used
+    # by the index page snippets and knowledge graph, just not here.
 
     tags_html = "".join(
         f'<span class="tag">{t}</span>' for t in p.get("secondary_tags", [])[:6]
@@ -1676,10 +1669,6 @@ for p in papers:
     {"&nbsp;·&nbsp; <a href='/readers/" + pid + "-reader.html' style='background:#1b2a4a;color:#fff;padding:3px 10px;border-radius:6px;text-decoration:none;font-weight:600'>📖 导读 Reader ↗</a>" if os.path.exists(os.path.join(SITE_DIR, 'readers', f'{pid}-reader.html')) else ""}
   </div>
   <div class="tags">{tags_html}</div>
-</div>
-<div class="tldr">
-  <div class="tldr-label">TL;DR</div>
-  <div>{html.escape(tldr_text)}</div>
 </div>
 {toc_html}
 <div class="w content">
