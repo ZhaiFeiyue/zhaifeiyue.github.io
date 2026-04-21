@@ -455,7 +455,7 @@ footer {
 <h2 id="core-contribution">Core Contribution</h2>
 <blockquote>Kimi K2.6 以 Kimi K2.5 的 1T MoE + MLA + MoonViT 多模态主干 <b>整模复用</b>为前提，通过 <b>长程 agentic coding RL</b> 把单次工具调用/代码编辑会话从"分钟级"推到"4-13 小时、4000+ 次工具调用"级别；同时把 Agent Swarm 扩到 300 sub-agent × 4000 steps 并打开 Claw Groups 异构 agent 编排层；默认以 INT4 compressed-tensors 发布，单节点可服务 1.04T 主模型。</blockquote>
 <h2 id="summary">Summary</h2>
-<p>Kimi K2.6 的发布哲学延续 K2.5 的"主干别动、创新放在训练和 orchestration"路线——并把它做到极致。HuggingFace config.json 显示，K2.6 的<b>所有架构维度与 K2.5 字字相同</b>：<code>DeepseekV3ForCausalLM</code> 作为文本主干（61 层，d_model=7168，MLA with q_lora=1536 / kv_lora=512 / qk_nope_head_dim=128 / qk_rope_head_dim=64 / v_head_dim=128，64 heads），384 routed experts top-8 + 1 shared expert（expert hidden=2048 SwiGLU），首层 dense（<code>first_k_dense_replace=1</code>），sigmoid + noaux_tc 路由，<code>routed_scaling_factor=2.827</code>，YaRN factor=64 扩到 262,144 context；视觉侧仍是 MoonViT-3D（27 层，d=1152，patch=14，<code>sd2_tpool</code> 2×2 空间 merge，vocab=163,840）。<b>唯一的 config 新增项是 <code>quantization_config</code></b>——INT4 symmetric group_size=32 的 compressed-tensors pack-quantized 权重，仅作用在 routed MoE experts（<code>lm_head</code>、<code>self_attn.*</code>、<code>shared_experts.*</code>、<code>mlp.(gate|up|down)_proj</code> 全部在 <code>ignore</code> 名单里保持 FP16）。</p>
+<p>Kimi K2.6 的发布哲学延续 K2.5 的"主干别动、创新放在训练和 orchestration"路线——并把它做到极致。HuggingFace config.json 显示，K2.6 的<b>所有架构维度与 K2.5 字字相同</b>：<code>DeepseekV3ForCausalLM</code> 作为文本主干（61 层，d_model=7168，MLA with q_lora=1536 / kv_lora=512 / qk_nope_head_dim=128 / qk_rope_head_dim=64 / v_head_dim=128，64 heads），384 routed experts top-8 + 1 shared expert（expert hidden=2048 SwiGLU），首层 dense（<code>first_k_dense_replace=1</code>），sigmoid + noaux_tc 路由，<code>routed_scaling_factor=2.827</code>，YaRN factor=64 扩到 262,144 context；视觉侧仍是 MoonViT-3D（27 层，d=1152，patch=14，<code>sd2_tpool</code> 2×2 空间 merge，vocab=163,840）。<b>唯一的 config 新增项是 <code>quantization_config</code></b>——INT4 symmetric group_size=32 的 compressed-tensors pack-quantized 权重，仅作用在 routed MoE experts（<code>lm_head</code>、<code>self_attn.<em></code>、<code>shared_experts.</em></code>、<code>mlp.(gate|up|down)_proj</code> 全部在 <code>ignore</code> 名单里保持 FP16）。</p>
 <p>真正的"新内容"完全在 post-training 和 orchestration 层：(1) <b>长程 agentic coding RL</b> —— blog 两个 flagship case 证明模型能连续 4-13 小时、1000-4000+ 次工具调用、14 轮迭代下持续改善一个真实 OSS 代码库的性能（Zig 推理 15→193 tok/s，exchange-core +185% MT/s）；(2) <b>Agent Swarm 规模 3×</b> —— 从 K2.5 的 100 sub-agent × 1500 步扩到 K2.6 的 300 sub-agent × 4000 步，且产物形态从"搜索/报告"扩展到"documents + websites + slides + spreadsheets 同轨输出"；(3) <b>Skills</b> —— 把高质量 PDF / slides / sheets 吸收为"结构 + 风格 DNA"可复用模板（McKinsey 式 PPT、astro-paper 可视化风格等）；(4) <b>Claw Groups 研究预览</b> —— 异构 agent 编排层，K2.6 做协调器，子 agent 可跑任何模型、部署在 laptop / 手机 / 云，人和 agent 以"真正合作者"身份同台协作。</p>
 <p>效果上，在 agentic + coding benchmark 基本追平 Claude Opus 4.6 / GPT-5.4（SWE-Bench Pro 58.6 领先、Terminal-Bench 2.0 66.7 仅次 Gemini 3.1 Pro 68.5、DeepSearchQA f1 92.5 大幅领先闭源对手）；在纯 reasoning（HLE-Full 34.7 vs Gemini 44.4 / GPT 39.8，AIME 2026 96.4 vs GPT 99.2）上仍略逊顶尖闭源。视觉侧小幅提升但仍非重点（MMMU-Pro 78.5→79.4，BabyVision 36.5→39.8）。</p>
 <h2 id="key-findings">Key Findings</h2>
@@ -646,7 +646,7 @@ flowchart TB
 <li>MLA heads=64, 不是 GQA (<code>num_key_value_heads=64</code> 看似 MHA, 实际是 MLA 用 latent 压缩代替 GQA)</li>
 <li>K_rope 跨 64 heads 共享单份, 不是 64 份 per-head</li>
 <li>KV cache 只存 576 fp/token (<code>kv_lora_rank + qk_rope_head_dim</code>); K_nope / V 由 kv_b_proj 运行时展开, 不进 cache</li>
-<li>INT4 边界正则陷阱: <code>re:.*mlp\.(gate|up|gate_up|down)_proj.*</code> 匹配 <code>DeepseekV2MLP</code> 的属性名 → layer 0 dense 和 shared expert 都 <b>命中 ignore</b>, 保 FP16。真正 INT4 的是 <code>mlp.experts.N.*</code> (<code>FusedMoE</code>)</li>
+<li>INT4 边界正则陷阱: <code>re:.<em>mlp\.(gate|up|gate_up|down)_proj.</em></code> 匹配 <code>DeepseekV2MLP</code> 的属性名 → layer 0 dense 和 shared expert 都 <b>命中 ignore</b>, 保 FP16。真正 INT4 的是 <code>mlp.experts.N.*</code> (<code>FusedMoE</code>)</li>
 </ul>
 <p>---</p>
 <h4 id="架构-3-moonvit-3d-vision-tower">架构 3 · MoonViT-3D Vision Tower</h4>
@@ -810,7 +810,7 @@ flowchart LR
 <p>1. <b>MLA heads 数 = 64, 不是 GQA</b> — config 的 <code>num_key_value_heads=64</code> 看似 "同 MHA", 实际是 MLA 用 latent 压缩代替 GQA, 两种机制不同</p>
 <p>2. <b>K_rope 跨所有 64 heads 共享</b> — <code>kv_a_proj_with_mqa</code> 输出里的 64-dim <code>k_pe</code> 段是<b>单份</b>, 不是 64 份 per-head</p>
 <p>3. <b>KV cache 只存 576 float/token</b> = <code>kv_lora_rank(512) + qk_rope_head_dim(64)</code>; <code>K_nope</code> 和 <code>V</code> 通过 <code>kv_b_proj</code> 运行时展开, 不进 cache</p>
-<p>4. <b>INT4 quant 边界的正则陷阱</b>: <code>re:.*mlp\.(gate|up|gate_up|down)_proj.*</code> 匹配的是 <code>DeepseekV2MLP</code> 内部的属性名 <code>gate_proj</code> / <code>up_proj</code> / <code>down_proj</code>. 因为 layer 0 dense 和 shared expert 都是 <code>DeepseekV2MLP</code> 实例, 它们的 proj <b>同时命中</b> ignore pattern → FP16 保留。真正走 INT4 的是 <code>mlp.experts.N.*</code> (<code>FusedMoE</code> 的 routed experts)。详见上方「架构 4」</p>
+<p>4. <b>INT4 quant 边界的正则陷阱</b>: <code>re:.<em>mlp\.(gate|up|gate_up|down)_proj.</em></code> 匹配的是 <code>DeepseekV2MLP</code> 内部的属性名 <code>gate_proj</code> / <code>up_proj</code> / <code>down_proj</code>. 因为 layer 0 dense 和 shared expert 都是 <code>DeepseekV2MLP</code> 实例, 它们的 proj <b>同时命中</b> ignore pattern → FP16 保留。真正走 INT4 的是 <code>mlp.experts.N.*</code> (<code>FusedMoE</code> 的 routed experts)。详见上方「架构 4」</p>
 <h4 id="1c-vision-tower-moonvit-3d-对应上方-架构-3">1c. Vision tower (MoonViT-3D) (对应上方「架构 3」)</h4>
 <p><b>关键代码锚点</b>:</p>
 <div class="table-wrap"><table class="md-table">
@@ -915,9 +915,9 @@ flowchart LR
 </code></pre>
 <p><b>解读（必须细读 <code>ignore</code> 正则）</b>：</p>
 <ul>
-<li><code>.*self_attn.*</code> → <b>所有 MLA 投影</b>（q_a/q_b、kv_a/kv_b、o_proj）保持 FP16；</li>
-<li><code>.*shared_experts.*</code> → 1 个 shared expert 的 gate/up/down 保持 FP16；</li>
-<li><code>.*mlp\.(gate|up|gate_up|down)_proj.*</code> → <b>注意这个正则通常匹配 dense 层的 MLP 投影</b> —— 也就是第 0 层（首 dense 层）的 FFN 保持 FP16；</li>
+<li><code>.<em>self_attn.</em></code> → <b>所有 MLA 投影</b>（q_a/q_b、kv_a/kv_b、o_proj）保持 FP16；</li>
+<li><code>.<em>shared_experts.</em></code> → 1 个 shared expert 的 gate/up/down 保持 FP16；</li>
+<li><code>.<em>mlp\.(gate|up|gate_up|down)_proj.</em></code> → <b>注意这个正则通常匹配 dense 层的 MLP 投影</b> —— 也就是第 0 层（首 dense 层）的 FFN 保持 FP16；</li>
 <li><code>lm_head</code> → 输出头保持 FP16；</li>
 <li><b>剩下被量化的是</b>：routed MoE experts（383 层 × 384 experts × 3 个 FFN 投影矩阵），这些是参数量的绝对主体（~960/1050 GB FP16 → ~240/260 GB INT4）。</li>
 </ul>

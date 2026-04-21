@@ -896,9 +896,16 @@ def restore_math(text, store):
     return re.sub(r'\x00MATH(\d+)\x00', _restore, text)
 
 def inline_fmt(text):
-    """Apply bold/code inline transforms while preserving LaTeX."""
+    """Apply bold/italic/code inline transforms while preserving LaTeX."""
     text, store = protect_math(text)
+    # Bold first (double-asterisk) — after this pass no `**` remain
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    # Italic (single-asterisk). Content must not be whitespace-only;
+    # boundary assertions prevent matching within identifiers or around
+    # solo `*`. Since bold is already stripped, no `**` confusion here.
+    text = re.sub(
+        r'(?<![*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![*\w])',
+        r'<em>\1</em>', text)
     text = re.sub(r'`([^`]+)`', r'<code>\1</code>', text)
     return restore_math(text, store)
 
