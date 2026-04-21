@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>LLM Skill-Leak in Agent Workflows：机制、五层防御与根因</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700;800&family=Noto+Sans+SC:wght@400;600;700&family=Noto+Serif+SC:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+nav .logo { font-weight: 700; font-size: 1.05rem; }
+nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+nav a:hover { color: #fff; text-decoration: none; }
+.w { max-width: 960px; margin: 0 auto; padding: 0 24px 64px; }
+footer {
+  text-align: center; padding: 28px 24px; color: var(--mt);
+  font-size: 0.8rem; border-top: 1px solid var(--bd);
+  max-width: 960px; margin: 0 auto;
+}
+
+.article-header {
+  max-width: 960px; margin: 0 auto; padding: 40px 24px 20px;
+}
+.article-header h1 {
+  font-size: 1.7rem; font-weight: 800; letter-spacing: -0.02em;
+  margin-bottom: 12px; line-height: 1.3;
+}
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tag {
+  font-size: 0.72rem; padding: 2px 10px; border-radius: 999px;
+  background: #f1f5f9; color: var(--mt); font-weight: 600;
+}
+.content {
+  font-family: 'Noto Serif SC', 'Lora', serif;
+  font-size: 0.95rem;
+}
+.content h2 {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1.25rem; font-weight: 700; margin: 36px 0 14px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--bd);
+  color: #1e293b;
+}
+.content h3 {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  font-size: 1.05rem; font-weight: 700; margin: 24px 0 8px;
+  color: #475569;
+}
+.content p { margin: 12px 0; }
+.content ul, .content ol { margin: 10px 0; padding-left: 28px; }
+.content ul { list-style-type: disc; }
+.content ul ul { list-style-type: circle; margin: 6px 0; }
+.content ol { list-style-type: decimal; }
+.content li { margin: 6px 0; line-height: 1.75; }
+.content blockquote {
+  border-left: 4px solid var(--accent); padding: 10px 18px;
+  margin: 16px 0; background: #f8fafc; border-radius: 0 8px 8px 0;
+  font-style: normal; color: #475569;
+}
+.content blockquote p { margin: 4px 0; }
+.content pre {
+  background: #1e293b; color: #e2e8f0; padding: 16px 18px;
+  border-radius: 8px; overflow-x: auto; margin: 16px 0;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;
+  line-height: 1.55;
+}
+.content code {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.85em;
+  background: #f1f5f9; padding: 2px 6px; border-radius: 4px;
+  color: #be123c;
+}
+.content pre code { background: none; padding: 0; color: #e2e8f0; }
+.content table {
+  border-collapse: collapse; width: 100%;
+  margin: 16px 0; font-size: 0.85rem;
+  border: 1px solid var(--bd); border-radius: 8px; overflow: hidden;
+}
+.content th, .content td {
+  border-bottom: 1px solid #f1f5f9; padding: 8px 14px; text-align: left;
+}
+.content th {
+  background: #f8fafc; font-weight: 700; color: #475569;
+  border-bottom: 2px solid var(--bd);
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.content tr:nth-child(even) td { background: #fafbfc; }
+.content tr:hover td { background: #eff6ff; }
+.content hr {
+  border: none; border-top: 1px solid var(--bd); margin: 28px 0;
+}
+.back { display: inline-block; margin: 24px; font-size: 0.9rem; font-weight: 600; }
+
+/* Pandoc source-highlight blocks: reset to simple light style */
+.sourceCode { background: transparent !important; }
+.content pre.sourceCode { background: #1e293b; }
+.content pre.sourceCode span { color: inherit !important; }
+.content pre.sourceCode .fu { color: #93c5fd; }
+.content pre.sourceCode .at { color: #fcd34d; }
+.content pre.sourceCode .in { color: #a7f3d0; }
+
+@media (max-width: 768px) {
+  .article-header { padding: 28px 18px 14px; }
+  .article-header h1 { font-size: 1.3rem; }
+  .w { padding: 0 18px 48px; }
+  .content { font-size: 0.9rem; }
+  .content h2 { font-size: 1.1rem; margin: 28px 0 10px; }
+  .content h3 { font-size: 1rem; }
+  .content pre { padding: 12px; font-size: 0.78rem; }
+  .content table { font-size: 0.78rem; }
+  .content th, .content td { padding: 6px 10px; }
+}
+</style>
+</head>
+<body>
+<nav>
+  <a class="logo" href="/">Feiyue Zhai</a>
+  <a href="/">Papers</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="article-header">
+  <a class="back" style="margin-left:0" href="/knowledge/">← Knowledge</a>
+  <h1>LLM Skill-Leak in Agent Workflows：机制、五层防御与根因</h1>
+  <div class="tags">
+    <span class="tag" style="background:#7c3aed;color:#fff">LLM agent</span>
+    <span class="tag" style="background:#dc2626;color:#fff">Skill-leak</span>
+    <span class="tag" style="background:#2563eb;color:#fff">Generation-time bias</span>
+    <span class="tag" style="background:#059669;color:#fff">Scanner</span>
+    <span class="tag" style="background:#ea580c;color:#fff">Agent framework</span>
+  </div>
+</div>
+
+<div class="w content">
+<blockquote>
+<p><strong>作者</strong>: Feiyue Zhai + LLM collaborator <strong>日期</strong>: 2026-04-21 <strong>标签</strong>: LLM agent, skill-leak, generation-time bias, scanner, agent framework <strong>触发事件</strong>: 调试 paper-reader v0.3 skill 在 PrfaaS notes 里反复出现的 "Scope of this file"、"Stage 4 synthesis" 等 meta-language</p>
+</blockquote>
+<p>一次具体的调试日记, 推导出一个通用的 agent workflow 失效模式。</p>
+<h2 id="1-什么是-skill-leak">1. 什么是 skill-leak</h2>
+<p>agent-based paper reader 用 <code>SKILL.md</code> 定义 workflow: "Stage 2 READ 产出 preread, Stage 3 WRITE 产出 notes, Stage 4 CONNECT 产出 synthesis"。Stage 3 WRITE 里 LLM 本该只输出 paper 内容, 但实际产出 notes 里混进了 <strong>skill 定义里教 agent 怎么写 notes 的话</strong>。</p>
+<p>典型 leak 现场（PrfaaS v3 真实案例）:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu"># PrfaaS notes §0</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>**Scope of this file**: paper-internal content only. Cross-paper</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>comparisons, adversarial rebuttals, ecosystem positioning, and</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>unexplored-hybrid directions live in <span class="in">`knowledge/synthesis-{id}.md`</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>(Stage 4, TBD).</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="fu">## §3.3 双时间尺度调度器（§3.4.3 的状态机——paper 无此图, Mermaid 补充）</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="at">&gt; **Redraw reason**: paper §3.4.3 只用文字描述 short-term + long-term</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="at">&gt; 两层调度, 没有状态机。以下状态机是为了让 Stage 4 synthesis 能指向</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="at">&gt; 具体的状态转移而补充的。</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="fu">## §6. 论证链</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>**Scope note**: 这一节只**复原 paper 自己的多步论证**, 不是读者的攻击 /</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>ecosystem check / 反例搜索——那些是 Stage 4 synthesis 的任务。</span></code></pre></div>
+<p>这些段落不是错误信息——<strong>内容可能是对的</strong>, 只是<strong>出现在错误的文件里</strong>。它们解释 "本节 vs 他节的分工",这是给 skill-aware 的读者看的 meta-language, 不是给 paper-reading 的读者看的内容。</p>
+<p>实际项目里这个 pattern 在 paper-reader v0.3 一次 Stage 3 WRITE 里出现 <strong>9 次不同 surface form</strong>, 指向同一个底层语义。</p>
+<h2 id="2-机制为什么-llm-会这么做">2. 机制：为什么 LLM 会这么做？</h2>
+<p>LLM 不是"规则遵守机器", 是<strong>语言生成模型</strong>。当它的 context 同时装着两类内容时, 它自然混合两者生成文本:</p>
+<pre><code>LLM Context (Stage 3 WRITE 运行时)
+┌──────────────────────────────────────────┐
+│  Paper 内容 (应输出)                      │
+│  - preread/{id}.md (992 行 raw)           │
+│  - papers.json 元数据                     │
+├──────────────────────────────────────────┤
+│  Skill 内容 (不应输出)                    │
+│  - SKILL.md (1069 行, 5 stages + meta)    │
+│  - deep-&lt;category&gt;.md                     │
+│  - incidents.md                           │
+│  - 8-pattern leak table 本身              │
+└──────────────────────────────────────────┘
+         ↓ 生成
+    notes/{id}.md  ← 混合输出</code></pre>
+<p>三层观察:</p>
+<h3 id="21-结构性-不是偶发">2.1 结构性, 不是偶发</h3>
+<p>这不是"LLM 偶尔疏忽"。<strong>只要 context 装着 SKILL.md 的结构说明, LLM 就倾向于把这个结构告诉读者</strong>。当 LLM 刚读完 "Stage 3 = paper-internal, Stage 4 = cross-paper" 的分工, 它写 notes 时的 mental model 就包含这个划分, 然后很自然地想在 notes 顶部/节末 解释这个划分。</p>
+<p>对一个<strong>典型的 technical writing 训练目标</strong>, "解释 scope" 是 helpful 的——README 开头经常有 "What this file is about"。训练分布<strong>奖励</strong>这种 meta-orientation。</p>
+<h3 id="22-作者偏见让-self-check-失效">2.2 作者偏见让 self-check 失效</h3>
+<p>Pre-Save Self-Check 是一个写在 skill 里的指令: "写完后, 回去 review draft, catch leak patterns"。</p>
+<p>问题: <strong>同一个 LLM 刚写出 "Scope of this file..."</strong>, 它 review 自己的输出时<strong>不会觉得是 leak</strong>。用 technical writing 标准判断, 这句话完全合理。</p>
+<p>经验 rate: 纯指令层的 Pre-Save Self-Check 漏率 ~30%。</p>
+<h3 id="23-训练分布-vs-任务要求的冲突">2.3 训练分布 vs 任务要求的冲突</h3>
+<p>LLM 被训练成 "generate helpful technical documentation"。helpful documentation 的成熟 pattern 之一是 <strong>"tell the reader about scope"</strong>。任务 (paper notes) 的要求是 <strong>"don't tell the reader about skill structure"</strong>。</p>
+<p>两个 objective 直接冲突。softmax 的默认路径倾向训练分布的 pattern, 所以 <strong>不做任何 mitigation 的 baseline 就是产出 leak</strong>。</p>
+<h2 id="3-五层防御">3. 五层防御</h2>
+<p>按<strong>效力递增 + 工程复杂度递增</strong>:</p>
+<h3 id="l1--具体-phrase-list-弱">L1 — 具体 phrase list (弱)</h3>
+<p>在 SKILL.md 的 "Content Hygiene" 列出禁用短语 + 反例:</p>
+<pre><code>❌ &quot;Scope of this file: paper-internal content only&quot;
+❌ &quot;**Scope note**&quot;
+❌ &quot;Stage 3 v2 (post-preread)&quot;
+❌ &quot;本节只写 X 不讨论 Y&quot;</code></pre>
+<p><strong>强项</strong>: 改文档即可。 <strong>弱项</strong>: LLM 会 paraphrase。"Here we cover..." 绕过。<strong>每次新 iteration 追加新 phrase</strong> → whack-a-mole。</p>
+<h3 id="l2--硬-scanner-gate-中-工程闭环">L2 — 硬 scanner gate (中, 工程闭环)</h3>
+<p>两组件:</p>
+<ol type="1">
+<li><code>check_paper_completeness.py</code> 维护 <code>_SKILL_LEAK_PHRASES</code> 正则列表 (当前 73 条)</li>
+<li><code>SKILL.md</code> Stage 3 exit 强制跑 <code>check_paper_completeness.py {id} --check=leaks</code>, <code>exit != 0</code> 不进 Stage 4</li>
+</ol>
+<p><strong>强项</strong>: scanner 没有<strong>作者偏见</strong>——它看 phrase 就是 phrase, 不会 "觉得这话是 helpful". 一次 CI 级 enforce。 <strong>弱项</strong>: 仍然靠 phrase list。paraphrase 绕过。<strong>也是 whack-a-mole</strong>。</p>
+<h3 id="l3--two-pass-generation-中强-需工作流支持">L3 — Two-pass generation (中强, 需工作流支持)</h3>
+<ul>
+<li><strong>Pass 1</strong>: LLM 自由写 draft</li>
+<li><strong>Pass 2</strong>: <strong>新的 tool call</strong> (独立 context) 专门 review draft against 8-pattern 表, 删除违规段</li>
+</ul>
+<p>为什么新 tool call 更好:</p>
+<ul>
+<li>Pass 2 的 LLM 实例看 draft 时<strong>不带 "I wrote this 5 秒前" 的作者偏见</strong></li>
+<li>context 里不再是"我在写 notes"而是"我在审查 notes 里的违规"——任务框架变了</li>
+<li>同一个底层模型, 不同 prompt + context → 不同判断质量</li>
+</ul>
+<p><strong>强项</strong>: 结构上消除同一 run 内作者偏见。 <strong>弱项</strong>:</p>
+<ul>
+<li>依赖 agent 框架支持显式 split tool call (手工写 skill 文档说"请 review"不够)</li>
+<li>Pass 2 LLM 仍是 LLM, 有自己的生成偏见</li>
+<li>Pass 2 用的还是 phrase list → paraphrase 仍绕过</li>
+</ul>
+<h3 id="l4--stage-scoped-context-强-结构性">L4 — Stage-scoped context (强, 结构性)</h3>
+<p><strong>根治思路</strong>: Stage 3 WRITE <strong>不加载完整 SKILL.md</strong>。只加载:</p>
+<ul>
+<li>paper 内容 (preread)</li>
+<li>7-section 输出 schema 的 bare 描述 (无叙述, 无 "why this separation" 解释)</li>
+<li>硬格式约束 (LaTeX 规则、图片路径等)</li>
+</ul>
+<p><strong>不加载</strong>:</p>
+<ul>
+<li>Stage 4 的描述</li>
+<li>Meta-rules (Skill-Modification Protocol 等)</li>
+<li>8-pattern leak table 本身及其说明</li>
+<li>Deep-*.md 的 inheritance model 讨论</li>
+</ul>
+<p><strong>原理</strong>: LLM 没法 leak 它 context 里<strong>没有</strong>的内容。如果它没看到 "Stage 4 synthesis" 这个词, 它就不会用这个词写 notes。</p>
+<p><strong>强项</strong>: 真·根治——消除 context 污染源头。 <strong>弱项</strong>:</p>
+<ul>
+<li>需要 agent 框架支持 "按 stage 切分 skill context" 的 API</li>
+<li>当前 Cursor / Claude Code 都是整体 skill-load</li>
+<li>SKILL.md 需拆成 <code>stage-1-absorb.md</code> / <code>stage-3-write.md</code> / ... 各自独立, 运行时按 stage 切换</li>
+<li>失去 single-file skill 的 human readability</li>
+</ul>
+<h3 id="l5--schema-bound-output-最强-最受限">L5 — Schema-bound output (最强, 最受限)</h3>
+<p><strong>根治但受限</strong>: Stage 3 输出不是 free-form MD, 是 <strong>structured JSON / per-field blanks</strong>:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;tldr&quot;</span><span class="fu">:</span> <span class="st">&quot;PrfaaS 把...&quot;</span><span class="fu">,</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;q1_pain&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;q2_method&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;q3_results&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;architecture_diagrams&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="er">...</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;author_proof&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;notation_table&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="er">...</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;equations&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="fu">{</span><span class="dt">&quot;latex&quot;</span><span class="fu">:</span> <span class="st">&quot;$...$&quot;</span><span class="fu">,</span> <span class="dt">&quot;physical&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;load_bearing&quot;</span><span class="fu">:</span> <span class="kw">true</span><span class="fu">}</span><span class="ot">]</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><code>sync.sh</code> 从 JSON 拼 MD / HTML。LLM 只能填已有 field, <strong>没地方塞 "Scope of this file"</strong> 因为没这个 field。</p>
+<p><strong>强项</strong>: leak surface → 0 (结构上不可能)。 <strong>弱项</strong>:</p>
+<ul>
+<li>失去 free-form prose 的灵活性</li>
+<li>paper 需要的"非标准"内容 (章节题外话、需要叙事语调的数学推导) 被 schema 约束掉</li>
+<li>Schema 设计错误 → LLM 无处塞合理内容, 硬塞进 nearest field 或直接丢失</li>
+</ul>
+<h3 id="五层对比表">五层对比表</h3>
+<table>
+<thead>
+<tr class="header">
+<th>层</th>
+<th>效力</th>
+<th>工程成本</th>
+<th>对 agent framework 要求</th>
+<th>失效模式</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>L1 phrase list</td>
+<td>弱</td>
+<td>低 (文档)</td>
+<td>无</td>
+<td>刚学过 skill 的 LLM 仍漏; paraphrase 绕过</td>
+</tr>
+<tr class="even">
+<td>L2 scanner gate</td>
+<td>中</td>
+<td>中 (代码+文档)</td>
+<td>无</td>
+<td>列表穷举困难, whack-a-mole</td>
+</tr>
+<tr class="odd">
+<td>L3 two-pass</td>
+<td>中强</td>
+<td>中高 (工作流)</td>
+<td>split tool call</td>
+<td>Pass 2 仍是 phrase-list based; 新 framework 支持</td>
+</tr>
+<tr class="even">
+<td>L4 scoped context</td>
+<td>强</td>
+<td>高 (skill 重组 + framework)</td>
+<td>per-stage context API</td>
+<td>尚无 framework 原生支持</td>
+</tr>
+<tr class="odd">
+<td>L5 schema output</td>
+<td>最强</td>
+<td>最高 (重设计协议)</td>
+<td>structured output</td>
+<td>失去 free-form 灵活性, 需 exhaustive schema</td>
+</tr>
+</tbody>
+</table>
+<h2 id="4-实际实施-prfaas-v03-的-l1l2轻-l3">4. 实际实施 (PrfaaS v0.3 的 L1+L2+"轻 L3")</h2>
+<ul>
+<li>✅ <strong>L1</strong>: SKILL.md 8-pattern 表有 PrfaaS 真实 leak 反例 + 作者偏见提示</li>
+<li>✅ <strong>L2</strong>: scanner 73 条 phrase + Stage 3 exit HARD gate</li>
+<li>🟡 <strong>L3</strong>: 仅指令层 Pre-Save Self-Check, <strong>无 split tool call</strong></li>
+<li>❌ <strong>L4</strong>: 未实施 (需 Cursor / Claude Code framework 支持)</li>
+<li>❌ <strong>L5</strong>: 未实施 (需 skill 协议重设计)</li>
+</ul>
+<h3 id="残余-leak-rate-prfaas-v3-实测">残余 leak rate (PrfaaS v3 实测)</h3>
+<ul>
+<li>LLM draft 含 <strong>9 种不同 phrase surface</strong> 的 leak</li>
+<li>Scanner v1 (~40 phrase) 抓: 3 种</li>
+<li>Scanner v2 (~60 phrase, 加了 "Stage 4 synthesis" 等) 抓: 5 种</li>
+<li>Scanner v3 (~73 phrase, 加了 "这一?节 ?只(复原|讨论)" 等) 抓: 6 种</li>
+<li><strong>3 轮 scanner 扩列 + 3 轮人工 review 后清零</strong></li>
+</ul>
+<p>实际 9 种 leak phrase (同一个 LLM 同一个 draft 找到):</p>
+<ol type="1">
+<li><code>Scope of this file</code></li>
+<li><code>**Scope note**</code></li>
+<li><code>paper-internal content only</code></li>
+<li><code>cross-paper ... lives in</code></li>
+<li><code>Stage 4 synthesis</code></li>
+<li><code>（后者属 Stage 4 synthesis）</code></li>
+<li><code>paper 无此图 Mermaid 补充</code></li>
+<li><code>Redraw reason: ... Stage 4 synthesis</code></li>
+<li><code>这一节只复原论文内容</code></li>
+</ol>
+<p><strong>同一语义</strong> ("告诉读者本节 vs 他节的分工") 找到 <strong>9 种表达</strong>。</p>
+<h2 id="5-根因-whack-a-mole">5. 根因: Whack-a-mole</h2>
+<p>为什么 L1+L2+L3 永远不够:</p>
+<pre><code>LLM 输出倾向 (训练分布奖励)
+       ↓
+    orientation meta / structure hint / reader guidance
+       ↓  
+  whatever phrase     ← phrase list (scanner)
+  the LLM picks         只抓当前已知
+       ↓
+  下次新 phrase 诞生  ← 追加列表
+       ↓
+  whack-a-mole ∞</code></pre>
+<p>scanner 是<strong>后验</strong>机制——它只能抓 LLM 已经生成的东西。但 LLM 的表达空间<strong>无穷</strong>: 同一个语义能用无穷多种 phrase 表达。每抓一个, LLM 下次换一个。</p>
+<p><strong>根治只有 L4 或 L5</strong>——改变 LLM 的 <strong>context</strong> 或 <strong>output shape</strong>, 让它<strong>不可能</strong> generate leak:</p>
+<ul>
+<li>L4: context 没有源</li>
+<li>L5: schema 没有出口</li>
+</ul>
+<p>L1/L2/L3 本质是<strong>降低 leak rate</strong>, 不是<strong>消除 leak</strong>。这条路的天花板是: "接受残余 leak, 靠 periodic scanner phrase list 扩充和人工 review 兜底"。</p>
+<h2 id="6-对-agent-design-的-implication">6. 对 agent design 的 implication</h2>
+<p>这不是 paper-reader 独有的问题——<strong>所有 agent-based workflow 都有这个 pattern</strong>:</p>
+<ul>
+<li>Skill doc <strong>必须</strong>在 LLM context 里 (才能执行 skill)</li>
+<li>Skill doc <strong>不应该</strong>出现在 output 里 (那不是 task 要求的)</li>
+<li><strong>LLM 无法天然区分 "execute skill" vs "describe skill"</strong></li>
+</ul>
+<p>短期可行 (不改 framework):</p>
+<ul>
+<li>phrase list + scanner + Stage exit gate (L1-L2)</li>
+<li>反例驱动的 pattern examples in skill (L1 的强化)</li>
+<li>工作流里的 split LLM calls (L3 的强化)</li>
+</ul>
+<p>长期正确 (需改 framework 或重设计 skill):</p>
+<ul>
+<li>Agent framework 提供 "scoped skill loading" API → L4</li>
+<li>Task 用 structured output schemas instead of free-form MD → L5</li>
+</ul>
+<p>Cursor / Claude Code 当前都是整 skill-load。如果 Claude Projects / Claude Skills 未来支持 <strong>"per-task-phase context scoping"</strong>, 就能走 L4 路线。</p>
+<h2 id="7-对-llm-当初级工程师的启示">7. 对 "LLM 当初级工程师"的启示</h2>
+<p>把 LLM 类比成<strong>上岗一周的实习工程师</strong>:</p>
+<ul>
+<li>刚读完 team style guide (= SKILL.md)</li>
+<li>第一个任务是写个代码 doc (= Stage 3 WRITE)</li>
+<li><strong>新员工常见失误之一</strong>: 在自己的 doc 里解释 "按照 team 规范, 这里写 X 不写 Y"</li>
+<li>这种"表明我学过规范"的 orientation meta 不会进最终产品, 但会出现在 draft 里</li>
+<li>team lead 的 code review 就是 L2 的 scanner</li>
+<li>日积月累, 新人学会"规范内化不外显"</li>
+</ul>
+<p>LLM 每次 call 都是"<strong>新员工第一天</strong>", 没有长时间的 scoping 训练。<strong>每次都会产同样的 leak</strong>, 除非结构上让它不可能。</p>
+<p>这是为什么 L4 (structural context control) 比 L1-L3 (procedural enforcement) 根本——不是训练问题, 是信息论问题。</p>
+<h2 id="8-references">8. References</h2>
+<ul>
+<li><code>~/.cursor/skills/paper-reader/SKILL.md</code> v0.3 — "Content Hygiene — Pre-Save Self-Check" + "Stage 3 exit gate" 段落</li>
+<li><code>~/.cursor/paper-db/tools/check_paper_completeness.py</code> — <code>_SKILL_LEAK_PHRASES</code> 73 条列表 + <code>--check=leaks</code> 实现</li>
+<li><code>~/.cursor/paper-db/incidents.md</code> 2026-04-21 系列 — PrfaaS v3 iteration logs</li>
+<li>github 源码: <a href="https://github.com/ZhaiFeiyue/amd-tools/tree/v0.2-slim/skills/paper-reader"><code>amd-tools/skills/paper-reader</code> @ v0.2-slim</a></li>
+</ul>
+
+</div>
+
+<footer>
+  Built with Claude Opus 4.6 · <a href="/">Back to index</a> · <a href="/knowledge/">Knowledge</a>
+</footer>
+</body>
+</html>
