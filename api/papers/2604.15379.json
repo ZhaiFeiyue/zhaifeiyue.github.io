@@ -1,0 +1,77 @@
+{
+  "id": "2604.15379",
+  "title": "Fleet: Hierarchical Task-based Abstraction for Megakernels on Multi-Die GPUs",
+  "authors": [
+    "Sangeeta Chowdhary",
+    "Ryan Swann",
+    "Sean Siddens",
+    "Muhammad Osama",
+    "Stephen Neuendorffer",
+    "Alexandru Dutu",
+    "Karthik Sangaiah",
+    "Sandeepa Bhuyan",
+    "Samuel Bayliss",
+    "Ganesh Dasika"
+  ],
+  "date": "2026-04",
+  "source": "arXiv",
+  "url": "https://arxiv.org/abs/2604.15379",
+  "category": "framework",
+  "secondary_tags": [
+    "megakernel",
+    "persistent-kernel",
+    "chiplet",
+    "amd-mi350",
+    "l2-locality",
+    "scheduler",
+    "runtime",
+    "llm-decode"
+  ],
+  "core_contribution": "在 CUDA/HIP 的 wavefront/workgroup/grid 三层抽象之上新增 Chiplet-task 一层，用持久化 megakernel + 每 XCD 软件调度器 + M-major 协作式 tile 遍历 + 两级事件同步，把 AMD MI350 八颗 XCD 上本来互相踩踏的私有 L2 变成协作复用的 L2，在 Qwen3-8B decode 上 bs=1–16 比 vLLM 快 1.3–1.5×、bs=32 L2 hit 从 39% 提到 51%、HBM 读降 37%。",
+  "summary": "现代 chiplet GPU（AMD MI300X/MI350 八颗 XCD 各有 4 MB 私有 L2；NV Blackwell 双 die）物理上把 L2 切碎了，CUDA/HIP 却仍以整块 device-scope L2 暴露给程序员——结果 LLM decode 时 8 颗 XCD 各自独立把同一份 368 MB/layer 的权重从 HBM 拉进自己的 L2，把 40 MB 聚合 L2 当成 4 MB 用；同时每 token 近 250 次 kernel launch 在小 batch 下也成了主瓶颈。Fleet 以 Mirage MPK 持久化 megakernel 为底座，新增 Chiplet-task 抽象（绑定一颗 XCD + 其 4 MB L2），每颗 XCD 留 1 个 workgroup 做软件 scheduler、31 个做 worker；GEMM 按输出列 N-split 给 8 个 Chiplet-task，配合 M-major windowed 遍历让 R=min(W, m_tiles) 个 worker 共享同一份权重（Eq.(1) L2 Hit=(R−1)/R），用 CDNA 三档 cache modifier（权重 sc1=1 nt=1 streaming / 激活 NT=1 bypass / 调度 volatile）隔离驱逐冲突，用两级事件计数把每事件 248 次跨 XCD fence 压到 8 次。MI350+Qwen3-8B bf16 实测：bs=1 decode 6.73 ms/token（vLLM 10.51 ms，1.56× 加速），bs=1–16 稳定 1.3–1.5× 快于 vLLM；bs=32 L2 hit 38.9%→51.0%、HBM 读 −18%；bs=64 L2 hit 61.4%、HBM 读 −37%。关键 M-split ablation 证明：bs ≤ 16 加速来自 dispatch 压缩（543 任务 vs 1,407），bs ≥ 32 加速来自 L2 协作复用。bs ≥ 64 Fleet 进入 compute-bound 后被 hipBLASLt (K-split) 反超——论文自陈持久化 kernel 里 K-split 未实现。",
+  "key_findings": [
+    "Chiplet-task 是 CUDA/HIP 缺失的第四层抽象，填上 L2 scope 与任务粒度之间的断层",
+    "M-split ablation 干净分离出两种加速源：bs≤16 的 dispatch 压缩 vs bs≥32 的 L2 协作复用",
+    "L2 hit 率解析式 (R−1)/R 在 bs=32 预测 50% 实测 51%，bs=64 预测 75% 实测 61.4%（streaming 修饰符提前驱逐权重）",
+    "两级事件同步把 248 次 cross-chiplet fence 压到 8 次——persistent kernel 在 chiplet GPU 成立的必要条件",
+    "CDNA3/4 per-instruction scope/NT 位让 Fleet 可以按数据类型精细控制 L2 分配，NV Hopper/Blackwell 无等价硬件",
+    "Register pressure 让 persistent megakernel 只能跑 1 wave/SIMD，L2 hit 从'锦上添花'升格为'生死攸关'（每次 miss 直接 stall MFMA pipeline）",
+    "Fused SiLU 带来 bs=1 基线 L2 hit 16.9% 的'免费午餐'，Eq.(1) 未建模这一部分"
+  ],
+  "limitations": [
+    "评测仅 Qwen3-8B dense bf16 单一模型 + 单一硬件（MI350X）；无 MoE / 无量化 / 无多 GPU TP / 无 prefill",
+    "bs ≥ 64 compute-bound 区被 vLLM 反超，因为 Fleet 未实现 wave-level K-split",
+    "8 CU (3.1%) 被 scheduler 占用，未来 chiplet 数更大时线性放大",
+    "M-major 协作要求 B ≥ 2 × T_M（bs ≥ 32）；小 batch 下只能吃 dispatch-overhead 这一项加速",
+    "Mirage 超优化器尚未理解 Chiplet-task 的 cost model，当前 task graph 需手动写",
+    "未与 NVIDIA thread block cluster / DSMEM 做头对头比较（作者声明无 Blackwell）",
+    "Chiplet-task 假设 dense GEMM 可按 N 维度均匀 8-split；MoE 的 per-token expert 路由破坏此前提",
+    "Eq.(1) SJM 在 bs=64 有 13.6 pp 预测偏差（streaming eviction 未建模）"
+  ],
+  "infra_impact": {
+    "algorithm": "几乎无直接影响；Fleet 是推理运行时层优化，不改训练算法也不改权重分布",
+    "kernel": "定义新的 tile 遍历模板（M-major windowed）和 per-instruction cache modifier 三档策略，推动 kernel DSL 支持 chiplet-aware 编程",
+    "framework": "核心影响层 — 给 vLLM/SGLang/TRT-LLM 提议新的调度粒度 block-to-chiplet affinity；2.6× 任务数压缩模板",
+    "llm": "仅 dense transformer 场景受益；MoE / long-context attention-bound 需新抽象",
+    "agent": "间接利好 — agent serving 的 bs=1–8 正好落在 Fleet 最优区间，1.3–1.5× decode 延迟降幅直接翻译成 time-to-first-tool-call 同比例降低",
+    "code": "开源路径未披露（arXiv 预印本）；Mirage MPK 是开源的，Fleet 作为其扩展原则上可 upstream；HipKittens XCD-grouping 互补"
+  },
+  "related_paper_ids": [
+    "2511.08083",
+    "2511.02132",
+    "amd-cdna4-whitepaper",
+    "amd-cdna3-whitepaper",
+    "2510.27583"
+  ],
+  "open_questions": [
+    "NV Blackwell 端（2 × L2 partition）能否 1:1 实现 Chiplet-task？cluster-scope barrier + DSMEM 是否足够替代 buffer_wbl2？",
+    "MoE 场景 Chiplet-task 如何适配 — 每 token 只激活 2 个 expert，M-major 协作前提崩溃；需要 Expert-task 抽象？",
+    "TP + Chiplet-task 组合时 N-split 会被 TP 先吃掉部分，per-XCD 分区过小跌破 L2 容量阈值 — 在什么 TP 度下仍有收益？",
+    "K-split wave-level reduction 如何补到持久化 megakernel 里？bs ≥ 64 的 compute-bound 区 Fleet 能否翻身？",
+    "MI400 类更多 XCD 架构下 scheduler 3.1% CU 开销会线性放大，能否用 wavefront-level scheduler 降开销？",
+    "long-context(seq ≥ 32K) 时 attention 成本相对升至 40–50%，Fleet 的 linear-only 优化是否需延伸到 attention 的协作式 L2 策略？",
+    "Fleet 的 SJM 在 streaming 修饰符下 bs=64 residual 13.6 pp — 能否给出 streaming eviction 的解析模型（LRU window × allocation rate）？"
+  ],
+  "read_depth": "deep",
+  "date_read": "2026-04-21"
+}
