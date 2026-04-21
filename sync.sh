@@ -1133,17 +1133,25 @@ for p in papers:
     with open(notes_path) as f:
         md = f.read()
 
-    # Strip the leading `# title` + `> meta` block — it's redundant with
-    # the page hero (rendered separately above).
+    # Strip the leading `# title` + `> meta` + separator + blank block —
+    # it's redundant with the page hero (rendered separately above).
+    # Robust version: scan through `# `, `>`, `---`, blank lines in any
+    # order; stop at the first line that is none of these (e.g. a `##`
+    # heading or a body paragraph).
     body_lines = md.split('\n')
     skip = 0
     for i, l in enumerate(body_lines):
-        if l.startswith('# '):
+        s = l.strip()
+        if s == '' or s == '---':
+            # Neutral line: keep scanning but don't commit skip until we
+            # see another header-zone line (avoids eating an initial blank
+            # line that actually precedes body content).
+            continue
+        if s.startswith('# ') or s.startswith('>'):
             skip = i + 1
             continue
-        if l.startswith('>') and i <= skip + 3:
-            skip = i + 1
-            continue
+        # First real body content — stop, skip is already set to the last
+        # header-zone line.
         break
     body_md = '\n'.join(body_lines[skip:]).strip()
     # Drop a leading `---` separator if present after the meta block
@@ -1259,21 +1267,23 @@ for p in papers:
     if os.path.exists(synth_md_path):
         with open(synth_md_path) as f:
             synth_md_src = f.read()
-        # Strip leading `# title` + `> meta` block (we render our own banner)
+        # Strip leading `# title` + `> meta` + separator + blank block.
+        # Same robust scanner as notes — tolerate any order / blank lines
+        # between header elements until we hit the first real body line.
         synth_lines = synth_md_src.split('\n')
         synth_skip = 0
         for i, l in enumerate(synth_lines):
-            if l.startswith('# '):
-                synth_skip = i + 1
+            s = l.strip()
+            if s == '' or s == '---':
                 continue
-            if l.startswith('>') and i <= synth_skip + 5:
-                synth_skip = i + 1
-                continue
-            if l.strip() == '---' and i <= synth_skip + 6:
+            if s.startswith('# ') or s.startswith('>'):
                 synth_skip = i + 1
                 continue
             break
-        synth_body_md = '\n'.join(synth_lines[synth_skip:])
+        synth_body_md = '\n'.join(synth_lines[synth_skip:]).strip()
+        # Drop a leading `---` separator if present
+        if synth_body_md.startswith('---'):
+            synth_body_md = synth_body_md[3:].lstrip()
         synth_body_raw, synth_toc = md_to_html(synth_body_md, paper_id=pid)
         synth_body_html = sanitize_html(synth_body_raw)
         # Append a separator entry + synthesis TOC entries to paper's TOC.
