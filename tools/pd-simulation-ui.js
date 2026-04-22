@@ -2,7 +2,7 @@
 // Consumes a PDSimulator instance for read-only state + config.
 
 (function(){
-const UI_VERSION = '1.1.5';
+const UI_VERSION = '1.2.0';
 const $ = id => document.getElementById(id);
 // Show version in header (also cross-check simulator lib version)
 (function showVer(){
@@ -33,7 +33,7 @@ function readConfig(){
   return {
     tot: +$('c_conc').value * 10, conc: +$('c_conc').value,
     isl: +$('c_isl').value, osl: +$('c_osl').value, rng: +$('c_range').value,
-    pfN: +$('c_pfN').value, pfTP, pfDP, pfEP, pfL: +$('c_pfL').value,
+    pfN: +$('c_pfN').value, pfTP, pfDP, pfEP, pfTPS: +$('c_pfTPS').value,
     pcR: +$('c_pcR').value / 100, chk: +$('c_chk').value, pfMR: +$('c_pfMR').value,
     txP: +$('c_txP').value / 100,
     dcN: +$('c_dcN').value, dcTP, dcDP, dcEP, mrr: +$('c_mrr').value,
@@ -42,7 +42,7 @@ function readConfig(){
   };
 }
 
-const cfgInputs = ['c_total','c_conc','c_isl','c_osl','c_range','c_pfN','c_pfTP','c_pfDP','c_pfEP','c_pfL','c_pcR','c_chk','c_pfMR','c_txP','c_dcN','c_dcTP','c_dcDP','c_dcEP','c_mrr','c_tpot','c_mt','c_spd'];
+const cfgInputs = ['c_total','c_conc','c_isl','c_osl','c_range','c_pfN','c_pfTP','c_pfDP','c_pfEP','c_pfTPS','c_pcR','c_chk','c_pfMR','c_txP','c_dcN','c_dcTP','c_dcDP','c_dcEP','c_mrr','c_tpot','c_mt','c_spd'];
 function saveCfg(){
   const o = {};
   for (const id of cfgInputs) o[id] = $(id).value;
@@ -52,9 +52,14 @@ function loadCfg(){
   try {
     const o = JSON.parse(localStorage.getItem('pd_sim_cfg'));
     if (!o) return;
-    // v1.0.0 -> v1.1.5 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
+    // v1.0.0 -> v1.2.0 migration: DEP became DP; map old c_pfD/c_dcD to c_pfDP/c_dcDP
     if (o.c_pfD != null && o.c_pfDP == null) o.c_pfDP = o.c_pfD;
     if (o.c_dcD != null && o.c_dcDP == null) o.c_dcDP = o.c_dcD;
+    // v1.2.0 -> v1.2.0: pfL (ms@ISL) replaced by pfTPS (tokens/s/rank)
+    if (o.c_pfL != null && o.c_pfTPS == null && o.c_isl != null){
+      const tps = Math.round(+o.c_isl / +o.c_pfL * 1000);
+      if (tps > 0 && isFinite(tps)) o.c_pfTPS = tps;
+    }
     for (const id of cfgInputs) if (o[id] != null) $(id).value = o[id];
   } catch(e){}
 }

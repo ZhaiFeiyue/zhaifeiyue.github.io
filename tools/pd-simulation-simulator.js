@@ -2,7 +2,7 @@
 // Exposes a Simulator class with: reset(), tick(dt), state, config.
 
 (function(global){
-const SIM_VERSION = '1.1.5';
+const SIM_VERSION = '1.2.0';
 class Simulator {
   constructor(config){
     this.cfg = { ...config };
@@ -103,7 +103,7 @@ class Simulator {
           for (let i = rk.run.length - 1; i >= 0; i--){
             if (rk.run[i].rem <= 0){
               const req = rk.run[i].r;
-              const realT = req.isl / C.isl * C.pfL;
+              const realT = req.isl / C.pfTPS * 1000;
               S.pfOut[ni][ri].push({ r: req, te: S.t + realT * C.txP });
               rk.run.splice(i, 1);
             }
@@ -134,7 +134,7 @@ class Simulator {
         const cons = S.pfR[ni].map(r => r.con);
         const mx = Math.max(0, ...cons);
         const sumC = cons.reduce((a, b) => a + b, 0);
-        bar.bt = mx > 0 ? Math.max(20, mx / C.isl * C.pfL) : 0;
+        bar.bt = mx > 0 ? Math.max(20, mx / C.pfTPS * 1000) : 0;
         bar.cs = S.t;
         bar.sc = 0;
         bar.rate = (mx > 0 && bar.bt > 0) ? sumC * 1000 / bar.bt : 0;
