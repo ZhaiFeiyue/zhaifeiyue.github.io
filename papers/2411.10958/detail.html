@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SageAttention2: Efficient Attention with Thorough Outlier Smoothing and Per-thread INT4 Quantization — Feiyue KB</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card */
+.card {
+  background: var(--card-bg); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 12px; box-shadow: var(--card-shadow);
+  border-left: 4px solid var(--accent); transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.card-title a { color: var(--tx); }
+.card-meta { font-size: 0.82rem; color: var(--mt); margin-bottom: 6px; }
+.card-body { font-size: 0.9rem; line-height: 1.6; }
+.card-tags { margin-top: 6px; }
+.tag {
+  display: inline-block; background: var(--tag-bg); color: var(--tag-tx);
+  padding: 1px 8px; border-radius: 8px; font-size: 0.75rem; margin-right: 4px;
+}
+.card-links { margin-top: 8px; font-size: 0.85rem; }
+.card-links a { margin-right: 12px; }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/domain/">Domain</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>SageAttention2: Efficient Attention with Thorough Outlier Smoothing and Per-thread INT4 Quantization</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2411.10958</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention</span><span class="tag">quantization</span><span class="tag">INT4</span><span class="tag">FP8</span><span class="tag">tensor-core</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/domain/kernel.html">← kernel (L4)</a>
+<a href="https://arxiv.org/abs/2411.10958" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="sageattention2-efficient-attention-with-thorough-outlier-smoothing-and-per-thread-int4-quantization">SageAttention2: Efficient Attention with Thorough Outlier Smoothing and Per-thread INT4 Quantization</h1>
+<blockquote>
+Jintao Zhang, Haofeng Huang, Pengle Zhang, Jia Wei, Jun Zhu, Jianfei Chen | 2024-11 | https://arxiv.org/abs/2411.10958
+Category: kernel | Tags: attention, quantization, INT4, FP8, tensor-core
+Read: 2026-04-16
+</blockquote>
+
+<h2 id="core-contribution">Core Contribution</h2>
+<p>SageAttention2 proposes a quantized attention mechanism that uses INT4 for $QK^\top$ and FP8 for $PV$ with three key techniques (Q+K smoothing, per-thread quantization aligned to MMA instruction layout, two-level FP32 accumulation for FP22 accumulators), achieving 3x speedup over FlashAttention2 with negligible end-to-end accuracy loss.</p>
+
+<h2 id="核心三问">核心三问</h2>
+
+<p><strong>Q1: 这篇论文试图解决什么核心痛点/问题？</strong></p>
+<p>Attention计算是Transformer的主要性能瓶颈，尤其在长序列场景下。虽然SageAttention已将QK用INT8加速，但INT8仅有INT4一半的速度；同时其PV的FP16加速方案仅在少数GPU上有效。如何安全地将Attention量化到INT4/FP8以获得极致速度，同时保持精度，是核心问题。</p>
+
+<p><strong>Q2: 作者提出了什么新的"杀手锏"方法/架构？</strong></p>
+<p>SageAttention2提出三大技术：(1) <strong>双重Smoothing</strong>——不仅smooth K（如SageAttention），还smooth Q（减去block均值），将量化前outlier大幅削减；(2) <strong>Per-thread量化</strong>——根据PTX mma指令的线程-数据映射关系设计量化分组，使每个GPU线程只对应一个量化scale，精度接近per-token而无额外开销；(3) <strong>两级累加策略</strong>——发现FP8 mma指令的累加器实际是FP22（非FP32），通过外层FP32 buffer累加来消除精度损失。</p>
+
+<p><strong>Q3: 最终效果/结论如何？</strong></p>
+<p>在RTX4090上达到481 TOPS峰值，比FlashAttention2快约3倍、比xformers快约4.5倍。在Hopper GPU上，SageAttn2-8b匹配FlashAttention3(fp8)的速度但精度显著更高。在10+个语言/图像/视频生成模型上，端到端指标损失可忽略不计。</p>
+
+<h2 id="逻辑故事还原">逻辑故事还原</h2>
+
+<h3 id="背景-context">背景 (Context)</h3>
+<p>FlashAttention系列通过tiling优化了Attention的内存访问，但计算本身仍使用FP16/BF16。SageAttention首次将 $QK^\top$ 量化为INT8实现了2x加速，但存在两个弱点：INT8 Matmul只有INT4一半的速度；PV使用FP16累加器加速仅在RTX4090等极少数GPU上生效。</p>
+
+<h3 id="破局-insight">破局 (Insight)</h3>
+<blockquote>
+👉 打个比方：想象你在给一幅画拍照（量化），如果画上有一个极亮的光点（outlier），相机为了不让光点过曝，会把其他所有细节都拍得很暗（量化为零）。解决方法是先把那个光点擦掉（smoothing），单独记录它的位置，拍完照再贴回去。SageAttention2对Q和K都做了这样的"擦光点"操作，而且巧妙地利用了GPU线程与数据的对应关系，让"贴回去"的过程零开销。
+</blockquote>
+
+<p>核心洞察有三：(1) Q和K的token之间高度相似，减去均值后outlier大幅缩小，INT4量化精度从80%→99.5% CosSim；(2) MMA指令的线程布局天然将特定token分配给同一线程，可以把这些token作为一个量化组，实现比per-block更细但比per-token零开销的量化；(3) NVIDIA Ada/Hopper的FP8 MMA累加器实际只有22位有效精度（非标称的FP32），需要外层FP32 buffer累加来补偿。</p>
+
+<h3 id="拆解-deconstruction">拆解 (Deconstruction)</h3>
+<ol>
+<li><strong>预处理阶段</strong>：对K减去全局均值（smooth K），对每个Q block减去block均值（smooth Q），计算补偿向量 $\Delta S = \bar{q}_i \cdot \gamma(K_j)^\top$；同时对V做per-channel FP8量化</li>
+<li><strong>Per-thread量化</strong>：根据mma.m16n8k64指令的线程-数据映射，将Q的每 $8k+i$ 个token分为一组、K的每 $8k+2i$ 和 $8k+2i+1$ 分为一组，每组共享一个scale</li>
+<li><strong>Attention kernel内部</strong>：执行INT4 GEMM得到 $QK^\top$，反量化并加上 $\Delta S$ 补偿；softmax后将 $\tilde{P}$ 乘以448转为FP8 E4M3</li>
+<li><strong>两级累加</strong>：$\tilde{P}V$ 的FP8 GEMM结果（FP22精度）累加到FP32 buffer中，外层再用FP32做跨block累加</li>
+<li><strong>后处理</strong>：反量化V的per-channel scale，输出最终O</li>
+</ul>
+
+<h2 id="key-figures">Key Figures</h2>
+
+<h3 id="figure-1-overall-performance-and-demo">Figure 1: Overall Performance and Demo</h3>
+<p>!<a href="../images/2411.10958/fig1-overview.png">Figure 1: Overall Performance and Demo</a></p>
+<p><strong>What it shows</strong>: 左上为RTX4090上的kernel速度对比（SageAttn2 vs FlashAttention2/xformers），右上为Llama3.1在100K序列长度下的首token生成加速和Needle-in-a-Haystack任务表现，下方为CogvideoX生成的视频对比。</p>
+<p><strong>Why it matters</strong>: 一图展示了SageAttention2的核心价值——3x kernel加速、端到端推理加速、以及视觉质量无损。</p>
+<p><strong>Detailed description</strong>: 左上bar chart显示随序列长度增加，SageAttn2-4b达到~480 TOPS，FlashAttention2约160 TOPS，xformers更低。右上展示Llama3.1在L20上100K序列的首token延迟从39.9s降至23.2s（1.72x加速），同时NIAH热力图显示精度完全保持。下方两组视频帧对比表明CogvideoX 1.5-5B使用SageAttention2加速1.8x且视频质量无差异。</p>
+
+<h3 id="figure-3-workflow-of-sageattention2">Figure 3: Workflow of SageAttention2</h3>
+<p>!<a href="../images/2411.10958/fig3-workflow.png">Figure 3: Workflow of SageAttention2</a></p>
+<p><strong>What it shows</strong>: SageAttention2的完整数据流管线，包含5个阶段：①Smooth Q,K,V → ②GEMV计算 $\Delta S$ → ③Per-thread量化Q,K和per-channel量化V → ④执行SageAttention2 kernel → ⑤修正输出。</p>
+<p><strong>Why it matters</strong>: 这是论文的"灵魂图"，清晰展示了从FP16输入到最终输出的完整处理流程，以及各量化/补偿技术如何协同工作。</p>
+<p><strong>Detailed description</strong>: 图左侧显示Q经过减均值（smooth Q）后进行per-thread INT4量化，K经过减全局均值（smooth K）后同样per-thread INT4量化。中间GEMV计算 $\bar{q}_i$ 与 $\gamma(K_j)$ 的向量积作为 $\Delta S$ 补偿。V做per-channel FP8量化。kernel内部执行INT4 $QK^\top$ + $\Delta S$ → softmax → FP8 $PV$（两级累加），最后乘以V的per-channel scale得到输出。</p>
+
+<h3 id="figure-4-per-thread-quantization-example">Figure 4: Per-thread Quantization Example</h3>
+<p>!<a href="../images/2411.10958/fig4-perthread.png">Figure 4: Per-thread Quantization Example</a></p>
+<p><strong>What it shows</strong>: 左侧展示量化scale与GPU warp内token的对应关系，右侧展示MMA.m16n8k64指令中GPU线程与量化token的映射。</p>
+<p><strong>Why it matters</strong>: 这是per-thread量化的核心机制图，说明了为何每个线程只需一个scale就能完成反量化——因为MMA指令天然将特定token映射到同一线程。</p>
+<p><strong>Detailed description</strong>: 左图显示bq=128个query token被4个warp分割，每个warp处理32个token，其中token $i$, $8+i$, $16+i$, $24+i$ 共享一个量化scale。右图是mma.m16n8k64指令的线程布局，展示32个线程（T0-T31）如何分别持有结果矩阵D的不同元素，每个线程仅对应 $\delta_Q$ 和 $\delta_K$ 各一个scale值。</p>
+
+<h3 id="figure-5-speed-comparison">Figure 5: Speed Comparison</h3>
+<p>!<a href="../images/2411.10958/fig5-speed.png">Figure 5: Speed Comparison</a></p>
+<p><strong>What it shows</strong>: RTX4090上headdim=128时，SageAttention2与FlashAttention2、xformers在不同序列长度下的速度对比（有/无causal mask）。</p>
+<p><strong>Why it matters</strong>: 直观展示SageAttn2-4b达到~480 TOPS，约为FlashAttention2的3倍和xformers的4.5倍。</p>
+<p><strong>Detailed description</strong>: 四张子图分别对应headdim=128 non-causal、headdim=128 causal、headdim=64 non-causal、headdim=64 causal。在所有配置下，SageAttn2-4b（红色线）均显著领先，SageAttn2-8b（橙色线）次之，两者均大幅超越FlashAttention2（蓝色线）和xformers（灰色线）。</p>
+
+<h2 id="key-tables">Key Tables</h2>
+
+<h3 id="table-2-end-to-end-metrics-main-results">Table 2: End-to-end Metrics (Main Results)</h3>
+<table>
+<tr><th>Model</th><th>Attention</th><th>Key Metric</th><th>Value</th></tr>
+<tr><td>Llama3.1</td><td>Full-Precision</td><td>WikiText PPL↓</td><td>6.013</td></tr>
+<tr><td></td><td>SageAttn2-8b</td><td>WikiText PPL↓</td><td><strong>6.019</strong></td></tr>
+<tr><td></td><td>SageAttn2-4b</td><td>WikiText PPL↓</td><td>6.256</td></tr>
+<tr><td>CogvideoX 1.5-5B</td><td>Full-Precision</td><td>VQA-t↑</td><td>70.928</td></tr>
+<tr><td></td><td>SageAttn2-8b</td><td>VQA-t↑</td><td><strong>74.415</strong></td></tr>
+<tr><td></td><td>FlashAttn3-fp8</td><td>VQA-t↑</td><td>2.181</td></tr>
+<tr><td>HunyuanVideo</td><td>Full-Precision</td><td>VQA-a↑</td><td>82.516</td></tr>
+<tr><td></td><td>SageAttn2-8b</td><td>VQA-a↑</td><td><strong>81.786</strong></td></tr>
+<tr><td></td><td>FlashAttn3-fp8</td><td>VQA-a↑</td><td>4.433</td></tr>
+</table>
+<p><strong>Takeaway</strong>: SageAttn2-8b在所有模型上几乎无损，SageAttn2-4b有轻微损失但远优于其他baseline。FlashAttn3-fp8在视频生成模型上严重退化。</p>
+
+<h3 id="table-4-smoothing-methods-comparison-cogvideox">Table 4: Smoothing Methods Comparison (CogvideoX)</h3>
+<table>
+<tr><th>Method</th><th>CosSim↑</th><th>Relative L1↓</th><th>RMSE↓</th></tr>
+<tr><td>None</td><td>80.04%</td><td>0.3906</td><td>0.2223</td></tr>
+<tr><td>HadmdAttn</td><td>79.77%</td><td>0.3782</td><td>0.2180</td></tr>
+<tr><td>SmoothAttn</td><td>90.21%</td><td>0.3383</td><td>0.1952</td></tr>
+<tr><td>Smooth K</td><td>98.07%</td><td>0.1493</td><td>0.0743</td></tr>
+<tr><td>Smooth Q</td><td>98.30%</td><td>0.1250</td><td>0.0712</td></tr>
+<tr><td><strong>Smooth Q+K</strong></td><td><strong>99.46%</strong></td><td><strong>0.0648</strong></td><td><strong>0.0334</strong></td></tr>
+</table>
+<p><strong>Takeaway</strong>: Smooth Q+K将CosSim从80%提升至99.46%，是所有smoothing方法中效果最好的，证明了双重smoothing的关键价值。</p>
+
+<h3 id="table-6-quantization-granularity-comparison">Table 6: Quantization Granularity Comparison</h3>
+<table>
+<tr><th>Method</th><th>Cos Sim↑</th><th>Relative L1↓</th><th>RMSE↓</th></tr>
+<tr><td>Per-token</td><td>99.45%</td><td>0.0649</td><td>0.0335</td></tr>
+<tr><td><strong>Per-thread</strong></td><td><strong>99.45%</strong></td><td><strong>0.0622</strong></td><td><strong>0.0313</strong></td></tr>
+<tr><td>Per-block</td><td>98.03%</td><td>0.1492</td><td>0.0744</td></tr>
+<tr><td>Per-tensor</td><td>97.15%</td><td>0.1800</td><td>0.0865</td></tr>
+</table>
+<p><strong>Takeaway</strong>: Per-thread量化精度与per-token几乎相同（99.45% vs 99.45%），但比per-block（98.03%）显著更好，且无额外速度开销。</p>
+
+<h3 id="table-8-end-to-end-latency-speedup">Table 8: End-to-end Latency Speedup</h3>
+<table>
+<tr><th>Model</th><th>GPU</th><th>Original</th><th>SageAttn2-8b</th><th>SageAttn2-4b</th></tr>
+<tr><td>CogvideoX 1.5-5B</td><td>RTX4090</td><td>1040s</td><td>577s</td><td><strong>555s</strong></td></tr>
+<tr><td>HunyuanVideo</td><td>L20</td><td>2221s</td><td>1486s</td><td><strong>1435s</strong></td></tr>
+<tr><td>Mochi</td><td>L20</td><td>2336s</td><td>1316s</td><td><strong>1190s</strong></td></tr>
+<tr><td>Llama3.1 100K</td><td>L20</td><td>39.9s</td><td>25.4s</td><td><strong>23.2s</strong></td></tr>
+</table>
+<p><strong>Takeaway</strong>: CogvideoX获得1.8x端到端加速，Mochi获得近2x加速，长序列LLM首token延迟显著降低。</p>
+
+<h2 id="algorithm-1-sageattention2">Algorithm 1: SageAttention2</h2>
+
+<pre><code>
+Input: Q(FP16), K(FP16), V(FP16) ∈ R^{N×d}, block size bq, bkv, warp count cw
+
+Preprocessing:
+  K = K - mean(K)                    // Smooth K: 减去全局token均值
+  (δV, V̂) = ψV(V)                   // Per-channel FP8 quantize V
+
+Divide Q into Tm = N/bq blocks {Qi}
+Divide K, V into Tn = N/bkv blocks {Ki}, {Vi}
+
+for i = 1 to Tm do                   // 外层循环：遍历Q blocks
+  q̄i = mean(Qi)                     // 计算Q block均值
+  (δQ, Q̂i) = ψQ(Qi - q̄i)           // Smooth Q + per-thread INT4 quantize
+
+  for j = 1 to Tn do                 // 内层循环：遍历K,V blocks
+    (δK, K̂j) = ψK(Kj)              // Per-thread INT4 quantize K block
+
+    // INT4 GEMM + dequant + GEMV compensation (per warp parallel)
+    Sij = ψ⁻¹(Q̂i · K̂j^T) + GEMV(q̄i, Kj^T)
+
+    // Online softmax
+    mij = max(mi,j-1, rowmax(Sij))
+    P̃ij = exp(Sij - mij)
+    lij = exp(mi,j-1 - mij) · li,j-1 + rowsum(P̃ij)
+
+    // FP8 PV matmul (two-level accumulation)
+    Oij(FP22) = Matmul((P̃ij * 448).to(FP8.E4M3), Vj)  // Level 1: FP22
+    Oij(FP32) = diag(exp(...)) · Oi,j-1(FP32) + Oij(FP22)  // Level 2: FP32
+  end for
+
+  Oi = diag(li,Tn)⁻¹ · Oi,Tn(FP32) / 448 * δV  // Final rescale
+end for
+return O = {Oi}
+</code></pre>
+
+<p><strong>逐行解读</strong>:</p>
+<ul>
+<li><strong>Smooth K</strong>: 全局一次性操作，减去K的token-wise均值消除channel-wise outlier</li>
+<li><strong>Per-thread量化</strong>: 基于mma.m16n8k64指令布局，Q每 $8k+i$ 个token一组，K每 $8k+2i$ 和 $8k+2i+1$ 一组</li>
+<li><strong>GEMV补偿</strong>: $\bar{q}_i \cdot \gamma(K_j)^\top$ 是 $1 \times N$ 向量，补偿smooth Q引入的偏差。因为 $b = \bar{q}_i \cdot \bar{k}^\top + \gamma(Q_i) \cdot \bar{k}^\top$ 是row-wise常数，softmax后消除，无需计算</li>
+<li><strong>静态scale $\tilde{P}$</strong>: $\tilde{P} \in [0,1]$，乘以448映射到FP8 E4M3的全范围 $[-448, +448]$</li>
+<li><strong>两级累加</strong>: 内层FP22累加器仅累加 $b_k$ 个token（如64），外层FP32累加器跨block累加，将精度损失限制在block范围内</li>
+</ul>
+
+<h2 id="key-findings">Key Findings</h2>
+<ul>
+<li>Smooth Q+K将INT4 $QK^\top$ 的CosSim从80%提升至99.46%，是实现INT4 Attention精度的关键</li>
+<li>Per-thread量化利用MMA指令布局实现零开销的细粒度量化，精度接近per-token</li>
+<li>NVIDIA Ada/Hopper FP8 MMA累加器实际为FP22（1+8+13 bits），非标称FP32</li>
+<li>SageAttn2-4b在RTX4090上达到481 TOPS，3x于FlashAttention2</li>
+<li>SageAttn2-8b在Hopper上匹配FlashAttention3(fp8)速度但精度远优</li>
+<li>在CogvideoX、HunyuanVideo、Mochi等视频生成模型上，FlashAttention3(fp8)严重退化而SageAttention2几乎无损</li>
+</ul>
+
+<h2 id="limitations">Limitations</h2>
+<ul>
+<li>INT4 tensor core仅在NVIDIA Ada架构上可用，Hopper需退回INT8变体</li>
+<li>4-bit量化在某些模型上仍有轻微精度损失（如Llama3.1 MMLU从0.635降至0.607）</li>
+<li>需要预处理步骤（smooth + GEMV），增加约3.7%的kernel开销</li>
+<li>未讨论训练场景（仅推理），backward pass的量化兼容性未知</li>
+<li>未评估AMD或Intel GPU上的可移植性</li>
+<li>Smooth V技术是可选的，在LLM（如Llama）上无效果（V无channel-wise bias）</li>
+</ul>
+
+<h2 id="infrastructure-impact">Infrastructure Impact</h2>
+<ul>
+<li>Algorithm: 为长序列LLM推理和视频生成提供即插即用的Attention加速，可与稀疏注意力方法正交组合</li>
+<li>Kernel: 首次系统利用INT4 tensor core加速Attention，发现FP22累加器问题并提出通用解决方案</li>
+<li>Framework: 作为drop-in替换集成到推理框架中，已开源CUDA kernel（github.com/thu-ml/SageAttention）</li>
+<li>LLM: 长上下文LLM（100K+ tokens）的首token延迟降低40-50%，直接提升用户体验</li>
+<li>Agent: 降低Attention延迟使实时agent场景更可行，特别是需要处理长上下文的agent</li>
+</ul>
+
+<hr>
+
+<h2 id="deep-analysis-kernel">Deep Analysis (kernel)</h2>
+
+<h3 id="1-target-operation">1. Target Operation</h3>
+
+<p><strong>Computational primitive</strong>: Attention — 包含两个核心矩阵乘法 $QK^\top$（$N \times d \cdot d \times N = N \times N$）和 $PV$（$N \times N \cdot N \times d = N \times d$），以及中间的softmax操作。</p>
+
+<p><strong>Input/output shapes and data types</strong>:</p>
+<ul>
+<li>Input: $Q, K, V \in \mathbb{R}^{N \times d}$，原始FP16，其中 $d = 64$ 或 $128$</li>
+<li>量化后: Q,K → INT4（per-thread granularity），$\tilde{P}$ → FP8 E4M3（static scale \$1/448\$），V → FP8 E4M3（per-channel）</li>
+<li>Output: $O \in \mathbb{R}^{N \times d}$，FP16</li>
+</ul>
+
+<p><strong>Theoretical arithmetic intensity</strong>: 对于Attention整体，$2N^2d$ FLOPs（两个matmul），数据量约 $6Nd$ bytes（读Q,K,V + 写O，忽略中间S,P的HBM访问因FlashAttention tiling）。$\text{AI} \approx 2N^2d / 6Nd = N/3$。当 $N > 1000$ 时远超大多数GPU的计算/带宽比，是<strong>compute-bound</strong>。</p>
+
+<p><strong>Roofline position</strong>: 对于 $N \geq 4K$, $d = 128$ 的典型配置，Attention是计算密集型操作，使用低精度tensor core（INT4/FP8）正好能最大化计算吞吐。</p>
+
+<h3 id="2-hardware-model">2. Hardware Model</h3>
+
+<p><strong>Target architectures</strong>:</p>
+<ul>
+<li>NVIDIA Ada Lovelace (SM89): RTX4090, L20, L40 — 原生INT4 tensor core</li>
+<li>NVIDIA Hopper (SM90): H100, H20 — 无原生INT4 TC，使用INT8变体</li>
+</ul>
+
+<p><strong>Hardware units</strong>:</p>
+<ul>
+<li>INT4 Tensor Cores: mma.m16n8k64 PTX指令，用于 $QK^\top$（仅Ada）</li>
+<li>FP8 Tensor Cores: mma.f32.f8.f8.f32，用于PV（Ada + Hopper）</li>
+<li>CUDA cores: 用于smooth操作、在线softmax、scale计算</li>
+<li>SFU: 用于exp()计算</li>
+</ul>
+
+<p><strong>Memory hierarchy</strong>:</p>
+<ul>
+<li><strong>Registers</strong>: 存储Oij的FP32累加器、量化scale、当前tile的中间结果</li>
+<li><strong>Shared memory (SRAM)</strong>: 存储当前处理的Qi, Kj, Vj tiles（FlashAttention tiling策略）</li>
+<li><strong>L2 Cache</strong>: 隐式利用，K/V tiles在多个Q blocks间复用</li>
+<li><strong>HBM</strong>: Q, K, V的原始存储，通过tiling最小化访问次数</li>
+</ul>
+
+<p><strong>Theoretical peak on RTX4090</strong>: INT4 tensor core理论峰值约660 TOPS（mma.m16n8k64），论文实测达到481 TOPS（约73%利用率）。FlashAttention2在FP16约160 TOPS。</p>
+
+<h3 id="3-optimization-techniques">3. Optimization Techniques</h3>
+
+<h3 id="figure-3-workflow-of-sageattention2">Figure 3: Workflow of SageAttention2</h3>
+<p>!<a href="../images/2411.10958/fig3-workflow.png">Figure 3</a></p>
+<p><strong>解读</strong>: 如Figure 3所示，SageAttention2的完整pipeline包含预处理（smooth + quantize）和kernel内部（INT4 $QK^\top$ + FP8 $PV$ + two-level accumulation）两个阶段。预处理中smooth和quantize操作被fuse成单个kernel以避免额外的HBM读写。</p>
+
+<table>
+<tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
+<tr><td>Tiling / blocking</td><td>✅</td><td>FlashAttention-style, $b_q = 128$, $b_{kv} = 64$, 4 warps per SM</td></tr>
+<tr><td>Software pipelining</td><td>部分</td><td>K,V tiles的加载与前一个tile的计算重叠</td></tr>
+<tr><td>Warp specialization</td><td>✅</td><td>4个warp并行处理Q block的不同段（cw=4）</td></tr>
+<tr><td>Vectorized memory access</td><td>✅</td><td>INT4数据紧凑存储，128-bit向量化加载</td></tr>
+<tr><td>Shared memory optimization</td><td>✅</td><td>标准FlashAttention共享内存布局</td></tr>
+<tr><td>Register pressure</td><td>中等</td><td>FP32累加器Oij + scale + softmax状态</td></tr>
+<tr><td>Kernel fusion</td><td>✅</td><td>smooth + quantize + GEMV fuse为单个预处理kernel</td></tr>
+</table>
+
+<h3 id="4-performance-analysis">4. Performance Analysis</h3>
+
+<h3 id="figure-5-speed-comparison-rtx4090">Figure 5: Speed Comparison (RTX4090)</h3>
+<p>!<a href="../images/2411.10958/fig5-speed.png">Figure 5</a></p>
+<p><strong>解读</strong>: 如Figure 5所示，SageAttn2-4b在RTX4090上随序列长度增加趋近481 TOPS，而FlashAttention2稳定在约160 TOPS，加速比约3x。在短序列（<2K）时加速比略低，因为预处理kernel的固定开销占比更大。</p>
+
+<p><strong>Peak utilization</strong>: 481 TOPS / ~660 TOPS（INT4理论峰值）≈ 73%，在实际attention workload中是很好的利用率。</p>
+
+<p><strong>vs vendor library</strong>:</p>
+<table>
+<tr><th>Method</th><th>RTX4090 TOPS</th><th>vs FA2</th></tr>
+<tr><td>SageAttn2-4b</td><td>481</td><td>3.0x</td></tr>
+<tr><td>SageAttn2-8b</td><td>~430</td><td>2.7x</td></tr>
+<tr><td>FlashAttention2</td><td>~160</td><td>1.0x</td></tr>
+<tr><td>xformers</td><td>~107</td><td>0.67x</td></tr>
+</table>
+
+<p><strong>Scaling</strong>: 速度随序列长度增加趋于稳定（compute-bound区域）。在短序列下（$N < 1K$），固定开销（smooth、quantize预处理）占比增大，加速比下降。</p>
+
+<p><strong>跨GPU表现</strong>: 如Table 9所示，SageAttention2在不同GPU上的加速比从2.46x（L20）到3.12x（H20）不等，Hopper上使用8b变体仍能匹配FlashAttention3(fp8)速度。</p>
+
+<h3 id="5-numerical-considerations">5. Numerical Considerations</h3>
+
+<h3 id="figure-4-per-thread-quantization">Figure 4: Per-thread Quantization</h3>
+<p>!<a href="../images/2411.10958/fig4-perthread.png">Figure 4</a></p>
+<p><strong>解读</strong>: 如Figure 4所示，per-thread量化的核心是将MMA指令的线程布局映射为量化分组。左图展示了每个warp内token与量化scale的对应——token $i$, $8+i$, $16+i$, $24+i$ 共享一个scale，形成32个量化组（8×4 warps），比per-block（1个scale）细32倍。右图展示MMA指令中每个线程仅持有D矩阵128个元素中的4个，且这4个元素恰好对应同一个Q scale和同一个K scale。</p>
+
+<p><strong>Accuracy vs baseline</strong>:</p>
+<ul>
+<li>Smooth Q+K: CosSim 99.46%（vs 80.04% without smoothing）</li>
+<li>Per-thread vs per-token: 99.45% vs 99.45%（几乎相同）</li>
+<li>E4M3 for PV: 99.44% vs FP16's 99.45%（几乎相同）</li>
+<li>End-to-end: Llama3.1 PPL 6.019 vs 6.013（+0.1%），CogvideoX VQA-t 74.4 vs 70.9（实际略有提升）</li>
+</ul>
+
+<p><strong>Numerical stability tricks</strong>:</p>
+<ol>
+<li><strong>Q smoothing数学保正确性</strong>: 利用softmax对行常数不变的性质，$b = \bar{q} \cdot \bar{k}^\top + \gamma(Q) \cdot \bar{k}^\top$ 是行常数，无需计算</li>
+<li><strong>Static $\tilde{P}$ scaling</strong>: $\tilde{P} \in [0,1]$，乘以448映射到E4M3全范围，避免动态量化开销</li>
+<li><strong>FP22累加器发现</strong>: 通过实验验证mma(f32f8f8f32)的累加器D实际只有13位尾数（非23位），当D > 13位尾数时低10位被截断</li>
+<li><strong>两级累加</strong>: 内层FP22仅累加 $b_k$ 个token，误差限制在小范围内；外层FP32跨block累加保持高精度</li>
+</ul>
+
+<p><strong>Edge cases</strong>: 论文未明确讨论NaN/Inf/subnormal处理。INT4范围[-7,+7]加上smoothing后，实际输入值应在合理范围内。</p>
+
+<h3 id="6-portability">6. Portability</h3>
+
+<table>
+<tr><th>Dimension</th><th>Assessment</th></tr>
+<tr><td>Cross-GPU within NVIDIA</td><td>Ada全功能（INT4 TC），Hopper降级为INT8变体（无INT4 TC），Ampere未提及</td></tr>
+<tr><td>Cross-vendor</td><td>CUDA-only，依赖PTX mma指令，无HIP/Triton版本</td></tr>
+<tr><td>Integration</td><td>独立CUDA kernel，可作为drop-in替换FlashAttention</td></tr>
+<tr><td>Compiler dependency</td><td>需要CUDA 12.x+（PTX mma.m16n8k64 INT4指令支持）</td></tr>
+</table>
+
+<h3 id="7-source-code-repository">7. Source Code & Repository</h3>
+
+<ul>
+<li><strong>Repository</strong>: https://github.com/thu-ml/SageAttention</li>
+<li><strong>Language</strong>: CUDA C++ with PTX inline assembly</li>
+<li><strong>Build requirements</strong>: CUDA 12.x, PyTorch</li>
+<li><strong>Benchmark scripts</strong>: 论文附录A.8描述了benchmark setup</li>
+<li><strong>Integration</strong>: Python wrapper，可直接替换PyTorch的F.scaled_dot_product_attention</li>
+</ul>
+
+<h3 id="8-key-source-code-walkthrough">8. Key Source Code Walkthrough</h3>
+
+<h4 id="8b-pseudocode-annotation-algorithm-1">8b. Pseudocode Annotation (Algorithm 1)</h4>
+
+<pre><code>
+// [Grid level] Each CUDA block processes one Q tile (bq tokens)
+// Grid dim: (N/bq, num_heads, batch_size)
+for i = 1 to Tm do    // → maps to block index
+
+  // [Block level] Compute Q block mean and smooth (SRAM → registers)
+  // This is compute-bound: FP16 reduction over bq tokens
+  q̄i = mean(Qi)                    // Shared memory reduction
+  (δQ, Q̂i) = ψQ(Qi - q̄i)          // Per-thread INT4 quantize in registers
+
+  for j = 1 to Tn do  // → sequential K,V tile iterations
+
+    // [Block level] Load Kj from HBM → SRAM, quantize
+    (δK, K̂j) = ψK(Kj)             // Per-thread INT4 quantize
+
+    // [Warp level] INT4 GEMM via mma.m16n8k64 (compute-bound)
+    // Each of 4 warps processes cw=bq/4=32 query tokens
+    // Dequantization: each thread multiplies by its single δQ·δK
+    Sij = ψ⁻¹(Q̂i · K̂j^T)         // Tensor Core (INT4)
+
+    // [Warp level] GEMV compensation (memory-bound, small)
+    Sij += GEMV(q̄i, Kj^T)          // CUDA cores, 1×N vector
+
+    // [Thread level] Online softmax (registers)
+    // Standard FlashAttention online softmax
+    mij, P̃ij, lij = online_softmax(Sij)
+
+    // [Warp level] FP8 PV matmul (compute-bound)
+    // Static scale: P̃ * 448 → FP8 E4M3 (no dynamic quantization)
+    // Two-level accumulation:
+    //   Level 1: mma(f32f8f8f32) → FP22 result in registers
+    //   Level 2: accumulate to FP32 buffer (also in registers)
+    Oij(FP22) = Matmul(P̃ij.to(FP8), Vj)  // Tensor Core (FP8)
+    Oij(FP32) += Oij(FP22)                 // FP32 register accumulation
+
+    // [Sync] Barrier before loading next K,V tile
+  end for
+
+  // [Block level] Final rescale and writeback to HBM
+  Oi = normalize(Oij) * δV          // Apply V per-channel scale
+  // Write Oi to global memory (HBM)
+end for
+</code></pre>
+
+<h4 id="8c-data-layout-memory-access-patterns">8c. Data Layout & Memory Access Patterns</h4>
+
+<ul>
+<li><strong>Input layout</strong>: Q, K, V in row-major (standard PyTorch layout), (batch, heads, seq, dim)</li>
+<li><strong>Memory coalescing</strong>: INT4 packing — 2 elements per byte，连续线程访问连续内存地址</li>
+<li><strong>Per-thread quantization alignment</strong>: 量化分组严格匹配mma.m16n8k64的线程-数据映射，确保反量化时每个线程只需一个scale值，无需线程间通信</li>
+<li><strong>Register allocation</strong>: 估计每线程约80-100个寄存器（FP32 $O_{ij}$ 累加器 $b_q/4 \times d/8 = 32 \times 16 = 512$ values需要128个FP32 regs，加上softmax状态、scales等），可能导致中等occupancy（2-3 blocks/SM）</li>
+</ul>
+
+<h3 id="9-infrastructure-impact">9. Infrastructure Impact</h3>
+
+<table>
+<tr><th>Layer</th><th>Impact</th></tr>
+<tr><td>Algorithm</td><td>为所有基于标准Attention的模型提供免费的推理加速，与sparse attention、linear attention正交</td></tr>
+<tr><td>Framework</td><td>可作为PyTorch custom op集成，已有Python wrapper；适合集成到vLLM、SGLang等serving框架</td></tr>
+<tr><td>LLM</td><td>长上下文推理（100K+ tokens）首token延迟降低40-50%，直接提升用户体验；使更长上下文窗口在现有硬件上可行</td></tr>
+<tr><td>Agent</td><td>Attention延迟降低使实时multi-turn agent更可行，特别是需要处理长对话历史或大量工具输出的场景</td></tr>
+</table>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search + category filter for list pages */
+
+document.addEventListener('DOMContentLoaded', function() {
+  const searchBox = document.querySelector('.search-box');
+  const catBtns = document.querySelectorAll('.cat-btn');
+  const cards = document.querySelectorAll('.card');
+  const catSections = document.querySelectorAll('.cat-section');
+  let activeCategory = 'all';
+
+  function filterCards() {
+    const query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      const text = card.textContent.toLowerCase();
+      const cat = card.dataset.category || '';
+      const matchesSearch = !query || text.includes(query);
+      const matchesCat = activeCategory === 'all' || cat === activeCategory;
+      card.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+    });
+    // Hide empty category sections
+    catSections.forEach(function(sec) {
+      const visible = sec.querySelectorAll('.card:not([style*="display: none"])');
+      sec.style.display = visible.length > 0 ? '' : 'none';
+    });
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('input', filterCards);
+  }
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      filterCards();
+    });
+  });
+});
+</script>
+</body>
+</html>

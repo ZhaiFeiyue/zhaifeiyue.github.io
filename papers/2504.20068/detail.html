@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>JITServe: SLO-aware LLM Serving with Imprecise Request Information — Feiyue KB</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card */
+.card {
+  background: var(--card-bg); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 12px; box-shadow: var(--card-shadow);
+  border-left: 4px solid var(--accent); transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.card-title a { color: var(--tx); }
+.card-meta { font-size: 0.82rem; color: var(--mt); margin-bottom: 6px; }
+.card-body { font-size: 0.9rem; line-height: 1.6; }
+.card-tags { margin-top: 6px; }
+.tag {
+  display: inline-block; background: var(--tag-bg); color: var(--tag-tx);
+  padding: 1px 8px; border-radius: 8px; font-size: 0.75rem; margin-right: 4px;
+}
+.card-links { margin-top: 8px; font-size: 0.85rem; }
+.card-links a { margin-right: 12px; }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/domain/">Domain</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>JITServe: SLO-aware LLM Serving with Imprecise Request Information</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2504.20068</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">slo-aware</span><span class="tag">llm-serving</span><span class="tag">scheduling</span><span class="tag">goodput</span><span class="tag">agent-serving</span><span class="tag">length-prediction</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/domain/framework.html">← framework (L4)</a>
+<a href="https://arxiv.org/abs/2504.20068" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="jitserve-slo-aware-llm-serving-with-imprecise-request-information">JITServe: SLO-aware LLM Serving with Imprecise Request Information</h1>
+
+<blockquote>
+Wei Zhang, Zhiyu Wu, Yi Mu, Rui Ning, Banruo Liu, Nikhil Sarda, Myungjin Lee, Fan Lai (UIUC / Google / Cisco Research) | 2025-04 | https://arxiv.org/abs/2504.20068
+Category: framework | Tags: slo-aware, llm-serving, scheduling, goodput, agent-serving, length-prediction
+Read: 2026-04-18
+</blockquote>
+
+<h2 id="core-contribution">Core Contribution</h2>
+
+<p><strong>首个面向多类型 SLO 的 LLM 服务调度系统</strong>——用"保守估计 + 在线精化"的方式处理未知的响应长度与依赖图，然后用 Grouped Margin Goodput Maximization (GMAX) 算法把"刚好够用的带宽"just-in-time 分配给每个请求，使 service goodput 相比 SOTA 提升 1.4× –6.3×，并给出常数竞争比（≈1/8.55）的可证明保证。</p>
+
+<h2 id="summary">Summary</h2>
+
+<p><strong>Motivation (为什么现在做)</strong>：LLM 服务的请求类型正在从单一 chat 快速扩散到 <strong>三类 SLO 差异巨大的工作负载</strong>——latency-sensitive (TTFT/TBT)、deadline-sensitive (E2EL 截止时间)、compound (多阶段依赖，例如 multi-agent / deep research / test-time scaling)。现有调度器要么只看聚合吞吐 (vLLM FCFS, Sarathi-Serve)，要么只看 mean E2EL (Autellix LAS, LTR SJF)，作者在 Appendix D.1 中证明 SJF / EDF 对 goodput 的竞争比<strong>可以任意差</strong>。与此同时，精确预测响应长度和依赖图几乎不可能 (BERT/Llama3-based 预测器误差巨大)。</p>
+
+<p><strong>Method</strong>：JITServe 提出 <strong>JIT (Just-in-Time)</strong> 调度原则——允许信息不精确但<strong>可在生成过程中连续精化</strong>。系统由两部分组成：(1) <strong>Request Analyzer</strong> 用 Quantile Regression Forest (QRF) 预测响应长度的<strong>高分位上界</strong> (7ms 推理，比 BERT 快 7×)，每 50 个 token 重新调用以逐步收紧上界；对 compound 请求用 <strong>pattern graph + Gaussian-kernel 图相似匹配</strong>找历史相似执行图，按累积贡献比 $\phi(s)=t_{\leq s}/t_{\text{total}}$ 给每一阶段分配 sub-deadline。(2) <strong>GMAX scheduler</strong> 把每个请求建模为一个需要 $\text{bw}_\Delta(r) = \frac{t_\text{gen}(r)}{t_\text{rem}(r)}\cdot\Delta$ 带宽的"矩形"，按 $\text{Priority}(r)=\text{goodput}(r)/t_\text{gen}(r)$ 排序，过滤得到 top-$p$ 候选后按 <strong>input length 滑动窗口</strong> 选出 batch size $B$ 的一组——前者保证 goodput，后者保证 batch 内长度同质以发挥 Flash Decoding 的效率。</p>
+
+<p><strong>Results</strong>：在 16×A100、Llama-3.1-8B/70B、Qwen2.5-14B、Qwen3-30B-MoE-A3B 上跑 Chatbot / Deep Research / Agentic CodeGen / Math Reasoning 混合工作负载 (>10K requests/run)。JITServe 相比 Sarathi-Serve / vLLM / Autellix / LTR 的 token-level goodput 提升 <strong>1.4× – 6.3×</strong>，或者在相同 goodput 下节省 <strong>28.5% – 83.2% 资源</strong>，且吞吐仅为 Sarathi-Serve 上限的 96–98%。距离 oracle (精确知道长度+依赖) 只差 <strong>3–9%</strong>。</p>
+
+<h2 id="key-findings">Key Findings</h2>
+
+<ul>
+<li><strong>SJF 和 EDF 的竞争比可任意差</strong>：作者在 Appendix D 用 Multiple-Knapsack 归约证明最优调度是 NP-hard，并构造对抗工作负载让 OPT/SJF 与 OPT/EDF 的比值 → ∞。这是 JITServe 存在的理论合法性。</li>
+<li><strong>上界预测 (QRF) > 点估计</strong>：所有基于 BERT/Llama3 fine-tune 的点估计器在线上都会<strong>显著低估</strong>长度——这直接导致 SLO 违反。QRF 的"保守上界 + 每 50 token 精化"策略把每次预测开销压到 7ms 且不会低估。</li>
+<li><strong>Batch 内长度异质是独立于 Flash Decoding 的 second-order bottleneck</strong>：Figure 8 显示即使用 Flash Decoding，batch 内混合长输入和短输入仍会显著减慢 per-token 速度——这是 GMAX 强制 "输入长度相似" 分组的硬件原因，不是算法原因。</li>
+<li><strong>JITServe 的性能保证是常数竞争比 ≈ 1/8.55</strong>：在 $\delta=10\%$ 的 preemption threshold 下 (作者用信用分摊 + 抢占链几何级数证明)，goodput(JITServe) ≥ (1/8.55)·goodput(OPT)。EDF/SJF 没有任何这样的保证。</li>
+<li><strong>3–9% 距离 oracle</strong>：说明 QRF 上界 + 在线精化策略的 "信息损失" 非常小，剩余改进空间有限——这实际上给未来调度器的论文定了一个上限。</li>
+<li><strong>非侵入</strong>：整套方案作为中间件加在 vLLM 之上，仅需几行 API 改动 (<code>client.responses.create(..., deadline=None, target_tbt=0.2, target_ttft=5, waiting_time=5)</code>)，QRF + graph matcher 通过 gRPC 异步 offload，元数据仅几字节/事件。</li>
+</ul>
+
+<h2 id="key-figures">Key Figures</h2>
+
+<h3 id="figure-1-three-request-patterns-latency-deadline-compound">Figure 1: Three request patterns (latency / deadline / compound)</h3>
+
+<p>!<a href="../images/2504.20068/fig1-patterns.png">Figure 1: Three request patterns</a></p>
+
+<p><strong>What it shows</strong>：论文开篇的"灵魂分类图"——把 LLM 服务请求分为 latency-sensitive (streaming chat，以 TTFT/TBT 衡量)、deadline-sensitive (单次 E2EL 截止，agent tool call)、compound (多阶段依赖 DAG，deep research / multi-agent)。</p>
+<p><strong>Why it matters</strong>：这是整篇论文的"问题定义"——一旦承认这三类共存、且在单一请求的生命周期内甚至会互相切换 ("thinking" → "streaming")，就无法再用单一调度目标 (throughput / mean E2EL) 覆盖，也就论证了 JITServe 的 necessity。</p>
+<p><strong>Detailed description</strong>：三行子图。第一行画一个 streaming chatbot，用户持续读取 token，重点标注 TTFT 和每个 token 之间的 TBT；第二行画一个 "LLM → external tool" 的单体请求，只要求整体 E2EL 在 deadline 前完成；第三行是 compound 的 DAG，若干 LLM/tool 节点之间有边，总 E2EL 决定整个 workflow 的 SLO。</p>
+
+<h3 id="figure-3-existing-schedulers-fail-under-workload-diversity">Figure 3: Existing schedulers fail under workload diversity</h3>
+
+<p>!<a href="../images/2504.20068/fig3-motivation.png">Figure 3: Failure of existing schedulers</a></p>
+
+<p><strong>What it shows</strong>：在混合工作负载上，Autellix (LAS/SJF 风格) 虽然把 mean E2EL 降下来了，但 SLO 违反率 > 90%；Sarathi-Serve (chunked prefill 优化 TBT) 则在 deadline-sensitive 上 TTLT 很大。</p>
+<p><strong>Why it matters</strong>：这张图是 motivation 的"铁证"——证明聚合指标改善并不等于 goodput 改善。也说明 Appendix D.1 里的理论结果 (SJF/EDF 非竞争性) 在真实系统上会真的 manifest。</p>
+
+<h3 id="figure-4-jitserve-system-overview">Figure 4: JITServe system overview</h3>
+
+<p>!<a href="../images/2504.20068/fig4-overview.png">Figure 4: JITServe system overview</a></p>
+
+<p><strong>What it shows</strong>：Request Analyzer (QRF length predictor + pattern-graph matcher) → SLO-Aware Scheduler (GMAX) → SLO Tracker，整个 loop 挂在 vLLM 上作为中间件，只加几行 API 代码。</p>
+<p><strong>Why it matters</strong>：理解 JITServe 架构的"一张图"；特别是看清 Request Analyzer 是<strong>旁路</strong>的 (gRPC)，Scheduler 是<strong>核心路径</strong>，Tracker 反馈到 Analyzer 用于在线精化。</p>
+
+<h3 id="figure-5-qrf-vs-bert-llama3-length-prediction">Figure 5: QRF vs BERT/Llama3 length prediction</h3>
+
+<p>!<a href="../images/2504.20068/fig5-qrf.png">Figure 5: QRF prediction quality</a></p>
+
+<p><strong>What it shows</strong>：(a) QRF 推理 7ms，比 fine-tuned BERT 快 7×；(b) QRF 能随生成过程输出"从上到下"收紧的保守上界 (ratio → 1)，而 BERT/Llama3 的点估计器会<strong>系统性低估</strong>。</p>
+<p><strong>Why it matters</strong>：这是论文最核心的"工具论证"——如果 QRF 不能给出可用的上界，整个 GMAX 的前提 (bw 估计) 就崩塌了。图 (b) 中红线 ratio=1 是 ground truth，QRF 的阴影区间始终在 ratio=1 上方下探。</p>
+
+<h3 id="figure-10-gmax-algorithm-visualization">Figure 10: GMAX algorithm visualization</h3>
+
+<p>!<a href="../images/2504.20068/fig10-gmax.png">Figure 10: GMAX visualization</a></p>
+
+<p><strong>What it shows</strong>：左图——每个请求 rectangle 的高度代表带宽需求 $\text{bw}_\Delta(r)$，在每个 frame $\Delta$ 内填入 $B$ 个 slot；右图——先按 <code>Priority = goodput/t_gen</code> 过滤出 top-$p$ 候选，再在候选集按 input length 排序用长度为 $B$ 的滑动窗口选出 <code>sum(priority)</code> 最大的那一组作为 batch。</p>
+<p><strong>Why it matters</strong>：GMAX 算法最直观的可视化，把"maximize goodput"和"batch 内长度同质"两个目标<strong>解耦</strong>为两步——第一步保 goodput 的下界 (top-$p$ 过滤)，第二步在候选内部保 batch 效率 (滑动窗口)。正是这种解耦使得作者能在 Appendix D.2 证明出 $p$ 只引入 $p$ 的乘法损失。</p>
+
+<h3 id="figure-11-service-goodput-over-1-hour-online-deployment">Figure 11: Service goodput over 1-hour online deployment</h3>
+
+<p>!<a href="../images/2504.20068/fig11-goodput.png">Figure 11: Goodput over time</a></p>
+
+<p><strong>What it shows</strong>：在一个 1 小时的 online serving trace 下，JITServe 的 service goodput 稳定在高位，而 vLLM / Sarathi-Serve 随时间累积 head-of-line blocking 导致 goodput 逐步退化。</p>
+<p><strong>Why it matters</strong>：这是论文的主结果图——说明 JITServe 不仅瞬时性能好，而且在<strong>长时间运行</strong>下不会出现 baseline 常见的"雪球"式 SLO 违反。</p>
+
+<h3 id="figure-13-near-oracle-performance">Figure 13: Near-oracle performance</h3>
+
+<p>!<a href="../images/2504.20068/fig13-oracle.png">Figure 13: Near-oracle</a></p>
+
+<p><strong>What it shows</strong>：JITServe 相比 JITServe\* (oracle，已知精确长度+依赖) 在各种 RPS 下只差 3–9%。</p>
+<p><strong>Why it matters</strong>：给出了"imprecise information 的成本上限"——即使把未来研究的预测器做到完美，goodput 也只能再涨 3–9%。这实际上限制了下游 length-prediction 类论文的价值空间。</p>
+
+<h3 id="figure-19-component-ablation">Figure 19: Component ablation</h3>
+
+<p>!<a href="../images/2504.20068/fig19-ablation.png">Figure 19: Component ablation</a></p>
+
+<p><strong>What it shows</strong>：分别移除 Request Analyzer (退化为 avg length)、移除 GMAX (退化为 SJF using QRF estimates)，goodput 都显著下降——两者缺一不可。</p>
+<p><strong>Why it matters</strong>：说明 JITServe 不是"用 QRF + 普通调度器就行"或"随便估计长度 + GMAX 就行"——两个组件<strong>乘性</strong>地贡献最终效果。</p>
+
+<h2 id="key-tables">Key Tables</h2>
+
+<h3 id="table-1-user-study-on-slo-diversity-within-the-same-application">Table 1: User study on SLO diversity within the same application</h3>
+
+<table>
+<tr><th>Application</th><th>Real-Time (low TBT)</th><th>Direct Use (low E2EL)</th><th>Content-Based (mixed)</th></tr>
+<tr><td>Code generation</td><td>38.1%</td><td>30.5%</td><td>31.4%</td></tr>
+<tr><td>Report generation</td><td>39.1%</td><td>36.2%</td><td>24.7%</td></tr>
+<tr><td>Deep research</td><td>38.6%</td><td><strong>47.1%</strong></td><td>14.3%</td></tr>
+<tr><td>Real-time translation</td><td>36.2%</td><td>39.9%</td><td>23.9%</td></tr>
+<tr><td>Batch data processing</td><td>15.6%</td><td><strong>49.6%</strong></td><td>34.8%</td></tr>
+<tr><td>Reasoning task</td><td>28.9%</td><td>47.4%</td><td>23.7%</td></tr>
+</table>
+
+<p><strong>Takeaway</strong>：即使在<strong>同一个应用内部</strong>，用户对 SLO 的偏好也显著分化——例如 code generation 中 38% 希望流式读取、30% 希望整体最快返回。这直接否决了"按应用分类 + 专用集群"的朴素方案。</p>
+
+<h3 id="table-2-example-request-length-statistics-two-of-four-applications">Table 2: Example request length statistics (two of four applications)</h3>
+
+<table>
+<tr><th>Workload</th><th>Type</th><th>Input Mean/Std/P50/P95</th><th>Output Mean/Std/P50/P95</th></tr>
+<tr><td>Chatbot (Single)</td><td>latency</td><td>93 / 244 / 27 / 391</td><td>318 / 313 / 225 / 1024</td></tr>
+<tr><td>Chatbot (Compound)</td><td>multi-stage</td><td>1300 / 912 / 1097 / 2767</td><td>4458 / 1176 / 4417 / 6452</td></tr>
+<tr><td>Deep Research (Single)</td><td>deadline</td><td>1911 / 2781 / 403 / 7573</td><td>534 / 644 / 410 / 1544</td></tr>
+<tr><td>Deep Research (Compound)</td><td>multi-stage</td><td><strong>12223</strong> / 8407 / 10807 / <strong>29282</strong></td><td>3541 / 2370 / 3148 / 7525</td></tr>
+</table>
+
+<p><strong>Takeaway</strong>：Deep Research compound 请求的输入均值比 Chatbot single 的输出均值还大一个数量级——batch 内混合 chatbot 和 deep research 会产生<strong>极端的长度异质</strong>，这正是 GMAX 引入"滑动窗口按长度分组"的直接动机。</p>
+
+<h2 id="limitations">Limitations</h2>
+
+<ul>
+<li><strong>训练 QRF 需要历史 prompt → response length 的标注数据</strong>——冷启动场景（新模型、新应用）下 QRF 初期精度未量化。</li>
+<li><strong>Pattern graph 匹配依赖历史相似模式</strong>——对于 truly novel 的 agent workflow (例如首次出现的深度研究结构)，匹配退化到通用估计。</li>
+<li><strong>只支持 A100 + vLLM</strong>，没有评估在 H100/MI300X 或 SGLang/TRT-LLM backend 上的可移植性。</li>
+<li><strong>SLO 是外部输入</strong>——JITServe 不自己推断 SLO，所有分析都假设 developer 提供 <code>deadline/target_tbt/target_ttft</code>。</li>
+<li>没有讨论 <strong>multi-tenant fairness</strong> (跨 tenant 的 goodput 隔离) 和 <strong>计费模型</strong> (保守带宽估计是否会让便宜 tier 抢占昂贵 tier)。</li>
+</ul>
+
+<h2 id="infrastructure-impact">Infrastructure Impact</h2>
+
+<ul>
+<li><strong>Algorithm</strong>：提出了 goodput-as-first-class-objective 的调度抽象，下一代 online RL / agentic RL 系统可以借鉴 pattern-graph + GMAX 思路。</li>
+<li><strong>Kernel</strong>：本身不触碰 kernel，但结论 "batch 长度异质 → per-token 变慢 (即使用 Flash Decoding)" 为未来长度异构的 attention kernel 提出了新需求。</li>
+<li><strong>Framework</strong>：直接推动 vLLM/SGLang 把 SLO 作为一等公民 API；<code>deadline/target_tbt/waiting_time</code> 很可能被 OpenAI 风格 API 采纳。</li>
+<li><strong>LLM</strong>：对模型架构无要求——dense、MoE 都测过；但 QRF 的精度会依赖模型响应长度分布稳定性。</li>
+<li><strong>Agent</strong>：这是本文最大的增量——pattern-graph matching 为多 agent workflow 提供了可伸缩的 "sub-deadline 分配" 机制，解决了过去 agent serving 的 E2E deadline 管理空白。</li>
+<li><strong>Code</strong>：工程上只改 vLLM 调度器层 + 一个异步 gRPC 服务，复现门槛很低；未开源 QRF 训练 pipeline 是最大障碍。</li>
+</ul>
+
+<hr>
+
+<h2 id="deep-analysis-framework">Deep Analysis (framework)</h2>
+
+<h3 id="0-时代定位与约束推导-从-phase-2-继承并补深">0. 时代定位与约束推导 (从 Phase 2 继承并补深)</h3>
+
+<p><strong>时代定位</strong>：2024–2025 年 LLM serving 的 low-hanging fruit (continuous batching / paged attention / chunked prefill / 分离 P-D) 已被 Orca / vLLM / DistServe / Sarathi-Serve 挨个摘走。<strong>下一阶段的核心矛盾从"系统吞吐"转向"应用级 goodput"</strong>——因为 agent / deep research / multi-agent 三类 workload 把 SLO 空间从一维 (TBT) 扩张到三维 (TBT × E2EL × compound-E2EL)，单一调度目标已经不够用。JITServe 代表的就是"serving 进入深水区"：从无视 SLO 的 FCFS/SJF 过渡到 SLO-aware + imprecise-info tolerant 的调度。</p>
+
+<p><strong>约束推导</strong>（为什么不能用更简单的方案？）：</p>
+
+<table>
+<tr><th>替代方案</th><th>能否 work</th><th>失败原因 (first principles)</th></tr>
+<tr><td>按应用分专用集群</td><td>❌</td><td>Table 1 显示<strong>同一应用内部</strong>用户 SLO 偏好分化到 38%/30%/31%，按应用分并不能消除 SLO 多样性；且请求在生命周期内会从 "thinking" (deadline) 切到 "streaming" (latency)，跨集群迁移 KV cache 代价极高。</td></tr>
+<tr><td>EDF (earliest deadline first)</td><td>❌ 任意差</td><td>Appendix D.1.1 构造：一个高 goodput 长任务 A + N 个小而紧 deadline 的低 goodput 任务 B_i，EDF 会优先 B_i 导致 A miss SLO；竞争比 OPT/EDF = M/N 可任意大。</td></tr>
+<tr><td>SJF (shortest job first)</td><td>❌ 任意差</td><td>Appendix D.1.2 同类构造：SJF 系统性地偏好短任务，忽略 goodput value；竞争比同样发散。</td></tr>
+<tr><td>精确预测长度后再调度</td><td>❌ 不可行</td><td>Figure 5(b) 和 §2.2 给出证据：BERT/Llama3-based predictor 系统性低估；自回归生成 + 随机采样 + self-reflection 使得精确预测在信息论上几乎不可能。</td></tr>
+<tr><td>DP on request rectangles</td><td>❌ 规模问题</td><td>文中提及 $DP(\mathcal{R}, t, B)$ 对上千请求 + 在线抢占不可扩展 (Figure 9 显示 GMAX 扩展到 thousands of requests，而 DP 无法)。</td></tr>
+<tr><td>单纯用 QRF + SJF / LAS</td><td>❌ 部分</td><td>Figure 19 ablation 证明：仅去掉 GMAX (换成 SJF-on-QRF) 也会显著掉 goodput——预测精确不能补偿调度错误。</td></tr>
+</table>
+
+<p><strong>剩余可行设计空间</strong>：<strong>"保守的上界估计 + 基于 goodput/bandwidth 的启发式优先级 + batch 内部长度同质约束"</strong>——这正是 JITServe 占据的 niche。</p>
+
+<p><strong>核心技术壁垒</strong>：不是 QRF (现成工具)，也不是 margin goodput 公式 (直观)，而是 <strong>GMAX 的"两步解耦"——top-$p$ 过滤 + 滑动窗口分组</strong>。这种解耦是可证明竞争比的根源：作者在 Appendix D.2 证明 top-$p$ 引入的只是 $p$ 的乘法损失 (Eq. 50)，而滑动窗口仅在候选集内部运作，不会把 priority 拖到 $p \cdot R(r_{(B)})$ 下方。其他任何"直接联合优化 goodput + length homogeneity"的写法都会破坏这个竞争比分析。</p>
+
+<p><strong>质疑假设</strong>：JITServe 的 QRF 预测<strong>只有 7ms</strong> 这个数字，前提是 QRF 在部署点已经训练好。作者没有披露 QRF 训练数据量、训练耗时、re-training 频率。对新模型 (Qwen3-MoE) 或新 application (未见过的 agent workflow) 下的 cold-start 精度是个未知数——这部分的 3-9% oracle gap 很可能会放大。此外，pattern-graph matching "500 graphs 足够" (Figure 7) 是在作者选取的 workload 上测得，对 deep research 这种图结构可以有 10+ stage 的应用是否仍成立存疑。</p>
+
+<p><strong>设计绑定批判</strong>：JITServe 强制绑定了 (a) <strong>外部提供的 SLO</strong>——没有 <code>deadline/target_tbt</code> 就无法工作；(b) <strong>vLLM 风格的 continuous batching + chunked prefill</strong>——GMAX 的 frame 模型假设 batch size 在一个 $\Delta$ 内近似恒定，若换成 P-D 分离或大 chunk 预填，$\text{bw}_\Delta$ 的定义需要重写；(c) <strong>QRF 训练数据</strong>——对完全冷启动 (全新模型 + 全新应用) 没有兜底方案。</p>
+
+<p><strong>生态影响追踪</strong>：论文声称只需几行代码即可集成 vLLM，且 API 形式 (<code>deadline=</code>, <code>target_tbt=</code>) 与 OpenAI 现有 API 风格一致——这强烈暗示作者希望被 OpenAI / 云厂商吸收。截至 2025 Q2 尚未看到 vLLM / SGLang 主线 PR 采用此设计，但 AdaServe / Autellix / u-Serve 等后续论文已经把 JITServe 列为对照组，说明在学术圈已经成为新的 goodput baseline。</p>
+
+<h3 id="1-system-scope">1. System Scope</h3>
+
+<ul>
+<li><strong>Primary goal</strong>：online LLM <strong>serving</strong>——接收 HTTP 请求、返回生成 token，核心指标是 service goodput。</li>
+<li><strong>Scale</strong>：论文评估使用 16×A100 单一 cluster；通过 data parallelism 扩展到多 replicas (Figure 20)。未评估跨 DC 或大规模 (100+ GPU) 部署。</li>
+<li><strong>Online / latency-sensitive</strong>：调度粒度是 per-frame $\Delta$，典型 frame = 秒级以下。</li>
+<li><strong>Workloads</strong>：Chatbot (latency-sensitive) + Agent CodeGen (deadline-sensitive) + Math Reasoning + Deep Research (compound)；模型覆盖 Llama-3.1-8B/70B、Qwen2.5-14B、Qwen3-30B-MoE-A3B (dense 和 MoE 都有)。</li>
+</ul>
+
+<h3 id="2-architecture-data-flow">2. Architecture & Data Flow</h3>
+
+<h3 id="figure-4-jitserve-system-overview-重复引用于本节">Figure 4: JITServe system overview (重复引用于本节)</h3>
+
+<p>!<a href="../images/2504.20068/fig4-overview.png">Figure 4: System overview</a></p>
+
+<p><strong>解读</strong>：Request arrival → Request Analyzer (1️⃣ QRF 预测 len_upper + pattern-graph match 依赖图) → SLO-Aware Scheduler (2️⃣ GMAX) → Execution Backend (vLLM engine, chunked prefill + continuous batching) → SLO Tracker 监测真实生成速度并反馈给 Analyzer 用于 online refinement。</p>
+
+<p><strong>Control plane vs data plane separation</strong>：Request Analyzer (QRF + graph matcher) <strong>offloaded 到独立进程</strong>，通过 gRPC 与主调度器通信；元数据仅几字节/事件。Scheduler 本身是 vLLM scheduler layer 的 policy module 扩展 (data plane 内)，但用 priority cache 摊薄计算。</p>
+
+<p><strong>Stateful components</strong>：(1) SLO Tracker (per-request actual generation speed)；(2) Request Analyzer 中的 pattern-graph 历史库 (K-medoids 聚类 + 0.9/hour 衰减)；(3) Scheduler priority cache。</p>
+<p><strong>Stateless components</strong>：QRF 推理本身 (given prompt → quantile)；GMAX 决策函数 (given request set + priorities → batch)。</p>
+
+<p><strong>Failure handling</strong>：作者只提到 monitoring daemon 跟踪 component liveness + 周期性 checkpoint metadata，未深入讨论 GPU/node failure 的 mid-request recovery。</p>
+
+<h4 id="2a-end-to-end-data-flow">2a. End-to-End Data Flow</h4>
+
+<table>
+<tr><th>Stage</th><th>Input → Output</th><th>Location</th><th>Latency</th><th>Data format</th></tr>
+<tr><td>Tokenize</td><td>text → token IDs</td><td>CPU (vLLM frontend)</td><td><1ms</td><td><code>List[int]</code></td></tr>
+<tr><td>Request Analyze</td><td>prompt + history → <code>len_upper</code>, <code>graph_sig</code>, <code>priority</code></td><td>独立 CPU 进程 (gRPC)</td><td>~7ms QRF + <5ms graph match</td><td>几字节/event</td></tr>
+<tr><td>GMAX Schedule</td><td>request queue + priorities → batch of $B$</td><td>main scheduler (CPU)</td><td><1ms (priority cache 摊薄)</td><td>in-memory struct</td></tr>
+<tr><td>Prefill/Chunked Prefill</td><td>tokens → KV cache</td><td>GPU HBM</td><td>O(input_len²)</td><td><code>[layers, heads, seq, dim]</code> fp16/bf16</td></tr>
+<tr><td>Decode</td><td>KV cache + last token → next token</td><td>GPU HBM</td><td>O(batch × layers) per token</td><td>logits <code>[vocab_size]</code></td></tr>
+<tr><td>SLO Track</td><td>actual token output → per-req speed update</td><td>CPU</td><td><1ms</td><td>scalar per req</td></tr>
+<tr><td>Refine</td><td>every 50 tokens trigger QRF re-call</td><td>CPU (gRPC async)</td><td>~7ms</td><td>新 <code>len_upper</code></td></tr>
+</table>
+
+<h4 id="2b-data-movement-hotspots">2b. Data Movement Hotspots</h4>
+
+<ol>
+<li><strong>KV cache</strong> in HBM：paged via vLLM (继承)，per-decode 一次。JITServe 通过 prefix caching 尽量复用。</li>
+<li><strong>Scheduler ↔ Analyzer gRPC</strong>：每请求每 50 token 一次，总量"几字节/event"，与 compute 重叠。</li>
+<li><strong>vLLM chunked prefill</strong>：GMAX 不改变这一步，但 "batch 长度同质" 约束让 prefill chunks 大小更均匀，减少 ragged-batch padding 浪费。</li>
+</ul>
+
+<h3 id="3-design-space-constraint-analysis">3. Design Space & Constraint Analysis</h3>
+
+<p>见上文 <strong>0. 时代定位与约束推导</strong> 中的 feasibility matrix 和核心技术壁垒分析。</p>
+
+<p><strong>Assumption audit（补深）</strong>：</p>
+<ul>
+<li><strong>QRF 能给出有意义的上界</strong> — 在 prompt 可提取的 feature (长度、语言、模板) 与 response length 有足够相关性时成立；在<strong>对抗性 prompt</strong> 或<strong>分布偏移</strong> (新模型、新领域) 下可能失效。</li>
+<li><strong>Pattern graph 相似匹配有用</strong> — 要求历史库中存在 "结构相似" 的执行图。对于真正 novel 的 workflow (例如刚上线的 agent 架构)，会退化到 "匀分 sub-deadline"。</li>
+<li><strong>Batch 内长度相似 → 效率提升</strong> — 论文 Figure 8 在 A100 上验证；H100/MI300X 的 TMA + dynamic shapes 可能让这个不等式变弱。</li>
+<li><strong>Preemption 成本可 amortize</strong> — $\delta=10\%$ 阈值下只允许"高 goodput 打低 goodput"，作者用几何级数论证链长有限 (Eq. 34)；但没评估 KV cache eviction / reload 的绝对开销。</li>
+</ul>
+
+<h3 id="4-key-innovations">4. Key Innovations</h3>
+
+<table>
+<tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost / Tradeoff</th></tr>
+<tr><td>QRF upper-bound length prediction</td><td>Quantile Regression Forest，每 50 token re-invoke</td><td>7ms/次，比 BERT 快 7×；不会低估</td><td>需要离线训练 QRF；对 cold-start 未量化</td></tr>
+<tr><td>Pattern-graph matching</td><td>K-medoids 聚类 + Gaussian-kernel 相似 + 0.9/hour 衰减</td><td><5ms for 500 graphs，准确率 > 80%</td><td>对真正 novel workflow 退化</td></tr>
+<tr><td>Margin goodput priority</td><td><code>Priority(r) = goodput(r) / t_gen(r)</code></td><td>对 $\Delta$ 不敏感；可证明竞争比</td><td>需要 <code>goodput(r)</code> 的 closed-form 定义</td></tr>
+<tr><td>GMAX two-step (filter + window)</td><td>top-$p$ 过滤 + input-length 滑窗</td><td>同时保 goodput 下界 + batch 效率；可证明 $p$ 损失</td><td>候选集大小受 $p$ 影响，$p$ 需调</td></tr>
+<tr><td>$(1+\delta)$ preemption threshold</td><td>只有 goodput ratio > $1+\delta$ 才抢占</td><td>抢占链长有限（几何级数收敛）</td><td>$\delta$ 过小→抢占风暴；过大→ goodput 损失</td></tr>
+<tr><td>Starvation-avoid additive $\delta$</td><td>每帧给 <code>goodput(r)</code> 加常数</td><td>长等请求最终升到顶</td><td>可能让 best-effort 请求也消耗 bandwidth</td></tr>
+</table>
+
+<h3 id="5-scheduling-resource-management">5. Scheduling & Resource Management</h3>
+
+<ul>
+<li><strong>Batch formation</strong>：每个 $\Delta$ frame 内由 GMAX 决定——不是传统 continuous batching 的"完工即加新"，而是主动按 priority+length 选 $B$ 个请求。</li>
+<li><strong>Memory management</strong>：继承 vLLM PagedAttention + prefix cache，不改动。</li>
+<li><strong>GPU utilization</strong>：GMAX 强制 batch 内长度相似 → Flash Decoding 效率提升 → 不会因 ragged batch 引入 idle。</li>
+<li><strong>Multi-tenancy</strong>：通过 SLO 参数隐式区分 tenant，但未显式讨论公平性隔离。</li>
+<li><strong>Priority / SLO-aware</strong>：核心。<code>Priority = goodput/t_gen</code>，每帧重算。</li>
+</ul>
+
+<h3 id="6-target-scenarios-bottleneck">6. Target Scenarios & Bottleneck</h3>
+
+<table>
+<tr><th>Scenario</th><th>Workload</th><th>SLO</th><th>主瓶颈</th><th>为何其他系统失败</th></tr>
+<tr><td>Chat streaming</td><td>短输入短输出，高并发</td><td>TTFT<2s, TBT~100ms</td><td>scheduling-bound (HOL blocking)</td><td>vLLM FCFS 被长请求堵塞</td></tr>
+<tr><td>Agent tool call</td><td>中长输入，一次输出</td><td>E2EL<20s</td><td>length-prediction bound</td><td>Autellix SJF 用错预测器</td></tr>
+<tr><td>Deep research (compound)</td><td>长输入长输出，多阶段</td><td>E2EL=20×#stages</td><td>compound-deadline 分配</td><td>现有系统无 sub-deadline 概念</td></tr>
+<tr><td>Math reasoning</td><td>长 thinking + 短 final</td><td>混合 deadline→latency</td><td>请求类型切换</td><td>静态分类无法处理</td></tr>
+</table>
+
+<h3 id="figure-11-goodput-over-time-本节重复引用">Figure 11: Goodput over time (本节重复引用)</h3>
+
+<p>!<a href="../images/2504.20068/fig11-goodput.png">Figure 11: Service goodput over time</a></p>
+
+<p><strong>解读</strong>：JITServe (紫) 在 1h trace 上保持平稳高 goodput；LTR/Sarathi-Serve/Autellix 都在累积 HOL blocking 后缓慢下滑。这直接证明 scheduling-bound 是四个系统在混合 workload 下的共同瓶颈，JITServe 是唯一能持续抑制它的系统。</p>
+
+<h3 id="7-performance-evaluation">7. Performance Evaluation</h3>
+
+<h4 id="7a-metrics">7a. Metrics</h4>
+
+<table>
+<tr><th>Metric</th><th>Definition</th><th>Unit</th><th>Direction</th></tr>
+<tr><td>Token-level goodput</td><td># tokens meeting SLO</td><td>tokens/s</td><td>↑</td></tr>
+<tr><td>Request-level goodput</td><td># requests meeting SLO</td><td>reqs/s</td><td>↑</td></tr>
+<tr><td>TTFT / TBT</td><td>time-to-first-token / time-between-tokens</td><td>ms</td><td>↓</td></tr>
+<tr><td>E2EL (TTLT)</td><td>time-to-last-token</td><td>ms</td><td>↓</td></tr>
+<tr><td>Throughput (system)</td><td>all tokens/s (ignores SLO)</td><td>tokens/s</td><td>↑ (not primary)</td></tr>
+<tr><td>Resource saving</td><td>GPU hrs to hit same goodput</td><td>%</td><td>↑</td></tr>
+</table>
+
+<h4 id="7b-before-after-comparison">7b. Before-After Comparison</h4>
+
+<table>
+<tr><th>Optimization</th><th>Metric</th><th>Baseline</th><th>JITServe</th><th>Improvement</th><th>Conditions</th></tr>
+<tr><td>Full JITServe</td><td>token-goodput</td><td>Autellix</td><td>5.3–6.1×</td><td><strong>5.3×+</strong></td><td>16×A100, 1h online</td></tr>
+<tr><td>Full JITServe</td><td>token-goodput</td><td>LTR</td><td>1.3–1.7×</td><td><strong>1.3×+</strong></td><td>同上</td></tr>
+<tr><td>Full JITServe</td><td>request-goodput</td><td>LTR</td><td>2.3–4.5×</td><td><strong>2.3×+</strong></td><td>同上</td></tr>
+<tr><td>Full JITServe</td><td>vs oracle JITServe\*</td><td>3–9% gap</td><td>-</td><td>near-oracle</td><td>across RPS</td></tr>
+<tr><td>No Request Analyzer</td><td>token-goodput</td><td>full JITServe</td><td>显著下降</td><td>ablation</td><td>Figure 19</td></tr>
+<tr><td>No GMAX</td><td>token-goodput</td><td>full JITServe</td><td>显著下降</td><td>ablation</td><td>Figure 19</td></tr>
+<tr><td>Full JITServe</td><td>throughput</td><td>Sarathi-Serve</td><td>96–98%</td><td>无退化</td><td>Figure 14</td></tr>
+<tr><td>Full JITServe</td><td>multi-replica goodput</td><td>baseline</td><td>1.34–2.42×</td><td>scalable</td><td>Figure 20</td></tr>
+<tr><td>Full JITServe</td><td>latency-only workload</td><td>Sarathi-Serve</td><td>1.72×</td><td>在其强项上也赢</td><td>Figure 22</td></tr>
+</table>
+
+<h4 id="7c-bottleneck-shift">7c. Bottleneck Shift</h4>
+
+<pre><code>
+vLLM FCFS:        scheduling-bound (HOL blocking)
+ → Sarathi-Serve: scheduling-bound (TBT good, TTLT bad)
+ → Autellix LAS:  scheduling-bound (mean E2EL good, SLO violation 90%+)
+ → JITServe:      SLO-estimation bound (3–9% gap to oracle)
+</code></pre>
+
+<p>JITServe 实际上把 bottleneck 从"调度策略错误"推到了"信息完美性"——而 oracle 上限表明再改进只剩 3–9% 空间。</p>
+
+<h3 id="figure-13-near-oracle-本节重复引用">Figure 13: Near-oracle (本节重复引用)</h3>
+
+<p>!<a href="../images/2504.20068/fig13-oracle.png">Figure 13: Near-oracle</a></p>
+
+<p><strong>解读</strong>：在 4 个不同 RPS 上，JITServe (实线) 紧跟 JITServe\* (虚线，oracle)，gap 3–9%。这证明作者关于"imprecise information is actionable enough"的论断在实验上站得住。</p>
+
+<h3 id="7d-baselines-fairness">7d. Baselines & Fairness</h3>
+
+<ul>
+<li><strong>同硬件 (16×A100)、同模型、同 workload trace</strong>；所有 baseline 都是 vLLM backend 上实现，差别仅在 scheduler。</li>
+<li><strong>10K+ requests/run，>1h online 窗口</strong>——比大多数 serving 论文的 5-min 小 window 更有说服力。</li>
+<li><strong>Sarathi-Serve 在 latency-only workload 上被 JITServe 打败 1.72×</strong>（Figure 22）——在其<strong>自身设计点</strong>上仍然输，这是最尴尬的比较。</li>
+<li><strong>公平性补丁</strong>：LTR 确实在 deadline-sensitive 上 E2EL 不错 (prior knowledge via predicted rank)，但在混合 workload 上全面落后；作者没有回避这一点。</li>
+</ul>
+
+<h3 id="figure-19-ablation-本节重复引用">Figure 19: Ablation (本节重复引用)</h3>
+
+<p>!<a href="../images/2504.20068/fig19-ablation.png">Figure 19: Component ablation</a></p>
+
+<p><strong>解读</strong>：从左到右 — JITServe\* (oracle) / JITServe (full) / no-Analyzer / no-GMAX / Sarathi。移除任一组件掉 goodput 都很明显，且剩下的性能接近 Sarathi，说明 QRF+graph matcher 与 GMAX 是<strong>相互必需</strong>的。</p>
+
+<h3 id="8-api-usability">8. API & Usability</h3>
+
+<ul>
+<li><strong>OpenAI-compatible 扩展</strong>：<code>client.responses.create(model, input, deadline=None, target_tbt=0.2, target_ttft=5, waiting_time=5)</code>。</li>
+<li><strong>模型格式</strong>：HF SafeTensors (继承 vLLM)。</li>
+<li><strong>部署</strong>：vLLM 本身的 Docker/K8s path 可用；QRF 需单独起一个进程。</li>
+<li><strong>配置复杂度</strong>：核心新增 4 个用户参数 (deadline / target_tbt / target_ttft / waiting_time)；内部超参 ($\Delta$ frame size, $p$ 过滤阈值, $\delta$ 抢占阈值=10%) 可用默认。</li>
+</ul>
+
+<h3 id="9-infrastructure-impact">9. Infrastructure Impact</h3>
+
+<table>
+<tr><th>Layer</th><th>Impact</th></tr>
+<tr><td>Algorithm</td><td>激活 goodput-aware online scheduler 研究方向；pattern-graph 为 agent training 系统做 sub-deadline 分配提供模板。</td></tr>
+<tr><td>Kernel</td><td>无新 kernel 需求；但暴露"混长 batch 比长度同质 batch 慢"的现象，为未来长度感知 attention kernel 提供动机。</td></tr>
+<tr><td>LLM</td><td>不挑模型（dense + MoE 都测过）；但要求响应长度可用 QRF 预测——高度创造性输出 (open-ended generation) 上 QRF 精度待测。</td></tr>
+<tr><td>Agent</td><td>最大增量——为 multi-agent / deep research 框架提供了原生的 E2E deadline management。</td></tr>
+<tr><td>Ops</td><td>API 风格可直接进现有 OpenAI 生态；监控 daemon + metadata checkpoint 基本满足生产需求，但缺 autoscaling hook。</td></tr>
+</table>
+
+<h3 id="10-comparison-matrix">10. Comparison Matrix</h3>
+
+<table>
+<tr><th>Feature</th><th>JITServe</th><th>vLLM</th><th>Sarathi-Serve</th><th>Autellix</th><th>LTR</th></tr>
+<tr><td>Continuous batching</td><td>✓ (inherit)</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+<tr><td>Paged attention</td><td>✓ (inherit)</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+<tr><td>Chunked prefill</td><td>✓ (inherit)</td><td>✗</td><td>✓</td><td>✗</td><td>✗</td></tr>
+<tr><td>SLO-aware scheduling</td><td>✓ (multi-type)</td><td>✗ FCFS</td><td>✓ (TBT only)</td><td>✗ (mean E2EL)</td><td>✗ (rank-SJF)</td></tr>
+<tr><td>Length prediction</td><td>✓ QRF 上界</td><td>✗</td><td>✗</td><td>✗</td><td>✓ 点估计</td></tr>
+<tr><td>Compound/agent deadline</td><td>✓ pattern graph</td><td>✗</td><td>✗</td><td>部分 (LAS)</td><td>✗</td></tr>
+<tr><td>Provable competitive ratio</td><td>✓ ~1/8.55</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+<tr><td>Multi-node</td><td>data-parallel replicas</td><td>✓</td><td>✓</td><td>✓</td><td>未强调</td></tr>
+<tr><td>Preemption-aware</td><td>✓ ($\delta$=10%)</td><td>✗</td><td>✗</td><td>✓</td><td>✗</td></tr>
+</table>
+
+<h3 id="11-adoption-maturity-ecosystem-influence">11. Adoption, Maturity & Ecosystem Influence</h3>
+
+<ul>
+<li><strong>开源状态</strong>：论文提及"only a few lines of code modification to existing serving stacks"，但未贴公开 repo；QRF 训练脚本和 pattern-graph 数据暂未公开是最大落地门槛。</li>
+<li><strong>生产部署</strong>：论文通过"讨论两家大型 LLM 服务商 + 550+ 用户调查"为动机背书，暗示已有 production 对接意向，但未 name-drop。</li>
+<li><strong>下游影响</strong>：截至 2025 Q2 尚未出现在 vLLM / SGLang 主线 release note；但理论 artifact (SJF/EDF 非竞争性证明 + 1/8.55 竞争比) 已经被 AdaServe / Autellix follow-up 版本引用。长期看，<code>deadline=</code> 类 SLO 参数进入 OpenAI-style API 规范的概率较高。</li>
+<li><strong>Open questions</strong>：(1) QRF 在 open-ended reasoning 模型 (o1/R1) 上的精度；(2) 与 P-D 分离 serving (DistServe / MoonCake) 的集成；(3) KV-cache 迁移型 failover 下 GMAX 的鲁棒性；(4) fairness/billing 怎么融入 <code>Priority = goodput/t_gen</code> 公式。</li>
+</ul>
+
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search + category filter for list pages */
+
+document.addEventListener('DOMContentLoaded', function() {
+  const searchBox = document.querySelector('.search-box');
+  const catBtns = document.querySelectorAll('.cat-btn');
+  const cards = document.querySelectorAll('.card');
+  const catSections = document.querySelectorAll('.cat-section');
+  let activeCategory = 'all';
+
+  function filterCards() {
+    const query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      const text = card.textContent.toLowerCase();
+      const cat = card.dataset.category || '';
+      const matchesSearch = !query || text.includes(query);
+      const matchesCat = activeCategory === 'all' || cat === activeCategory;
+      card.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+    });
+    // Hide empty category sections
+    catSections.forEach(function(sec) {
+      const visible = sec.querySelectorAll('.card:not([style*="display: none"])');
+      sec.style.display = visible.length > 0 ? '' : 'none';
+    });
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('input', filterCards);
+  }
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      filterCards();
+    });
+  });
+});
+</script>
+</body>
+</html>

@@ -497,7 +497,328 @@ $$
 
 ---
 
-## 9. 还没解决的问题（Open Questions）
+## 9. Per-Request Cache Control TTL（Anthropic-style 客户端控制）
+
+> 这一节和 §1-8 的 router-side cost model 是**正交的两件事**——前面讲的是 **router 自己**怎么基于 cost 做路由决策；这里讲的是**客户端**通过 per-request hint 显式告诉 server "这段 prefix 给我留 5 分钟" 这种语义。
+
+### 9.1 概念区分
+
+容易混淆的两种 "TTL"：
+
+| 类别 | 在哪里 | 默认值 | 作用 |
+|---|---|---|---|
+| **Router-side prediction TTL** | Dynamo `--router-ttl-secs` (默认 120s) / `PruneManager` | 120s | router 在 approximate 模式下，对自己**预测**的 cache state 做老化清理；和 server 的真实 cache 无关 |
+| **Per-request cache pin TTL** | client header / body 里 `cache_control: {type: "ephemeral", ttl: "5m"}` | API 默认 5m | 通过 frontend 透传到 worker，告诉**真实的 KV cache** "这段前缀在 N 分钟内 LRU 不许动" |
+
+Anthropic Claude API 是 per-request TTL 的**事实标准**：客户端在 message content block 上挂 `cache_control: {type: "ephemeral", ttl: "5m"}`（默认 5 分钟）或 `"1h"`（需要 beta header `prompt-caching-2024-07-31`）。Cache hit 的 token 按 0.1× 计费、cache write 按 1.25× 计费、TTL 内复用 hit 自动续期。
+
+### 9.2 三家开源引擎现状（截至 2026-04）
+
+#### NVIDIA Dynamo —— ✅ **2026-02-27 merged**（PR [#6213](https://github.com/ai-dynamo/dynamo/pull/6213)）
+
+把 Anthropic-style `nvext.cache_control` 透传到 worker：
+
+```
+Client request:
+  POST /v1/chat/completions
+  {
+    "messages": [...],
+    "nvext": {
+      "cache_control": {"type": "ephemeral", "ttl": "5m"}
+    }
+  }
+
+→ NvExt.cache_control → CacheControl.ttl_seconds() → 300
+→ RoutingHints.cache_control_ttl: Option<u64> = Some(300)
+→ KvPushRouter::generate() 正常推理
+→ stream 完成后 fire-and-forget: spawn_pin_prefix(token_ids, 300)
+→ worker 的 cache_control 服务 mesh endpoint 收到 → pin_prefix(token_ids, 300)
+```
+
+关键点：
+
+- 解析 `"5m"`/`"30m"`/`"1h"`/`"<N>s"` 的 `ttl_seconds()` parser
+- 行为 = "**生成完 → 才 pin**"（不是发请求时就 pin），这样保证 prefix 是真实命中过的、有意义的
+- 由 `--enable-agentic-cache-control` 开关控制（默认关）
+- `CacheControlClient` 透传 ttl 到 worker；具体 pin 行为由 worker engine 实现（vLLM / SGLang）
+- 对应 worker 侧 PR：SGLang [#18941](https://github.com/sgl-project/sglang/pull/18941) (HiRadixCache)
+
+#### SGLang —— ✅ **2026-03-02 merged**（PR [#18941](https://github.com/sgl-project/sglang/pull/18941)）
+
+`HiRadixCache` 加 TTL-based prefix pinning + refresh-on-hit：
+
+```
+新增 endpoint:
+  POST /hicache/pin_prefix     {token_ids: [...], ttl_seconds: 300}
+  POST /hicache/unpin_prefix   {token_ids: [...]}
+
+实现细节:
+- TreeNode 加 {pin_count, pin_expiry, pin_ttl} 三字段
+- _split_node() 拆节点时正确传递 pin 状态
+- evict() / evict_host() lazy 检查 expired pin（无后台 timer）
+- 命中 pinned 节点时 pin_expiry 自动续期（refresh-on-hit）
+- 部分 pin 反馈：predicate "pin budget exhausted"
+
+Pin budget:
+  环境变量 SGLANG_HICACHE_MAX_PINNED_RATIO ∈ [0, 1)
+  默认 0.0 = 完全关闭 pinning（请求会被 reject + 错误信息）
+  典型用法 0.6 = 允许 60% host cache 用于 pin
+
+Pin 范围: 仅 host（CPU）tier 内 pin，HBM 仍走 LRU
+```
+
+实测数据（PR description）：
+
+| Metric | Baseline | Pinned (TTL=5m) |
+|---|---|---|
+| Cache hit rate | (未给) | **89%** |
+| TTFT | (未给) | **313 ms** |
+| Workload | 5770 req flood after warmup | 同 |
+
+Dynamo 的 cache_control 落到 SGLang worker 时就走这个 endpoint，闭环。
+
+#### vLLM —— ⚠️ **未上游**
+
+历史：
+
+- RFC [#8333](https://github.com/vllm-project/vllm/issues/8333) (2024-09 提，标记 completed 但实际由作者关闭) + 草稿 PR [#8334](https://github.com/vllm-project/vllm/pull/8334) (2025-02 关闭未合)
+- 作者 @llsj14 评论："I want to complete this PR, but I've lost direction on how to integrate it with the API and how to restrict the resources used by pinned caching"
+- 2025-12 仍有用户在评论里催："is this RFC shelved forever?"
+
+vLLM 现状：
+
+- ✅ 有 Anthropic 兼容的 `/v1/messages` endpoint（PR [#22627](https://github.com/vllm-project/vllm/pull/22627), 2025-10 merged），但**只解析 cache_control 字段、没真做 pinning**
+- ⚠️ usage 里 `cache_creation_input_tokens` / `cache_read_input_tokens` 字段一开始没填，PR [#34282](https://github.com/vllm-project/vllm/pull/34282) (2026-02, 仍 open) 才在补
+- ✅ Cache salting（PR [#17045](https://github.com/vllm-project/vllm/pull/17045)）已合 → per-request `cache_salt` 字段，但作用是**隔离**而非 **pin**
+- ⚠️ 真正的 per-request TTL prefix pinning **还没在 upstream**，只能靠 Dynamo 在外面包一层用
+
+实际可用路径：**vLLM 当 Dynamo worker，TTL 由 Dynamo 解析后通过 `cache_control` mesh endpoint 调到 vLLM 的 pin 接口**——但 vLLM 的 `pin_prefix` API 也还没合，所以这条路目前要靠 fork 或 patch。
+
+### 9.3 三家横向对比
+
+| 维度 | Anthropic API（标准） | Dynamo (#6213) | SGLang (#18941) | vLLM |
+|---|---|---|---|---|
+| 字段名 | `cache_control: {type, ttl}` | `nvext.cache_control: {type, ttl}` | `PinPrefixReqInput.ttl_seconds` | （Anthropic endpoint 接收但不真 pin） |
+| TTL 格式 | `"5m"` / `"1h"` | `"5m"` / `"30m"` / `"1h"` / `"<N>s"` | int `ttl_seconds` | — |
+| 默认 TTL | 5 min | 由客户端传 | 由请求传 | — |
+| Pin 触发时机 | 请求处理时 | **响应完成后** fire-and-forget | endpoint 调用时 | — |
+| Pin 范围 | server 端不可见 | 透传到 worker | host (CPU tier) only | — |
+| Refresh-on-hit | ✅ 会续期 | 由 worker 决定 | ✅ 命中续期 | — |
+| 资源限制 | 不可控 | 由 worker | `SGLANG_HICACHE_MAX_PINNED_RATIO` (默认 0 = off) | — |
+| 状态 | 生产 | 2026-02 上游 | 2026-03 上游 | 上游未支持 |
+| 文档 | [docs.anthropic.com](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) | [docs.nvidia.com/dynamo/blog/agentic-inference](https://docs.nvidia.com/dynamo/blog/agentic-inference) | PR description | RFC #8333 |
+
+### 9.4 为什么这件事对 agent serving 重要
+
+回到 §4 的 cost model 视角，per-request cache_control TTL 是 client → router → engine 之间的**第三种信号**（前两种是被动观察的 KV events 和主动声明的 routing hints），它直接对应一个**新的 cost model 项**：
+
+- 在 §4.4 的 tier-aware cost 上加 `\alpha_{\text{pinned}} \cdot \mathbb{1}[\text{request asks pin}]`
+- 这个项让 router 知道："这个请求声明了 5 分钟内还要再来"，可以更激进地选择**留住 prefix 不被驱逐**的 worker
+- KVFlow STE（§2.3）拟合的 STE 也可以被 client 通过 cache_control TTL 显式 override—— agent harness 比 router 更知道 workflow 结构
+
+具体场景：
+- **Code Agent**：subagent fork 之前父 agent 把当前 conversation prefix 标 `ttl=10m`，确保 4 个 subagent 并发跑完后父 agent 回来还能命中
+- **Multi-turn chat**：每个 user 第一 turn 自动加 `ttl=5m`，闲置超时就让位（refresh-on-hit 保证活跃用户不掉）
+- **System+tool prompt**：tool definitions 那段 ~12K token 一次性加 `ttl=1h`，几乎永驻 cache
+
+### 9.5 对 Dynamo `kv-router` 落地的影响（§6.1 补充）
+
+§6.1 的 `select_worker` 替换公式上要加一项：
+
+```rust
+// Per-request pin awareness
+let pin_bonus = if request.cache_control_ttl.is_some() {
+    // 选择"未来 ttl 内最不会驱逐这条 prefix"的 worker
+    alpha_pin * (1.0 - eviction_prob_within(w, ttl, prefix_blocks))
+} else {
+    0.0
+};
+```
+
+`eviction_prob_within` 的简单实现：基于 worker 当前 working set / pin budget 残量做线性估计。这能把 SGLang `SGLANG_HICACHE_MAX_PINNED_RATIO` 残量从 worker telemetry 里拉过来。
+
+### 9.6 实现/复现速查
+
+```bash
+# Dynamo: 启用 per-request cache_control
+dynamo serve --enable-agentic-cache-control ...
+
+# Client (Python OpenAI SDK):
+client.chat.completions.create(
+    model="...",
+    messages=[...],
+    extra_body={
+        "nvext": {
+            "cache_control": {"type": "ephemeral", "ttl": "5m"}
+        }
+    }
+)
+
+# SGLang: 启用 HiRadixCache pin
+SGLANG_HICACHE_MAX_PINNED_RATIO=0.6 python -m sglang.launch_server ...
+# 直接调 pin endpoint:
+curl -X POST localhost:30000/hicache/pin_prefix \
+    -d '{"token_ids": [1,2,3,...], "ttl_seconds": 300}'
+```
+
+### 9.7 还没解决的小问题
+
+- **跨 worker pin 不传递**：SGLang/vLLM 的 pin 是 worker-local。如果路由到不同 worker，pin 不会迁移。NVIDIA Dynamo blog 提到要把 retention 元数据带进 HiCache/KVBM 共享 storage，但还没实现
+- **vLLM 上游什么时候有**：目前 RFC stale，依赖社区 driver
+- **TTL 与 cache size 的耦合**：pin 太多会让 LRU 部分饿死，需要 admission control（SGLang 用 `MAX_PINNED_RATIO` 上界，但还不够智能）
+- **Pin budget 的 cost 应该计入 router**：如果 worker A 已经 pin 满，新请求即使 prefix 命中 A 也应该考虑路由到 B
+
+---
+
+## 10. Agent Orchestrator-Engine Co-design：Sutradhara 案例与 API 谱系对比
+
+> §9 讲了**客户端**通过 `cache_control.ttl` 给 server 一个粗粒度 hint。本节往更深一层走：**orchestrator** 把它对 prompt 结构和 workflow 的认知**内嵌到 engine 的调度** 里——不是 hint，而是 thin API 双向 co-design。这是 Sutradhara (Microsoft Research, arXiv 2601.12967) 的核心论点。
+
+### 10.1 问题定位：层级隔离的"三个不可能"
+
+| 层 | 知道什么 | 不知道什么 |
+|---|---|---|
+| **Orchestrator**（LangChain / AutoGen / Claude Code） | iteration 边界、prompt 怎么拼、哪段依赖 tool 输出、workflow STE | engine 内部排程、KV cache 状态 |
+| **LLM Engine**（vLLM / SGLang） | batching、KV cache、调度 | prompt 的语义结构、下一 turn 的形态 |
+
+两边互不通信导致：
+
+1. **无法重叠**：engine 不知道 prompt 哪段可提前 prefill（实测 50-80% 是 tool-independent）
+2. **无法提前分发 tool**：decode 输出全完才到 orchestrator
+3. **无法智能驱逐**：engine 不知道哪些 KV 即将被同 agent 下 turn 复用 → LRU 在并发 agent 下级联 thrashing，e2e 延迟最高放大 7.14×（GLM-4.6 / OpenHands 实测）
+
+### 10.2 Sutradhara 的 5 个 thin API
+
+不重写 engine、不改 model，只在 orchestrator ↔ engine 之间开 5 个 API：
+
+| API | 作用 | 对应优化 |
+|---|---|---|
+| `submit_partial_prefill(tokens)` | 提交 tool-independent 前缀（system + history + 不依赖本轮 tool 的部分） | **Prefill-tool 并行**：tool 在外执行时，engine 同时 prefill 这段 |
+| `extend_prefill(tool_output_tokens)` | tool 完成后追加输出到已 pin 的 partial prefill 上下文 | **避免重复 prefill**：tool 结果到达只需算 tool output 段，不重算前缀 |
+| `register_streaming_callback(cb)` | 注册 token-level 回调，decode 进行中就拿到增量 token | **Streaming tool dispatch**：流式 JSON parser 第一个完整 tool call object 闭合（`}`）就立即分发，不等整段 decode 结束 |
+| `tag_kv_blocks(block_ids, tag)` | 给 KV block 打 5 种语义标签：`SYSTEM_PROMPT` / `USER_QUERY` / `TOOL_OUTPUT` / `RESPONSE` / `PARTIAL_PREFILL` | **Workload-aware 驱逐**：基于 tag 的优先级驱逐替代 LRU |
+| `set_reuse_priority(block_ids, prio)` | 显式标记某些 block 即将被复用 | **防 thrashing**：partial prefill 的 KV 在 tool 执行的几百ms~几秒里被 pin 住 |
+
+驱逐优先级链（先踢 → 后踢）：
+
+```
+RESPONSE → TOOL_OUTPUT → USER_QUERY → SYSTEM_PROMPT → PARTIAL_PREFILL
+```
+
+`PARTIAL_PREFILL` 是最高优先级，**确保 tool 执行那几秒里不会被新进来的并发请求挤掉**——这是消除级联 thrashing 的关键。
+
+### 10.3 端到端数据流
+
+```
+[Iter i decode] ──────────────────────────► [tool call JSON 流式吐出]
+        │                                          │
+        │ register_streaming_callback              │ 流式 JSON parser
+        │ (decode 中实时回调)                       │ 第一个 } 闭合即分发
+        ▼                                          ▼
+   [orchestrator]                             [Tool T1 执行 (数百ms~数秒)]
+        │                                          │
+        │ submit_partial_prefill(P_{i+1}^a)        │ ← 关键并行点
+        │ (tool-independent 那段)                   │
+        ▼                                          │
+   [engine: prefill P_{i+1}^a] ◄─────────────────┘
+        │ tag_kv_blocks(..., PARTIAL_PREFILL)
+        │ set_reuse_priority(..., HIGH)            (这段在 tool 执行期被 pin)
+        ▼
+   [tool 完成]
+        │
+        │ extend_prefill(tool_output)
+        ▼
+   [engine: 续算 P_{i+1}^b（仅 tool 输出段）]
+        ▼
+   [Iter i+1 decode]
+```
+
+### 10.4 实测效果（A100-80G + Qwen3-14B / Gemma-12B）
+
+| 指标 | Baseline (vLLM v0.11.0) | Sutradhara | 改进 |
+|---|---|---|---|
+| Median FTR | 51.5s | 43.3s | **-15.83%** |
+| P99 FTR | — | — | **-12.3%** |
+| Median E2E | 84.2s | 73.8s | **-10%** |
+| Throughput | — | 不变 | 0% |
+
+Ablation：
+- KV semantic eviction 单独：基础
+- + Prompt Splitting：FTR -7.57%（最大单项贡献）
+- + Streaming Dispatch：再 -4.2%
+
+实现：3500 行 Python，**不改 CUDA kernel、不改模型架构**。
+
+### 10.5 三层 Agent-Aware Signaling 谱系（本节最重要的对比）
+
+把 §9 的 `cache_control.ttl` 和本节的 Sutradhara 5 API 放在一起，加上更轻量的 trace replay 思路，可以画出一个**三层信号粒度谱系**：
+
+| 层级 | 谁发信号 | 给谁 | 粒度 | 信息内容 | 代表实现 | 状态 |
+|---|---|---|---|---|---|---|
+| **L0 Replay-only** | 测试工具 | 黑盒 server | Request-level | 只发原 prompt，不带任何元信息 | `kv-cache-tester` / `trace_replay_tester.py` | 任何 server 即用 |
+| **L1 Hint (Anthropic-style)** | client | router/engine | Per-request flag | `cache_control: {type, ttl}` —— "这段 prefix 留 5 分钟" | Dynamo PR #6213 / SGLang PR #18941 | 2026-Q1 上游 |
+| **L2 Workflow context** | client | router | HTTP header / `nvext` | `agent_workflow_id` / `step_id` / `expected_tools` / `osl` —— "我属于 workflow X 的第 N 步" | NVIDIA Dynamo `nvext.agent_hints`（部分） | 2026-Q1 上游 |
+| **L3 Prompt structure co-design** | orchestrator | engine | 5 thin APIs（双向） | partial prefill 边界 + 语义 tag + token-level callback —— "这段 12K token 是 system prompt，下一段是 tool output" | **Sutradhara** | 论文，未上游 |
+
+**抽象层数顺序：L0 → L1 → L2 → L3，信号越来越重，性能空间越来越大，但绑定也越深**。
+
+| 维度 | L0 Replay | L1 Hint | L2 Context | L3 Co-design |
+|---|---|---|---|---|
+| 接口侵入 | 无 | API +1 字段 | API +N header | 需要 orchestrator 重写 |
+| Engine 侧改动 | 无 | 中等 (pin) | 中等 (route) | 大 (scheduler state machine) |
+| Engine 锁定 | 无 | 中等 | 中等 | 强 (Sutradhara 绑死 vLLM) |
+| Format 锁定 | 无 | 弱 | 弱 | 强 (绑 JSON tool call + prompt template) |
+| 收益数量级 | baseline | 5-15%（cache hit ↑） | 10-30%（路由更准 + cost model） | 10-15% FTR + 防 thrashing 7×（极端） |
+| 落地难度 | 低 | 低（已上游） | 中（已上游） | 高（需要 orchestrator + engine 双侧 fork） |
+
+### 10.6 与 §4 cost model 的整合
+
+L1 / L2 / L3 都给 cost model 加新项。把 §4 公式补全：
+
+$$
+\text{Logit}(w, r) = \alpha_p p_{\text{eff}} + \alpha_d d + \alpha_{d^2} \tfrac{d^2}{2} + \sum_t \alpha_t L_t + \alpha_{ho} H - \alpha_{wf} A_{wf} 
+\;\underbrace{- \alpha_{\text{pin}} \cdot \mathbb{1}[\text{cache\_control}]}_{\text{L1: pin}}
+\;\underbrace{- \alpha_{\text{step}} \cdot \text{StepAffinity}(w, r)}_{\text{L2: workflow context}}
+\;\underbrace{- \alpha_{\text{co}} \cdot \text{CoDesignPrefillSavings}(w, r)}_{\text{L3: partial prefill 已有}}
+$$
+
+其中：
+- `CoDesignPrefillSavings(w, r)` = 如果该 worker 上 partial prefill 已经为这个 workflow 跑过，重发同样 prefix 的算力可省 → 此 worker cost 减少。
+- L3 的 `tag_kv_blocks` 还能进一步给 §4.4 的 tier 选择加 priority 维度（高优先级 tag 倾向于留在 HBM）。
+
+### 10.7 Sutradhara 的硬约束（笔记里的 critique）
+
+接 L3 之前必须知道这些：
+
+1. **强绑定 vLLM v1 scheduler**：5 API 嵌入 state machine 很深，"可移植到 TRT-LLM/SGLang"是空话
+2. **强绑定 JSON tool call 格式**：streaming dispatch 假设 LLM 输出标准 JSON array of objects
+3. **强绑定 prompt template**：partial prefill 需要 orchestrator 精确知道 split point；prompt 改了得同步改 split 逻辑
+4. **PD colocation 假设**：在 disaggregated PD（DistServe / Splitwise）下 partial prefill 的 KV 跨 GPU 传输延迟特征完全不同，论文未评估
+5. **Tool 时延 proportional scaling 模拟**，不是真 tool 执行
+6. **单 GPU、60 请求子集**评估，统计显著性有限
+7. **高 QPS 下边际效益递减**：被 engine 排队主导
+
+### 10.8 实践建议
+
+按"接入难度 vs 收益"递进：
+
+- **新项目**：直接走 L1（`cache_control.ttl`），Dynamo + SGLang 都开箱可用，收益 5-15% 接近免费
+- **有自己 router 的**：加 L2，让 router 看到 `agent_workflow_id` / `expected_osl`，§4 cost model 的 workflow 项就能跑起来
+- **有完整 agent stack（自家 orchestrator + 自家 engine）**：L3 值得做，但要预算重写 scheduler 的工作量。SGLang 端的 HiRadixCache pin（PR #18941）已经给了 L1 的 pin 原语，部分 L3 优化（partial prefill）可以站在它上面叠
+- **标准化路径**：现在 industry 在 L1 上有了事实标准（`cache_control.ttl`），L2 还很零散（每家命名不一样），L3 还在论文阶段。**短期最佳投入是把 L2 的 `agent_workflow_id` 也搞成 cross-vendor 标准**——OpenAPI 这类组织可以推一个 `nvext.agent_context` schema
+
+### 10.9 知识库内的相关条目
+
+- §1-8：本文件前面，router cost model 主体（L0/L2 视角）
+- §9：L1 `cache_control.ttl`（Anthropic-style）
+- §10：本节，L3 Sutradhara
+- 笔记 `~/.cursor/paper-db/notes/2601.12967.md`：Sutradhara 全文精读
+- 笔记 `~/.cursor/paper-db/notes/2602.13692.md`：ThunderAgent，与 Sutradhara 互补的另一篇 agent program-aware co-design
+- 笔记 `~/.cursor/paper-db/notes/2507.07400.md`：KVFlow，STE-aware eviction（L2 端的语义信号源）
+
+---
+
+## 11. 还没解决的问题（Open Questions）
 
 下面列的是即使 §4 的 cost model 全部实现，仍需要进一步研究的：
 
@@ -511,7 +832,7 @@ $$
 
 ---
 
-## 10. 参考资料
+## 12. 参考资料
 
 **代码库**:
 - NVIDIA Dynamo `kv-router`: `/apps/feiyue/upstream/dynamo/lib/kv-router/`，重点看 `scheduling/selector.rs`、`scheduling/policy.rs`、`indexer/README.md`
@@ -535,6 +856,8 @@ $$
 
 ---
 
-## 11. 修订历史
+## 13. 修订历史
 
 - **2026-04-21** v1：初版，覆盖三家 router 调查、cost model 现状、tier-aware + agent-aware 统一公式与 Dynamo 落地路径。
+- **2026-04-21** v1.1：新增 §9 *Per-Request Cache Control TTL（Anthropic-style 客户端控制）*——梳理 vLLM / Dynamo / SGLang 三家对 Anthropic-style `cache_control: {type: "ephemeral", ttl: "5m"}` 的支持现状（Dynamo PR #6213 / SGLang PR #18941 已合，vLLM #8334 未合），区分 router-side prediction TTL 与 per-request pin TTL，并在 cost model 中加入 pin awareness 项。
+- **2026-04-22** v1.2：新增 §10 *Agent Orchestrator-Engine Co-design：Sutradhara 案例与 API 谱系对比*——分析 Microsoft Sutradhara (arXiv 2601.12967) 的 5 thin API（`submit_partial_prefill` / `extend_prefill` / `register_streaming_callback` / `tag_kv_blocks` / `set_reuse_priority`）、prefill-tool 并行 + streaming dispatch + 语义 KV 驱逐三大优化（FTR -15.83%）；提出 **L0 Replay → L1 Hint → L2 Workflow context → L3 Co-design** 四层 agent-aware signaling 谱系，把本文件 §1-9 内容定位到统一抽象层；§4 cost model 补充 pin / workflow / co-design 三个新项；给出按"接入难度 vs 收益"递进的实践建议。

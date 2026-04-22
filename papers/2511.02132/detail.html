@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Optimizing Attention on GPUs by Exploiting GPU Architectural NUMA Effects — Feiyue KB</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card */
+.card {
+  background: var(--card-bg); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 12px; box-shadow: var(--card-shadow);
+  border-left: 4px solid var(--accent); transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.card-title a { color: var(--tx); }
+.card-meta { font-size: 0.82rem; color: var(--mt); margin-bottom: 6px; }
+.card-body { font-size: 0.9rem; line-height: 1.6; }
+.card-tags { margin-top: 6px; }
+.tag {
+  display: inline-block; background: var(--tag-bg); color: var(--tag-tx);
+  padding: 1px 8px; border-radius: 8px; font-size: 0.75rem; margin-right: 4px;
+}
+.card-links { margin-top: 8px; font-size: 0.85rem; }
+.card-links a { margin-right: 12px; }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/domain/">Domain</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>Optimizing Attention on GPUs by Exploiting GPU Architectural NUMA Effects</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2511.02132</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention</span><span class="tag">NUMA</span><span class="tag">MI300X</span><span class="tag">chiplet</span><span class="tag">L2-cache</span><span class="tag">swizzling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/domain/kernel.html">← kernel (L4)</a>
+<a href="https://arxiv.org/abs/2511.02132" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="optimizing-attention-on-gpus-by-exploiting-gpu-architectural-numa-effects">Optimizing Attention on GPUs by Exploiting GPU Architectural NUMA Effects</h1>
+<blockquote>
+Mansi Choudhary, Karthik Sangaiah, Sonali Singh, Muhammad Osama, Lisa Wu Wills, Ganesh Dasika | 2025-11 | https://arxiv.org/abs/2511.02132
+Category: kernel | Tags: attention, NUMA, MI300X, chiplet, L2-cache, swizzling, FlashAttention
+Read: 2026-04-16
+</blockquote>
+
+<h2 id="core-contribution">Core Contribution</h2>
+<p>在 AMD MI300X 的多 chiplet (8 XCD) 架构上，识别出 FlashAttention2 的 workgroup 调度未考虑 NUMA 效应导致 L2 cache 失效，提出 <strong>Swizzled Head-first Mapping</strong> 策略——将同一 attention head 的所有 workgroups 映射到同一 XCD，使 K/V 数据在单 XCD 的 L2 cache 中被复用。以极小的代码改动（~15 行 swizzle 逻辑）实现最高 <strong>50% 性能提升</strong>和 <strong>80-97% L2 cache hit rate</strong>。</p>
+
+<h2 id="summary">Summary</h2>
+<p>现代 AI GPU 正从单 die 向多 chiplet 架构演进（MI300X 8 XCD、Blackwell 双 die、Rubin Ultra 四 die），引入了显著的 NUMA（Non-Uniform Memory Access）效应：不同 XCD 拥有独立的 L2 cache 和 HBM 控制器，跨 XCD 访问延迟和带宽显著劣化。然而，现有的 FlashAttention2 实现假设 GPU 内存访问是 uniform 的，其 workgroup 调度策略（round-robin 分配到各 XCD）将同一 attention head 的 workgroups 分散到不同 XCD，导致 K/V 数据在每个 XCD 的 L2 cache 中只有部分命中，产生大量冗余 HBM 访问。</p>
+
+<p>本文提出 Swizzled Head-first Mapping：将 attention 的计算网格按 head-first 顺序迭代，并通过 swizzle 逻辑将同一 head 的所有 row blocks 强制映射到同一 XCD。这样，每个 XCD 在某一时刻只服务一个 Attention Compute Cluster (ACC)，K/V 数据只需从 HBM 加载一次到该 XCD 的 L2 cache 中，被该 head 的所有 workgroups 共享复用。</p>
+
+<p>在 MI300X 上的实验覆盖 MHA（DeepSeek-V3 prefill, H=128）和 GQA（Llama 3 系列），Swizzled Head-first 在 MHA H=128 / seqlen=128K 下比传统 Block-first 映射快 <strong>50%</strong>，L2 cache hit rate 从 <strong>~1%</strong> 提升到 <strong>90-97%</strong>。Forward 和 backward pass 均有效。</p>
+
+<h2 id="逻辑故事还原（约束推导型）">逻辑故事还原（约束推导型）</h2>
+
+<h3 id="时代定位">时代定位</h3>
+<p>2024-2025年，GPU 架构正经历从单 die 到多 chiplet 的范式转换。A100/H100 是单 die 统一 L2 cache，所有 CU 对 L2 的访问是 uniform 的。MI300X（8 XCD chiplet）和 Blackwell（2 die）打破了这个假设——L2 cache 被物理分散到各 die/XCD 中，NUMA 效应出现。GEMM 领域已经通过 CTA swizzling（Tensile, hipBLASLt）解决了这个问题（L2 hit rate 从 43% → 92%），但 <strong>attention kernel 领域还没有人系统性地解决 NUMA-aware 调度问题</strong>。本文将 GEMM swizzling 的思路迁移到 attention 领域，是一个 "低垂但重要的果实"。</p>
+
+<h3 id="约束推导（为何不可x？）">约束推导（为何不可X？）</h3>
+
+<p><strong>为何不可继续用 Naive Block-first (round-robin) 调度？</strong></p>
+<p>→ Round-robin 将 wg0 分到 XCD0, wg1 分到 XCD1, ...，同一 head 的 workgroups 被均匀打散到 8 个 XCD。每个 XCD 只服务该 head 的 1/8 row blocks，但需要完整的 K/V 数据。因此 K/V 在每个 XCD 的 L2 cache 中只有 1/8 的复用率，其余 7/8 是冗余加载。当 head 数多（H≥64）、序列长（≥32K）时，K/V 数据远超单 XCD 的 4MB L2 cache，命中率暴跌至 <strong>~1%</strong>（Figure 13）。</p>
+
+<p><strong>为何不可只用 Swizzled Block-first？</strong></p>
+<p>→ Swizzled Block-first 在 GQA（KV heads 数 = XCD 数 = 8）时效果好（每个 GQA group 恰好映射到一个 XCD），但在 <strong>MHA</strong>（如 DeepSeek-V3 的 H=128）时，128 个独立 head 需要 128 个 ACC，每个 XCD 同时服务 128/8 = 16 个 ACC，L2 cache 仍被 16 个不同 head 的 K/V 数据竞争，命中率在长序列下暴跌。</p>
+
+<p><strong>为何不可只用 Naive Head-first (无 swizzle)？</strong></p>
+<p>→ Head-first 迭代顺序对了（先完成一个 head 的所有 blocks 再到下一个 head），但 round-robin XCD 分配仍将同一 head 的 blocks 打散到所有 XCD。在短序列时尚可（K/V 小，各 XCD 的 L2 都装得下），但长序列（128K）时 K/V 超出单 XCD L2，打散导致命中率从 90% 跌至 <strong>40-60%</strong>（Figure 13）。</p>
+
+<p><strong>为何 NVIDIA Blackwell 不需要这个优化？</strong></p>
+<p>→ Blackwell 在硬件层面维持了两个 die 之间的 full cache coherency（Figure 1b），对软件隐藏了 NUMA 效应。而 MI300X 显式暴露了 NUMA 特性，<strong>需要软件层面的 NUMA-aware 调度</strong>。这是一个重要的 AMD vs NVIDIA 架构差异：NVIDIA 选择硬件兜底，AMD 选择给程序员更多控制。</p>
+
+<table>
+<tr><th>Mapping Strategy</th><th>MHA H=128 128K Perf</th><th>L2 Hit Rate</th><th>适用场景</th></tr>
+<tr><td>Naive Block-first</td><td>~65%</td><td>~1%</td><td>不推荐</td></tr>
+<tr><td>Swizzled Block-first</td><td>~76%</td><td>~10%</td><td>GQA (groups=XCDs)</td></tr>
+<tr><td>Naive Head-first</td><td>~90%</td><td>40-60%</td><td>短序列</td></tr>
+<tr><td><strong>Swizzled Head-first</strong></td><td><strong>100% (baseline)</strong></td><td><strong>90-97%</strong></td><td><strong>通用最优</strong></td></tr>
+</table>
+
+<h3 id="核心技术壁垒">核心技术壁垒</h3>
+<p><strong>ACC (Attention Compute Cluster) 到 XCD 的 1:1 映射</strong>。核心 insight 极其简单——"同一 head 的所有 blocks 放在同一 XCD"——但需要精确的 swizzle 逻辑来在 round-robin 硬件调度器之上实现这个映射。Figure 11 的 ~15 行 Triton 代码是全部实现。</p>
+
+<p>真正的壁垒不在代码，而在 <strong>对 MI300X 内存层次结构的深度理解</strong>：(1) L2 cache 是 per-XCD 私有的 4MB；(2) 硬件 WG 调度器使用 chunked round-robin（chunk=1）；(3) 这个调度策略是 driver-level、跨代 GPU 可能变化的；(4) 因此 swizzle 必须做成 kernel-level 的 mutable 逻辑而非依赖固定的硬件行为。</p>
+
+<h3 id="质疑假设">质疑假设</h3>
+<ol>
+<li><strong>MI300X 的 chunk=1 round-robin 调度假设</strong>：论文指出这是 "current hardware" 的行为，未来 driver 更新可能改变。如果 AMD 在驱动中实现了更智能的 NUMA-aware 调度，这个优化可能变得不必要。</li>
+<li><strong>L2 cache capacity 假设</strong>：方法的有效性取决于 "单个 ACC 的 K/V 数据能装入单 XCD 的 L2 cache (4MB)"。对于 HEAD_DIM=128, seqlen=128K: K 或 V 的大小 = 128K × 128 × 2B(FP16) = 32MB，远超 4MB L2。但 FA2 的 tiled access pattern 确保了在任一时刻只有 active tiles 在 L2 中，而非全部 K/V。这个隐含假设是否在所有 tile 大小和序列长度下都成立，论文未详细分析。</li>
+<li><strong>Forward-only 评估为主</strong>：Backward pass 仅在 Section 4.6 简要评估（~10% speedup），远低于 forward 的 50%。论文暗示 backward pass 有其他瓶颈（scalar operations）限制了收益。</li>
+<li><strong>仅在 MI300X 上验证</strong>：MI350X (CDNA4) 有不同的 chiplet 拓扑和 L2 大小，结论是否迁移？Blackwell 因硬件 coherency 不需要此优化，但 Rubin Ultra (4 die) 可能重新需要。</li>
+</ul>
+
+<h3 id="设计绑定批判">设计绑定批判</h3>
+<ul>
+<li><strong>绑定 AMD MI300X 架构</strong>: 核心优化依赖 8 XCD + per-XCD L2 cache 的特定拓扑。迁移到 MI350X 需要调整 NUM_XCD 参数；不适用于 NVIDIA GPU（Blackwell 硬件 coherent）</li>
+<li><strong>绑定 Triton 实现</strong>: 代码用 Triton 编写，依赖 <code>tl.program_id</code> 和 swizzle 逻辑。CUDA/HIP native kernel 需要不同的 swizzle 实现</li>
+<li><strong>绑定 FA2 算法结构</strong>: Swizzle 逻辑与 FA2 的 grid 结构（batch × heads × blocks）紧耦合。其他 attention 算法（FA3、PagedAttention、MLA）需要重新设计 swizzle mapping</li>
+<li><strong>绑定 head 数 ≥ XCD 数</strong>: 当 H < 8（如 MQA with H_Q=1），每个 head 的 blocks 不足以填满一个 XCD，方法退化</li>
+</ul>
+
+<h3 id="生态影响追踪">生态影响追踪</h3>
+<ul>
+<li><strong>AITER</strong>: AMD 的高性能 AI 算子仓库已部署了 Swizzled Block-first (Section 3.2.2)，本文的 Swizzled Head-first 是更优方案，可能被 AITER 后续采纳</li>
+<li><strong>Triton</strong>: 论文在 Triton 上实现，代码改动极小，可直接 upstream 到 Triton 的 FA 默认实现</li>
+<li><strong>与 2511.02168 (Three Taxes) 的关联</strong>: 同为 AMD GPU inference 优化，Three Taxes 解决 inter-GPU 通信融合，本文解决 intra-GPU NUMA 调度。两者在同一集群上互补</li>
+<li><strong>CDNA4/MI350X 适用性</strong>: MI350X 保持了 chiplet 架构但 XCD 数和 L2 大小可能不同，核心方法论（ACC-to-XCD mapping）仍适用</li>
+</ul>
+
+<h2 id="key-findings">Key Findings</h2>
+<ul>
+<li>MI300X 上 FA2 默认调度导致 L2 cache hit rate 在高 head 数 + 长序列下暴跌至 ~1%</li>
+<li>Swizzled Head-first Mapping 将 L2 hit rate 提升到 80-97%，实现最高 50% 性能提升</li>
+<li>MHA (H=128) 比 GQA (H_KV=8) 收益更大——GQA 因 KV groups=XCD 数而天然 cache 友好</li>
+<li>Forward pass 收益显著 (50%), backward pass 收益有限 (~10%)</li>
+<li>DeepSeek-V3 prefill (MHA H=128, D=56) 是最佳 case study</li>
+</ul>
+
+<h2 id="key-figures">Key Figures</h2>
+
+<h3 id="figure-1-gpu-architecture-evolution">Figure 1: GPU Architecture Evolution</h3>
+<p>!<a href="../images/2511.02132/fig1-gpu-evolution.png">Figure 1: GPU Architecture Evolution</a></p>
+<p><strong>What it shows</strong>: GPU 架构从单 die (A100/H100) → 双 die chiplet (Blackwell) → 四 die chiplet (MI300X, Rubin Ultra) 的演进。</p>
+<p><strong>Why it matters</strong>: 解释了 NUMA 效应的硬件根源——L2 cache 从统一变为 per-die 私有。关键对比：NVIDIA Blackwell 用硬件 coherency 隐藏 NUMA，AMD MI300X 显式暴露 NUMA。</p>
+<p><strong>Detailed description</strong>: 三幅子图分别展示：(a) 单 die 统一 L2 cache，所有 CU 均匀访问；(b) 双 die 有 interconnect，各 die 有独立 L2 和 HBM；(c) 四 die MI300X 架构，8 个 XCD 各有独立 L2 (4MB) 和 HBM 控制器，NUMA 效应最显著。</p>
+
+<h3 id="figure-2-numa-scheduling-impact">Figure 2: NUMA Scheduling Impact</h3>
+<p>!<a href="../images/2511.02132/fig2-numa-scheduling.png">Figure 2: NUMA Scheduling Impact</a></p>
+<p><strong>What it shows</strong>: 当处理相关 tiles 的 workgroups 被调度到不同 XCD 时，无法共享 L2 cache，导致冗余 HBM 访问。</p>
+<p><strong>Why it matters</strong>: 直观展示了问题的根源——round-robin 调度打散了本应在同一 L2 cache 中复用的数据。</p>
+
+<h3 id="figure-10-swizzled-head-first-mapping">Figure 10: Swizzled Head-first Mapping</h3>
+<p>!<a href="../images/2511.02132/fig10-swizzled-headfirst.png">Figure 10: Swizzled Head-first Mapping</a></p>
+<p><strong>What it shows</strong>: 核心方法——Head-first 迭代 + 空间 swizzle，将同一 head 的所有 blocks 限制在同一 XCD。</p>
+<p><strong>Why it matters</strong>: 这是论文的 "灵魂图"，展示了 ACC (Attention Compute Cluster) 到 XCD 的 1:1 映射策略。每种颜色代表一个 attention head，所有同色 blocks 被限制在同一 XCD 列中。</p>
+
+<h3 id="figure-1213-mha-performance-l2-hit-rate">Figure 12+13: MHA Performance & L2 Hit Rate</h3>
+<p>!<a href="../images/2511.02132/fig12-mha-perf.png">Figure 12: MHA Performance</a></p>
+<p>!<a href="../images/2511.02132/fig13-l2-hitrate.png">Figure 13: L2 Cache Hit Rate</a></p>
+<p><strong>What it shows</strong>: 四种映射策略在不同 head 数、序列长度、batch size 下的性能和 L2 hit rate。</p>
+<p><strong>Why it matters</strong>: 核心实验结果。H=128/128K 下，Block-first L2 hit ≈1%, Swizzled Head-first ≈97%。性能差距 50%。</p>
+<p><strong>Detailed description</strong>: Figure 12 以 Swizzled Head-first 为 baseline (1.0) 归一化。Block-first 在 H≥64 + seqlen≥32K 时降到 0.64-0.70。Figure 13 的 L2 cache hit rate 揭示了原因：Block-first 在极端配置下 cache 完全失效 (~1%)，而 Swizzled Head-first 始终维持 90%+ 命中率。</p>
+
+<h2 id="key-tables">Key Tables</h2>
+
+<h3 id="table-1-mi300x-architecture">Table 1: MI300X Architecture</h3>
+<table>
+<tr><th>Component</th><th>Specification</th></tr>
+<tr><td>XCDs</td><td>8</td></tr>
+<tr><td>CUs per XCD</td><td>38 (304 total)</td></tr>
+<tr><td>L1 Cache/CU</td><td>16 KB</td></tr>
+<tr><td><strong>L2 Cache/XCD</strong></td><td><strong>4 MB (32 MB total)</strong></td></tr>
+<tr><td>HBM3</td><td>192 GB, 5.3 TB/s</td></tr>
+</table>
+<p><strong>Takeaway</strong>: 每 XCD 仅 4MB L2。K/V 数据 (e.g. 128K×128×FP16=32MB per head) 远超 L2，tiled access 是唯一出路。</p>
+
+<h3 id="table-3-evaluated-model-configurations">Table 3: Evaluated Model Configurations</h3>
+<table>
+<tr><th>Model</th><th>Attn Type</th><th>H_Q</th><th>H_K</th><th>D_HEAD</th></tr>
+<tr><td>Llama-3 8B</td><td>GQA</td><td>32</td><td>8</td><td>128</td></tr>
+<tr><td>Llama-3 70B</td><td>GQA</td><td>64</td><td>8</td><td>128</td></tr>
+<tr><td>Llama-3 405B</td><td>GQA</td><td>128</td><td>8</td><td>128</td></tr>
+<tr><td>DeepSeek-V3</td><td>MHA</td><td>128</td><td>128</td><td>56</td></tr>
+</table>
+<p><strong>Takeaway</strong>: DeepSeek-V3 (MHA H=128) 是 Swizzled Head-first 收益最大的场景。</p>
+
+<h2 id="limitations">Limitations</h2>
+<ul>
+<li>仅在 AMD MI300X 上验证，不适用于 NVIDIA GPU（Blackwell 硬件 coherent）</li>
+<li>Forward pass 收益显著 (50%)，backward pass 收益有限 (~10%)，其他瓶颈限制</li>
+<li>当 head 数 < XCD 数（如 MQA H_Q < 8）时方法退化</li>
+<li>未评估 decode 阶段（batch size 极大但序列已长，K/V per-request 不同）</li>
+<li>未评估与 PagedAttention、MLA 等变体的兼容性</li>
+<li>MI350X (CDNA4) 适用性未验证</li>
+</ul>
+
+<h2 id="infrastructure-impact">Infrastructure Impact</h2>
+<ul>
+<li>Algorithm: 方法论可泛化——任何在 chiplet GPU 上的 tiled kernel 都可能受益于 NUMA-aware swizzle</li>
+<li>Kernel: 极小代码改动 (~15 行 swizzle)，可直接集成到 Triton FA 默认实现和 AITER</li>
+<li>Framework: 对 vLLM/SGLang 的 attention kernel 在 MI300X 上有直接提速；prefill 阶段收益最大</li>
+<li>LLM: 对 MHA 高 head 数模型（如 DeepSeek-V3 H=128）影响最大；GQA 模型收益取决于 KV group 数与 XCD 数的关系</li>
+<li>Agent: Prefill 加速直接降低 TTFT，改善交互延迟</li>
+</ul>
+
+<hr>
+
+<h2 id="deep-analysis-kernel-extends-phase-2">Deep Analysis (kernel, extends Phase 2)</h2>
+
+<h3 id="1-target-operation">1. Target Operation</h3>
+<ul>
+<li><strong>Primitive</strong>: Multi-Head Attention (forward + backward) 的 FlashAttention2 实现</li>
+<li><strong>I/O shapes</strong>: $Q,K,V \in \mathbb{R}^{B \times H \times N \times D}$, $D$=56-128, $N$=2K-128K</li>
+<li><strong>Arithmetic intensity</strong>: FA2 forward 的 FLOP = $O(BHN^2D)$, 内存访问 = $O(BHND)$ (tiled) → compute-bound for large $N$</li>
+<li><strong>Roofline</strong>: 在 MI300X 上，FA2 在长序列时是 compute-bound（MFMA 瓶颈），但在短序列或 cache miss 严重时退化为 memory-bound → 本文通过提升 L2 hit rate 将瓶颈从 HBM bandwidth 移回 compute</li>
+</ul>
+
+<h3 id="2-hardware-model">2. Hardware Model</h3>
+<ul>
+<li><strong>Target</strong>: AMD MI300X (CDNA3), 8 XCDs, 304 CUs total</li>
+<li><strong>Compute units</strong>: Matrix Cores (MFMA instructions), 每 XCD 38 CUs</li>
+<li><strong>Memory hierarchy</strong>: L1 (16KB/CU) → <strong>L2 (4MB/XCD, 私有)</strong> → HBM3 (192GB, 5.3TB/s)</li>
+<li><strong>NUMA topology</strong>: 8 个 XCD 各有独立 L2 和 HBM 控制器。跨 XCD L2 访问需通过 Infinity Fabric，延迟和带宽显著劣化</li>
+<li><strong>WG scheduler</strong>: 硬件 round-robin, chunk=1（每个 XCD 依次分配 1 个 WG）</li>
+</ul>
+
+<h3 id="3-design-space-constraint-analysis-extends-phase-2">3. Design Space & Constraint Analysis (extends Phase 2)</h3>
+<p>见上方约束推导——覆盖了 4 种 mapping 策略的 feasibility matrix 和 NVIDIA vs AMD 架构差异分析。</p>
+
+<p><strong>核心 constraint</strong>: MI300X 的 L2 是 per-XCD 私有且不 coherent across XCDs → 任何跨 XCD 的数据共享必须通过 HBM 重新加载。这迫使 kernel 设计者将数据共享的 workgroups 物理放在同一 XCD。</p>
+
+<h3 id="4-optimization-techniques">4. Optimization Techniques</h3>
+
+<table>
+<tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
+<tr><td>Tiling / blocking</td><td>Yes (inherited from FA2)</td><td>BLOCK_M=128, BLOCK_N=64</td></tr>
+<tr><td>Software pipelining</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled K/V access 模式</td></tr>
+<tr><td><strong>Workgroup swizzling</strong></td><td><strong>Yes (core contribution)</strong></td><td>Swizzled Head-first: ~15行 Triton swizzle 逻辑重映射 WG ID</td></tr>
+<tr><td>Vectorized memory access</td><td>Yes (inherited from FA2)</td><td>标准 Triton 向量化</td></tr>
+<tr><td>Shared memory / LDS</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled softmax</td></tr>
+<tr><td>Kernel fusion</td><td>N/A</td><td>不涉及 kernel fusion，纯调度优化</td></tr>
+</table>
+
+<p><strong>关键 insight</strong>: 本文不修改 FA2 kernel 的计算逻辑，仅修改 <strong>WG ID 到 (batch, head, block) 的映射函数</strong>。这意味着它与任何 FA2 实现兼容，不引入额外 compute 或 memory overhead。</p>
+
+<h3 id="5-performance-analysis">5. Performance Analysis</h3>
+
+<table>
+<tr><th>Config</th><th>Speedup (vs Naive Block-first)</th><th>L2 Hit Rate</th></tr>
+<tr><td>MHA H=128, N=128K, B=1</td><td><strong>1.50×</strong></td><td>90-97% (vs ~1%)</td></tr>
+<tr><td>MHA H=64, N=32K, B=4</td><td>1.30-1.40×</td><td>85-95% (vs ~5%)</td></tr>
+<tr><td>GQA H_Q=128 H_K=8, N=128K</td><td>1.10-1.15×</td><td>Similar to Swizzled Block-first</td></tr>
+<tr><td>DeepSeekV3 prefill, N=128K, B=8</td><td>~1.35× (vs Swizzled Block-first ~0.76)</td><td>-</td></tr>
+<tr><td>FA2 Backward, H=128, N=128K</td><td><strong>1.10×</strong></td><td>-</td></tr>
+</table>
+
+<p><strong>Scaling behavior</strong>: 收益随 head 数和序列长度增加而增大。H<16 或 N<8K 时所有方法性能接近（K/V 小，L2 装得下）。</p>
+
+<h3 id="6-numerical-considerations">6. Numerical Considerations</h3>
+<p>N/A — 本文是纯调度优化，不修改数值计算。与 FA2 完全数值等价。</p>
+
+<h3 id="7-portability">7. Portability</h3>
+
+<table>
+<tr><th>Dimension</th><th>Assessment</th></tr>
+<tr><td>Cross-GPU within AMD</td><td>需调整 NUM_XCD 参数（MI350X XCD 数可能不同）</td></tr>
+<tr><td>Cross-vendor</td><td><strong>不适用于 NVIDIA Blackwell</strong>（硬件 coherent，不暴露 NUMA），可能适用于 Rubin Ultra (4 die)</td></tr>
+<tr><td>Integration</td><td>Triton 实现，~15 行改动，可直接 upstream</td></tr>
+<tr><td>Compiler dependency</td><td>ROCm + Triton</td></tr>
+</table>
+
+<h3 id="8-deployment-context">8. Deployment Context</h3>
+<ul>
+<li><strong>Inference prefill</strong>: 收益最大——compute-bound, 长序列, 高 head 数</li>
+<li><strong>Inference decode</strong>: 未评估，可能收益有限（每 request 单 token, K/V 不同）</li>
+<li><strong>Training forward+backward</strong>: Forward 50% speedup, backward 10%</li>
+<li><strong>Hardware-specific buff</strong>: MI300X 的 8 XCD + 4MB per-XCD L2 使 NUMA 效应极度显著 → 本优化的 "甜蜜点"</li>
+<li><strong>Framework</strong>: 可直接集成到 AMD AITER 和 Triton FA 实现；vLLM/SGLang 在 MI300X 上的 attention 可直接受益</li>
+</ul>
+
+<h3 id="9-source-code">9. Source Code</h3>
+<ul>
+<li><strong>Code</strong>: 论文给出了 Triton 实现的核心 swizzle 代码（Figure 3, Figure 11）</li>
+<li><strong>AITER</strong>: https://github.com/ROCm/aiter — AMD 高性能 AI 算子仓库，已有 Swizzled Block-first，Swizzled Head-first 可作为 PR 提交</li>
+</ul>
+
+<h3 id="10-key-source-code-walkthrough">10. Key Source Code Walkthrough</h3>
+
+<h4 id="10a-swizzled-head-first-mapping-figure-11">10a. Swizzled Head-first Mapping (Figure 11)</h4>
+<pre><code class="language-python">
+# Grid: total WGs = batch * num_q_heads * ceil(seqlen_q / BLOCK_M)
+grid = lambda META: (batch * num_q_heads * (seqlen_q / META[&quot;BLOCK_M&quot;]))
+
+wid = tl.program_id(0)                         # [Line 5] 获取线性 WG ID
+wid_per_batch = wid // BATCH                    # [Line 6] 去掉 batch 维度
+heads_per_xcd = NUM_Q_HEADS // NUM_XCD          # [Line 7] 每 XCD 分配的 head 数 (e.g. 128/8=16)
+blocks_per_head = ceil(SEQLEN_Q / BLOCK_M)      # [Line 8] 每 head 的 row block 数
+chunk_size = NUM_XCD * blocks_per_head           # [Line 9] 一个 &quot;chunk&quot; = 8 × blocks_per_head
+
+# [Line 12] head_offset: 通过 wid % NUM_XCD 确定目标 XCD，
+#   再乘以 heads_per_xcd 映射到该 XCD 负责的 head 范围
+head_offset = ((wid_per_batch % NUM_XCD) * heads_per_xcd
+               + wid_per_batch // (NUM_XCD * blocks_per_head))
+
+# [Line 13] block_offset: 在目标 head 内的 row block 编号
+block_offset = (wid_per_batch % chunk_size) // NUM_XCD
+
+# [Line 14] batch_offset: batch 维度 index
+batch_offset = (wid // (blocks_per_head * NUM_Q_HEADS)) % BATCH
+</code></pre>
+
+<p><strong>核心机制</strong>: <code>wid % NUM_XCD</code> 决定 XCD 编号 → <code>heads_per_xcd</code> 个 head 被绑定到该 XCD → 同一 head 的所有 blocks 共享该 XCD 的 L2 cache。<strong>极简但有效</strong>。</p>
+
+<h4 id="10c-data-layout-memory-access-patterns">10c. Data Layout & Memory Access Patterns</h4>
+<ul>
+<li>Q/K/V: 标准 [B, H, N, D] layout (row-major)</li>
+<li>同一 head 内：FA2 的 tiled access → 每个 WG 处理一个 Q row block (BLOCK_M=128 rows)，需访问完整 K/V</li>
+<li>Swizzled Head-first 保证同 head 的 WGs 在同一 XCD → K/V 的 tiled blocks 在 L2 中被逐块缓存和复用</li>
+<li>无额外 bank conflict 或 coalescing 问题（纯调度优化，不改数据布局）</li>
+</ul>
+
+<h3 id="11-infrastructure-impact">11. Infrastructure Impact</h3>
+<table>
+<tr><th>Layer</th><th>Impact</th></tr>
+<tr><td>Algorithm</td><td>"ACC-to-XCD mapping" 原则可泛化到任何 chiplet GPU 上的 tiled kernel</td></tr>
+<tr><td>Framework</td><td>MI300X 上 vLLM/SGLang 的 prefill attention 可直接加速；AITER 可 upstream</td></tr>
+<tr><td>LLM</td><td>MHA 高 head 数模型（DeepSeek-V3）收益最大；GQA 模型收益取决于 KV groups vs XCD 数</td></tr>
+<tr><td>Agent</td><td>Prefill 加速 → TTFT 降低 → 改善交互延迟</td></tr>
+</table>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search + category filter for list pages */
+
+document.addEventListener('DOMContentLoaded', function() {
+  const searchBox = document.querySelector('.search-box');
+  const catBtns = document.querySelectorAll('.cat-btn');
+  const cards = document.querySelectorAll('.card');
+  const catSections = document.querySelectorAll('.cat-section');
+  let activeCategory = 'all';
+
+  function filterCards() {
+    const query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      const text = card.textContent.toLowerCase();
+      const cat = card.dataset.category || '';
+      const matchesSearch = !query || text.includes(query);
+      const matchesCat = activeCategory === 'all' || cat === activeCategory;
+      card.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+    });
+    // Hide empty category sections
+    catSections.forEach(function(sec) {
+      const visible = sec.querySelectorAll('.card:not([style*="display: none"])');
+      sec.style.display = visible.length > 0 ? '' : 'none';
+    });
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('input', filterCards);
+  }
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      filterCards();
+    });
+  });
+});
+</script>
+</body>
+</html>

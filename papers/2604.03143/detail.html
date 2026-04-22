@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TokenDance: Scaling Multi-Agent LLM Serving via Collective KV Cache Sharing — Feiyue KB</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card */
+.card {
+  background: var(--card-bg); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 12px; box-shadow: var(--card-shadow);
+  border-left: 4px solid var(--accent); transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.card-title a { color: var(--tx); }
+.card-meta { font-size: 0.82rem; color: var(--mt); margin-bottom: 6px; }
+.card-body { font-size: 0.9rem; line-height: 1.6; }
+.card-tags { margin-top: 6px; }
+.tag {
+  display: inline-block; background: var(--tag-bg); color: var(--tag-tx);
+  padding: 1px 8px; border-radius: 8px; font-size: 0.75rem; margin-right: 4px;
+}
+.card-links { margin-top: 8px; font-size: 0.85rem; }
+.card-links a { margin-right: 12px; }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/domain/">Domain</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>TokenDance: Scaling Multi-Agent LLM Serving via Collective KV Cache Sharing</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2604.03143</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">multi-agent-serving</span><span class="tag">kv-cache-sharing</span><span class="tag">position-independent-caching</span><span class="tag">llm-inference</span><span class="tag">agent-systems</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/domain/framework.html">← framework (L4)</a>
+<a href="https://arxiv.org/abs/2604.03143" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="tokendance-scaling-multi-agent-llm-serving-via-collective-kv-cache-sharing">TokenDance: Scaling Multi-Agent LLM Serving via Collective KV Cache Sharing</h1>
+
+<blockquote>
+Zhuohang Bian, Feiyang Wu, Chengrui Zhang, Hangcheng Dong, Yun Liang, Youwei Zhuo (Peking University, SJTU) | 2026-04 | <a href="https://arxiv.org/abs/2604.03143">arXiv:2604.03143</a>
+Category: framework | Tags: multi-agent-serving, kv-cache-sharing, position-independent-caching, llm-inference, agent-systems
+Read: 2026-04-18
+</blockquote>
+
+<h2 id="core-contribution">Core Contribution</h2>
+
+<p>把 multi-agent All-Gather round 当作 KV Cache 复用的第一类单位，将 N 个智能体在同一轮中的共享内容的 PIC 复用代价从 O(N) 摊销到 O(1)，并用 Master-Mirror 块稀疏 diff 将 per-agent 存储压缩 11–17×，使同一张 A100 可支撑最多 2.7× 的并发智能体数。</p>
+
+<h2 id="summary">Summary</h2>
+
+<p><strong>Motivation</strong>：以 GenerativeAgents、AgentSociety 为代表的多智能体模拟系统按"同步轮"推进：中心调度器收集所有 agent 上一轮的输出 $\mathcal{O}^t = \{O_1^t, \ldots, O_N^t\}$，再把完整集合分发给每个 agent 作为新一轮输入。每个 agent 的提示形如 $P_i^{t+1} = H_i^t \,\|\, \Pi_i(\mathcal{O}^t)$：前缀是自己的私有历史 $H_i^t$，长度各异；后段是同一组共享输出块，但在不同 agent 里出现在<strong>不同的绝对位置</strong>。这种 All-Gather 通信结构导致：①prefix caching 一旦私有历史不同就彻底失效；②PIC（CacheBlend/EPIC 等）虽然能在任意 offset 复用，但必须对每个 agent 单独做一次 RoPE 旋转+重要位置选择，N 个 agent 就要跑 N 遍；③即便成功复用，最终 N 份 KV Cache 仍然是 91–97% 块级相同的密集副本，直接撑爆显存。</p>
+
+<p><strong>Method</strong>：TokenDance 把优化单位从"单请求"提升到"一整轮 All-Gather"。三大组件：(1) <strong>Round-Aware Prompt Interface</strong> 用保留分隔符 token 打标 logical block 边界，让运行时可以按 segment 做 content-based hashing，识别跨 agent 的共享块；(2) <strong>Collective KV Cache Reuse</strong>：KV Collector 把同一轮中 prompt 长度、cache span、slot mapping 兼容的请求组成一个 group，layer-wise 同步推进，在 check layer 上把 N 个请求的 Q/K 拼成一个大 batch 做<strong>一次</strong> RoPE + 一次 key-difference 分析，选出的 important positions 集合直接复用到后面所有层；(3) <strong>Diff-Aware Storage + Fused Restore</strong>：一轮里挑出偏差最小的 Master 保留完整 cache，其余以 block-sparse K/V diff 表示，仅记录差异块索引和值；回读时用 ping-pong buffer 在 Master 传输路径中就近 merge diff 并做 RoPE recover，避免显式构造 dense Mirror。</p>
+
+<p><strong>Results</strong>：在 A100-80G 上用 Qwen2.5-7B/14B 评测 GenerativeAgents 与 AgentSociety：</p>
+<ul>
+<li>同一 1500 ms SLO 下并发 agent 数最多提升 <strong>2.7×</strong> vs vLLM prefix caching；</li>
+<li>Mirror 对完整 cache 的压缩比 <strong>11.2×（7B）/ 17.5×（14B）</strong>，per-agent 存储降低 94%；</li>
+<li>Collective reuse 对 serial PIC 峰值加速 <strong>2.57×</strong>（10 agents, QPS=1）；</li>
+<li>Fused restore 对 dense restore 加速 <strong>1.3–2.6×</strong>；</li>
+<li>端到端 latency 对 vLLM 最多降低 2.3×，对 CacheBlend prefill 加速 1.9×；</li>
+<li>在 temperature=0 的 8 个场景里，3 个场景完全匹配 vLLM 输出，其余 5 个偏离 3.3–11.9%，偏离全部可归因于底层 CacheBlend 的 PIC 选择性重算，TokenDance 本身不引入额外误差。</li>
+</ul>
+
+<h2 id="key-findings">Key Findings</h2>
+
+<ul>
+<li><strong>All-Gather 是多智能体轮次的结构共性</strong>：GenerativeAgents、AgentSociety、OpenClaw、MoltBook 等框架都遵循"gather outputs → redistribute to all"的同步模式，prompt 里 $O$ 部分在 N 个 agent 之间 91–97% 块级重叠，是一个被现有服务栈系统性忽视的优化窗口。</li>
+<li><strong>PIC 重复劳动是现行方法的结构性浪费</strong>：CacheBlend/EPIC 的 RoPE 旋转 + diff 分析在 N 个 agent 上产生近似相同的结果，却被重复执行 N 次，是典型的"粒度错配"。</li>
+<li><strong>多智能体内存代价是 $O(N \times R)$ 的</strong>：N 个 agent × R 轮各存一份 cache，memory 压力线性叠加。只减少 prefill compute（像 PIC）不解决 scaling；必须砍 per-agent 存储。</li>
+<li><strong>恢复后的 KV Cache 在块粒度上高度相似</strong>：7B 模型平均每个 Mirror 仅 53.2 个 block 与 Master 不同（典型 total 500–700 blocks）；14B 为 59.6，差异块数与模型无关但 block 本身更大，所以压缩率反而更高。</li>
+<li><strong>Fused restore 是 online 链路的关键</strong>：dense 重建的 write-then-read 往返会吃掉压缩红利；把 diff merge 塞进 layerwise ping-pong transfer 能保住压缩收益且 1.3–2.6× 快。</li>
+<li><strong>设计上 decouple compute 与 storage</strong>：collective reuse 可以替换为任意接受"位置集合 → 修正 K/V"接口的 PIC 方法（CacheBlend 只是默认后端），Master-Mirror 存储也能与其他 single-cache 压缩（KIVI、H2O）叠加。</li>
+</ul>
+
+<h2 id="key-figures">Key Figures</h2>
+
+<h3 id="figure-1-all-gather-prompt-structure">Figure 1: All-Gather Prompt Structure</h3>
+<p>!<a href="../images/2604.03143/fig1-allgather.png">Figure 1: All-Gather Prompt Structure</a></p>
+<p><strong>What it shows</strong>：三个 agent 在同一轮中的 prompt 组成——各自的私有历史 $H$（长度不一）加上同一组共享输出块 $O_1, O_2, O_3$，但因为 $\Pi_i$ 给每个 agent 的块顺序不同，同样的 $O_1$ 在不同 prompt 中出现在不同的绝对 offset。</p>
+<p><strong>Why it matters</strong>：这张图直接解释了为什么 prefix caching 在 multi-agent 场景彻底失效——前缀 bit 对 bit 相同是 prefix caching 的先决条件，而 $H$ 长度不等就把对齐打破了。它也是 TokenDance "round-aware" 设计的出发点：内容相同但位置不同，就必须用 content-based segment hashing 而不是 position-based chunk hashing。</p>
+<p><strong>Detailed description</strong>：左侧列出 3 个 agent 的完整 prompt，每个 prompt 顶部是长度不一的 $H_i$ 块（浅色），底部是标注了 $O_1/O_2/O_3$ 的共享块（三种深色），图中用竖直虚线对齐同色块展示它们在 token 轴上的偏移差异。最右侧的标注强调"same content, different absolute positions"。</p>
+
+<h3 id="figure-2-motivation-—-scaling-gap">Figure 2: Motivation — Scaling Gap</h3>
+<p>!<a href="../images/2604.03143/fig2a-scaling-latency.png">Figure 2a: Per-request latency under multi-agent vs independent loads</a></p>
+<p>!<a href="../images/2604.03143/fig2b-scaling-memory.png">Figure 2b: Peak KV Cache usage comparison</a></p>
+<p><strong>What it shows</strong>：同样 250 个子请求，multi-agent workload（10 sessions × 25 rounds）与 250 个独立 request 在 A100-80G + Qwen2.5-14B 上的对比。左：latency-vs-request-index 曲线，multi-agent 从头就顶着 136 s 的 P99，而独立请求从低位逐渐爬到 125 s；右：peak KV Cache footprint，multi-agent 占 41.5 GiB（99.3% pool），独立请求只占 24.8 GiB（59.2%）。</p>
+<p><strong>Why it matters</strong>：用实测说明"即便总 workload 一样，只要 cache 需要跨轮 coexist 就会把内存池撑爆并触发 preempt/swap"。这是 TokenDance 把 storage 列为一等公民的经验证据——就算 prefill 再快，不砍每 agent 存储都救不了 scaling。</p>
+<p><strong>Detailed description</strong>：(a) 横轴是 request index (0-250)，纵轴是子请求 latency，两条曲线颜色区分 multi-agent vs independent；(b) 条形图展示两种 workload 的 peak KV Cache 占用，标注绝对值与百分比。</p>
+
+<h3 id="figure-5-tokendance-overview">Figure 5: TokenDance Overview</h3>
+<p>!<a href="../images/2604.03143/fig5-overview.png">Figure 5: TokenDance overview — three components</a></p>
+<p><strong>What it shows</strong>：TokenDance 的三块组件并列：①round-aware prompt interface 保留块结构；②collective KV Cache reuse 把 N 个请求组成 group 做一次 RoPE+diff；③diff-aware storage + fused restore 把 per-agent cache 压成 Master + sparse diffs。</p>
+<p><strong>Why it matters</strong>：一图说清论文的"先暴露结构 → 共享计算 → 共享存储"三段式设计原则。它也明示了本文的 design rule："把 round structure 留给 runtime 看见"和"每个请求一份语义 cache，但共享所有真正公共的东西"。</p>
+<p><strong>Detailed description</strong>：顶部是 application 侧的多 agent prompts（带 separator token 标注分段），中部是 runtime 的 block-level scheduler 把 N 个兼容 request 汇入 KV Collector；底部是 storage 层，画出 Master 与 Mirror 的关系以及回读时的 fused restore 路径。各组件之间用带标注的箭头表示数据流（token → KV → diff）。</p>
+
+<h3 id="figure-7-collective-kv-cache-reuse-核心创新">Figure 7: Collective KV Cache Reuse (核心创新)</h3>
+<p>!<a href="../images/2604.03143/fig7-collective-reuse.png">Figure 7: Collective KV Cache Reuse</a></p>
+<p><strong>What it shows</strong>：三种路径对比。T1：vLLM 从零算所有层；T2：per-request PIC，N 个 agent 各自 RoPE + diff + selective recompute；T3：TokenDance 把 N 个请求的 Q/K 拼成一个 batch 做<strong>一次</strong> RoPE，在 check layer 做<strong>一次</strong> important-position 选择，后续层直接用这个集合刷新每个请求的 K/V。</p>
+<p><strong>Why it matters</strong>：这是 compute 侧的核心 diagram。它展示了"从每请求摊销 → 每轮摊销"的粒度跃迁，也呼应了本文的"amortize group-wide work once per round"原则。Section 6.3 的 2.57× speedup 就是这个 diagram 的量化结果。</p>
+<p><strong>Detailed description</strong>：左侧画出 3 个 agent 的 prompt（共享块颜色相同，排列顺序不同）；右侧是三条 compute timeline：T1 横排 3 条独立 prefill；T2 横排 3 条 PIC reuse（RoPE + diff + recompute 被画成重复色块）；T3 把 3 个 agent 的操作合并，RoPE 和 diff 只画一遍（大色块），重算部分保留每请求独立。</p>
+
+<h3 id="figure-8-diff-aware-storage-master-mirror">Figure 8: Diff-Aware Storage (Master-Mirror)</h3>
+<p>!<a href="../images/2604.03143/fig8-diff-storage.png">Figure 8: Master-Mirror Diff-Aware Storage</a></p>
+<p><strong>What it shows</strong>：左边 3 份近乎相同的 recovered KV Cache，仅在 10–20% 位置不同；右边是 TokenDance 的存储布局——Master 保留一份完整 cache，Diff 2 / Diff 3 只记录与 Master 不同的块的索引和 K/V correction。</p>
+<p><strong>Why it matters</strong>：这是 memory 侧的关键 figure。它直接对应 11–17× 的压缩比来源，也解释了为什么要和 collective reuse 共享同一个 reuse plan（reuse plan 里有 Master 选择和 important positions，直接被存储层消费）。</p>
+<p><strong>Detailed description</strong>：左侧 3 个 agent 的 cache 以同色/异色格子表示共享块/私有差异；右侧 Master 仍然是密集张量形状，Diff 2/3 缩成块稀疏结构（只有几个高亮块 + 索引列表）。箭头标注 "Diff = block-sparse (indices, values)"。</p>
+
+<h3 id="figure-10-main-scaling-result">Figure 10: Main Scaling Result</h3>
+<p>!<a href="../images/2604.03143/fig10-scaling-results.png">Figure 10: Scaling capacity — supported agents vs QPS</a></p>
+<p><strong>What it shows</strong>：2×2 布局（GenerativeAgents/AgentSociety × Qwen2.5-7B/14B）。每格左图是 round latency vs agent count（QPS=10，虚线 1500 ms SLO），右图是"最多能撑住 SLO 的 agent 数 vs QPS"。TokenDance（橙）在所有配置、QPS 全程都高于 vLLM、CacheBlend Ordinary Path、CacheBlend 三个 baseline。</p>
+<p><strong>Why it matters</strong>：论文最重要的一张图。它证明了本文的核心 claim："在同样 SLO 下能跑的 agent 更多"。特别突出了两个规律：①agent 多了 TokenDance 的优势更大（因为复用和去重都是 per-round 摊销）；②模型越大优势越明显（cache per agent 翻倍，去重绝对收益翻倍）。</p>
+<p><strong>Detailed description</strong>：4 个子图，每个含两条面板：左侧折线图（x=agent count 1–10, y=round latency, 4 条曲线），右侧折线图（x=QPS 1–16, y=max agents under SLO）。TokenDance 橙色曲线在所有子图都位于底部（latency）或顶部（capacity）；SLO 虚线横跨左面板。</p>
+
+<h2 id="key-tables">Key Tables</h2>
+
+<h3 id="table-—-capacity-gains-从正文和-figure-10-抽取">Table — Capacity Gains (从正文和 Figure 10 抽取)</h3>
+
+<table>
+<tr><th>Workload</th><th>Model</th><th>Metric</th><th>vLLM prefix</th><th>CacheBlend</th><th>TokenDance</th></tr>
+<tr><td>GenerativeAgents</td><td>Qwen2.5-7B</td><td>Max agents @ QPS=16</td><td>2</td><td>4</td><td><strong>8</strong></td></tr>
+<tr><td>GenerativeAgents</td><td>Qwen2.5-14B</td><td>Max agents @ QPS>8</td><td>1</td><td>≤2</td><td><strong>4</strong></td></tr>
+<tr><td>AgentSociety</td><td>Qwen2.5-7B</td><td>Max agents @ QPS=4</td><td>3</td><td>3</td><td><strong>4</strong></td></tr>
+<tr><td>AgentSociety</td><td>Qwen2.5-14B</td><td>Max agents @ QPS=16</td><td><1</td><td><1</td><td><strong>2</strong></td></tr>
+</table>
+
+<p><strong>Takeaway</strong>：2.7× 并发 agent 数的提升来自 <strong>compute 摊销 × 存储压缩</strong> 两侧收益的乘积；14B 上优势更大，因为 per-agent KV footprint 翻倍。</p>
+
+<h3 id="table-—-storage-compression">Table — Storage Compression</h3>
+
+<table>
+<tr><th>Model</th><th>Compression ratio</th><th>Avg changed blocks per Mirror</th><th>Implied capacity for N=10</th></tr>
+<tr><td>Qwen2.5-7B</td><td><strong>11.2×</strong></td><td>53.2 / (500–700)</td><td>1.8 caches (vs 10) — <strong>5.6×</strong> ↓</td></tr>
+<tr><td>Qwen2.5-14B</td><td><strong>17.5×</strong></td><td>59.6 / (500–700)</td><td>1.5 caches (vs 10) — <strong>6.7×</strong> ↓</td></tr>
+</table>
+
+<p><strong>Takeaway</strong>：Mirror 只需 Master 的 5.7–8.9%，模型越大压缩越狠（因为差异块数目近似不变，但 per-token cache 变大）。</p>
+
+<h3 id="table-—-accuracy">Table — Accuracy</h3>
+
+<table>
+<tr><th>Workload</th><th>Scenarios (ID)</th><th>Δ rounds-to-first-divergence</th></tr>
+<tr><td>GenerativeAgents</td><td>Meet and Greet (1), Valentine's Day (2)</td><td><strong>0.0%</strong></td></tr>
+<tr><td>GenerativeAgents</td><td>Election Discussions (3), Winning the Election (4)</td><td>3.3–11.9%</td></tr>
+<tr><td>AgentSociety</td><td>Information Outbreak (5)</td><td><strong>0.0%</strong></td></tr>
+<tr><td>AgentSociety</td><td>Pre-Landfall (6), Hurricane (7), Economic Stabilization (8)</td><td>3.3–11.9%</td></tr>
+</table>
+
+<p><strong>Takeaway</strong>：所有偏离都是底层 CacheBlend PIC 选择性重算的数值扰动放大，TokenDance 的 collective grouping 只变执行顺序不变数值结果。</p>
+
+<h2 id="limitations">Limitations</h2>
+
+<ul>
+<li><strong>强依赖 All-Gather 模式</strong>：一旦某 agent 只收到 $\mathcal{O}^t$ 的子集或 agent 的 history 分支严重分叉，Mirror correction 会膨胀，压缩率塌缩——section 6.4 明言 "if requests diverge more strongly … storage benefit diminishes"。</li>
+<li><strong>Compatibility constraints 限制 grouping</strong>：collective reuse 要求同一 group 的请求"same active prompt length, same cached span, non-overlapping slot mappings"。实际生产里调度器决定的 token budget/chunk size 未必能凑出大 group，此时 fallback 回到 per-request PIC。</li>
+<li><strong>精度承继自 PIC backend</strong>：TokenDance 本身 numerically identical，但整套方案只在用户能容忍 CacheBlend 级别的 drift 时合算；对高精度场景仍需关闭 selective recompute，从而失去 reuse 加速。</li>
+<li><strong>Fused restore 当前不在 attention tile loader 内</strong>：作者承认更深的 fusion（把 diff 塞进 HBM→SMEM 的 attention tile 加载）只是"natural extension"，当前仍有额外 HBM 流量。</li>
+<li><strong>只在 A100 + Qwen2.5 两个 size 上评测</strong>：没有 H100/H200/MI300 的数据，没有 MoE 模型（每 agent KV 包含 expert routing 的情形），多节点 TP/PP 下 collective grouping 的协议成本未评估。</li>
+<li><strong>OpenClaw/MoltBook 等引用的是 2026 年的产品网站</strong>，社区是否真的广泛采纳 All-Gather 模式还需继续观察；若实际生产里 agent pattern 更接近 DAG 或 chain-of-thought，本文的基本前提会松动。</li>
+</ul>
+
+<h2 id="infrastructure-impact">Infrastructure Impact</h2>
+
+<ul>
+<li><strong>Algorithm</strong>：对训练/RL 算法本身无直接改动，但提供了 multi-agent RL rollout 更便宜的 inference 基础——当 rollout workload 呈现 All-Gather 结构（如 multi-agent simulation-based RL）时，rollout throughput 直接受益。</li>
+<li><strong>Kernel</strong>：新增一对 CUDA kernel：单 KV-plane / paired-KV block-sparse diff merge（500 行 CUDA/C++），需要与 attention tile 对齐的 block size；对上游 FlashAttention/FlashInfer 有潜在集成空间（把 diff merge 放进 tile loader）。</li>
+<li><strong>Framework</strong>：核心贡献层。对 vLLM V1 adapter + LMCache 的直接扩展；提出"round 作为调度与缓存的一级单位"这一范式，可能启发 vLLM/SGLang 在调度层暴露 group API、在 KV 存储层支持 diff backend。</li>
+<li><strong>LLM</strong>：对模型架构没有要求，但 RoPE + PIC recovery 接口是前提；MLA/长短两段 cache 分离的架构（DeepSeek-V3 式）里 Master-Mirror 需要重新适配，作者未讨论。</li>
+<li><strong>Agent</strong>：直接利好 multi-agent runtime（AgentSociety / GenerativeAgents / OpenClaw / MoltBook）——给它们提供"round-aware prompt interface"的标准姿势，只需插分隔符 token 就能把 KV 去重权交给 runtime。</li>
+<li><strong>Code</strong>：~3K 行 Python + 500 行 CUDA/C++ 的增量贡献，建立在 LMCache + vLLM 之上；没有开源链接公开（论文未给 repo），如果开源会是 LMCache 最大的 PR 之一。</li>
+</ul>
+
+<hr>
+
+<h2 id="deep-analysis-framework">Deep Analysis (framework)</h2>
+
+<h3 id="0-时代定位与设计约束（继承-phase-2，补深）">0. 时代定位与设计约束（继承 Phase 2，补深）</h3>
+
+<p><strong>时代定位</strong>：2023–2025 年 LLM serving 的三波浪潮——PagedAttention（空间）、Continuous Batching（时间）、Chunked Prefill（P-D 交织）——已经把"单请求串行模型"里能砍的 overhead 几乎砍完。紧接着的是 disaggregated serving（Mooncake、Splitwise）和 PIC（CacheBlend、EPIC、KVLink、KVComm）这两个 2024–2025 的方向，但它们都停留在"单请求"视角。TokenDance 站在 2026 年回望这条时间线，指出<strong>下一个系统性红利来自"请求间结构"而不是"请求内结构"</strong>——把 All-Gather 作为第一类 schedule 单位。</p>
+
+<p><strong>为何不可 X（约束推导）</strong>：</p>
+
+<table>
+<tr><th>替代方案</th><th>在多 agent All-Gather 里是否可行？</th><th>不可的根本原因</th></tr>
+<tr><td><strong>Prefix caching</strong>（vLLM/SGLang 默认）</td><td>❌</td><td>需要 prefix byte-aligned 相同；$H_i$ 长度各异后，$O_1$ 的绝对 offset 在不同 agent 里不同，token-0 对齐的 trie 直接 miss。</td></tr>
+<tr><td><strong>Per-request PIC</strong>（CacheBlend）</td><td>⚠ 部分可行</td><td>能匹配任意位置，但 RoPE 旋转 + diff 分析的复杂度与请求数成<strong>线性关系</strong>，N 个 agent 就是 N 次重复。</td></tr>
+<tr><td><strong>完全共享单份 KV</strong></td><td>❌</td><td>$H_i$ 产生的 context 会污染后续 attention（跨 agent 信息泄漏）；而且 RoPE 作用后 K 的位置依赖不同，语义上就是不同的张量。</td></tr>
+<tr><td><strong>KV 去重 = CDN 式的内容寻址存储</strong></td><td>⚠ 粒度不对</td><td>若按 token 级 content-hash 去重，metadata 爆炸且每 hit 需要跨表查询；按 block 级又不能直接发 attention（RoPE 位置不同）。</td></tr>
+<tr><td><strong>offload 到 CPU/SSD + prefetch</strong>（Mooncake/CacheGen）</td><td>⚠ 单向优化</td><td>对 idle cache 有效，但对"必须在线的 N 份 cache 同时进 attention"无帮助；且 round-to-round 的高重用率意味着 prefetch 也只是把重复数据搬来搬去。</td></tr>
+<tr><td><strong>更高级的 eviction/quant</strong>（H2O/KIVI）</td><td>✅ 正交</td><td>可与本文正交叠加，但不解决"N 份近乎相同的 cache 同时 alive"这个 root cause。</td></tr>
+</table>
+
+<p><strong>破局</strong>：一句话的"aha"——<strong>"N 个 agent 的 prompt 里，$O$ 块 bit-level 相同但 position 不同；位置差异可以通过一次 group-wide RoPE 校正，内容冗余可以用 block-sparse diff 压缩；所以 compute 和 storage 两侧都可以从 per-request 升级到 per-round"</strong>。</p>
+
+<p><strong>核心技术壁垒</strong>：<strong>Reuse plan 的跨组件流转</strong>。看似简单的"挑一个 Master + 其他人存 diff"，实际上要求：①collective reuse 在 check layer 的 important-position 集合必须<strong>精确</strong>反映每个 Mirror 相对 Master 的差异分布（否则 diff 里要么遗漏要么冗余）；②Diff backend 要在 write 时消费 plan、在 read 时按 block 产出 indices+values；③fused restore 的 ping-pong buffer 与 diff 元数据的对齐、与 attention tile 对齐、与 paged memory 的 slot 对齐——三个对齐同时满足。这套"plan → store → restore"的端到端一致性，比单独实现任一组件都要难，作者用 3K 行 Python + 500 行 CUDA 才把四个子系统粘起来。</p>
+
+<p><strong>设计绑定批判</strong>：本文 implicitly 绑定了 (i) All-Gather 通信模式（若实际是 DAG/chain-of-thought 会失效），(ii) RoPE 位置编码（方法强依赖 RoPE 的数学可逆性），(iii) CacheBlend 风格的 selective recompute（提供"位置集合→修正 K/V"的语义），(iv) LMCache + vLLM V1 的 paged KV 数据模型（block 对齐、slot mapping 可见）。任何一条松动都要重写一大块。</p>
+
+<h3 id="1-system-scope">1. System Scope</h3>
+
+<ul>
+<li><strong>Primary goal</strong>：online multi-agent LLM <strong>serving</strong>（延迟敏感），把"可支撑的并发 agent 数"作为 headline metric，是能力扩展型（capacity scaling）而非吞吐扩展型。</li>
+<li><strong>Scale target</strong>：单 GPU（A100 80G）起家，作者未展示多节点。范围是"local GPU 上尽量多 agent"，与 Mooncake 那种分布式 cache pool 的定位不同。</li>
+<li><strong>Online vs offline</strong>：online。评测里有 1500 ms round SLO，QPS 1–16 的扫描；目标是 latency 约束下的 capacity。</li>
+<li><strong>Workload</strong>：multi-agent 社交/仿真类 workload（GenerativeAgents, AgentSociety, OpenClaw, MoltBook），本质是"<strong>同步轮 + shared context</strong>"的 LLM application。</li>
+</ul>
+
+<h3 id="2-architecture-data-flow">2. Architecture & Data Flow</h3>
+
+<h4 id="2a-end-to-end-data-flow">2a. End-to-End Data Flow</h4>
+
+<pre><code>
+[Agent t outputs {O_1..O_N}] → [Scheduler: assemble prompts with separators]
+    → [Round-Aware Interface: segment tokenization]
+    → [KV Collector: group compatible requests]
+    → [Layerwise collective prefill: shared RoPE + batched diff @ check layer]
+    → [Per-request selective recompute at important positions]
+    → [Reuse plan: Master + per-request diff metadata]
+    → [Diff-Aware Storage: write Master dense + Mirrors as block-sparse]
+    → [Decode phase: standard per-request autoregressive]
+    → [Next round: fused restore (ping-pong buf) → attention → agent t+1 outputs]
+</code></pre>
+
+<table>
+<tr><th>Stage</th><th>Input → Output</th><th>Location</th><th>Latency scale</th><th>Data format & size</th></tr>
+<tr><td>Application</td><td>Agent outputs $\mathcal{O}^t$</td><td>CPU</td><td>< 1 ms</td><td>string blocks</td></tr>
+<tr><td>Prompt assembly</td><td>$\mathcal{O}^t + H_i^t$ + separators</td><td>CPU</td><td>< 1 ms</td><td>token IDs, len $L_i$</td></tr>
+<tr><td>Segment hashing</td><td>tokens → segment IDs</td><td>CPU</td><td><1 ms</td><td>hash table per segment</td></tr>
+<tr><td>Grouping</td><td>N requests → K compatible groups</td><td>CPU</td><td>~ ms</td><td>group metadata</td></tr>
+<tr><td>Collective prefill</td><td>Q/K per layer → corrected K/V</td><td>GPU HBM</td><td>~100s ms</td><td>$[N, L, H, D]$ batched</td></tr>
+<tr><td>Reuse plan</td><td>per-request deviation scores</td><td>GPU→CPU</td><td>< 1 ms</td><td>index lists</td></tr>
+<tr><td>Diff serialize</td><td>Mirror dense → (indices, K/V)</td><td>GPU→CPU/Storage</td><td>~ms</td><td>sparse blocks</td></tr>
+<tr><td>Fused restore</td><td>Master chunk + diff → paged KV</td><td>GPU HBM</td><td>0.1–0.6 ms/mirror/layer</td><td>ping-pong buffers</td></tr>
+<tr><td>Attention + decode</td><td>KV → next token</td><td>GPU HBM</td><td>TPOT scale</td><td>standard</td></tr>
+</table>
+
+<h4 id="2b-data-movement-hotspots">2b. Data Movement Hotspots</h4>
+
+<ol>
+<li><strong>Collective Q/K tensor concatenation</strong>（GPU HBM 内部）：把 N 个请求的 Q/K 拼成一个大 batch，每层一次；不跨 PCIe，但对 HBM bandwidth 敏感。</li>
+<li><strong>Diff serialize 与回读</strong>（GPU ↔ CPU/LMCache 后端）：每 Mirror 每层一条 (indices, values) 记录，N-1 个 Mirror × L 层是写入端的高频数据移动；靠 block-sparse 把绝对体积从 dense 的 100% 压到 5–15%。</li>
+<li><strong>Fused restore 的 ping-pong 传输</strong>（Storage → GPU scratch → paged KV）：是 online 关键路径。Algorithm 1 显式用两块 buffer 交替 load/compute 以隐藏 transfer-compute latency；作者特别提到这一步不 overlap 就会吃掉压缩红利。</li>
+</ul>
+
+<h3 id="3-design-space-constraint-analysis-framework-维度补深">3. Design Space & Constraint Analysis (framework 维度补深)</h3>
+
+<h4 id="3a-alternative-approaches">3a. Alternative Approaches</h4>
+
+<ol>
+<li><strong>Per-request PIC（CacheBlend/EPIC）</strong> — 已经被采用，但 overhead 与 N 线性增长。</li>
+<li><strong>Token-level content hashing</strong> — 理论上能识别任意位置共享，但 metadata 爆炸、hash 冲突处理复杂、无法与 paged memory 的 block 边界对齐。</li>
+<li><strong>Agent-aware scheduling only（Parrot/Autellix/Tokencake）</strong> — 调度时间而不触碰 cache 内容；无法减少 compute 或 storage。</li>
+<li><strong>KV quantization / eviction（KIVI/H2O）</strong> — 缩小单份 cache，不减少 cache 数目。</li>
+<li><strong>Disaggregated cache pool（Mooncake）</strong> — 跨节点共享 pool，但同一轮 N 份 active cache 必须同时驻留 HBM 才能 run attention，pool 不解决"同一时刻 peak"。</li>
+</ul>
+
+<h4 id="3b-feasibility-matrix">3b. Feasibility Matrix</h4>
+
+<table>
+<tr><th>Alternative</th><th>减少 compute?</th><th>减少 storage?</th><th>与 paged KV 兼容?</th><th>精度损失?</th></tr>
+<tr><td>Per-request PIC</td><td>❌ N 次重复</td><td>❌</td><td>✅</td><td>轻微（本文承继）</td></tr>
+<tr><td>Token-level content hashing</td><td>⚠ 有收益但 metadata 爆炸</td><td>⚠ 随机访问代价大</td><td>❌</td><td>❌</td></tr>
+<tr><td>Agent-aware scheduler only</td><td>❌</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><td>KV quant/evict</td><td>❌</td><td>✅ 1.5–4×</td><td>✅</td><td>视方法而定</td></tr>
+<tr><td>Disaggregated pool</td><td>❌</td><td>⚠ pool 够大但 HBM peak 不变</td><td>✅</td><td>❌</td></tr>
+<tr><td><strong>TokenDance (collective + Master-Mirror)</strong></td><td>✅ 1.2–2.57×</td><td>✅ 11–17×</td><td>✅</td><td>同底层 PIC</td></tr>
+</table>
+
+<h4 id="3c-assumption-audit">3c. Assumption Audit</h4>
+
+<ul>
+<li><strong>A1：同一轮中 $O$ 块占 prompt 大头</strong> — 在 GenerativeAgents/AgentSociety 成立（作者 Figure 2、Figure 3 实测）；若 $H$ 远大于 $O$（长历史短 broadcast），Mirror diff 膨胀、压缩率下降。<strong>不确定处</strong>：作者 section 6.4 用 "requests diverge more strongly" 一笔带过，没给定量阈值。</li>
+<li><strong>A2：选个"与 group 结构最接近"的 Master 能使 diff 最稀疏</strong> — 通过 deviation score 挑选；但作者没给该 heuristic 与 optimal Master 的 gap 评估。</li>
+<li><strong>A3：check layer 选出的 important positions 对所有后续层都适用</strong> — 承继自 CacheBlend 的假设；section 4.2 显式"later layers reuse the important-position set ... without repeating the difference computation"。若某些 layer 的 K 分布与 check layer 偏差大，精度损失被放大。</li>
+<li><strong>A4：block_size 与 attention tile size 对齐</strong> — 典型 page_size = 16/32 tokens 与 FlashAttention BLOCK_M/BLOCK_N 对齐。切换到 tensor-parallel 或 speculative decode 时对齐需要重调。</li>
+</ul>
+
+<h4 id="3d-core-technical-barrier（framework-维度下的再确认）">3d. Core Technical Barrier（framework 维度下的再确认）</h4>
+
+<p>真正难复刻的是 <strong>Algorithm 1（Fused Diff Restore）</strong> 的在线链路：ping-pong buffer 切换 + 每层按 paged KV slot map 写回 + block 稀疏 merge + RoPE recover，<strong>同一条</strong> transfer 里完成。如果任何一个 phase 错位（比如在 swap 前写回、diff indices 与 page boundary 未对齐、RoPE recover 被放在 attention 里而非 transfer 里），就会失去论文观察到的"dense materialization 零次"的关键 invariant，从而 restore latency 回到 dense 的 1.8–2×。这段逻辑藏在 500 行 CUDA/C++ 里，是 TokenDance 的核心壁垒。</p>
+
+<h4 id="3e-design-binding-critique">3e. Design Binding Critique</h4>
+
+<ul>
+<li><strong>强绑 LMCache backend</strong>：diff backend 是在 LMCache 上 wrap 的，若 serving 栈是 SGLang RadixAttention / TRT-LLM 的 KV manager，Master-Mirror 语义需要在别的抽象下重新落地。</li>
+<li><strong>强绑 vLLM V1 scheduler</strong>：依赖 V1 的"每 step scan requests"的节奏做 grouping；vLLM V2 的 continuous batching 语义下 group 成员可能在一轮中被 preempt 或 chunk 拆分。</li>
+<li><strong>强绑 RoPE</strong>：KVLink/KVComm 其实也用 RoPE，但 ALiBi/PI/NTK 或 YaRN extension 下 "rotate + diff" 的数学保证需要重证。</li>
+<li><strong>强绑 All-Gather 语义</strong>：tree-structured multi-agent 或 partial broadcast 会使 Master-Mirror 退化。</li>
+</ul>
+
+<h3 id="4-key-innovations">4. Key Innovations</h3>
+
+<table>
+<tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost/Tradeoff</th></tr>
+<tr><td>Round-Aware Prompt Interface</td><td>Application 插入 reserved separator token；runtime 用 segment hash 取代 chunk hash</td><td>让 runtime 识别共享 block</td><td>需要 application 改 prompt 拼装（一行改动）；非 All-Gather workload 回退</td></tr>
+<tr><td>Collective KV Cache Reuse</td><td>group N requests → batched RoPE + batched important-position check → per-request refresh</td><td>RoPE+diff cost 从 O(N) 摊销到 O(1)</td><td>对 group 兼容性有约束；fallback path 必不可少</td></tr>
+<tr><td>Diff-Aware Storage (Master-Mirror)</td><td>1 dense Master + block-sparse diff per Mirror；共享 reuse plan</td><td>per-agent storage −94%, compression 11–17×</td><td>选 Master 的 heuristic；diff metadata 额外开销</td></tr>
+<tr><td>Fused Diff Restore</td><td>ping-pong buffer + layerwise transfer + in-place sparse merge + RoPE recover</td><td>restore latency 1.3–2.6× 优于 dense</td><td>CUDA kernel 实现；对 paged-KV slot map 依赖</td></tr>
+</table>
+
+<h3 id="5-scheduling-resource-management">5. Scheduling & Resource Management</h3>
+
+<ul>
+<li><strong>Batch formation</strong>：在 vLLM continuous batching 之上增加"按 round 结构聚合"的 pre-scheduler。Group 的形成依赖 runtime 每步扫描请求，满足 {same active prompt length, same cached span, disjoint slot mappings} 三约束才并入同组；否则 degrade to per-request。</li>
+<li><strong>Memory management</strong>：继承 paged attention；diff-aware backend 只在 LMCache 存储侧生效。Mirror 占 10–20% dense 空间，因此 KV pool 的有效容量被"放大"同比例。</li>
+<li><strong>GPU utilization</strong>：collective reuse 通过 batched RoPE 增加算术强度（更大 tensor → 更好 MMA 利用），间接帮助 HBM-bound kernel；但 attention 本身仍然是 per-request。</li>
+<li><strong>Multi-tenancy & priority</strong>：论文没深入；本质上和 vLLM 一样，但 round-level grouping 给了"优先保住关键 agent 的 Mirror"这种新的策略空间（未实现）。</li>
+</ul>
+
+<h3 id="6-target-scenarios-workload-characterization">6. Target Scenarios & Workload Characterization</h3>
+
+<table>
+<tr><th>Scenario</th><th>Workload pattern</th><th>SLO/Goal</th><th>Why baseline fails</th></tr>
+<tr><td>Social simulation (GenerativeAgents)</td><td>10s agents × 10s rounds, 短私有历史</td><td>1500ms round latency</td><td>跨轮 cache 共存 + prefix 失效</td></tr>
+<tr><td>Agent society simulation</td><td>100s agents × long history</td><td>同上</td><td>14B 模型里单 cache 就 ~50 MB，10 agents 直接撑爆</td></tr>
+<tr><td>Multi-agent coding (ChatDev/MetaGPT)</td><td>少量 agent + 长共享代码库</td><td>交互延迟</td><td>本文未直接测，但模式符合 All-Gather（代码被 redistribute）</td></tr>
+<tr><td>RAG + multi-agent tool use</td><td>外部知识 blocks 在 agents 间共享</td><td>端到端 latency</td><td>类似问题，但 retrieval context 可能更异构</td></tr>
+</table>
+
+<p><strong>Primary bottleneck</strong>：<strong>memory-capacity-bound</strong>（N 份 cache 撑爆 HBM），次要 compute-bound（PIC 反复劳动）。TokenDance 同时攻两边。</p>
+
+<h3 id="7-performance-evaluation-before-after-comparison">7. Performance Evaluation & Before-After Comparison</h3>
+
+<h4 id="7a-metrics-definition">7a. Metrics Definition</h4>
+
+<table>
+<tr><th>Metric</th><th>Definition</th><th>Unit</th><th>Direction</th></tr>
+<tr><td>Round latency</td><td>完成一轮所有 agent 的端到端时间</td><td>ms</td><td>↓</td></tr>
+<tr><td>Max agents @ SLO</td><td>在 1500ms round SLO 下最多支撑多少 agent</td><td>—</td><td>↑</td></tr>
+<tr><td>Compression ratio</td><td>dense KV size / (Master + diffs) size</td><td>×</td><td>↑</td></tr>
+<tr><td>Restore latency / mirror / layer</td><td>一个 Mirror 在一层上的回读时间</td><td>ms</td><td>↓</td></tr>
+<tr><td>Rounds-to-first-divergence</td><td>与 vLLM 基线相比第几轮首次输出不同</td><td>rounds</td><td>↑ (closer to full trace = better)</td></tr>
+</table>
+
+<h4 id="7b-before-after-table">7b. Before-After Table</h4>
+
+<table>
+<tr><th>Optimization</th><th>Metric</th><th>Baseline</th><th>After</th><th>Gain</th><th>Conditions</th></tr>
+<tr><td>Collective reuse</td><td>Prefill speedup vs serial PIC</td><td>1×</td><td><strong>2.57×</strong></td><td>2.57×</td><td>10 agents, QPS=1, GenerativeAgents/Qwen2.5-7B</td></tr>
+<tr><td>Collective reuse</td><td>Prefill speedup @ high QPS</td><td>1×</td><td>1.3–1.5×</td><td>—</td><td>QPS=16</td></tr>
+<tr><td>Master-Mirror</td><td>KV footprint compression</td><td>1×</td><td><strong>11.2×</strong></td><td>11.2×</td><td>Qwen2.5-7B</td></tr>
+<tr><td>Master-Mirror</td><td>KV footprint compression</td><td>1×</td><td><strong>17.5×</strong></td><td>17.5×</td><td>Qwen2.5-14B</td></tr>
+<tr><td>Fused restore</td><td>Per-mirror restore latency</td><td>0.59 ms</td><td><strong>0.43 ms</strong></td><td>1.37×</td><td>10 agents, QPS=1, 7B</td></tr>
+<tr><td>Fused restore</td><td>Peak speedup vs dense</td><td>1×</td><td><strong>2.6×</strong></td><td>2.6×</td><td>3 agents, QPS=4, 7B</td></tr>
+<tr><td>End-to-end</td><td>Max agents under SLO (14B)</td><td>1</td><td><strong>4</strong></td><td>4×</td><td>GenerativeAgents, QPS>8</td></tr>
+<tr><td>End-to-end</td><td>Latency reduction vs vLLM</td><td>1×</td><td>up to <strong>2.3×</strong></td><td>—</td><td>跨 workload</td></tr>
+<tr><td>End-to-end</td><td>KV storage reduction vs vLLM</td><td>1×</td><td>−94%</td><td>~17×</td><td>累积</td></tr>
+</table>
+
+<h4 id="7c-bottleneck-shift-analysis">7c. Bottleneck Shift Analysis</h4>
+
+<pre><code>
+baseline vLLM:  memory-bound (KV pool saturation → preempt/swap)
+ → after CacheBlend PIC: compute-bound (N 次 RoPE+diff)
+ → after collective reuse: memory-bound again (N 份 dense cache)
+ → after Master-Mirror: moderate both compute &amp; memory
+ → after fused restore: residual bottleneck = attention itself + scheduling overhead &gt;10 agents
+</code></pre>
+
+<p>作者在 Q2 末段明确指出"beyond 10 agents, scheduling overhead grows and partially offsets"——下一阶段瓶颈会回到调度层。</p>
+
+<h4 id="7d-baselines-fairness">7d. Baselines & Fairness</h4>
+
+<ul>
+<li>公平点：同 model、同硬件、同 workload trace、同 batch 配置；三 baseline 覆盖三种现有路线（prefix / PIC ordinary path / full PIC）。</li>
+<li><strong>不足之一</strong>：没有加 KV quant（KIVI/H2O）等正交手段混合的 baseline，不能直接知道 TokenDance 与"极致压缩单 cache"对比的相对效果。</li>
+<li><strong>不足之二</strong>：没有与 Mooncake/CacheGen 做对比（那些是 pool-level compress/offload）；虽然定位不同，但读者可能想看"cross-cache 去重 vs offload"。</li>
+<li><strong>不足之三</strong>：QPS ≤ 16 已经把 baseline 压垮，但没展示 QPS 更高时 TokenDance 本身何时 saturate。</li>
+</ul>
+
+<h3 id="8-api-usability">8. API & Usability</h3>
+
+<ul>
+<li><strong>Application 接入</strong>：改 prompt 拼装插 <code><sep></code>，一次性改动；非 All-Gather workload 自动走 fallback。</li>
+<li><strong>Runtime 部署</strong>：基于 vLLM V1 + LMCache；需要 CUDA extension 编译（paired block-sparse diff kernel）。</li>
+<li><strong>配置复杂度</strong>：没展示具体 knobs，可预期包括 block_size、check_layer、group compatibility 阈值、fallback threshold 等几项。</li>
+<li><strong>可观测性</strong>：论文未讨论。</li>
+</ul>
+
+<h3 id="9-infrastructure-impact-table（framework-维度）">9. Infrastructure Impact Table（framework 维度）</h3>
+
+<table>
+<tr><th>Layer</th><th>Impact</th></tr>
+<tr><td>Algorithm</td><td>间接利好 multi-agent RL rollout 的 inference 阶段</td></tr>
+<tr><td>Kernel</td><td>新增 paired block-sparse KV diff kernel；与 FlashAttention/FlashInfer 有对齐机会</td></tr>
+<tr><td>LLM</td><td>对模型架构无要求，但当前绑 RoPE + 一阶 KV（未讨论 MLA）</td></tr>
+<tr><td>Agent</td><td>给 multi-agent runtime 提供 round-aware 的一级接口，是本文最大的受益面</td></tr>
+<tr><td>Ops</td><td>需要观察 group 形成率、fallback 率、diff 大小分布等新指标</td></tr>
+</table>
+
+<h3 id="10-comparison-matrix">10. Comparison Matrix</h3>
+
+<table>
+<tr><th>Feature</th><th>TokenDance</th><th>vLLM prefix</th><th>CacheBlend</th><th>EPIC/KVLink</th><th>Tokencake</th></tr>
+<tr><td>Continuous batching</td><td>✅ (承继 vLLM)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>Paged attention</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>Position-independent reuse</td><td>✅ (via backend)</td><td>❌</td><td>✅</td><td>✅</td><td>part</td></tr>
+<tr><td>Collective (round-level) reuse</td><td>✅ <strong>unique</strong></td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td>Cross-agent KV dedup</td><td>✅ <strong>unique</strong></td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td>Agent-aware scheduling</td><td>partial</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+<tr><td>Multi-node</td><td>unknown</td><td>✅</td><td>unknown</td><td>unknown</td><td>✅</td></tr>
+<tr><td>Quantization</td><td>orthogonal</td><td>✅</td><td>orthogonal</td><td>orthogonal</td><td>orthogonal</td></tr>
+</table>
+
+<h3 id="11-adoption-maturity-ecosystem-influence">11. Adoption, Maturity & Ecosystem Influence</h3>
+
+<ul>
+<li><strong>Status</strong>：arXiv preprint，没有提到 repo 链接（截至 2026-04）。建立在开源 LMCache + vLLM 之上，如果作者开源，兼容性路径清晰。</li>
+<li><strong>上游依赖</strong>：LMCache、vLLM V1、CacheBlend；意味着可以随着这些项目一起迭代。</li>
+<li><strong>下游影响（预测）</strong>：(i) vLLM/LMCache 可能吸收 round-aware segment hashing 作为 multi-agent API；(ii) AgentSociety、OpenClaw 这些 agent framework 很可能把 "insert separator" 作为标准用法；(iii) 后续 paper（2026 中后期）会把 round-level 优化扩展到 DAG-pattern 多 agent。</li>
+<li><strong>生态链</strong>：TokenDance 可视为 CacheBlend → Tokencake → TokenDance 这条 peking-group 线的延续——从 cache-centric 到 scheduler-aware 到 round-aware，每一篇都向"更大的优化单位"推进一步。</li>
+</ul>
+
+<hr>
+
+<h2 id="open-questions">Open Questions</h2>
+
+<ul>
+<li>All-Gather 以外的通信模式（tree/DAG/partial broadcast）下，collective reuse 与 Master-Mirror 的退化曲线具体长什么样？是否能定义"结构 similarity 阈值"预测收益？</li>
+<li>Master 选择 heuristic 是否存在 pathological case（例如 $O$ 块高度异构时）？有没有 optimal Master 的近似算法？</li>
+<li>与 KIVI/H2O 等 per-cache 压缩叠加后的 compounding gain 是多少？是否存在互相抵消（Mirror diff 被量化后重算代价上升）？</li>
+<li>MLA / GQA / MoE 模型上这套流程需要多少改造？特别是 MoE 路由的"per-token expert assignment" 作为 per-agent 差异源会把 Mirror 撑多大？</li>
+<li>Fused restore 的 attention-tile-inside fusion 的实际加速上限是多少？是否值得一个后续论文专门做？</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search + category filter for list pages */
+
+document.addEventListener('DOMContentLoaded', function() {
+  const searchBox = document.querySelector('.search-box');
+  const catBtns = document.querySelectorAll('.cat-btn');
+  const cards = document.querySelectorAll('.card');
+  const catSections = document.querySelectorAll('.cat-section');
+  let activeCategory = 'all';
+
+  function filterCards() {
+    const query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      const text = card.textContent.toLowerCase();
+      const cat = card.dataset.category || '';
+      const matchesSearch = !query || text.includes(query);
+      const matchesCat = activeCategory === 'all' || cat === activeCategory;
+      card.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+    });
+    // Hide empty category sections
+    catSections.forEach(function(sec) {
+      const visible = sec.querySelectorAll('.card:not([style*="display: none"])');
+      sec.style.display = visible.length > 0 ? '' : 'none';
+    });
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('input', filterCards);
+  }
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      filterCards();
+    });
+  });
+});
+</script>
+</body>
+</html>

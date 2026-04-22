@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>KVFlow: Efficient Prefix Caching for Accelerating LLM-Based Multi-Agent Workflows — Feiyue KB</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card */
+.card {
+  background: var(--card-bg); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 12px; box-shadow: var(--card-shadow);
+  border-left: 4px solid var(--accent); transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.card-title a { color: var(--tx); }
+.card-meta { font-size: 0.82rem; color: var(--mt); margin-bottom: 6px; }
+.card-body { font-size: 0.9rem; line-height: 1.6; }
+.card-tags { margin-top: 6px; }
+.tag {
+  display: inline-block; background: var(--tag-bg); color: var(--tag-tx);
+  padding: 1px 8px; border-radius: 8px; font-size: 0.75rem; margin-right: 4px;
+}
+.card-links { margin-top: 8px; font-size: 0.85rem; }
+.card-links a { margin-right: 12px; }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/domain/">Domain</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>KVFlow: Efficient Prefix Caching for Accelerating LLM-Based Multi-Agent Workflows</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2507.07400</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">prefix-caching</span><span class="tag">kv-cache-management</span><span class="tag">multi-agent-serving</span><span class="tag">sglang-extension</span><span class="tag">scheduling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/domain/framework.html">← framework (L4)</a>
+<a href="https://arxiv.org/abs/2507.07400" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="kvflow-efficient-prefix-caching-for-accelerating-llm-based-multi-agent-workflows">KVFlow: Efficient Prefix Caching for Accelerating LLM-Based Multi-Agent Workflows</h1>
+
+<blockquote>
+Zaifeng Pan, Ajjkumar Patel, Zhengding Hu, Yipeng Shen, Yue Guan, Wan-Lu Li, Lianhui Qin, Yida Wang, Yufei Ding (UCSD & AWS) | 2025-07 | <a href="https://arxiv.org/abs/2507.07400">arXiv:2507.07400</a>
+Category: framework | Tags: prefix-caching, kv-cache-management, multi-agent, sglang, scheduling
+Read: 2026-04-18
+</blockquote>
+
+<h2 id="core-contribution">Core Contribution</h2>
+
+<p>KVFlow replaces SGLang 的 LRU 前缀缓存驱逐策略，改为 <strong>workflow-aware 的 "steps-to-execution" 优先级 + 完全重叠的 CPU→GPU 预取</strong>，在多智能体（multi-agent）工作流场景下相比 SGLang+HiCache 实现 1.83–2.19× 端到端加速。</p>
+
+<h2 id="summary">Summary</h2>
+
+<p>现代 agentic workflow (MetaGPT、AutoGen、AFlow、PEER、GPTSwarm 等) 把多个 "角色固定、prompt 很大" 的 agent 按图（graph）组织起来，反复迭代调用 LLM。每个 agent 的 system prompt（角色 + few-shot example）常在 1–3k+ tokens，是 prefix caching 的天然受益者。但现有 serving 系统（SGLang/vLLM）使用 <strong>LRU 驱逐</strong> —— 当 GPU 显存不够时，淘汰"最近最少使用"的 KV 节点。作者观察到这在 agentic workflow 中是反向信号：一个刚执行完、<strong>很快要再次执行</strong> 的 agent (例如 PEER 里 Executor → Expresser 的下一跳)，LRU 恰恰会认为它"不新鲜"而优先驱逐，下一步立刻发生 cache miss。</p>
+
+<p>KVFlow 的思路是把 workflow 拓扑信息 <strong>下推到 serving 后端</strong>。它引入 <strong>Agent Step Graph</strong> 抽象：每个节点是一次 agent 调用，边表示依赖；每个节点有一个 <strong>step aggregation function</strong> (<code>max(...)+1</code> 表示 join，<code>min(...)+1</code> 表示 conditional branch)，从而对任意 DAG / 环 / 条件分支都能计算出每个 agent 的 <strong>steps-to-execution (STE)</strong> —— 最早可能被执行的步数距离。驱逐时，radix tree 上每个 KV 节点继承其"所属 agent"的 STE，<strong>STE 越小越靠近被重用，优先级越高</strong>，反之最先驱逐。因为多个 agent 可共享前缀（树形结构），共享节点取所有子 agent STE 的 <strong>最小值</strong>。同时，所有 agent 的 dynamic 后缀无条件取最高驱逐优先级。</p>
+
+<p>在此基础上作者还给了两个配套机制：(1) <strong>proactive prefetching</strong> — 根据 Step Graph 预测下一步将被激活的 agent，在当前 agent 还在 GPU 上做 forward/decode 时，用后台线程把它的 KV 从 CPU 通过 PCIe 预取到 GPU，占用的是另一个方向的全双工带宽；(2) <strong>status-aware scheduling</strong> — 每个 cache 节点有 <code>{in-GPU, in-CPU, loading, offloading}</code> 四态，调度器跳过"仍在 loading"的请求去执行 ready 的请求，从而 GPU 不空转。实现基于 SGLang v0.4.4，对 radix tree 的驱逐函数和调度器做了扩展；前端通过 <code>sgl.function</code> 截获 HTTP 请求，把 workflow metadata 注入后端。评测在 A10G (Llama-3.1-8B, PCIe Gen1 2 GB/s) 和 H100 (Qwen2.5-32B, PCIe Gen5 64 GB/s) 上：单工作流 8192 fixed / 32 dynamic / 32 output 时相对 SGLang+HiCache 1.83×、相对纯 GPU SGLang 2.91×；64 并发 × 1024 fixed prompt 时相对 HiCache 2.19×。</p>
+
+<h2 id="key-findings">Key Findings</h2>
+
+<ul>
+<li><strong>LRU 的反常信号</strong>：在 cyclic/sequential agentic workflow 下，"刚执行完"强相关于"即将再次执行"，LRU 会系统性驱逐热数据；这是一个被 serving 系统忽视的 workload 特征。</li>
+<li><strong>Workflow 拓扑 → STE 可统一多种图结构</strong>：<code>max+1</code> / <code>min+1</code> 的步聚合函数可以把 DAG、cycle、conditional branch 用同一种抽象表达，不需要为每种 workflow frontend 专门定制。</li>
+<li><strong>共享前缀节点的"最小 STE"规则</strong> 是对 radix tree 的关键适配——一个 prefix node 被多个 agent 共享时，任何一个 agent 即将执行都会使该节点保留。</li>
+<li><strong>PCIe 全双工性质被首次在 prefix cache 场景下充分利用</strong>：forward/decode 输出走 GPU→CPU，KV 预取走 CPU→GPU，零 contention。</li>
+<li><strong>预取 alone 不够</strong>：当当前 agent 的执行时间短于 KV 传输时间，generation 仍会被阻塞；必须搭配 status-aware scheduling 让 GPU 先执行别的 ready 请求。</li>
+<li><strong>Gain 随 fixed prompt 长度线性放大</strong>：4096 fixed 平均 1.28×，8192 fixed 平均 1.48×；这是 cache-miss 代价随前缀长度增长的直接体现。</li>
+<li><strong>当 decode 占比升高（大 output tokens）时加速收益降低</strong>：KVFlow 优化的是 prefill / cache-load 路径，和 speculative decoding、sparsity 等 decode-path 优化正交。</li>
+</ul>
+
+<h2 id="phase-2-logic-flow-约束推导型">Phase 2: Logic Flow (约束推导型)</h2>
+
+<h3 id="时代定位">时代定位</h3>
+
+<p>2024–2025 agentic workflow (MetaGPT / AutoGen / AFlow / LangGraph) 已成为 LLM 应用层的主流范式，但 serving 基础设施仍是"单请求 / stateless 模型"假设。<strong>Prefix caching 的 low-hanging fruit 已经被 SGLang (RadixAttention)、vLLM (automatic prefix caching) 吃掉</strong>；下一波优化要开始利用<strong>更高层的语义信息</strong>（workflow 拓扑、agent 依赖）来做 KV 生命周期管理。KVFlow 代表 "serving 层开始感知 application-layer graph" 的新方向，和 Parrot/Autellix 的调度级 workflow 感知是同期工作，但 KVFlow 聚焦在 prefix cache 这一被前人忽略的维度。</p>
+
+<h3 id="背景">背景</h3>
+
+<p>现有路径：</p>
+<ul>
+<li><strong>纯 GPU prefix cache (SGLang/vLLM default)</strong>：GPU 放不下就 LRU 驱逐 + 重算。重算代价 = full prefill，长 prompt 下非常昂贵。</li>
+<li><strong>HiCache (SGLang 的 hierarchical radix cache)</strong>：CPU 做二级缓存，evict 时 backup 到 CPU，miss 时 reactive load-back。缺点：① 仍是 LRU（eviction 决策错）；② reactive load 暴露完整 PCIe 延迟；③ load 时和 compute 只有 "layer-by-layer" 的两段流水，冷启动 + 内存争用时经常无法重叠。</li>
+<li><strong>CachedAttention / RAGCache</strong>：聚焦多轮对话或 RAG，没有 multi-agent workflow 拓扑假设。</li>
+<li><strong>Parrot / Autellix</strong>：调度器侧做 workflow-aware，但没动 KV cache eviction。</li>
+</ul>
+
+<h3 id="约束推导">约束推导</h3>
+
+<p><strong>为何不可直接把所有 agent prompt 常驻 GPU？</strong></p>
+<p>当 4 个 agent × 各 8192 token × Llama-3.1-8B (32 层, 8 KV heads, 128 dim, FP16) ≈ 4 × 8192 × 32 × 8 × 128 × 2 × 2 B ≈ 4.3 GB 只算 prefix；实际 workflow 有 10+ agents + dynamic 后缀 + batch，24 GB A10G 直接爆。</p>
+
+<p><strong>为何不可 "刚用完就 evict"（MRU 反着来）？</strong></p>
+<p>Cyclic workflow 里下一步就要再用；MRU 会直接干掉热数据。</p>
+
+<p><strong>为何不可用 LFU？</strong></p>
+<p>首次执行所有 agent 频次相同，LFU 退化为 FIFO；且 workflow 换 phase 时频次已经过时。</p>
+
+<p><strong>为何不可用 "access-time-weighted LRU" (例如 priority = age × freq)？</strong></p>
+<p>仍然看的是"过去"，对"未来"无预测能力；agent 再次激活的时刻由 workflow 拓扑决定，而不是由历史访问频次决定。</p>
+
+<p><strong>为何必须做到 KV node 粒度而不是 agent 粒度？</strong></p>
+<p>多个 agent 共享前缀时（例如 PEER 的 4 个 agent 都以同一条 system preamble 开头），在 agent 粒度上会产生冲突："Planner 想驱逐前缀"但"Reviewer 想保留"。Radix tree 天然把共享前缀合并成同一 node，必须在 node 层做优先级聚合（作者选择了 <code>min</code> 规则）。</p>
+
+<table>
+<tr><th>替代方案</th><th>能预测未来？</th><th>支持 branch/cycle？</th><th>共享前缀一致性？</th><th>实现复杂度</th></tr>
+<tr><td>LRU</td><td>❌</td><td>N/A</td><td>N/A（冲突）</td><td>低</td></tr>
+<tr><td>LFU</td><td>❌</td><td>N/A</td><td>N/A</td><td>低</td></tr>
+<tr><td>MRU</td><td>❌（反向误判）</td><td>❌</td><td>❌</td><td>低</td></tr>
+<tr><td>Agent 级 STE</td><td>✅</td><td>✅</td><td>❌（冲突）</td><td>中</td></tr>
+<tr><td><strong>KV-node 级 STE + min 聚合</strong> ✅</td><td>✅</td><td>✅</td><td>✅</td><td>中高</td></tr>
+</table>
+
+<h3 id="破局-insight">破局 (Insight)</h3>
+
+<p><strong>"过去的访问模式在 agentic workflow 里是随机的，但未来的访问顺序是 application 自己给出的 DAG"。</strong> 与其让系统从时间序列里反推谁会被用到，不如让 <strong>application 直接把 workflow graph 递给后端</strong>。这就像公交调度——如果司机知道下一站是哪个站，就能提前开门；LRU 相当于让司机看后视镜猜下一站在哪。</p>
+
+<h3 id="核心技术壁垒">核心技术壁垒</h3>
+
+<p>整个方案能 work 的关键不是 "STE 这个概念"（这是直觉的），而是 <strong>"KV-node 级 min 聚合 + 状态机 (in-GPU/CPU/loading/offloading) 与 radix tree 驱逐/调度器的原子集成"</strong>。具体地：</p>
+<ol>
+<li>每次 agent 被调度时，后端必须在 <strong>同一个 radix tree 事务里</strong> 完成 "更新 STE → 重新计算 node 优先级 → 触发 proactive prefetch → 设置节点 loading 状态 → 从可驱逐列表中排除 offloading 节点"，任何竞态都会导致正在 prefetch 的节点被误驱逐。</li>
+<li>Status-aware 调度器必须能在 "node 仍在 loading" 时 <strong>跳过</strong> 该请求去服务别的 ready 请求，而不是 block 整个 batch——这要求 scheduler 层对 radix tree 节点状态有观测能力。</li>
+</ul>
+
+<p>复现这两个机制需要深入理解 SGLang 的 radix tree + scheduler 内部实现；这是 3–4 周 dev effort 而非 "加一个 priority key"。</p>
+
+<h3 id="质疑假设">质疑假设</h3>
+
+<ul>
+<li><strong>假设 1：workflow graph 在运行时是稳定可观测的</strong>。对 MetaGPT 那种"静态角色 pipeline"成立；但 ReAct/Reflexion/autonomous agent 这种<strong>运行时动态生成下一步 agent</strong> 的场景，Agent Step Graph 无法在请求时刻给出完整拓扑，STE 退化为 heuristic。笔者认为这是本文最大的隐含假设，论文未做实验验证 ReAct 场景。</li>
+<li><strong>假设 2：fixed prompt 和 dynamic suffix 可以被清晰划分</strong>。作者给了两种方案（用户显式标记 / 启发式"一致命中的前缀即 fixed"），但启发式在 agent prompt 自己被 workflow 调整（e.g. self-improving workflow）时会漂移。</li>
+<li><strong>假设 3：CPU 侧存得下所有 evicted KV</strong>。在真正的高并发场景（几百个并发 workflow × 几十个 agent × 长 prompt），CPU RAM 也会被打爆，KVFlow 没给 CPU 层的二级驱逐策略。</li>
+</ul>
+
+<h3 id="设计绑定批判">设计绑定批判</h3>
+
+<p>KVFlow 强制绑定了：</p>
+<ol>
+<li><strong>Radix tree 结构</strong>（否则共享前缀 / min 聚合都做不出来）——换一个非 radix 的 cache (例如 vLLM 原生的 paged block)，这套 STE 优先级需要重新设计。</li>
+<li><strong>SGLang 的 frontend API (<code>sgl.function</code>)</strong>——必须能在 frontend 识别 agent 边界并注入 HTTP metadata；换到其他框架需要手动适配。</li>
+<li><strong>同步 workflow driver</strong>——工作流的 executor 在运行时向后端周期性同步 STE 信息；异步 / event-driven agent framework 需要另外设计同步时机。</li>
+<li><strong>有 CPU 二级缓存</strong>——当 CPU 也没有存 (first-miss) 时退化为重算，KVFlow 节省不了。</li>
+</ul>
+
+<h3 id="生态影响追踪">生态影响追踪</h3>
+
+<ul>
+<li>截至 2025-07 论文发布，KVFlow 的代码未在 SGLang 主线合入；但思想"workflow-aware eviction"已经被 <strong>Autellix (arXiv 2502.13965)</strong> 和 <strong>Parrot (OSDI'24)</strong> 等调度器工作作为 reference。</li>
+<li>vLLM v1 的 prefix caching 设计中，可插拔 eviction policy 的讨论 RFC 近期出现，KVFlow 是一个 natural plugin 候选。</li>
+<li>与同组前作 <strong>Cognify (2502.08056)</strong> 和 <strong>InferCept (2402.01869)</strong> 属于 UCSD "efficient multi-agent serving" 系列；KVFlow 是其中 KV 层的贡献，InferCept 是 tool-call 层，Cognify 是 frontend autotuning 层，三者互补。</li>
+</ul>
+
+<h2 id="key-figures">Key Figures</h2>
+
+<h3 id="figure-1-lru-policy-fails-in-cyclic-agentic-workflows">Figure 1: LRU policy fails in cyclic agentic workflows</h3>
+
+<p>!<a href="../images/2507.07400/fig1-motivation.png">Figure 1: LRU failure motivation</a></p>
+
+<p><strong>What it shows</strong>: 一个 4-agent 循环工作流（Planner → Executor → Expresser → Reviewer → Planner …）的时间轴。在 timestamp 13 Executor 执行更新自己的 KV 时，LRU 决定驱逐 Expresser 的 cache；timestamp 14 Expresser 立刻要执行，发生 cache miss 并付出完整 prefill 代价。</p>
+<p><strong>Why it matters</strong>: 这是全文 motivation 的"反直觉信号"证据——在 agentic workflow 中，access recency 与 future reuse 负相关，不是正相关。</p>
+<p><strong>Detailed description</strong>: 图分成两行时间线：上行是 agent 执行序列（Planner @ t=10, Executor @ t=13, Expresser @ t=14…），下行是 KV cache 状态（Expresser KV 在 t=13 被画叉表示驱逐，t=14 时 prefill 延迟被高亮为红色表示 cache miss 代价）。箭头从 Executor 指向被驱逐的 Expresser 说明"LRU 做决策的依据——Expresser 最久没被用"。</p>
+
+<h3 id="figure-3-a-agent-step-graph-with-two-topology-examples">Figure 3(a): Agent Step Graph with two topology examples</h3>
+
+<p>!<a href="../images/2507.07400/fig3a-step-graph.png">Figure 3a: Agent Step Graph</a></p>
+
+<p><strong>What it shows</strong>: 两种不同的 workflow 拓扑以及每个 agent 的 steps-to-execution。上图 (join) 里 Expresser 需要等 Executor1 和 Executor2 都完成，所以 $\text{STE}(\text{Expresser}) = \max(E_1, E_2) + 1$；下图 (branch) 里任一 Executor 完成即可，所以 $\text{STE}(\text{Expresser}) = \min(E_1, E_2) + 1$。</p>
+<p><strong>Why it matters</strong>: 说明 Agent Step Graph 比 CFG / DAG 更通用的原因——把"依赖类型"抽象成 per-node 的 <strong>aggregation function</strong>，一次性支持 join、branch、synchronization barrier。</p>
+<p><strong>Detailed description</strong>: 两张并排的小 DAG，节点标注 <code>agent_name (STE)</code>，边从 predecessor 指向 successor。最右上方有一个图例说明 aggregation function 的语义：<code>max+1</code> = 并行依赖需全部完成，<code>min+1</code> = 择一路径即可。</p>
+
+<h3 id="figure-3-b-kv-node-level-eviction-priority-assignment">Figure 3(b): KV node-level eviction priority assignment</h3>
+
+<p>!<a href="../images/2507.07400/fig3b-cache-tree.png">Figure 3b: Cache tree priorities</a></p>
+
+<p><strong>What it shows</strong>: radix tree 里每个 node 的驱逐优先级。Agent 的 STE 先赋给其 fixed prompt 的最后一个 token 对应的 node，然后向树根方向传播；当一个 node 被多 agent 共享时取 <strong>min</strong> (最保守，最难驱逐)。动态后缀统一赋最高驱逐优先级。</p>
+<p><strong>Why it matters</strong>: 把 "agent 级的未来信号" 下沉到 "KV node 级"，解决多 agent 共享前缀的冲突——共享 prefix 不会被某一个 agent 的驱逐需求误伤。</p>
+<p><strong>Detailed description</strong>: 一棵 radix tree，根节点到多个 agent 的 fixed-prompt 末端节点构成多条路径。每个 node 旁边标注了其继承的 STE 数字。共享分叉 node 被高亮并标注 <code>min(STE_i)</code>；每个 agent 下挂的 dynamic-suffix node 被打上 "always-evict-first" 标签。</p>
+
+<h3 id="figure-4-overlapped-kv-prefetching-timeline">Figure 4: Overlapped KV prefetching timeline</h3>
+
+<p>!<a href="../images/2507.07400/fig4-prefetch-timeline.png">Figure 4: Overlapped prefetching timeline</a></p>
+
+<p><strong>What it shows</strong>: 三条时间线对比：① reactive loading (baseline, HiCache)：当 Executor1 被 schedule 时才开始 load KV，GPU 干等；② proactive prefetching only：在 Planner 执行期间预取 Executor1，但如果 Planner 执行短于 load 时间，Executor1 开始时仍要等；③ KVFlow (proactive + status-aware)：Executor1 还在 loading 时调度器直接跳过它去跑 Executor2 或别的 ready 请求，GPU 全程不空转。</p>
+<p><strong>Why it matters</strong>: 这是 "GPU 利用率从 ~70% 拉到 >95%" 的根本原因——PCIe load 和 GPU compute 不仅要 overlap，还要有"bypass 未 ready 请求"的 scheduler 逻辑。</p>
+<p><strong>Detailed description</strong>: 三条水平 swim lane，每条分成 GPU-compute、PCIe-load、Scheduler-decision 三个 track。红色区块 = GPU 空转；绿色 = compute；蓝色 = PCIe transfer；黄色箭头 = scheduler 把请求推到 queue 尾部。KVFlow 条完全没有红色区块。</p>
+
+<h2 id="key-tables">Key Tables</h2>
+
+<h3 id="table-a-single-workflow-speedup-10-agent-sequential-reconstructed-from-fig-5">Table A: Single-workflow speedup (10-agent sequential, reconstructed from Fig 5)</h3>
+
+<table>
+<tr><th>Setting (Fixed/Dynamic/Output)</th><th>Platform</th><th>vs SGLang (GPU-only)</th><th>vs SGLang+HiCache</th></tr>
+<tr><td>4096 / 32 / 32</td><td>A10G / Llama-3.1-8B</td><td>~1.9×</td><td>~1.2×</td></tr>
+<tr><td><strong>8192 / 32 / 32</strong></td><td><strong>A10G / Llama-3.1-8B</strong></td><td><strong>2.91×</strong></td><td><strong>1.83×</strong></td></tr>
+<tr><td>4096 / 32 / 32</td><td>H100 / Qwen2.5-32B</td><td>~1.5×</td><td>~1.3×</td></tr>
+<tr><td>8192 / 32 / 32</td><td>H100 / Qwen2.5-32B</td><td>~2.0×</td><td>~1.5× (HiCache 在 H100 大场景下反而退化)</td></tr>
+<tr><td>8192 / 32 / 512 (长 decode)</td><td>双平台</td><td>~1.2×</td><td>~1.05× (decode 占比高时收益降)</td></tr>
+</table>
+
+<p><strong>Takeaway</strong>: 加速倍数 <strong>随 fixed prompt 长度单调上升</strong>（cache miss 代价占比越大）、<strong>随 output 长度单调下降</strong>（decode 占比越大 serving 瓶颈越不在 prefix）。</p>
+
+<h3 id="table-b-high-concurrency-peer-style-multi-workflow-speedup-reconstructed-from-fig-8">Table B: High-concurrency PEER-style multi-workflow speedup (reconstructed from Fig 8)</h3>
+
+<table>
+<tr><th>Fixed tokens / concurrency</th><th>vs SGLang</th><th>vs SGLang+HiCache</th></tr>
+<tr><td>512 / 32</td><td>1.15×</td><td>1.10×</td></tr>
+<tr><td>1024 / 32</td><td>1.25×</td><td>1.20×</td></tr>
+<tr><td><strong>1024 / 64</strong></td><td><strong>1.25×</strong></td><td><strong>2.19×</strong> (HiCache 只有 0.57× SGLang)</td></tr>
+<tr><td>PEER real-world sim</td><td>1.12×</td><td>1.08×</td></tr>
+</table>
+
+<p><strong>Takeaway</strong>: HiCache 在 "1024 fixed × 64 并发" 下 <strong>反向劣化到 SGLang 的 0.57×</strong>——因为 reactive load 和 SGLang 原本的 layer-by-layer pipeline 打架，frequent cache miss 触发的 load-back 破坏了调度。KVFlow 通过 proactive + bypass 规避了这个陷阱。</p>
+
+<h2 id="limitations">Limitations</h2>
+
+<ul>
+<li><strong>动态 agent workflow 未验证</strong>：ReAct / Reflexion / autonomous agent 的 runtime-generated next step 场景下，Agent Step Graph 无法在 request 时刻给出完整拓扑。</li>
+<li><strong>CPU 二级缓存未做容量管理</strong>：CPU 内存也会被打爆，论文未给 CPU 层驱逐策略。</li>
+<li><strong>未测 MoE / 长上下文 (>32k) 场景</strong>：KV cache 尺寸和 PCIe 拥塞在这两个场景下显著加剧，效果未知。</li>
+<li><strong>评测仅 1 GPU</strong>：没有多 GPU / 跨节点 prefix cache 迁移的讨论；分布式 workflow serving 尚属开放问题。</li>
+<li><strong>Fragment 未解决</strong>：作者承认 SGLang 的 KV fragmented layout 导致 PCIe 带宽无法打满；KVFlow 只是更好地 overlap 了那个"不满的带宽"，没解决根因。</li>
+<li><strong>Frontend 入侵性</strong>：必须在 <code>sgl.function</code> 层注入 workflow 元数据；非 SGLang 框架要手工适配。</li>
+</ul>
+
+<h2 id="infrastructure-impact">Infrastructure Impact</h2>
+
+<ul>
+<li><strong>Algorithm</strong>: 反向启示——agentic workflow 的调度/训练算法应暴露更多结构信息给 serving 层 (AFlow 这类 workflow 优化器可以和 KVFlow 共同设计"cache-friendly topology")。</li>
+<li><strong>Kernel</strong>: N/A — 纯 cache / scheduler 层，不依赖新 kernel，复用 SGLang 原生 attention。</li>
+<li><strong>Framework</strong>: 直接给 vLLM / TRT-LLM 提供了 "在 prefix cache 里接受 workflow metadata" 的设计模板；可作为 eviction policy plugin 合并到 vLLM v1 的 pluggable prefix-cache 架构。</li>
+<li><strong>LLM</strong>: 与模型架构无关，GQA/MHA/MLA 均可，但长 prompt 受益最大（KV 体积大 → miss 代价大）。</li>
+<li><strong>Agent</strong>: 对 static DAG 类 agent framework (MetaGPT / AutoGen graph / LangGraph) 是即插即用；对 dynamic agent (ReAct) 需要改造成"增量 graph 提示"。</li>
+<li><strong>Cluster</strong>: 目前是单节点设计；分布式 prefix cache 迁移和跨节点 workflow-aware eviction 是 follow-up 方向。</li>
+<li><strong>Code</strong>: 实现为 SGLang v0.4.4 的 patch；修改点集中在 radix tree eviction、request scheduler、frontend HTTP metadata 三处。</li>
+</ul>
+
+<hr>
+
+<h2 id="deep-analysis-framework">Deep Analysis (framework)</h2>
+
+<h3 id="1-system-scope">1. System Scope</h3>
+
+<ul>
+<li><strong>Primary goal</strong>: online serving of multi-agent LLM workflows (low-latency, interactive)</li>
+<li><strong>Scale</strong>: 单节点单 GPU（A10G 24GB 或 H100 80GB），同时支持 "single workflow" 和 "高并发多 workflow" 两种模式</li>
+<li><strong>Online vs offline</strong>: 纯 online（latency-sensitive，batch size 可小到 1）</li>
+<li><strong>Workload target</strong>: LLM-based agentic workflow，每个 agent 有很大 fixed prompt（角色 + few-shot ≈ 几百到几千 token）+ 较小 dynamic suffix；workflow 以 graph 结构（DAG / cycle / conditional branch）执行</li>
+</ul>
+
+<h3 id="2-architecture-data-flow">2. Architecture & Data Flow</h3>
+
+<h4 id="2a-end-to-end-data-flow">2a. End-to-End Data Flow</h4>
+
+<pre><code>
+[User task]
+  │
+  ▼
+[Frontend: sgl.function per agent]  ──── 注入 workflow metadata (agent_id, STE map) 到 HTTP ───▶
+  │
+  ▼
+[Backend: Request Router]
+  │
+  ▼
+[Radix Tree Prefix Matcher]  ── 找出命中的 KV node 路径
+  │
+  ├── hit (in GPU)  ────────────────────────────▶ [Prefill new tokens only]
+  ├── hit (in CPU)  ── trigger async load ─────▶ [Wait/skip via status-aware]
+  └── miss          ────────────────────────────▶ [Full prefill recompute]
+  │
+  ▼
+[Scheduler: Status-Aware]  ── skip &quot;loading&quot; nodes; prioritize ready
+  │
+  ▼
+[GPU forward: prefill + decode]
+  │
+  ▼
+[Sampler → CPU output]  (GPU→CPU direction)
+  │
+  ▼
+[Eviction policy: STE-priority]  ── 后台：按 STE 驱逐; 触发 proactive prefetch 下一批
+  │
+  ▼
+[Return tokens to frontend]
+</code></pre>
+
+<table>
+<tr><th>Stage</th><th>Input → Output</th><th>Location</th><th>Latency</th><th>Data format</th></tr>
+<tr><td>sgl.function 截获</td><td>user call → HTTP + metadata</td><td>CPU (frontend)</td><td><1 ms</td><td>JSON (STE map, agent_id)</td></tr>
+<tr><td>Radix match</td><td>tokens → node path</td><td>GPU-resident tree + CPU</td><td>μs</td><td>tree pointers</td></tr>
+<tr><td>Prefill (fresh)</td><td>tokens → KV</td><td>GPU HBM</td><td>~O(n²) for n tokens</td><td>[layers, kv_heads, n, dim]</td></tr>
+<tr><td>KV load (CPU→GPU)</td><td>CPU KV → GPU KV</td><td>PCIe</td><td>n × layers × 2 × dim × 2B / BW</td><td>per-layer block</td></tr>
+<tr><td>Proactive prefetch</td><td>同上</td><td>PCIe (与 compute 同时)</td><td>overlapped</td><td>per-layer block</td></tr>
+<tr><td>Decode</td><td>KV → logits</td><td>GPU HBM</td><td>~ms/token</td><td>[vocab_size]</td></tr>
+<tr><td>Eviction & status update</td><td>radix tree + status vars</td><td>CPU + GPU</td><td>μs</td><td>priority queue</td></tr>
+</table>
+
+<h4 id="2b-data-movement-hotspots">2b. Data Movement Hotspots</h4>
+
+<ol>
+<li><strong>CPU↔GPU KV transfer (PCIe)</strong> — 最大带宽消耗者</li>
+<li>量级：Llama-3.1-8B @ 8192 tokens = 32 × 8 × 128 × 2 × 2 × 8192 ≈ 1 GB 每 agent</li>
+<li>频率：每个"被驱逐出 GPU 的 agent"一次；proactive prefetch 下频率等于 workflow 步数</li>
+<li>重叠情况：KVFlow 下与 GPU compute 完全双向重叠（PCIe full-duplex 利用）</li>
+</ul>
+
+<ol>
+<li><strong>GPU→CPU sampled token / activation</strong> — 小量但每步都有</li>
+<li>量级：单 token / step；可与 CPU→GPU prefetch 并行（不同方向）</li>
+</ul>
+
+<ol>
+<li><strong>Intra-GPU radix tree traversal</strong> — 控制平面</li>
+<li>量级：几十 KB metadata，μs 级，不是瓶颈</li>
+</ul>
+
+<h3 id="3-design-space-constraint-analysis-extends-phase-2">3. Design Space & Constraint Analysis (extends Phase 2)</h3>
+
+<p>见上文 Phase 2 约束推导；framework 视角的补充：</p>
+
+<p><strong>3a. Alternative Approaches</strong></p>
+<ul>
+<li>LRU / LFU / MRU / TTL / FIFO — 全部基于"历史访问"，无预测能力</li>
+<li>Oracle：直接 pin 所有 agent prompt 到 GPU — 显存不够</li>
+<li>Segmented cache (per agent reserved slots) — 不支持共享前缀</li>
+<li>Cost-model eviction (InferCept) — 需要离线训练 cost model，对 unknown workflow 不 generalize</li>
+</ul>
+
+<p><strong>3b. 可行性矩阵</strong></p>
+
+<table>
+<tr><th>方案</th><th>预测未来</th><th>支持 branch/cycle</th><th>共享前缀一致</th><th>无需离线训练</th><th>工程复杂度</th></tr>
+<tr><td>LRU</td><td>✗</td><td>✗</td><td>✗</td><td>✓</td><td>低</td></tr>
+<tr><td>LFU</td><td>✗</td><td>✗</td><td>✗</td><td>✓</td><td>低</td></tr>
+<tr><td>MRU</td><td>✗ (反向)</td><td>✗</td><td>✗</td><td>✓</td><td>低</td></tr>
+<tr><td>InferCept cost model</td><td>△</td><td>△</td><td>✗</td><td>✗</td><td>高</td></tr>
+<tr><td>Agent 级 STE</td><td>✓</td><td>✓</td><td>✗</td><td>✓</td><td>中</td></tr>
+<tr><td><strong>KVFlow (KV-node 级 STE + min)</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>中高</strong></td></tr>
+</table>
+
+<p><strong>3c. Assumption Audit</strong></p>
+<ul>
+<li>workflow graph 静态可见 — 对 static agent framework 成立，对 ReAct/Reflexion 不成立</li>
+<li>fixed/dynamic prompt 可分 — 论文给了 heuristic 兜底，但会漂移</li>
+<li>PCIe full-duplex 真能用满 — SGLang 的 KV fragmented layout 会限制实际带宽利用（作者明确承认）</li>
+<li>CPU 总能装下所有 evicted KV — 高并发下会被打爆</li>
+</ul>
+
+<p><strong>3d. Core Technical Barrier</strong></p>
+<p>See Phase 2: "KV-node 级 min 聚合 + 4 态 status 机（in-GPU / in-CPU / loading / offloading）与 radix tree eviction 和 scheduler 的原子集成"。这部分没法通过读论文 3 页就 reproduce；需要深入 SGLang 内部，估计 3–4 周 dev effort。</p>
+
+<p><strong>3e. Design Binding Critique</strong></p>
+<p>Radix-tree cache (排除 vLLM paged block)、SGLang 前端、静态可观测 workflow、必须有 CPU 二级缓存——四个强耦合。</p>
+
+<h3 id="4-key-innovations">4. Key Innovations</h3>
+
+<table>
+<tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost/Tradeoff</th></tr>
+<tr><td>Agent Step Graph abstraction</td><td>每节点带 <code>max+1</code> / <code>min+1</code> aggregation function</td><td>统一 DAG/cycle/branch</td><td>需要 frontend 暴露 workflow 元数据</td></tr>
+<tr><td>STE-based eviction at KV-node level</td><td>每个 radix tree node 继承所属 agent 的 STE；共享 node 取 min</td><td>精准保留"即将被用"的前缀；共享前缀无冲突</td><td>每次 step 切换需刷新一遍 priority</td></tr>
+<tr><td>Proactive KV prefetching</td><td>后台线程根据 Step Graph 预测下一步 agent，CPU→GPU 预取</td><td>完全重叠 PCIe 延迟与 GPU compute</td><td>分支时可能过度预取（有并发限制 cap）</td></tr>
+<tr><td>Status-aware scheduler</td><td>4 态 {in-GPU, in-CPU, loading, offloading}；跳过 loading 请求</td><td>GPU 零空转；eviction 与 loading 无竞态</td><td>调度器复杂度上升；长 load 可能饥饿短请求</td></tr>
+</table>
+
+<h3 id="5-scheduling-resource-management">5. Scheduling & Resource Management</h3>
+
+<ul>
+<li><strong>Batch 形成</strong>：继承 SGLang continuous batching；在每次 scheduler tick 上过滤掉 KV 仍在 loading 的请求</li>
+<li><strong>内存管理</strong>：继承 RadixAttention 树结构；扩展 eviction priority queue（按 STE 排序）+ 4 态 status</li>
+<li><strong>GPU 利用</strong>：通过"计算-传输重叠 + bypass"实现几乎无 bubble</li>
+<li><strong>多租户</strong>：每个 application 分配 client_id，避免 <code>agent_name="Planner"</code> 命名冲突；workflow 间 STE 独立计算，共享 prefix node 取 <strong>最保守 min</strong> (跨 workflow 也是 min)</li>
+<li><strong>SLO 感知</strong>：未显式设计；隐含地，由于 status-aware skip，short-KV 请求天然被优先</li>
+</ul>
+
+<h3 id="6-target-scenarios-workload-characterization">6. Target Scenarios & Workload Characterization</h3>
+
+<table>
+<tr><th>Scenario</th><th>Workload Pattern</th><th>SLO / Goal</th><th>Why SGLang/HiCache fails</th></tr>
+<tr><td>Interactive dev (notebook, batch=1)</td><td>单 workflow 串行 10 agents, 大 fixed prompt</td><td>E2E latency 最低</td><td>LRU 误驱逐 + reactive load 串行</td></tr>
+<tr><td>High-concurrency multi-workflow serving</td><td>32–64 并发 × PEER-style 4-agent workflow</td><td>吞吐 + tail latency</td><td>HiCache 的 reactive load 在高并发下崩溃（0.57× SGLang）</td></tr>
+<tr><td>Agentic RAG/tool pipeline</td><td>Mixed branch/cycle</td><td>TTFT < 500ms</td><td>无感知下一跳，prefetch 无从谈起</td></tr>
+</table>
+
+<p><strong>Primary bottleneck</strong>：在 fixed-prompt-heavy 场景下是 <strong>memory-bound (prefix KV 装不下 GPU HBM)</strong> + <strong>PCIe-bound (CPU 二级缓存的传输延迟)</strong>，KVFlow 针对这两者。</p>
+
+<h3 id="7-performance-evaluation">7. Performance Evaluation</h3>
+
+<h4 id="7a-metrics">7a. Metrics</h4>
+
+<table>
+<tr><th>Metric</th><th>Definition</th><th>Unit</th><th>Direction</th></tr>
+<tr><td>E2E latency</td><td>workflow 所有 agent 依次完成的时间</td><td>ms</td><td>↓</td></tr>
+<tr><td>Speedup vs SGLang</td><td>latency ratio</td><td>×</td><td>↑</td></tr>
+<tr><td>Speedup vs SGLang+HiCache</td><td>对 CPU-backed baseline</td><td>×</td><td>↑</td></tr>
+</table>
+
+<p>注：论文<strong>未单独报告</strong> TTFT / TPOT / P99 / goodput 等 serving 标准指标；只用 E2E latency 和 speedup，这是一个<strong>评测深度不足</strong>的地方。</p>
+
+<h4 id="7b-before-after-comparison">7b. Before-After Comparison</h4>
+
+<p>见 Key Tables A / B。核心数据：</p>
+<ul>
+<li>单 workflow 8192 fixed tokens：相对 SGLang 2.91×，相对 HiCache 1.83×</li>
+<li>64 并发 × 1024 fixed：相对 SGLang 1.25×，相对 HiCache <strong>2.19×</strong>（HiCache 反劣化到 0.57× 基线）</li>
+<li>长 decode：速比退化到 ~1.1×</li>
+</ul>
+
+<h4 id="7c-bottleneck-shift">7c. Bottleneck Shift</h4>
+
+<pre><code>
+Baseline (SGLang GPU-only):   memory-bound (KV 装不下) → miss → recompute-bound (prefill)
+↓
++HiCache:                      recompute-bound → PCIe-bound (reactive load 串行)
+↓
++KVFlow eviction only:         PCIe-bound → 仍 PCIe-bound (但 miss 次数减少)
+↓
++KVFlow prefetch:              PCIe-bound → 当 compute &gt; load 时 → 回到 compute-bound (理想)
+↓
++KVFlow status-aware scheduling: 当 compute &lt; load 时 → 靠 bypass 填 GPU → 几乎无 bubble
+</code></pre>
+
+<p><strong>剩余瓶颈</strong>：作者自己承认的 <strong>KV fragmented layout 导致 PCIe 带宽无法打满</strong>；以及 decode-heavy 场景下的 auto-regressive decode（与 KVFlow 正交）。</p>
+
+<h4 id="7d-baselines-fairness">7d. Baselines & Fairness</h4>
+
+<ul>
+<li>公平性 OK：同模型、同硬件、同 workflow</li>
+<li>缺：没有 vLLM / TRT-LLM 对比；只对比了 SGLang 两种配置</li>
+<li>缺：没有 tail latency / P99 分布；只有平均 latency</li>
+<li>缺：没有 ablation 分离 "eviction only" vs "prefetch only" vs "full" 的贡献</li>
+</ul>
+
+<h3 id="8-api-usability">8. API & Usability</h3>
+
+<ul>
+<li>API 兼容：OpenAI-compat 的 HTTP；frontend 是 <code>sgl.function</code> 装饰器</li>
+<li>模型格式：继承 SGLang，支持 HF Transformers</li>
+<li>部署：SGLang 同款 (bare-metal / Docker)</li>
+<li>可调参数：<code>max_concurrent_prefetch</code>、fixed-prompt boundary (显式 / heuristic 两选一) — 调参量小</li>
+</ul>
+
+<h3 id="9-infrastructure-impact">9. Infrastructure Impact</h3>
+
+<p>已在 Summary 最后的 Infrastructure Impact 表覆盖。</p>
+
+<h3 id="10-comparison-matrix">10. Comparison Matrix</h3>
+
+<table>
+<tr><th>Feature</th><th>KVFlow</th><th>SGLang</th><th>SGLang+HiCache</th><th>vLLM</th><th>TRT-LLM</th></tr>
+<tr><td>Radix prefix cache</td><td>✓</td><td>✓</td><td>✓</td><td>Paged (non-radix)</td><td>✓</td></tr>
+<tr><td>CPU 二级缓存</td><td>✓</td><td>✗</td><td>✓</td><td>✓ (v1)</td><td>✓</td></tr>
+<tr><td>Workflow-aware eviction</td><td><strong>✓</strong></td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+<tr><td>Proactive prefetch</td><td><strong>✓</strong></td><td>✗</td><td>✗ (reactive only)</td><td>✗</td><td>✗</td></tr>
+<tr><td>Status-aware scheduling</td><td><strong>✓</strong></td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+<tr><td>Multi-node prefix cache</td><td>✗</td><td>✗</td><td>✗</td><td>Dev</td><td>✓</td></tr>
+</table>
+
+<h3 id="11-adoption-maturity-ecosystem-influence">11. Adoption, Maturity & Ecosystem Influence</h3>
+
+<ul>
+<li>Open source：未提及公开代码（论文 2025-07 发布）；基于 SGLang v0.4.4 的 patch</li>
+<li>成熟度：原型级；未在主线 SGLang 合入</li>
+<li>生产部署：未提</li>
+<li>采纳成本：对使用 SGLang 的 agentic application 是"前端加 <code>sgl.function</code> + 后端打 patch"—— 2–4 周 integration</li>
+<li>下游影响：与 Autellix、Parrot、Cognify、InferCept 形成 UCSD multi-agent serving 系列；有望作为 vLLM v1 可插拔 eviction policy 的候选</li>
+</ul>
+
+<h2 id="open-questions">Open Questions</h2>
+
+<ol>
+<li>ReAct / Reflexion 类<strong>动态 workflow</strong> 下如何在线更新 Agent Step Graph？是否需要"on-the-fly graph growth + priority invalidation"机制？</li>
+<li><strong>CPU 也爆</strong>时的二级驱逐策略？要不要引入"三级 disk/NVMe cache"？</li>
+<li>多 GPU / 跨节点的 prefix cache <strong>迁移</strong>如何做？STE 是否可以跨节点传播？</li>
+<li>与 <strong>speculative decoding</strong> / <strong>KV sparsity</strong> 的组合效应？decode-heavy 场景下能否通过组合再拿 2×？</li>
+<li>Workflow topology <strong>本身是否可优化</strong> 以对 KVFlow 友好？（和 AFlow 共同设计 cache-friendly workflow optimizer）</li>
+<li>论文没报 TTFT/TPOT/P99，如果报了会不会揭示 long-load 请求的 starvation？</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search + category filter for list pages */
+
+document.addEventListener('DOMContentLoaded', function() {
+  const searchBox = document.querySelector('.search-box');
+  const catBtns = document.querySelectorAll('.cat-btn');
+  const cards = document.querySelectorAll('.card');
+  const catSections = document.querySelectorAll('.cat-section');
+  let activeCategory = 'all';
+
+  function filterCards() {
+    const query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      const text = card.textContent.toLowerCase();
+      const cat = card.dataset.category || '';
+      const matchesSearch = !query || text.includes(query);
+      const matchesCat = activeCategory === 'all' || cat === activeCategory;
+      card.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+    });
+    // Hide empty category sections
+    catSections.forEach(function(sec) {
+      const visible = sec.querySelectorAll('.card:not([style*="display: none"])');
+      sec.style.display = visible.length > 0 ? '' : 'none';
+    });
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('input', filterCards);
+  }
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      filterCards();
+    });
+  });
+});
+</script>
+</body>
+</html>

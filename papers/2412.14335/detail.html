@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Optimizing ML Concurrent Computation and Communication with GPU DMA Engines — Feiyue KB</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card */
+.card {
+  background: var(--card-bg); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 12px; box-shadow: var(--card-shadow);
+  border-left: 4px solid var(--accent); transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.card-title a { color: var(--tx); }
+.card-meta { font-size: 0.82rem; color: var(--mt); margin-bottom: 6px; }
+.card-body { font-size: 0.9rem; line-height: 1.6; }
+.card-tags { margin-top: 6px; }
+.tag {
+  display: inline-block; background: var(--tag-bg); color: var(--tag-tx);
+  padding: 1px 8px; border-radius: 8px; font-size: 0.75rem; margin-right: 4px;
+}
+.card-links { margin-top: 8px; font-size: 0.85rem; }
+.card-links a { margin-right: 12px; }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/domain/">Domain</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>Optimizing ML Concurrent Computation and Communication with GPU DMA Engines</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2412.14335</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">GPU-DMA</span><span class="tag">compute-communication-overlap</span><span class="tag">CUDA</span><span class="tag">copy-engine</span><span class="tag">kernel-optimization</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/domain/kernel.html">← kernel (L4)</a>
+<a href="https://arxiv.org/abs/2412.14335" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="optimizing-ml-concurrent-computation-and-communication-with-gpu-dma-engines">Optimizing ML Concurrent Computation and Communication with GPU DMA Engines</h1>
+
+<ul>
+<li><strong>arXiv</strong>: 2412.14335</li>
+<li><strong>Authors</strong>: Anirudha Agrawal, Shaizeen Aga, Suchita Pati, Mahzabeen Islam (AMD)</li>
+<li><strong>Venue</strong>: ISPASS (IEEE International Symposium on Performance Analysis of Systems and Software)</li>
+<li><strong>Date</strong>: 2024-12</li>
+<li><strong>Category</strong>: kernel</li>
+<li><strong>Tags</strong>: GPU-DMA, compute-communication-overlap, CUDA, copy-engine, kernel-optimization</li>
+</ul>
+
+<hr>
+
+<h2 id="粗读-first-pass">粗读 (First Pass)</h2>
+
+<h3 id="core-contribution">Core Contribution</h3>
+
+<p>提出 ConCCL（Concurrent Communication Collectives），通过将通信 collective 操作 offload 到 GPU 的 DMA 引擎（而非 GPU CU），消除计算-通信并发时的 compute interference，将 C3 (Concurrent Computation and Communication) 的加速比从 ideal speedup 的 21%（baseline）提升至 72%（ConCCL），最高达 1.67x speedup。</p>
+
+<h3 id="figure-1-baseline-c3-vs-conccl-via-dma-offloads">Figure 1: Baseline C3 vs ConCCL via DMA Offloads</h3>
+<p>!<a href="../images/2412.14335/fig1.png">Figure 1: Baseline C3 vs ConCCL via DMA Offloads</a></p>
+<p><strong>What it shows</strong>: Left: baseline C3 where both GEMM (orange) and communication (green) kernels share GPU compute units and caches, causing mutual interference. Right: ConCCL offloads communication to DMA engines (bypassing CUs and L1/L2 caches), freeing all 304 CUs for GEMM.</p>
+<p><strong>Why it matters</strong>: This is the paper's core architectural insight in one diagram — communication is pure data movement that doesn't need ALUs, so routing it through DMA engines eliminates both compute and cache interference simultaneously.</p>
+
+<h3 id="核心三问">核心三问</h3>
+
+<p><strong>Q1: 这篇论文试图解决什么问题？</strong></p>
+
+<p>GPU 上 ML workload 的计算与通信并发执行（C3）性能远低于理想值。当 GEMM kernel 和 collective communication kernel 同时在 GPU CU 上运行时，两者竞争 compute units、L1/L2 cache 和 HBM 带宽，导致严重的 mutual interference。实测 baseline C3 仅实现理想加速比的 21%（平均 1.13x），远低于理论上限 1.6x-2.0x。</p>
+
+<p><strong>Q2: 这是否是一个新的问题？</strong></p>
+
+<p>不是全新问题，但论文的贡献在于：</p>
+<ol>
+<li>首次系统性地提出 C3 taxonomy（G-long/C-long/GC-equal）并做详细 characterization</li>
+<li>首次在不改硬件的前提下，用已有的 DMA 引擎构建 collective PoC 来降低 C3 interference</li>
+<li>之前的工作要么需要定制硬件加速器（ACE），要么需要大量 SW/HW 改动（T3, Fused Computation-Collective），本文走了一条 "用已有硬件资源" 的路线</li>
+</ul>
+
+<p><strong>Q3: 这篇论文采用的方案是什么？关键 insight 是什么？</strong></p>
+
+<p>三层递进方案：</p>
+<ol>
+<li><strong>Schedule Prioritization</strong>：先调度资源需求小的 communication kernel，避免 GEMM 抢占过多 CU → 21% → 42%</li>
+<li><strong>Resource Partitioning</strong>：利用 MI300X 的 CU reservation 功能显式分配 CU → 与 SP 效果相当 (~42%)</li>
+<li><strong>ConCCL (DMA Offload)</strong>：将 all-gather/all-to-all offload 到 SDMA 引擎，释放全部 304 CU 给 GEMM → 72%</li>
+</ul>
+
+<p><strong>关键 insight</strong>：通信 kernel 本质上是数据搬运，不需要算术计算。GPU 已内置 DMA 引擎（MI300X 有 14 个 SDMA），这些引擎位于 IOD 层（L2 cache 之外），offload 通信到 DMA 同时消除 compute interference 和 L1/L2 cache interference。</p>
+
+<h3 id="逻辑故事还原">逻辑故事还原</h3>
+
+<ol>
+<li><strong>起点</strong>：ML 训练/推理中 GEMM 和 collective communication 可以并发（data parallelism, FSDP, nano-batching），但实际性能远低于理想值</li>
+<li><strong>Characterization</strong>：在 MI300X 8-GPU 平台上系统分析了 15 个 C3 场景（来自 LLaMA-70B/405B），发现：</li>
+<li>Communication kernel 只需 32-64 CU（总共 304），但共享 CU 导致 GEMM 性能大幅下降</li>
+<li>Memory-bound GEMM 对 CU 损失有 resilience，compute-bound GEMM 敏感（17-27% slowdown）</li>
+<li>理想加速比 1.1x-2.0x，实际仅 1.13x（21%）</li>
+</ul>
+
+<h3 id="figure-5-kernel-slowdown-vs-cu-loss">Figure 5: Kernel Slowdown vs CU Loss</h3>
+<p>!<a href="../images/2412.14335/fig5.png">Figure 5: Kernel Slowdown vs CU Loss</a></p>
+<p><strong>What it shows</strong>: (a) GEMM slowdown as CUs are taken away — memory-bound GEMM (mb1) is resilient and even speeds up at 32-48 CU loss (circled, due to better cache locality), while compute-bound GEMM (cb1) degrades up to 1.55x. (b/c) All-gather needs only ~32 CUs and all-to-all needs ~64 CUs to reach full performance.</p>
+<p><strong>Why it matters</strong>: This is the empirical foundation for the entire paper: communication kernels consume few CUs but cause disproportionate interference, and memory-bound GEMMs paradoxically benefit from fewer CUs — both facts motivate DMA offload.</p>
+
+<ol>
+<li><strong>优化 Level 1</strong>：Schedule prioritization（先调度小 kernel）和 resource partitioning（显式 CU 分配），提升到 42%</li>
+</ul>
+
+<h3 id="figure-8-c3-speedups-with-schedule-prioritization-resource-partitioning">Figure 8: C3 Speedups with Schedule Prioritization & Resource Partitioning</h3>
+<p>!<a href="../images/2412.14335/fig8.png">Figure 8: C3 Speedups with Schedule Prioritization & Resource Partitioning</a></p>
+<p><strong>What it shows</strong>: Bar chart comparing c3_base, c3_sp (schedule prioritization), c3_rp (resource partitioning), and c3_sp_rp across all C3 taxonomy types (G-long, C-long, GC-equal) for both all-to-all and all-gather. Ideal speedups shown at top (1.32x–1.92x). SP and RP both roughly double the baseline from ~21% to ~42% of ideal.</p>
+<p><strong>Why it matters</strong>: Establishes the performance ceiling of software-only optimizations (42% of ideal), motivating the need for ConCCL's DMA offload approach to go further.</p>
+
+<ol>
+<li><strong>优化 Level 2</strong>：ConCCL 将通信 offload 到 DMA 引擎，完全消除 compute interference + 部分消除 cache interference → 72%</li>
+<li><strong>结论</strong>：呼吁 GPU 厂商增强 DMA 引擎能力（如加入算术单元支持 all-reduce）</li>
+</ul>
+
+<h3 id="key-figures">Key Figures</h3>
+
+<table>
+<tr><th>Figure</th><th>描述</th><th>关键观察</th></tr>
+<tr><td>Fig.1</td><td>Baseline C3 vs ConCCL 架构对比</td><td>左：CU 被通信和计算分享；右：DMA 处理通信，CU 全给计算</td></tr>
+<tr><td>Fig.2</td><td>MI300X 架构图</td><td>8 XCD (304 CU) + 4 IOD (Infinity Cache + 14 SDMA) + 8 HBM stacks</td></tr>
+<tr><td>Fig.3</td><td>DMA 传输流程</td><td>CPU→DMA queue→DMA engine→HBM read/write，4 步流水</td></tr>
+<tr><td>Fig.4</td><td>C3 Taxonomy</td><td>G-long/C-long/GC-equal × compute/memory-bound × latency/bandwidth-bound</td></tr>
+<tr><td>Fig.5</td><td>CU 损失 vs kernel slowdown</td><td>memory-bound GEMM 在减少 CU 时甚至加速（cache 行为改善）；通信需 32-64 CU</td></tr>
+<tr><td>Fig.8</td><td>各策略 speedup 对比</td><td>c3_base(21%) → c3_sp(42%) → c3_rp(41%) → ConCCL(66%) → ConCCL_rp(72%)</td></tr>
+<tr><td>Fig.9</td><td>ConCCL vs RCCL isolated 性能</td><td><32MB 时 ConCCL 慢 4x（CPU launch overhead），>128MB 时持平</td></tr>
+<tr><td>Fig.10</td><td>C3+ConCCL speedup 全景图</td><td>all-to-all 受益更大（c3_base 1.05x → ConCCL 1.43x）</td></tr>
+</table>
+
+<h3 id="key-tables">Key Tables</h3>
+
+<table>
+<tr><th>Table</th><th>描述</th><th>关键信息</th></tr>
+<tr><td>Table I</td><td>GEMM sizes & sources</td><td>5 compute-bound (cb1-cb5) + 2 memory-bound (mb1-mb2)，来自 LLaMA-70B/405B</td></tr>
+<tr><td>Table II</td><td>C3 组合及 taxonomy</td><td>15 个场景：9 G-long + 5 C-long + 2 GC-equal</td></tr>
+</table>
+
+<h3 id="key-details-takeaway">Key Details & Takeaway</h3>
+
+<ol>
+<li><strong>MI300X 有 14 个 SDMA 引擎</strong>：位于 IOD 层，通过 HSA API <code>hsa_amd_memory_async_copy_on_engine</code> 调用，每个引擎处理一个 point-to-point transfer</li>
+<li><strong>Communication kernel 的 CU 需求很低</strong>：all-gather 需 32 CU，all-to-all 需 64 CU（总 304 CU 中的 10-20%），但这少量 CU 共享就导致了大量 interference</li>
+<li><strong>Memory-bound GEMM 在减少 CU 时反而加速</strong>：因为更少线程 → 更好 cache locality，这是 resource partitioning 的理论基础</li>
+<li><strong>ConCCL 是 PoC 而非 production library</strong>：使用简单 direct algorithm（每个 GPU 直接读写所有其他 GPU），在 ≥128MB 时与 RCCL 性能持平</li>
+<li><strong>DMA 无法做 all-reduce</strong>：因为 DMA 引擎不支持算术操作，只能做 all-gather 和 all-to-all</li>
+</ul>
+
+<h3 id="summary">Summary</h3>
+
+<p>本文系统研究了 GPU 上计算-通信并发（C3）的性能瓶颈，发现 baseline 仅实现 21% 的理想加速比。通过 schedule prioritization 和 resource partitioning 提升到 42%，进一步通过将通信 offload 到 GPU DMA 引擎（ConCCL）提升到 72%。这是一条 "不改硬件、用好已有资源" 的实用路线，但仍有显著局限（不支持 all-reduce、仅 intra-node、CPU 编排开销）。</p>
+
+<h3 id="key-findings">Key Findings</h3>
+
+<ol>
+<li>C3 baseline 在 MI300X 上平均仅实现理想加速比的 21%（1.13x），interference 是主要瓶颈</li>
+<li>Schedule prioritization（先调度小 kernel）是简单有效的优化，将性能提升到 42%</li>
+<li>ConCCL DMA offload 将性能提升到 72%，对 all-to-all 效果尤为显著（从 1.05x 到 1.43x）</li>
+<li>Memory-bound GEMM 对 CU 损失有 resilience 甚至获益，而 compute-bound GEMM 非常敏感</li>
+<li>ConCCL 在通信量 ≥128MB 时与 RCCL 性能持平，但在 <32MB 时因 CPU launch overhead 慢 4x</li>
+</ul>
+
+<h3 id="limitations">Limitations</h3>
+
+<ol>
+<li><strong>不支持 all-reduce</strong>：DMA 引擎无算术能力，而 all-reduce 是 data parallelism 中最常用的 collective</li>
+<li><strong>仅 intra-node</strong>：只在 8-GPU MI300X 节点内测试，未涉及跨节点通信</li>
+<li><strong>CPU orchestration overhead</strong>：DMA 由 CPU 编排，小传输（<32MB）的 launch/sync 开销不可忽略</li>
+<li><strong>PoC 质量</strong>：ConCCL 是概念验证，使用简单 direct algorithm，非 production-ready</li>
+<li><strong>HBM 带宽竞争未解决</strong>：DMA offload 消除了 compute 和 L1/L2 cache interference，但 HBM 带宽竞争仍存在</li>
+<li><strong>仅在 AMD MI300X 上验证</strong>：未讨论 NVIDIA GPU 的 copy engine 是否有类似机会</li>
+<li><strong>泛化性存疑</strong>：15 个 C3 场景中 7 个来自 LLaMA，其余为 synthetic，未覆盖 MoE、attention 等复杂通信模式</li>
+<li><strong>未评估端到端 ML 训练性能</strong>：所有实验都是 microbenchmark 级别</li>
+</ul>
+
+<h3 id="infrastructure-impact">Infrastructure Impact</h3>
+
+<ul>
+<li><strong>中等偏高</strong>：证明了一条不需要硬件修改的 C3 优化路线，但受限于 PoC 质量和 all-reduce 缺失</li>
+<li><strong>对 GPU 架构设计有启发</strong>：推动 DMA 引擎增加算术能力、降低 CPU 编排开销</li>
+<li><strong>对通信库开发有价值</strong>：RCCL/NCCL 可以考虑在 bandwidth-bound collective 中利用 DMA 引擎</li>
+<li><strong>对 ML 框架有间接影响</strong>：如果通信库支持 DMA offload，框架层可以更积极地 overlap 计算和通信</li>
+</ul>
+
+<hr>
+
+<h2 id="deep-analysis-kernel">Deep Analysis (kernel)</h2>
+
+<h3 id="1-target-operation">1. Target Operation</h3>
+
+<p><strong>Primary operation</strong>: Communication collectives (all-gather, all-to-all) 的 DMA offload，以及与 GEMM 的并发执行优化。</p>
+
+<p><strong>具体来说</strong>:</p>
+<ul>
+<li><strong>Computation side</strong>: GEMM (matrix-matrix multiply)，sizes 从 8192×8192×8192 到 106496×8192×16384，BF16 数据类型（推测，论文未明确说明数据类型但在 MI300X 上 ML 训练标准是 BF16）</li>
+<li><strong>Communication side</strong>: All-gather 和 all-to-all collectives，数据量 128MB - 26.5GB</li>
+<li><strong>Target scenario</strong>: LLaMA-70B/405B 训练中的 FSDP weight gather + GEMM forward/backward 并发</li>
+</ul>
+
+<p>论文并非优化单个 kernel 本身，而是优化两个 kernel 并发时的资源分配和 interference 问题。</p>
+
+<h3 id="2-hardware-model">2. Hardware Model</h3>
+
+<p><strong>平台</strong>: AMD MI300X Infinity Platform (8× MI300X, fully-connected)</p>
+
+<h3 id="figure-2-amd-mi300x-gpu-architecture">Figure 2: AMD MI300X GPU Architecture</h3>
+<p>!<a href="../images/2412.14335/fig2.png">Figure 2: AMD MI300X GPU Architecture</a></p>
+<p><strong>What it shows</strong>: The 3D chiplet architecture of MI300X — 8 XCDs (each with 38 active CUs and 4MB L2) stacked over 4 IODs (containing Infinity Cache LLC, SDMA engines, and HBM interfaces), all on a passive silicon interposer. GPU kernels dispatch workgroups across XCDs.</p>
+<p><strong>Why it matters</strong>: The physical separation of SDMA engines (in IOD, below L2) from compute units (in XCD) is why DMA offload eliminates both compute AND L1/L2 cache interference — the data path for DMA transfers never touches per-XCD caches.</p>
+
+<p><strong>单 GPU 架构</strong>:</p>
+<table>
+<tr><th>组件</th><th>规格</th><th>在 C3 中的角色</th></tr>
+<tr><td>XCD</td><td>8 个，每个 38 active CU</td><td>GEMM 和传统 communication kernel 的执行单元</td></tr>
+<tr><td>CU 总数</td><td>304</td><td>是 compute interference 的核心资源</td></tr>
+<tr><td>L2 Cache</td><td>4MB/XCD × 8 = 32MB</td><td>Per-XCD private，DMA 不经过 L2</td></tr>
+<tr><td>Infinity Cache (LLC)</td><td>256MB (memory-side)</td><td>所有 HBM 流量都经过，DMA 在此层访问</td></tr>
+<tr><td>HBM</td><td>8 stacks × 24GB = 192GB, 5.3TB/s</td><td>C3 中 bandwidth contention 的瓶颈</td></tr>
+<tr><td>SDMA engines</td><td>14 个</td><td>ConCCL 的核心执行单元</td></tr>
+<tr><td>Infinity Fabric links</td><td>7 bi-directional links, 64GB/s/link uni</td><td>GPU 间通信带宽</td></tr>
+</table>
+
+<p><strong>DMA 数据路径</strong>: CPU → DMA queue (system memory) → DMA engine (IOD) → Infinity Cache → HBM (source) → Infinity Fabric → HBM (destination)</p>
+
+<p><strong>关键硬件特性</strong>:</p>
+<ul>
+<li>DMA 引擎位于 IOD 层，在 L2 cache 之下，所以 DMA 传输不污染 L1/L2 cache</li>
+<li>MI300X 支持 CU reservation（stream-level 的 CU 分配），是 resource partitioning 的基础</li>
+<li>每个 XCD 有独立 L2 cache，kernel 结束时 L2 已 write-back 到 Infinity Cache，所以切换到 DMA 不需要额外 cache flush</li>
+</ul>
+
+<h3 id="3-optimization-techniques">3. Optimization Techniques</h3>
+
+<table>
+<tr><th>Technique</th><th>类型</th><th>描述</th><th>Speedup (% of ideal)</th></tr>
+<tr><td>c3_base</td><td>Baseline</td><td>GEMM 先调度，CU 自然分配</td><td>21% (1.13x avg)</td></tr>
+<tr><td>Schedule Prioritization (SP)</td><td>SW scheduling</td><td>先调度 resource 需求小的 communication kernel</td><td>42% (~1.27x avg)</td></tr>
+<tr><td>Resource Partitioning (RP)</td><td>HW-assisted partitioning</td><td>显式 reserve CU 给 communication stream</td><td>41% (~1.26x avg)</td></tr>
+<tr><td>SP + RP</td><td>Combined</td><td>SP 和 RP 叠加</td><td>无额外提升</td></tr>
+<tr><td>ConCCL</td><td>DMA offload</td><td>通信 offload 到 SDMA 引擎</td><td>66% (~1.40x avg)</td></tr>
+<tr><td>ConCCL + RP</td><td>DMA + CU tuning</td><td>对 memory-bound GEMM 减少 CU（改善 cache）</td><td>72% (~1.46x avg)</td></tr>
+</table>
+
+<p><strong>各 technique 的 tradeoff</strong>:</p>
+<ul>
+<li>SP 最简单（只改调度顺序），但上限低</li>
+<li>RP 需要 CU partition 的硬件支持（MI300X 有），调优需要 sweep</li>
+<li>ConCCL 消除 compute interference，但引入 CPU orchestration overhead 和 DMA 限制</li>
+</ul>
+
+<h3 id="4-performance-analysis">4. Performance Analysis</h3>
+
+<p><strong>Baseline characterization</strong>:</p>
+<ul>
+<li>15 个 C3 场景，ideal speedup 1.1x-2.0x（avg 1.6x）</li>
+<li>c3_base 仅 1.13x (21% of ideal)</li>
+<li>All-gather 比 all-to-all 表现好：all-gather 24-46% ideal vs all-to-all 0-13% ideal</li>
+<li>原因：all-to-all 需更多 CU (64 vs 32) 和更高 memory bandwidth</li>
+</ul>
+
+<p><strong>ConCCL isolated 性能</strong>:</p>
+<ul>
+<li>≥128MB: 与 RCCL 持平</li>
+<li><32MB: 慢 4x（CPU launch/sync overhead 未摊销）</li>
+<li>论文中 C3 场景最小通信量 128MB，所以 isolated 性能差异不影响 C3 评估</li>
+</ul>
+
+<p><strong>ConCCL C3 性能</strong>:</p>
+
+<h3 id="figure-10-c3-speedup-with-conccl">Figure 10: C3 Speedup with ConCCL</h3>
+<p>!<a href="../images/2412.14335/fig10.png">Figure 10: C3 Speedup with ConCCL</a></p>
+<p><strong>What it shows</strong>: Comprehensive bar chart comparing c3_base, c3_best (best of SP/RP), ConCCL, and ConCCL_rp across all C3 taxonomy types for both all-to-all and all-gather. ConCCL (red) and ConCCL_rp (purple) consistently and substantially outperform all CU-based approaches across every category.</p>
+<p><strong>Why it matters</strong>: This is the paper's main result — ConCCL achieves 66-72% of ideal speedup (vs 21% baseline, 42% with SP/RP). The improvement is most dramatic for all-to-all where baseline barely helps (1.05x → 1.43x), because all-to-all's higher CU demand (64 vs 32) means DMA offload eliminates more interference.</p>
+
+<ul>
+<li>All-gather: c3_base 1.24x → ConCCL 1.40x avg</li>
+<li>All-to-all: c3_base 1.05x → ConCCL 1.43x avg（改善最大）</li>
+<li>最高 1.67x speedup</li>
+</ul>
+
+<p><strong>性能分析的批判性评估</strong>:</p>
+<ol>
+<li>所有数字都是 microbenchmark 级别，端到端 ML 训练的实际收益会被 kernel launch overhead、memory allocation 等稀释</li>
+<li>72% of ideal speedup 听起来好，但 ideal speedup 本身的计算假设了完美重叠（shorter kernel 完全隐藏），这在实际中需要精确的 timing 对齐</li>
+<li>Memory-bound GEMM + 大通信量的 GC-equal 场景（HBM 带宽竞争最严重）的数据点太少（仅 2 个），说服力有限</li>
+</ul>
+
+<h3 id="5-numerical-considerations">5. Numerical Considerations</h3>
+
+<p>论文未涉及数值精度问题。ConCCL 做的是纯数据搬运（all-gather, all-to-all），不涉及算术运算，因此不存在精度损失。</p>
+
+<p>这也正是 DMA offload 的局限：all-reduce 需要 reduction（求和），DMA 引擎无法执行，必须用 CU 或专用算术单元。</p>
+
+<h3 id="6-portability">6. Portability</h3>
+
+<p><strong>当前限制</strong>: 深度绑定 AMD MI300X 生态</p>
+<ul>
+<li>使用 AMD HSA API (<code>hsa_amd_memory_async_copy_on_engine</code>)</li>
+<li>利用 MI300X 特有的 CU reservation 功能</li>
+<li>DMA 引擎的数量和位置是 MI300X specific</li>
+</ul>
+
+<p><strong>NVIDIA GPU 的类比可能性</strong>:</p>
+<ul>
+<li>NVIDIA GPU 也有 copy engines (CE)，CUDA 的 <code>cudaMemcpyAsync</code> 可以利用</li>
+<li>NCCL 的 proxy thread 已经在做类似的事情（某些 collective 用 copy engine）</li>
+<li>但 NVIDIA 的 copy engine 数量、placement、与 SM 的 cache 关系不同</li>
+<li>CUDA 没有直接暴露 per-engine 调度的 API（不像 HSA 的 <code>_on_engine</code>）</li>
+</ul>
+
+<p><strong>跨平台移植的挑战</strong>:</p>
+<ol>
+<li>DMA engine 数量和 topology 不同 → collective algorithm 需要重新设计</li>
+<li>Cache hierarchy 不同 → interference 特性不同（NVIDIA L2 是全局共享的，不是 per-SM）</li>
+<li>CU/SM partitioning 机制不同 → resource partitioning heuristic 不可复用</li>
+<li>CPU orchestration 的开销取决于 CPU-GPU interconnect 架构</li>
+</ul>
+
+<h3 id="8-source-code-repository">8. Source Code & Repository</h3>
+
+<p>论文未开源代码。ConCCL 被明确称为 "proof-of-concepts (PoCs)"，可能是 AMD 内部实验代码。</p>
+
+<p><strong>相关开源项目</strong>:</p>
+<ul>
+<li>RCCL: https://github.com/ROCm/rccl （AMD 的 collective communication library）</li>
+<li>MSCCL++: https://github.com/microsoft/mscclpp （Microsoft 的 GPU communication stack，也有 DMA offload）</li>
+<li>rocBLAS: https://github.com/ROCm/rocBLAS （论文使用的 GEMM 库）</li>
+</ul>
+
+<h3 id="9-key-source-code-walkthrough">9. Key Source Code Walkthrough</h3>
+
+<h4 id="9a-core-analysis">9a. Core Analysis</h4>
+
+<p>虽然没有源码，但论文描述了 ConCCL 的核心实现逻辑：</p>
+
+<p><strong>ConCCL All-Gather 实现</strong>:</p>
+<ol>
+<li>将 collective 分解为 N-1 个 point-to-point transfer（N = GPU 数，这里 N=8）</li>
+<li>每个 transfer 分配到一个 SDMA engine（14 个 engine 中选 7 个）</li>
+<li>通过 HSA API 从 CPU 发起 transfer</li>
+<li>同步等待所有 transfer 完成</li>
+</ul>
+
+<p><strong>ConCCL All-to-All 实现</strong>:</p>
+<ol>
+<li>每个 GPU 有 N-1 个 send buffer 和 N-1 个 receive buffer</li>
+<li>分解为 N×(N-1) 个 point-to-point transfer</li>
+<li>分配到可用的 SDMA engine</li>
+<li>同步</li>
+</ul>
+
+<h4 id="9b-pseudocode-annotation">9b. Pseudocode Annotation</h4>
+
+<pre><code class="language-python">
+# ConCCL All-Gather (conceptual, per-GPU logic)
+def conccl_allgather(local_data, all_gpu_buffers, my_gpu_id, num_gpus=8):
+    &quot;&quot;&quot;
+    每个 GPU 将自己的 local_data 写入所有其他 GPU 的对应 slot。
+    使用 DMA 引擎而非 GPU CU 执行传输。
+    &quot;&quot;&quot;
+    transfers = []
+    for dst_gpu in range(num_gpus):
+        if dst_gpu == my_gpu_id:
+            continue
+        # 选择一个可用的 SDMA engine (MI300X 有 14 个)
+        engine_id = select_sdma_engine(dst_gpu)
+        # 通过 HSA API 发起异步 DMA 传输
+        # 关键: 这不占用任何 GPU CU，GEMM 可以同时全速运行
+        t = hsa_amd_memory_async_copy_on_engine(
+            dst=all_gpu_buffers[dst_gpu][my_gpu_id],  # 目标 GPU 上的 slot
+            src=local_data,                             # 本地数据
+            size=len(local_data),
+            engine_id=engine_id
+        )
+        transfers.append(t)
+    
+    # 等待所有传输完成
+    wait_all(transfers)
+
+# C3 调度 (CPU-side orchestration)
+def c3_with_conccl(gemm_args, collective_args):
+    &quot;&quot;&quot;
+    计算和通信并发：
+    - GEMM 在 GPU stream (所有 304 CU)
+    - Communication 在 DMA engines (0 CU)
+    &quot;&quot;&quot;
+    # 1. 启动 DMA 通信 (不占 CU)
+    comm_handle = conccl_allgather(**collective_args)
+    
+    # 2. 立即启动 GEMM (拥有全部 304 CU)
+    gemm_handle = launch_gemm_on_stream(**gemm_args)
+    
+    # 3. 等待两者完成
+    wait(comm_handle)
+    wait(gemm_handle)
+</code></pre>
+
+<h4 id="9c-data-layout">9c. Data Layout</h4>
+
+<p><strong>All-Gather 数据布局</strong> (8 GPU 示例):</p>
+<pre><code>
+Before:
+  GPU 0: [chunk_0]
+  GPU 1: [chunk_1]
+  ...
+  GPU 7: [chunk_7]
+
+After (每个 GPU 都有完整数据):
+  GPU 0: [chunk_0 | chunk_1 | ... | chunk_7]
+  GPU 1: [chunk_0 | chunk_1 | ... | chunk_7]
+  ...
+  GPU 7: [chunk_0 | chunk_1 | ... | chunk_7]
+
+DMA transfer pattern (per GPU):
+  GPU 0 → DMA engine 0 → write chunk_0 to GPU 1
+  GPU 0 → DMA engine 1 → write chunk_0 to GPU 2
+  ...
+  GPU 0 → DMA engine 6 → write chunk_0 to GPU 7
+  (7 concurrent DMA transfers per GPU, 14 engines available)
+</code></pre>
+
+<p><strong>All-to-All 数据布局</strong>:</p>
+<pre><code>
+Before (每个 GPU 有 N 份不同数据):
+  GPU 0: [data_0→0 | data_0→1 | ... | data_0→7]
+  GPU 1: [data_1→0 | data_1→1 | ... | data_1→7]
+
+After (转置):
+  GPU 0: [data_0→0 | data_1→0 | ... | data_7→0]
+  GPU 1: [data_0→1 | data_1→1 | ... | data_7→1]
+</code></pre>
+
+<h3 id="10-infrastructure-impact">10. Infrastructure Impact</h3>
+
+<p><strong>短期 (1-2 年)</strong>:</p>
+<ul>
+<li>通信库（RCCL/NCCL）可以在 bandwidth-bound all-gather/all-to-all 中引入 DMA offload path</li>
+<li>ML 框架的 overlap scheduler 可以利用 schedule prioritization heuristic</li>
+<li>对 FSDP weight gathering 特别有价值（正好是 all-gather + GEMM 的并发）</li>
+</ul>
+
+<p><strong>中期 (2-4 年)</strong>:</p>
+<ul>
+<li>GPU 厂商可能增强 DMA 引擎：加入简单算术能力（支持 all-reduce）、降低 launch latency</li>
+<li>可能出现 GPU-side DMA orchestration（而非 CPU-side），解决小传输的 overhead 问题</li>
+<li>与 fine-grained overlap（如 async tensor parallelism）的结合</li>
+</ul>
+
+<p><strong>长期启示</strong>:</p>
+<ul>
+<li>GPU 架构需要更好的资源隔离机制，不仅是 CU partitioning，还需要 memory bandwidth partitioning</li>
+<li>"专用数据搬运器" vs "通用计算单元" 的架构 tradeoff 值得深入探索</li>
+<li>随着 model size 增长，communication-to-computation ratio 增加，C3 优化的重要性持续提升</li>
+</ul>
+
+<p><strong>批判性评估</strong>:</p>
+
+<ol>
+<li><strong>泛化性问题严重</strong>：论文仅在 MI300X intra-node 8-GPU 上验证，实际大规模训练是 multi-node，跨节点通信的 DMA offload 机制完全不同</li>
+<li><strong>All-reduce 缺失是致命短板</strong>：Data parallelism 最核心的 collective 是 all-reduce（gradient reduction），ConCCL 无法处理，大大限制了实用价值</li>
+<li><strong>PoC vs Production 的鸿沟</strong>：ConCCL 用 simple direct algorithm，实际 collective library 需要 ring/tree/hierarchical algorithm + error handling + topology awareness</li>
+<li><strong>CPU orchestration 是根本性限制</strong>：DMA 由 CPU 发起，在 kernel-level overlap 的精细度上不如 GPU-initiated communication（如 NCCL 的 GPU kernel + proxy thread 模式）</li>
+<li><strong>论文的核心价值更多是 characterization 而非 solution</strong>：C3 taxonomy 和 interference 分析比 ConCCL 本身更有学术贡献</li>
+</ul>
+
+<hr>
+
+<h2 id="figures">Figures</h2>
+
+<table>
+<tr><th>File</th><th>Figure</th><th>Description</th></tr>
+<tr><td><code>fig1.png</code></td><td>Fig.1</td><td>Baseline C3 vs ConCCL via DMA offloads</td></tr>
+<tr><td><code>fig2.png</code></td><td>Fig.2</td><td>AMD MI300X architecture diagram</td></tr>
+<tr><td><code>fig3.png</code></td><td>Fig.3</td><td>DMA transfer flow in MI300X</td></tr>
+<tr><td><code>fig4.png</code></td><td>Fig.4</td><td>C3 taxonomy</td></tr>
+<tr><td><code>fig5.png</code></td><td>Fig.5</td><td>Kernel slowdown vs CU loss</td></tr>
+<tr><td><code>fig6.png</code></td><td>Fig.6</td><td>Infinity Cache bandwidth utilization</td></tr>
+<tr><td><code>fig7.png</code></td><td>Fig.7</td><td>Ideal speedup projection</td></tr>
+<tr><td><code>fig8.png</code></td><td>Fig.8</td><td>Speedups with SP/RP optimizations</td></tr>
+<tr><td><code>fig9.png</code></td><td>Fig.9</td><td>ConCCL vs RCCL isolated performance</td></tr>
+<tr><td><code>fig10.png</code></td><td>Fig.10</td><td>C3 speedup with ConCCL</td></tr>
+</table>
+
+<p>Images saved to: <code>images/2412.14335/</code></p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search + category filter for list pages */
+
+document.addEventListener('DOMContentLoaded', function() {
+  const searchBox = document.querySelector('.search-box');
+  const catBtns = document.querySelectorAll('.cat-btn');
+  const cards = document.querySelectorAll('.card');
+  const catSections = document.querySelectorAll('.cat-section');
+  let activeCategory = 'all';
+
+  function filterCards() {
+    const query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      const text = card.textContent.toLowerCase();
+      const cat = card.dataset.category || '';
+      const matchesSearch = !query || text.includes(query);
+      const matchesCat = activeCategory === 'all' || cat === activeCategory;
+      card.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+    });
+    // Hide empty category sections
+    catSections.forEach(function(sec) {
+      const visible = sec.querySelectorAll('.card:not([style*="display: none"])');
+      sec.style.display = visible.length > 0 ? '' : 'none';
+    });
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('input', filterCards);
+  }
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      filterCards();
+    });
+  });
+});
+</script>
+</body>
+</html>

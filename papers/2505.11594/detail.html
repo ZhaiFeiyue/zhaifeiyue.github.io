@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SageAttention3: Microscaling FP4 Attention for Inference and An Exploration of 8-Bit Training — Feiyue KB</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card */
+.card {
+  background: var(--card-bg); border-radius: 10px; padding: 16px 20px;
+  margin-bottom: 12px; box-shadow: var(--card-shadow);
+  border-left: 4px solid var(--accent); transition: box-shadow 0.15s;
+}
+.card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+.card-title { font-size: 1rem; font-weight: 600; margin-bottom: 4px; }
+.card-title a { color: var(--tx); }
+.card-meta { font-size: 0.82rem; color: var(--mt); margin-bottom: 6px; }
+.card-body { font-size: 0.9rem; line-height: 1.6; }
+.card-tags { margin-top: 6px; }
+.tag {
+  display: inline-block; background: var(--tag-bg); color: var(--tag-tx);
+  padding: 1px 8px; border-radius: 8px; font-size: 0.75rem; margin-right: 4px;
+}
+.card-links { margin-top: 8px; font-size: 0.85rem; }
+.card-links a { margin-right: 12px; }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/domain/">Domain</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>SageAttention3: Microscaling FP4 Attention for Inference and An Exploration of 8-Bit Training</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2505.11594</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention</span><span class="tag">FP4</span><span class="tag">quantization</span><span class="tag">blackwell</span><span class="tag">training</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/domain/kernel.html">← kernel (L4)</a>
+<a href="https://arxiv.org/abs/2505.11594" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="sageattention3-microscaling-fp4-attention-for-inference-and-an-exploration-of-8-bit-training">SageAttention3: Microscaling FP4 Attention for Inference and An Exploration of 8-Bit Training</h1>
+<blockquote>
+Jintao Zhang, Jia Wei, Pengle Zhang, Xiaoming Xu, Haofeng Huang, Haoxu Wang, Kai Jiang, Jianfei Chen, Jun Zhu | 2025-05 | https://arxiv.org/abs/2505.11594
+Category: kernel | Tags: llm, algorithm, framework
+Read: 2026-04-16
+</blockquote>
+
+<h2 id="core-contribution">Core Contribution</h2>
+<p>首次利用 Blackwell GPU 的 FP4 microscaling Tensor Core 实现 FP4 attention 加速推理（RTX5090 上达到 1038 TOPS，5x 快于 FlashAttention），并首次将低比特 attention 扩展到训练任务（INT8 SageBwd 在微调上无损）。</p>
+
+<h2 id="核心三问">核心三问</h2>
+
+<p><strong>Q1: 这篇论文试图解决什么核心痛点/问题？</strong></p>
+<p>Attention 的二次时间复杂度是生成模型的性能瓶颈。现有低比特 attention（FlashAttention3、SageAttention2）仅关注推理加速，没有人探索将低比特 attention 用于训练。同时，Blackwell GPU 新增的 FP4 Tensor Core 尚未被利用来加速 attention 计算。</p>
+
+<p><strong>Q2: 作者提出了什么新的"杀手锏"方法/架构？</strong></p>
+<p>两大贡献：(1) <strong>SageAttention3</strong> — 使用 NVFP4 microscaling 量化（1×16 block，E4M3 scale factor）加速 $Q \cdot K^\top$ 和 $P \cdot V$ 两个矩阵乘法，并提出 <strong>two-level quantization</strong> 解决 softmax 输出 P 在 FP4 量化时 scale factor 动态范围过窄的问题；(2) <strong>SageBwd</strong> — 首次将 INT8 per-block 量化扩展到 attention 的反向传播，关键洞察是保持 $dO \cdot V^\top$ 在 FP16 以避免梯度误差累积。</p>
+
+<p><strong>Q3: 最终效果/结论如何？</strong></p>
+<p>SageAttention3 在 RTX5090 上达到 <strong>1038 TOPS</strong>（5x 快于 FlashAttention2，11x 快于 xformers），端到端加速 HunyuanVideo 视频生成 3x（489s→164s）。SageBwd 在微调任务上与 BF16 无差异（Qwen2.5、Llama3.2），但预训练收敛速度较慢。</p>
+
+<h2 id="逻辑故事还原">逻辑故事还原</h2>
+
+<p><strong>背景 (Context):</strong></p>
+<blockquote>
+想象你在一个巨大的图书馆里找一本书。Attention 机制就像逐一对比每一对书的相关性——当书的数量翻倍，工作量翻四倍。FlashAttention 通过聪明的分块策略减少了内存搬运，但计算量本身没变。SageAttention2 用 INT8 量化把计算速度翻了一倍，但 FP4 能提供 8x 的理论加速——问题是 FP4 只有 15 个可表示的值，直接量化会严重损失精度。另外，所有低比特 attention 都只管推理，训练时的反向传播从未被量化加速。
+</blockquote>
+
+<p><strong>破局 (Insight):</strong></p>
+<blockquote>
+👉 核心洞察：softmax 输出 P 的值在 $[0,1]$ 范围内，FP4 microscaling 的 scale factor 必须用 E4M3 FP8 表示，但 $[0, 0.167]$ 的窄范围只能利用 E4M3 的 35 个值（总共 127 个可用值的 28%）。<strong>通过先做 per-token 归一化将范围扩展到 $[0, 448 \times 6]$，再做 microscaling FP4 量化</strong>，可用值从 280 个增加到 1016 个——精度提升 3.6 倍。这就像先把所有小数放大成整数再量化，充分利用了数字格式的表示能力。
+</blockquote>
+
+<p><strong>拆解 (Deconstruction):</strong></p>
+<ol>
+<li><strong>FP4 Microscaling 量化 Q、K、V</strong>: 将 Q、K、V 按 1×16 block 量化为 FP4 + E4M3 scale factor，使用 SageAttention2 的 smooth Q/K 技巧减少离群值</li>
+<li><strong>Two-level Quantization for P</strong>: 先 per-token 归一化 $\tilde{P}$ 到 $[0, 448 \times 6]$，再做标准 FP4 microscaling 量化，两个 scale 相乘还原</li>
+<li><strong>硬件级优化</strong>: K permutation（避免 accumulator layout 不匹配的 thread shuffle）、reuse shuffle（融合量化和 softmax 的 max reduction，节省 50% shuffle 操作，~10% kernel 加速）、producer warp epilogue（在寄存器压力下实现 MatMul 和 global store 的流水线重叠）</li>
+<li><strong>SageBwd 训练</strong>: 7 个矩阵乘法中 6 个用 INT8 per-block 量化，保持 $dO \cdot V^\top$ 在 FP16（因为 $dP \to dS \to dQ/dK$ 的误差链会沿序列长度累积）</li>
+<li><strong>互补性</strong>: SageBwd 微调 + SageAttention3 推理的组合比 BF16+FP4 更准（INT8 和 FP4 的数据分布更接近）</li>
+</ul>
+
+<h2 id="key-figures">Key Figures</h2>
+
+<h3 id="figure-1-overview-speedup-on-rtx5090">Figure 1: Overview Speedup on RTX5090</h3>
+<p>!<a href="../images/2505.11594/fig1-overview-speedup.png">Figure 1: Overview Speedup</a></p>
+<p><strong>What it shows</strong>: 左上角展示 kernel 级别 TOPS 对比（SageAttention3 达 1038 TOPS），右侧两张图展示 HunyuanVideo 端到端视频生成加速（489s→164s）</p>
+<p><strong>Why it matters</strong>: 直观证明 FP4 attention 在实际视频生成模型上的巨大加速效果——不仅是理论 TOPS，而是真实端到端延迟的 3x 降低</p>
+<p><strong>Detailed description</strong>: 左上 bar chart 对比 FlashAttention2、xformers、SageAttention 各版本在 RTX5090 上的 TOPS；右侧两张时间轴图展示 HunyuanVideo 生成一段视频时 attention 和其他部分的时间占比变化，SageAttention3 大幅压缩了 attention 部分的时间</p>
+
+<h3 id="figure-2-workflow-of-microscaling-fp4-attention">Figure 2: Workflow of Microscaling FP4 Attention</h3>
+<p>!<a href="../images/2505.11594/fig2-workflow-fp4-attention.png">Figure 2: FP4 Attention Workflow</a></p>
+<p><strong>What it shows</strong>: SageAttention3 的完整数据流——Q、K 经 smooth 后 FP4 量化做第一个 matmul，softmax 后的 P 经 two-level quantization 再与 FP4 量化的 V 做第二个 matmul</p>
+<p><strong>Why it matters</strong>: 这是论文的核心架构图，清晰展示了每一步的数据类型转换和量化策略</p>
+<p><strong>Detailed description</strong>: 数据流从左到右，Q 经 smooth-Q（减均值）后 FP4 量化，K 经 smooth-K（减均值）后转置并 FP4 量化，两者做 FP4MM 得到 S；S 经 online softmax 得到 $\tilde{P}$；$\tilde{P}$ 先 per-token scale 到 $[0, 448 \times 6]$，再 FP4 microscaling 量化；V 直接 FP4 量化；最终 FP4MM 得到 O</p>
+
+<h3 id="figure-3-two-level-quantization-analysis">Figure 3: Two-Level Quantization Analysis</h3>
+<p>!<a href="../images/2505.11594/fig3-two-level-quant-analysis.png">Figure 3: Two-Level Quantization</a></p>
+<p><strong>What it shows</strong>: (a) $\tilde{P}$ 的分布集中在 $[0,1]$；(b-c) direct vs two-level 量化下 scale factor 的分布；(d-e) 两种方法的量化误差对比</p>
+<p><strong>Why it matters</strong>: 这是论文最核心的技术创新——用可视化证明 two-level quantization 如何将 E4M3 scale factor 的有效利用从 35 个值提升到 127 个值</p>
+<p><strong>Detailed description</strong>: 5 个子图。(a) $\tilde{P}$ 的直方图显示值集中在接近 0 的区域；(b) direct quantization 下 $s_P$ 只分布在 $[0, 0.167]$，E4M3 仅有 35 个可用值；(c) two-level quantization 后 $s_{P2}$ 扩展到 $[0, 448]$，利用 127 个 E4M3 值；(d) direct 方法的误差大且分散；(e) two-level 方法误差小且集中</p>
+
+<h3 id="figure-4-kernel-speed-comparison-rtx5090-headim128">Figure 4: Kernel Speed Comparison (RTX5090, headim=128)</h3>
+<p>!<a href="../images/2505.11594/fig4-speed-rtx5090-h128.png">Figure 4: Speed Comparison</a></p>
+<p><strong>What it shows</strong>: 不同序列长度下 SageAttention3 vs FlashAttention2/xformers/SageAttention 各版本的 kernel TOPS</p>
+<p><strong>Why it matters</strong>: 证明 FP4 attention 在不同序列长度下一致地达到 4-5x 加速</p>
+<p><strong>Detailed description</strong>: x 轴为序列长度（1K-32K），y 轴为 TOPS。SageAttention3 曲线远高于其他方法，在 8K+ 序列长度下稳定在 ~1000 TOPS。FlashAttention2 约 200 TOPS，xformers 更低</p>
+
+<h3 id="figure-8-training-loss-curves">Figure 8: Training Loss Curves</h3>
+<p>!<a href="../images/2505.11594/fig8-training-loss-curves.png">Figure 8: Training Loss Curves</a></p>
+<p><strong>What it shows</strong>: (a) 预训练 loss 曲线对比 BF16 vs SageBwd；(b-e) 四个微调任务的 loss 曲线</p>
+<p><strong>Why it matters</strong>: 揭示了低比特 attention 训练的关键限制——微调完美匹配但预训练收敛慢</p>
+<p><strong>Detailed description</strong>: 5 个子图。(a) Llama 400M 在 FineWeb-Edu 上的预训练，SageBwd 收敛明显慢于 BF16，最终 loss 有 gap；(b-e) Qwen2.5 和 Llama3.2 在 GSM8K、DROP、MMLU、HELLASWAG 上的微调，SageBwd 与 BF16 的 loss 曲线几乎完全重合</p>
+
+<h2 id="key-tables">Key Tables</h2>
+
+<h3 id="table-1-accuracy-ablation">Table 1: Accuracy Ablation</h3>
+<table>
+<tr><th>Configuration</th><th>CosSim ↑</th><th>L1 ↓</th><th>RMSE ↓</th></tr>
+<tr><td>(a) MXFP4</td><td>98.37%</td><td>0.294</td><td>0.994</td></tr>
+<tr><td>(a) <strong>NVFP4</strong></td><td><strong>99.52%</strong></td><td><strong>0.077</strong></td><td><strong>0.201</strong></td></tr>
+<tr><td>(b) Direct quant for P</td><td>93.32%</td><td>0.193</td><td>1.103</td></tr>
+<tr><td>(b) <strong>Two-level quant</strong></td><td><strong>99.52%</strong></td><td><strong>0.077</strong></td><td><strong>0.201</strong></td></tr>
+<tr><td>(c) INT8 for $dO \cdot V^\top$</td><td>97.47%</td><td>0.171</td><td>2.440</td></tr>
+<tr><td>(c) <strong>FP16 for $dO \cdot V^\top$</strong></td><td><strong>99.77%</strong></td><td><strong>0.039</strong></td><td><strong>0.692</strong></td></tr>
+</table>
+<p><strong>Takeaway</strong>: NVFP4 优于 MXFP4；two-level quantization 将 CosSim 从 93.32% 提升到 99.52%；保持 $dO \cdot V^\top$ 在 FP16 将 CosSim 从 97.47% 提升到 99.77%</p>
+
+<h3 id="table-2-end-to-end-metrics-video-image-models">Table 2: End-to-End Metrics (Video/Image Models)</h3>
+<table>
+<tr><th>Model</th><th>Attention</th><th>CLIPSIM ↑</th><th>VQA-a ↑</th><th>FID ↓</th></tr>
+<tr><td>CogVideoX</td><td>Full-Precision</td><td>0.1865</td><td>70.476</td><td>-</td></tr>
+<tr><td></td><td>SageAttention3 (4bit)</td><td>0.1881</td><td>69.860</td><td>-</td></tr>
+<tr><td>HunyuanVideo</td><td>Full-Precision</td><td>0.1838</td><td>68.998</td><td>-</td></tr>
+<tr><td></td><td>SageAttention3 (4bit)</td><td>0.1866</td><td>70.552</td><td>-</td></tr>
+<tr><td>Flux</td><td>Full-Precision</td><td>-</td><td>-</td><td>162.812</td></tr>
+<tr><td></td><td>SageAttention3 (4bit)</td><td>-</td><td>-</td><td>162.121</td></tr>
+</table>
+<p><strong>Takeaway</strong>: SageAttention3 在所有模型上几乎无质量损失，部分指标甚至略有提升</p>
+
+<h3 id="table-4-end-to-end-speedup">Table 4: End-to-End Speedup</h3>
+<table>
+<tr><th>Model</th><th>Original</th><th>SageAttention3</th><th>Speedup</th></tr>
+<tr><td>CogVideoX (2B)</td><td>64s</td><td>27s</td><td><strong>2.4x</strong></td></tr>
+<tr><td>HunyuanVideo</td><td>489s</td><td>164s</td><td><strong>3.0x</strong></td></tr>
+<tr><td>Llama (8K, train)</td><td>2.1s</td><td>1.9s (SageBwd)</td><td>1.1x</td></tr>
+<tr><td>Llama (16K, train)</td><td>6.0s</td><td>5.2s (SageBwd)</td><td>1.15x</td></tr>
+</table>
+<p><strong>Takeaway</strong>: 推理加速显著（2.4-3x），训练加速相对温和（1.1-1.15x）</p>
+
+<h3 id="table-18-speed-accuracy-tradeoff">Table 18: Speed-Accuracy Tradeoff</h3>
+<table>
+<tr><th>Method</th><th>TOPS (5090) ↑</th><th>TOPS (H100) ↑</th><th>CosSim ↑</th></tr>
+<tr><td>FlashAttention2</td><td>214</td><td>338</td><td>100.000%</td></tr>
+<tr><td>FlashAttention3 (16bit)</td><td>N/A</td><td>470</td><td>100.000%</td></tr>
+<tr><td>FlashAttention3 (8bit)</td><td>N/A</td><td>890</td><td>98.570%</td></tr>
+<tr><td>SageAttention1</td><td>479</td><td>518</td><td>99.996%</td></tr>
+<tr><td>SageAttention2 (8bit)</td><td>643</td><td>885</td><td>99.995%</td></tr>
+<tr><td><strong>SageAttention3 (4bit)</strong></td><td><strong>1038</strong></td><td>N/A</td><td><strong>99.551%</strong></td></tr>
+</table>
+<p><strong>Takeaway</strong>: SageAttention3 以 0.45% 的 CosSim 下降换取 5x 的速度提升，性价比极高</p>
+
+<h2 id="summary">Summary</h2>
+
+<p>SageAttention3 是清华大学朱军团队推出的第三代量化 attention 加速方案，有两大核心贡献。</p>
+
+<p><strong>第一，FP4 Attention 推理加速</strong>：利用 NVIDIA Blackwell GPU 的 FP4 Tensor Core（NVFP4，E2M1 数据类型，1×16 block，E4M3 scale factor），将 attention 中的两个矩阵乘法（$Q \cdot K^\top$ 和 $P \cdot V$）量化到 FP4。核心技术创新是 <strong>two-level quantization</strong>——softmax 输出 P 的值域 $[0,1]$ 导致 FP4 scale factor 只能利用 E4M3 格式的 28% 可表示值（35/127），通过先 per-token 归一化到 $[0, 448 \times 6]$ 再做 microscaling 量化，将可用表示值从 280 提升到 1016。硬件实现方面，K permutation 避免了 accumulator layout 的 thread shuffle，reuse shuffle 融合了量化和 softmax 的 max reduction（~10% kernel 加速），producer warp epilogue 在寄存器压力下实现了计算和存储的流水线重叠。在 RTX5090 上达到 1038 TOPS，5x 快于 FlashAttention2，端到端加速视频生成 2.4-3x。</p>
+
+<p><strong>第二，8-bit Trainable Attention</strong>：首次将低比特量化 attention 扩展到训练的前向和反向传播。关键发现是反向传播中 $dO \cdot V^\top$ 的量化误差会通过 $dP \to dS \to dQ/dK$ 的依赖链沿序列长度累积，因此必须保持 $dO \cdot V^\top$ 在 FP16，其余 6 个矩阵乘法用 INT8 per-block 量化。选择 INT8 而非 FP8 的原因：(1) INT8 梯度精度更高（CosSim: 0.9987 vs 0.9880 for dQ）；(2) INT8 硬件支持更广（A100, MI250, Ascend 910B）。实验表明微调任务上无损但预训练收敛较慢。</p>
+
+<h2 id="key-findings">Key Findings</h2>
+<ul>
+<li>FP4 microscaling attention 在 RTX5090 上达到 1038 TOPS，比 FlashAttention2 快 5x，比 xformers 快 11x</li>
+<li>Two-level quantization 将 softmax 输出 P 的 FP4 量化 CosSim 从 93.32% 提升到 99.52%</li>
+<li>NVFP4（E2M1+E4M3, block 1×16）显著优于 MXFP4（E2M1+E8M0, block 1×32）</li>
+<li>8-bit trainable attention (SageBwd) 在微调任务上与 BF16 完全一致，但预训练收敛较慢</li>
+<li>反向传播中 $dO \cdot V^\top$ 是精度最敏感的矩阵乘法，必须保持 FP16</li>
+<li>INT8 SageBwd 优于 FP8 SageBwd（更高精度 + 更广硬件兼容）</li>
+<li>SageBwd 微调 + SageAttention3 推理的组合产生互补效果（INT8 和 FP4 数据分布更接近）</li>
+<li>端到端加速：HunyuanVideo 3x、CogVideoX 2.4x（推理），Llama 1.15x（训练）</li>
+</ul>
+
+<h2 id="limitations">Limitations</h2>
+<ul>
+<li>FP4 attention 仅支持 Blackwell GPU（RTX5090/B200/B300），不向下兼容</li>
+<li>SageBwd 在预训练任务上收敛速度明显慢于 BF16，目前不适用于预训练</li>
+<li>SageBwd 的实际加速（1.1-1.15x）远低于理论上限，受限于 Triton kernel 实现</li>
+<li>FlashAttention3 仅支持 Hopper GPU，无法在 Blackwell 上直接对比</li>
+<li>论文未探讨 FP4 attention 在 LLM 长序列 prefill 场景的效果</li>
+<li>层间量化误差累积问题需要手动选择敏感层保持 FP16</li>
+</ul>
+
+<h2 id="infrastructure-impact">Infrastructure Impact</h2>
+<ul>
+<li>Algorithm: 证明低比特 attention 可用于微调训练，为 quantization-aware training 提供新思路；预训练的收敛问题值得进一步研究</li>
+<li>Kernel: 首个 FP4 attention kernel，为 Blackwell GPU 上的 attention 计算提供了新的性能基准；two-level quantization 是通用的 FP4 softmax 量化技巧</li>
+<li>Framework: 即插即用的 PyTorch 接口，可直接替换 FlashAttention；CUTLASS + CUDA 实现（推理），Triton 实现（训练）</li>
+<li>LLM: 大幅加速视频/图像生成模型的推理；微调训练也能加速；对 LLM prefill 的影响待验证</li>
+<li>Agent: 5x attention 加速可显著降低实时生成模型的延迟，使交互式视频生成更可行</li>
+</ul>
+
+<hr>
+
+<h2 id="deep-analysis-kernel">Deep Analysis (kernel)</h2>
+
+<h3 id="1-target-operation">1. Target Operation</h3>
+
+<p><strong>计算原语</strong>: Attention（包含两个 GEMM：$S = Q \cdot K^\top$ 和 $O = P \cdot V$，以及 online softmax）</p>
+
+<p><strong>输入/输出形状和数据类型</strong>:</p>
+<ul>
+<li>输入：$Q, K, V \in \mathbb{R}^{N \times D}$，FP16/BF16</li>
+<li>中间：$S, P \in \mathbb{R}^{N \times N}$（tiled，不完整存储）</li>
+<li>输出：$O \in \mathbb{R}^{N \times D}$，FP16/BF16</li>
+<li>FP4 推理：Q, K, V 量化为 NVFP4（E2M1）+ E4M3 scale；P 经 two-level quant 后 FP4；累加器 FP32</li>
+<li>INT8 训练：Q, K, V, P, dS 量化为 INT8 per-block；$dO \cdot V^\top$ 保持 FP16</li>
+</ul>
+
+<p><strong>理论算术强度</strong>: 标准 attention 的 FLOPs = $4 \cdot N^2 \cdot D$（两个 $N \times D \times D \times N$ 矩阵乘法），memory = $O(N \cdot D)$（Q/K/V IO），所以 arithmetic intensity $\propto N$。长序列时 compute-bound，短序列时 memory-bound。</p>
+
+<p><strong>Roofline 位置</strong>: FP4 的 theoretical peak = 1676 TOPS (RTX5090)，实测 1038 TOPS ≈ <strong>62% utilization</strong>。对于 $N \geq 4K$ 的场景，kernel 处于 compute-bound 区域。</p>
+
+<h3 id="2-hardware-model">2. Hardware Model</h3>
+
+<p><strong>目标 GPU</strong>: NVIDIA Blackwell (RTX5090, B200, B300) — FP4 attention 推理；NVIDIA Ampere/Ada (RTX4090) — INT8 SageBwd 训练</p>
+
+<p><strong>硬件单元使用</strong>:</p>
+<ul>
+<li>FP4 Tensor Core (Blackwell)：核心 GEMM 加速，NVFP4 格式（1×16 block，E4M3 scale）</li>
+<li>INT8 Tensor Core (Ampere/Ada)：SageBwd 的 6 个 GEMM</li>
+<li>CUDA 核心：softmax、量化/反量化、scale 运算</li>
+<li>SFU：exp() 用于 softmax</li>
+</ul>
+
+<p><strong>内存层级利用</strong>:</p>
+<ul>
+<li>Registers：FlashAttention tiling 的 O 累加器、softmax 状态（m, l）</li>
+<li>Shared memory (SMEM)：Q, K, V 的 tiles，FP4 quantized tiles + scale factors</li>
+<li>L2 cache：隐式受益于 FlashAttention 的 tiling</li>
+<li>HBM：输入 Q/K/V 和输出 O 的全局读写</li>
+</ul>
+
+<p><strong>理论峰值吞吐量</strong>:</p>
+<table>
+<tr><th>GPU</th><th>FP4 TOPS</th><th>FP16 TOPS</th><th>FP4/FP16 比</th></tr>
+<tr><td>RTX5090</td><td>1676</td><td>209.5</td><td>8x</td></tr>
+<tr><td>B200</td><td>10000</td><td>2500</td><td>4x</td></tr>
+<tr><td>B300</td><td>15000</td><td>2500</td><td>6x</td></tr>
+</table>
+
+<h3 id="3-optimization-techniques">3. Optimization Techniques</h3>
+
+<p>如 Algorithm 1 (FP4 Attention) 和 Figure 2 所示：</p>
+
+<table>
+<tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
+<tr><td>Tiling / blocking</td><td>✅</td><td>FlashAttention-style tiling，Bq × D 和 Bkv × D blocks</td></tr>
+<tr><td>Software pipelining</td><td>✅</td><td>Producer warp epilogue：producer warps 的 ping-pong 调度，一个 load 下一 tile 的同时另一个 store 结果</td></tr>
+<tr><td>Warp specialization</td><td>✅</td><td>Producer warps (load/store) + Consumer warps (FP4MM)，非传统的 consumer-centric 设计</td></tr>
+<tr><td>Vectorized memory access</td><td>✅</td><td>FP4 格式天然支持 128-bit 向量化（32 个 FP4 = 16 bytes）</td></tr>
+<tr><td>SMEM optimization</td><td>✅</td><td>K permutation 避免 accumulator→operand layout 的 thread shuffle；量化相关数据在 SMEM 中传递</td></tr>
+<tr><td>Register pressure management</td><td>✅</td><td>因寄存器压力放弃了 consumer-side ping-pong，改用 producer warp epilogue</td></tr>
+<tr><td>Kernel fusion</td><td>✅</td><td><strong>Reuse shuffle</strong>：将 FP4 microscaling 的 max-16 reduction 与 online softmax 的 rowmax 融合，减少 50% shuffle 操作，约 10% kernel 加速</td></tr>
+<tr><td>Asynchronous operations</td><td>✅</td><td>CUTLASS 3.x 的 async copy 用于 global→shared memory 数据搬运</td></tr>
+</table>
+
+<h3 id="4-performance-analysis">4. Performance Analysis</h3>
+
+<p><strong>达到理论峰值的百分比</strong>:</p>
+<ul>
+<li>RTX5090: 1038 / 1676 = <strong>61.9%</strong> FP4 peak utilization</li>
+<li>对比：FlashAttention2 在 RTX5090 上约 214 TOPS / 209.5 TOPS FP16 peak ≈ ~100%</li>
+</ul>
+
+<p>如 Figure 4 所示，在不同序列长度下性能表现：</p>
+
+<p><strong>vs vendor library / SOTA</strong>:</p>
+<ul>
+<li>vs FlashAttention2：5x faster (RTX5090)</li>
+<li>vs xformers：11x faster (RTX5090)</li>
+<li>vs SageAttention2：1.6x faster (RTX5090)</li>
+<li>SageBwd vs FlashAttention2 (fwd+bwd)：1.67x (RTX4090)</li>
+</ul>
+
+<p><strong>性能随问题规模的变化</strong>: 在 $N \geq 4K$ 时 kernel 处于 compute-bound 区域，TOPS 稳定在 ~1000。$N < 2K$ 时 launch overhead 和 memory-bound 导致效率下降。</p>
+
+<p><strong>延迟 vs 吞吐量</strong>: 对于视频生成（长序列、batch=1），延迟改善显著（3x）。对于 LLM decode（短序列、大 batch），FP4 attention 的优势可能不明显。</p>
+
+<h3 id="5-numerical-considerations">5. Numerical Considerations</h3>
+
+<p><strong>精度 vs baseline</strong>:</p>
+<ul>
+<li>FP4 SageAttention3 CosSim = 99.551%（vs FP16 = 100%）— 仅损失 0.45%</li>
+<li>INT8 SageBwd dQ CosSim = 99.87%，dK = 99.93%，dV = 99.95%</li>
+</ul>
+
+<p><strong>数值稳定性技巧</strong>:</p>
+<ol>
+<li><strong>Smooth-K</strong>: $K = K - \text{mean}(K)$，减少 K 的离群值</li>
+<li><strong>Smooth-Q</strong>: 每 block $Q_i$ 减去均值 $\bar{q}_i$，量化后通过 GEMV 补偿偏置项</li>
+<li><strong>Two-level quantization</strong>: 解决 P 的窄动态范围问题</li>
+<li><strong>Online softmax</strong>: 数值稳定的 softmax 实现（减最大值）</li>
+<li><strong>选择性 FP16 保持</strong>: $dO \cdot V^\top$ 在反向传播中保持 FP16 防止梯度误差累积</li>
+<li><strong>敏感层 FP16 fallback</strong>: 可将误差增长最大的 3 层保持 FP16，显著降低层间累积误差</li>
+</ul>
+
+<p><strong>数据类型选择</strong>: 选择 NVFP4 而非 MXFP4 — NVFP4 的 1×16 block + E4M3 scale 比 MXFP4 的 1×32 block + E8M0 scale 精度高得多（CosSim 99.52% vs 98.37%），因为更小的 block 更好地约束离群值影响，E4M3 scale 有更细粒度的动态范围。</p>
+
+<h3 id="6-portability">6. Portability</h3>
+
+<table>
+<tr><th>Dimension</th><th>Assessment</th></tr>
+<tr><td>Cross-GPU within vendor</td><td>FP4 attention：仅 Blackwell (SM100+)；SageBwd (INT8)：Ampere/Ada/Hopper/Blackwell</td></tr>
+<tr><td>Cross-vendor</td><td>FP4: CUDA only，依赖 NVFP4 Tensor Core；INT8 SageBwd: Triton 实现，理论上可移植到 AMD（INT8 GEMM 是通用的）</td></tr>
+<tr><td>Integration</td><td>Python package（pip install sageattention），torch.nn.functional.scaled_dot_product_attention 替换</td></tr>
+<tr><td>Compiler dependency</td><td>FP4: CUTLASS 3.x + CUDA 12.6+；SageBwd: Triton 3.0+</td></tr>
+</table>
+
+<h3 id="7-source-code-repository">7. Source Code & Repository</h3>
+
+<ul>
+<li><strong>代码仓库</strong>: <a href="https://github.com/thu-ml/SageAttention">https://github.com/thu-ml/SageAttention</a></li>
+<li><strong>语言</strong>: CUTLASS + CUDA（FP4 推理 kernel），OpenAI Triton（INT8 训练 kernel），Python wrapper</li>
+<li><strong>构建要求</strong>: CUDA 12.6+，CUTLASS 3.x，PyTorch 2.0+，Triton 3.0+</li>
+<li><strong>安装</strong>: <code>pip install sageattention</code></li>
+</ul>
+
+<h3 id="8-key-source-code-walkthrough">8. Key Source Code Walkthrough</h3>
+
+<h4 id="8b-algorithm-1-fp4-attention-pseudocode-annotation">8b. Algorithm 1 (FP4 Attention) Pseudocode Annotation</h4>
+
+<pre><code>
+// [Line 2] Preprocessing: K = K - mean(K)
+// Grid-level: 全局预处理 kernel，计算 K 的 per-head 均值并减去
+// Memory: global memory read K, write K (in-place)
+// Why: Smooth-K 减少 K 的离群值，提高量化精度
+
+// [Line 5] q̄_i = mean(Q_i), (sQ, Q̂_i) = φ(Q_i - q̄_i)
+// Block-level: 每个 threadblock 处理一个 Q tile (Bq × D)
+// Memory: Q tile 从 global → shared → registers，量化后的 Q̂ 和 sQ 存 shared
+// Compute-bound: FP4 quantization (find max per 1×16, divide, round)
+// Why: Smooth-Q 减去均值后量化，通过 GEMV 补偿偏置
+
+// [Line 7] (sK, K̂_j) = φ(K_j^T), (sV, V̂_j) = φ(V_j)
+// 注意 K 需要转置后量化 — 论文在 Appendix A.5 提到 V 也需要转置
+// Memory: K, V tiles 从 global → shared，量化在 shared memory 中完成
+// Optimization: V 的转置与量化 kernel 融合，避免额外 I/O
+
+// [Line 8] S_ij = FP4MM(Q̂_i, sQ, K̂_j, sK) + GEMV(q̄_i, K_j^T)
+// Warp-level: Consumer warps 执行 FP4 Tensor Core GEMM (Bq × Bkv)
+// Hardware: FP4 Tensor Core → FP32 accumulator
+// GEMV 是 Smooth-Q 的偏置补偿项，用 CUDA cores 计算
+// Compute-bound phase: 这是 kernel 的核心瓶颈
+
+// [Line 9] Online softmax: m, exp(S-m), l 计算
+// Warp-level: rowmax 和 rowsum 需要 warp-level reduction
+// Memory: m, l 存在 registers 中
+
+// [Line 10] Two-level quantization for P̃
+// sP1 = rowmax(P̃)/(448×6)  — per-token scale (FP32)
+// P̃ = P̃/sP1              — 归一化到 [0, 448×6]
+// sP2, P̂ = φ(P̃)          — 标准 FP4 microscaling
+// CRITICAL OPTIMIZATION: 重用 softmax 的 rowmax 计算 sP1 的分子
+// &quot;Reuse shuffle&quot; — 融合 max-16 reduction 和 softmax rowmax
+// 减少 50% inter-thread shuffle，~10% kernel speedup
+
+// [Line 11] O_ij = rescale * O_prev + FP4MM(P̂, sP2, V̂, sV) * sP1
+// Consumer warps: 第二个 FP4 GEMM
+// sP1 的乘法在 FP32 accumulator 上完成
+// Producer warp epilogue: 一个 producer warp load 下一 iteration 的输入，
+// 另一个 store 当前 O 到 global memory，consumer warps 将 GEMM 结果
+// 从 registers 搬到 shared memory
+</code></pre>
+
+<h4 id="8c-data-layout-memory-access-patterns">8c. Data Layout & Memory Access Patterns</h4>
+
+<ul>
+<li><strong>输入 tensor layout</strong>: Q, K, V 按 [batch, seq_len, num_heads, head_dim] 连续存储（head_dim 维度连续）</li>
+<li><strong>K permutation</strong>: FP4 GEMM 的 FP32 accumulator layout 与 operand A 的 register layout 不匹配（Figure 19-21），通过 permute P tile 的列来适配 accumulator layout，对应 permute K 的列（与量化 kernel 融合）</li>
+<li><strong>V transpose</strong>: V 需要变为 seq_len 维度连续（row-major for FP4 MMA），与量化 kernel 融合</li>
+<li><strong>Memory coalescing</strong>: FP4 格式（4 bits/element）天然支持高带宽加载，32 个 FP4 值 = 16 bytes = 一个 128-bit load</li>
+<li><strong>Bank conflict</strong>: K permutation 的设计目的之一就是避免 shared memory 中的 bank conflict</li>
+<li><strong>Register allocation</strong>: 寄存器压力大是本 kernel 的关键约束——两个 FP4 GEMM 的累加器、online softmax 状态、two-level 量化的中间变量都需要 registers，导致放弃传统的 consumer ping-pong 调度</li>
+</ul>
+
+<h3 id="9-infrastructure-impact">9. Infrastructure Impact</h3>
+
+<table>
+<tr><th>Layer</th><th>Impact</th></tr>
+<tr><td>Algorithm</td><td>证明 FP4 量化可用于 attention 推理（无损）、INT8 可用于微调训练。Two-level quantization 是可推广的 FP4 softmax 量化范式。预训练的收敛问题指示需要更精细的量化策略或混合精度方案。</td></tr>
+<tr><td>Framework</td><td>即插即用 PyTorch API，可直接替换 FlashAttention。推理框架（vLLM, SGLang）可直接集成 SageAttention3 获得 Blackwell 上的 5x attention 加速。训练框架可集成 SageBwd 加速微调。</td></tr>
+<tr><td>LLM</td><td>5x attention kernel 加速对视频/图像生成模型影响巨大（attention 占比高）。对 LLM prefill 的加速取决于序列长度和 attention 占比。Decode 阶段因 batch 大、序列短，FP4 优势可能不明显。</td></tr>
+<tr><td>Agent</td><td>3x 端到端视频生成加速使交互式 AI 创作更可行（HunyuanVideo 489s→164s）。对 LLM agent 的实时推理，需要结合 KV cache 量化等技术。</td></tr>
+</table>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search + category filter for list pages */
+
+document.addEventListener('DOMContentLoaded', function() {
+  const searchBox = document.querySelector('.search-box');
+  const catBtns = document.querySelectorAll('.cat-btn');
+  const cards = document.querySelectorAll('.card');
+  const catSections = document.querySelectorAll('.cat-section');
+  let activeCategory = 'all';
+
+  function filterCards() {
+    const query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      const text = card.textContent.toLowerCase();
+      const cat = card.dataset.category || '';
+      const matchesSearch = !query || text.includes(query);
+      const matchesCat = activeCategory === 'all' || cat === activeCategory;
+      card.style.display = (matchesSearch && matchesCat) ? '' : 'none';
+    });
+    // Hide empty category sections
+    catSections.forEach(function(sec) {
+      const visible = sec.querySelectorAll('.card:not([style*="display: none"])');
+      sec.style.display = visible.length > 0 ? '' : 'none';
+    });
+  }
+
+  if (searchBox) {
+    searchBox.addEventListener('input', filterCards);
+  }
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      filterCards();
+    });
+  });
+});
+</script>
+</body>
+</html>
