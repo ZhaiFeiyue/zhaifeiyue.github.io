@@ -233,38 +233,38 @@ Read: 2026-04-18
 <h2 id="key-figures">Key Figures</h2>
 
 <h3 id="figure-1-all-gather-prompt-structure">Figure 1: All-Gather Prompt Structure</h3>
-<p>!<a href="../images/2604.03143/fig1-allgather.png">Figure 1: All-Gather Prompt Structure</a></p>
+<p><img src="/assets/2604.03143/fig1-allgather.png" alt="Figure 1: All-Gather Prompt Structure"></p>
 <p><strong>What it shows</strong>：三个 agent 在同一轮中的 prompt 组成——各自的私有历史 $H$（长度不一）加上同一组共享输出块 $O_1, O_2, O_3$，但因为 $\Pi_i$ 给每个 agent 的块顺序不同，同样的 $O_1$ 在不同 prompt 中出现在不同的绝对 offset。</p>
 <p><strong>Why it matters</strong>：这张图直接解释了为什么 prefix caching 在 multi-agent 场景彻底失效——前缀 bit 对 bit 相同是 prefix caching 的先决条件，而 $H$ 长度不等就把对齐打破了。它也是 TokenDance "round-aware" 设计的出发点：内容相同但位置不同，就必须用 content-based segment hashing 而不是 position-based chunk hashing。</p>
 <p><strong>Detailed description</strong>：左侧列出 3 个 agent 的完整 prompt，每个 prompt 顶部是长度不一的 $H_i$ 块（浅色），底部是标注了 $O_1/O_2/O_3$ 的共享块（三种深色），图中用竖直虚线对齐同色块展示它们在 token 轴上的偏移差异。最右侧的标注强调"same content, different absolute positions"。</p>
 
 <h3 id="figure-2-motivation-—-scaling-gap">Figure 2: Motivation — Scaling Gap</h3>
-<p>!<a href="../images/2604.03143/fig2a-scaling-latency.png">Figure 2a: Per-request latency under multi-agent vs independent loads</a></p>
-<p>!<a href="../images/2604.03143/fig2b-scaling-memory.png">Figure 2b: Peak KV Cache usage comparison</a></p>
+<p><img src="/assets/2604.03143/fig2a-scaling-latency.png" alt="Figure 2a: Per-request latency under multi-agent vs independent loads"></p>
+<p><img src="/assets/2604.03143/fig2b-scaling-memory.png" alt="Figure 2b: Peak KV Cache usage comparison"></p>
 <p><strong>What it shows</strong>：同样 250 个子请求，multi-agent workload（10 sessions × 25 rounds）与 250 个独立 request 在 A100-80G + Qwen2.5-14B 上的对比。左：latency-vs-request-index 曲线，multi-agent 从头就顶着 136 s 的 P99，而独立请求从低位逐渐爬到 125 s；右：peak KV Cache footprint，multi-agent 占 41.5 GiB（99.3% pool），独立请求只占 24.8 GiB（59.2%）。</p>
 <p><strong>Why it matters</strong>：用实测说明"即便总 workload 一样，只要 cache 需要跨轮 coexist 就会把内存池撑爆并触发 preempt/swap"。这是 TokenDance 把 storage 列为一等公民的经验证据——就算 prefill 再快，不砍每 agent 存储都救不了 scaling。</p>
 <p><strong>Detailed description</strong>：(a) 横轴是 request index (0-250)，纵轴是子请求 latency，两条曲线颜色区分 multi-agent vs independent；(b) 条形图展示两种 workload 的 peak KV Cache 占用，标注绝对值与百分比。</p>
 
 <h3 id="figure-5-tokendance-overview">Figure 5: TokenDance Overview</h3>
-<p>!<a href="../images/2604.03143/fig5-overview.png">Figure 5: TokenDance overview — three components</a></p>
+<p><img src="/assets/2604.03143/fig5-overview.png" alt="Figure 5: TokenDance overview — three components"></p>
 <p><strong>What it shows</strong>：TokenDance 的三块组件并列：①round-aware prompt interface 保留块结构；②collective KV Cache reuse 把 N 个请求组成 group 做一次 RoPE+diff；③diff-aware storage + fused restore 把 per-agent cache 压成 Master + sparse diffs。</p>
 <p><strong>Why it matters</strong>：一图说清论文的"先暴露结构 → 共享计算 → 共享存储"三段式设计原则。它也明示了本文的 design rule："把 round structure 留给 runtime 看见"和"每个请求一份语义 cache，但共享所有真正公共的东西"。</p>
 <p><strong>Detailed description</strong>：顶部是 application 侧的多 agent prompts（带 separator token 标注分段），中部是 runtime 的 block-level scheduler 把 N 个兼容 request 汇入 KV Collector；底部是 storage 层，画出 Master 与 Mirror 的关系以及回读时的 fused restore 路径。各组件之间用带标注的箭头表示数据流（token → KV → diff）。</p>
 
 <h3 id="figure-7-collective-kv-cache-reuse-核心创新">Figure 7: Collective KV Cache Reuse (核心创新)</h3>
-<p>!<a href="../images/2604.03143/fig7-collective-reuse.png">Figure 7: Collective KV Cache Reuse</a></p>
+<p><img src="/assets/2604.03143/fig7-collective-reuse.png" alt="Figure 7: Collective KV Cache Reuse"></p>
 <p><strong>What it shows</strong>：三种路径对比。T1：vLLM 从零算所有层；T2：per-request PIC，N 个 agent 各自 RoPE + diff + selective recompute；T3：TokenDance 把 N 个请求的 Q/K 拼成一个 batch 做<strong>一次</strong> RoPE，在 check layer 做<strong>一次</strong> important-position 选择，后续层直接用这个集合刷新每个请求的 K/V。</p>
 <p><strong>Why it matters</strong>：这是 compute 侧的核心 diagram。它展示了"从每请求摊销 → 每轮摊销"的粒度跃迁，也呼应了本文的"amortize group-wide work once per round"原则。Section 6.3 的 2.57× speedup 就是这个 diagram 的量化结果。</p>
 <p><strong>Detailed description</strong>：左侧画出 3 个 agent 的 prompt（共享块颜色相同，排列顺序不同）；右侧是三条 compute timeline：T1 横排 3 条独立 prefill；T2 横排 3 条 PIC reuse（RoPE + diff + recompute 被画成重复色块）；T3 把 3 个 agent 的操作合并，RoPE 和 diff 只画一遍（大色块），重算部分保留每请求独立。</p>
 
 <h3 id="figure-8-diff-aware-storage-master-mirror">Figure 8: Diff-Aware Storage (Master-Mirror)</h3>
-<p>!<a href="../images/2604.03143/fig8-diff-storage.png">Figure 8: Master-Mirror Diff-Aware Storage</a></p>
+<p><img src="/assets/2604.03143/fig8-diff-storage.png" alt="Figure 8: Master-Mirror Diff-Aware Storage"></p>
 <p><strong>What it shows</strong>：左边 3 份近乎相同的 recovered KV Cache，仅在 10–20% 位置不同；右边是 TokenDance 的存储布局——Master 保留一份完整 cache，Diff 2 / Diff 3 只记录与 Master 不同的块的索引和 K/V correction。</p>
 <p><strong>Why it matters</strong>：这是 memory 侧的关键 figure。它直接对应 11–17× 的压缩比来源，也解释了为什么要和 collective reuse 共享同一个 reuse plan（reuse plan 里有 Master 选择和 important positions，直接被存储层消费）。</p>
 <p><strong>Detailed description</strong>：左侧 3 个 agent 的 cache 以同色/异色格子表示共享块/私有差异；右侧 Master 仍然是密集张量形状，Diff 2/3 缩成块稀疏结构（只有几个高亮块 + 索引列表）。箭头标注 "Diff = block-sparse (indices, values)"。</p>
 
 <h3 id="figure-10-main-scaling-result">Figure 10: Main Scaling Result</h3>
-<p>!<a href="../images/2604.03143/fig10-scaling-results.png">Figure 10: Scaling capacity — supported agents vs QPS</a></p>
+<p><img src="/assets/2604.03143/fig10-scaling-results.png" alt="Figure 10: Scaling capacity — supported agents vs QPS"></p>
 <p><strong>What it shows</strong>：2×2 布局（GenerativeAgents/AgentSociety × Qwen2.5-7B/14B）。每格左图是 round latency vs agent count（QPS=10，虚线 1500 ms SLO），右图是"最多能撑住 SLO 的 agent 数 vs QPS"。TokenDance（橙）在所有配置、QPS 全程都高于 vLLM、CacheBlend Ordinary Path、CacheBlend 三个 baseline。</p>
 <p><strong>Why it matters</strong>：论文最重要的一张图。它证明了本文的核心 claim："在同样 SLO 下能跑的 agent 更多"。特别突出了两个规律：①agent 多了 TokenDance 的优势更大（因为复用和去重都是 per-round 摊销）；②模型越大优势越明显（cache per agent 翻倍，去重绝对收益翻倍）。</p>
 <p><strong>Detailed description</strong>：4 个子图，每个含两条面板：左侧折线图（x=agent count 1–10, y=round latency, 4 条曲线），右侧折线图（x=QPS 1–16, y=max agents under SLO）。TokenDance 橙色曲线在所有子图都位于底部（latency）或顶部（capacity）；SLO 虚线横跨左面板。</p>
