@@ -206,7 +206,15 @@ Category: framework | Tags: serving, KV-cache, disaggregated-inference, agentic-
 
 <h3 id="q1-痛点：pd-分离架构下-agentic-推理的存储带宽单点瓶颈">Q1 痛点：PD 分离架构下 agentic 推理的存储带宽单点瓶颈</h3>
 
+<p><img src="/assets/2602.21548/fig1-bottleneck-overview.png" alt="Figure 1: existing bottleneck vs DualPath dual-path loading"></p>
+
+<p><em>Paper's Figure 1 (caption: "Existing bottleneck (left) and DualPath (right)"). 左图：现有架构中 PE 的 SNIC 饱和而 DE 的 SNIC 空闲；右图：DualPath 新增 DE read path 聚合所有 SNIC 带宽。</em></p>
+
 <p>Agentic LLM 推理（多轮、短追加、长上下文）导致 KV-Cache 命中率极高——DeepSeek 生产 coding agent trace 显示平均 157 轮、429 token/轮 append、上下文 32.7K tokens，命中率 98.7%。Prefill 阶段从计算密集退化为 I/O 密集：DeepSeek-V3.2 的 cache-compute ratio 达 22 GB/PFLOP。在 PD 分离架构中，所有 KV-Cache 存储读取集中在 prefill engine 的 storage NIC（SNIC）上，该 NIC 持续饱和；而 decode engine 的 SNIC 几乎完全空闲。硬件趋势加剧了这一矛盾——Ampere 到 Blackwell 的 I/O-compute ratio 下降了 14.4×。</p>
+
+<p><img src="/assets/2602.21548/fig3-hardware-trends.png" alt="Figure 3: I/O-compute ratio across GPU generations"></p>
+
+<p><em>Paper's Figure 3 (caption: "Hardware trends from Ampere to Blackwell"). Ampere→Blackwell I/O-compute ratio 下降 14.4×，存储带宽瓶颈逐代恶化。</em></p>
 
 <p>Mooncake 用分布式 DRAM pool 缓解，但 DRAM 在 RL training rollout 时被 optimizer state offload 占用，且成本难以支撑超大 working set（论文估算真实场景下 working set 随 tool call latency 以 $r^2$ 扩展，总成本以 $r^3$ 扩展）。其他方案（HCache、TARDIS、Phoenix）从减少数据量或优化检索入手，但不解决带宽分配不均的根本问题。</p>
 
@@ -249,7 +257,17 @@ Category: framework | Tags: serving, KV-cache, disaggregated-inference, agentic-
 <li><strong>Deployment mode</strong>：多节点 PD 分离（disaggregated prefill-decode）。评估规模从 2 节点（1P1D）到 144 节点（48P96D, 1152 GPU）。计算网络和存储网络物理隔离</li>
 </ul>
 
-<h3 id="3-2-请求生命周期">3.2 请求生命周期</h3>
+<h3 id="3-2-数据通路">3.2 数据通路</h3>
+
+<p><img src="/assets/2602.21548/fig4a-pe-read-path.png" alt="Figure 4a: PE read path"></p>
+
+<p><em>Paper's Figure 4a: PE read path — 传统路径，KV-Cache 从 3FS 经 PE SNIC 加载到 PE buffer，逐层 H2D 后计算，再 RDMA 传至 DE。</em></p>
+
+<p><img src="/assets/2602.21548/fig4b-de-read-path.png" alt="Figure 4b: DE read path"></p>
+
+<p><em>Paper's Figure 4b: DE read path — 新增路径，KV-Cache 从 3FS 经 DE SNIC 加载到 DE buffer，通过 CNIC RDMA Write 逐层转发到 PE HBM 参与计算。两条路径均采用 layerwise streaming 实现传输-计算重叠。</em></p>
+
+<h3 id="3-3-请求生命周期">3.3 请求生命周期</h3>
 
 <div class="mermaid">
 sequenceDiagram
@@ -409,13 +427,25 @@ sequenceDiagram
 
 <h3 id="5-2-关键实验结果">5.2 关键实验结果</h3>
 
-<p><strong>Figure 7 — 离线推理主实验</strong>：三个模型在不同 agent 数量和 MaxLen 下的 JCT 对比。DualPath 在 DS 660B 上几乎逼近 Oracle（零 I/O 上界），证明 I/O 瓶颈被有效消除。更大 batch 和更长上下文时优势更大——这恰好是 agentic workload 的典型特征。SGL(MC) 在多个大配置标记 N/A（运行出错）。</p>
+<p><img src="/assets/2602.21548/fig7-offline-performance.png" alt="Figure 7: offline inference main results"></p>
+
+<p><em>Paper's Figure 7 (caption: "End-to-end JCT comparison for offline agentic inference"). 三个模型在不同 agent 数量和 MaxLen 下的 JCT 对比。</em></p>
+
+<p><strong>Figure 7 — 离线推理主实验</strong>：DualPath 在 DS 660B 上几乎逼近 Oracle（零 I/O 上界），证明 I/O 瓶颈被有效消除。更大 batch 和更长上下文时优势更大——这恰好是 agentic workload 的典型特征。SGL(MC) 在多个大配置标记 N/A（运行出错）。</p>
 
 <p><strong>Figure 8 — P/D ratio 消融</strong>（DS 27B）：DualPath 1P1D ≈ Basic 2P1D，DualPath 2P1D ≈ DualPath 1P2D。每对系统具有等量的可用存储带宽（Basic 只用 PE 节点 SNIC，DualPath 用所有节点），这直接证实存储带宽是主导瓶颈。</p>
 
 <p><strong>Figure 9 — Append/Generation 长度敏感性</strong>（DS 660B, 64K, 1024 agents）：短 append 时 DualPath 优势最大（1.82-1.99× vs Basic）。随 append 增长，Basic 性能逐渐追上 DualPath 和 Oracle（瓶颈从 I/O 转为 compute）。Generation 长度趋势类似。</p>
 
+<p><img src="/assets/2602.21548/fig10-online-serving.png" alt="Figure 10: online serving latency metrics"></p>
+
+<p><em>Paper's Figure 10 (caption: "Online serving: TTFT and TPOT under increasing APS"). DualPath APS 容量远超 Basic，TPOT 不增加。</em></p>
+
 <p><strong>Figure 10 — 在线服务延迟指标</strong>：DualPath APS 容量远超 Basic（DS 660B 2.25×, DS 27B 1.67×）。TPOT 不增加（证明 DE 端无额外开销）。TTFT 在高负载下保持稳定，而 Basic 的 TTFT 因排队急剧上升。</p>
+
+<p><img src="/assets/2602.21548/fig12-ablation.png" alt="Figure 12: TTFT decomposition and ablation"></p>
+
+<p><em>Paper's Figure 12 (caption: "TTFT breakdown (left) and ablation study (right)"). 左图 TTFT 各组件分解，右图三项技术的增量贡献。</em></p>
 
 <p><strong>Figure 12 — TTFT 分解 + Ablation</strong>：左图 TTFT 分解直接证明 Basic 瓶颈在 "Reading KV-Cache" 组件——随 APS 增长膨胀，DualPath 有效压缩。右图 ablation 量化三个技术独立贡献：layerwise prefill -17.21%（缓解 HBM 瓶颈），+dual-path loading -38.19%（核心贡献：聚合 SNIC 带宽），+scheduling -45.62%（均衡利用）。</p>
 
