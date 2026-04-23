@@ -185,7 +185,7 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 <div class="w">
 <h1>TensorHub: Scalable and Elastic Weight Transfer for LLM RL Training</h1>
 <div class="card-meta"><span class="badge badge-framework">framework</span> 2604.09107</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">RL-training</span><span class="tag">weight-transfer</span><span class="tag">RDMA</span><span class="tag">reference-oriented-storage</span><span class="tag">fault-tolerance</span><span class="tag">elastic-scaling</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">RL-training</span><span class="tag">weight-transfer</span><span class="tag">RDMA</span><span class="tag">reference-oriented-storage</span><span class="tag">elasticity</span><span class="tag">fault-tolerance</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2604.09107.html">← Synthesis (L3)</a>
 <a href="/domain/framework.html">← framework (L4)</a>
@@ -195,186 +195,191 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 <h1 id="tensorhub-scalable-and-elastic-weight-transfer-for-llm-rl-training">TensorHub: Scalable and Elastic Weight Transfer for LLM RL Training</h1>
 <blockquote>
 Chenhao Ye et al. (ByteDance Seed, UW-Madison) | 2026-04 | https://arxiv.org/abs/2604.09107
-Category: framework | Tags: RL-training, weight-transfer, RDMA, reference-oriented-storage, fault-tolerance, elastic-scaling, cross-datacenter, pipeline-replication
+Category: framework | Tags: RL-training, weight-transfer, RDMA, reference-oriented-storage, elasticity, fault-tolerance, pipeline-replication, cross-datacenter
 </blockquote>
 
 <h2 id="§1-tl-dr">§1 TL;DR</h2>
 
-<p>TensorHub 提出 Reference-Oriented Storage (ROS) 抽象，消除 RL 权重传输中的数据所有权开销——引用服务器仅追踪轻量级引用，数据在 GPU 间 RDMA 直传无中间拷贝。配合 pipeline replication 和 topology-aware 调度，在 1024 GPU 上实现 6.7× stall 降低，已部署于字节跳动生产 RL 训练。</p>
+<p>TensorHub 提出 Reference-Oriented Storage (ROS)，一种无数据所有权的存储抽象，直接复用 GPU 上已有的模型权重副本通过 RDMA 传输，结合 pipeline replication、拓扑感知调度和容错机制，在 1024 GPU standalone rollout 中减少 GPU stall 6.7×，elastic rollout 加速 4.8×，跨数据中心 stall 减少 19×。</p>
 
 <h2 id="§2-核心三问">§2 核心三问</h2>
 
-<h3 id="q1-痛点：rl-大规模权重传输中-flexibility-与-efficiency-的根本矛盾">Q1 痛点：RL 大规模权重传输中 flexibility 与 efficiency 的根本矛盾</h3>
+<h3 id="q1-痛点：llm-rl-训练中权重传输的效率-灵活性困境">Q1 痛点：LLM RL 训练中权重传输的效率-灵活性困境</h3>
 
-<p>LLM RL 训练依赖高频权重传输：trainer 每步产出新权重，数千 rollout worker 需拉取最新权重进行推理。权重规模可达 TB 级，传输效率直接决定训练吞吐。</p>
+<p><img src="/assets/2604.09107/fig1.png" alt="Figure 1: RL workload with diverse rollout strategies"></p>
 
-<p>生产环境进一步要求支持三种 rollout 策略：standalone（专用 GPU）、elastic（可抢占 spot 实例）、cross-datacenter（跨数据中心异构资源）。现有方案均无法同时满足五个设计目标：</p>
+<p><em>Paper's Figure 1 (caption: "RL Workload with Diverse Rollout Strategies"). 左侧为 co-located workers（trainer 与 rollout 时分复用同一 GPU），右侧展示三种 rollout 扩展策略：standalone（专用 GPU）、elastic（spot 实例，可随时被抢占）、cross-DC（跨数据中心异构资源）。模型权重（可达 TB 级）是流水线中的瓶颈数据。</em></p>
 
-<table>
-<tr><th>方案</th><th>典型实现</th><th>拓扑感知</th><th>弹性</th><th>最小协调</th><th>最小数据搬运</th><th>无额外存储</th></tr>
-<tr><td>Collective Comm.</td><td>NCCL</td><td>✓ (单DC)</td><td>✗</td><td>✗</td><td>✓</td><td>✓</td></tr>
-<tr><td>P2P Comm.</td><td>UCX</td><td>✗</td><td>✓</td><td>✗</td><td>✓</td><td>✓</td></tr>
-<tr><td>Distributed Storage</td><td>PS, Ray object store</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td></tr>
-<tr><td>TensorHub</td><td></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
-</table>
-
-<ul>
-<li><strong>NCCL</strong>：静态通信组，任何节点故障导致全集群崩溃，全局 barrier 中断所有 worker</li>
-<li><strong>UCX</strong>：无全局拓扑视图，fan-out 下 sender 带宽成为瓶颈</li>
-<li><strong>Distributed Storage</strong>：push-then-pull 模式将网络流量翻倍，Ray Plasma 40 GB 传输需 32s vs GPU-direct RDMA ~0.2s（~160× 差距），且 >300 GB 时常 OOM 崩溃</li>
-<li><strong>根因</strong>：data ownership——storage 必须先接管数据再提供读取，这是额外搬运和存储开销的本质来源</li>
-</ul>
-
-<h3 id="q2-方法：reference-oriented-storage-—-消除数据所有权的存储抽象">Q2 方法：Reference-Oriented Storage — 消除数据所有权的存储抽象</h3>
-
-<p><strong>核心洞察</strong>：RL 训练中模型权重具有三个可利用属性——(1) 数据并行导致高度冗余复制，(2) 推理期间不可变，(3) 版本短暂（只关心最近几个）。这些属性使得 GPU 上已有的权重副本天然构成多个对等数据源，无需额外存储。</p>
-
-<p>ROS 直接复用 GPU 上已有权重 in place，通过集中式引用服务器追踪哪些 worker 持有哪些版本，由客户端之间 RDMA 直连传输数据。三个核心原语：</p>
-
-<ul>
-<li><strong>publish</strong>：trainer 向引用服务器注册其 GPU 权重的引用（不搬运数据）</li>
-<li><strong>replicate</strong>：rollout 查询服务器获取源引用，通过 RDMA 从源 GPU 直读到目标 GPU</li>
-<li><strong>unpublish</strong>：mutation 前显式撤销引用，服务器等待 in-flight 传输完成后确认</li>
-</ul>
-
-<p>两个保障机制：</p>
-<ul>
-<li><strong>Mutability Contract</strong>：publish/unpublish 纪律确保引用有效期间数据不被修改，任何 concurrent transfer 都能读到完整数据</li>
-<li><strong>Retention Protocol</strong>：当最后一个 replica 要 unpublish 保留版本时，offload 一份到 CPU 内存（~48 GB/s PCIe，<2s 延迟）。此 fallback 极少触发——rollout 通常会及时 replicate</li>
-</ul>
-
-<p>TensorHub 将 ROS 扩展为生产级系统：</p>
+<p>LLM RL 训练是一个 trainer→rollout 的持续迭代循环，每步都需要将新版本模型权重从 trainer 传输到 rollout worker。生产环境中 rollout 时间占训练总时间 >90%，推动了 standalone、elastic（spot 实例）、cross-datacenter 三种扩展策略。这要求权重传输系统同时满足五个目标：</p>
 
 <ol>
-<li><strong>Pipeline Replication</strong>：部分复制完成的 worker 立即可作为源，利用 RDMA NIC 全双工特性在接收同时提供数据。每个 replicating worker 维护 progress counter，新请求者读取 counter 前缀并重复直到完成。将 N-way fan-out 转化为 bandwidth-amplifying DAG，总 stall 从二次方降至线性</li>
-<li><strong>Topology-Aware Scheduling</strong>：集中式服务器维护每 replica 的 in-flight 引用计数，优先同 DC 最低负载 replica。Cross-DC 时使用两阶段复制——先 TCP seeding 后 RDMA pipeline</li>
-<li><strong>Transactional Consistency</strong>：对 model-parallel group 内的请求在引用服务器上执行事务语义，首个 worker 的请求开启事务并缓存状态，后续 shard 请求消费缓存保证一致视图</li>
-<li><strong>Fault Tolerance</strong>：heartbeat 超时检测故障，replica 粒度驱逐。引用服务器仅持有软状态，故障后新 server 无需恢复任何状态——等待下轮 publish 即可</li>
+<li><strong>拓扑感知</strong>：适应网络拓扑和运行时负载</li>
+<li><strong>弹性</strong>：支持动态扩缩容和故障透明恢复</li>
+<li><strong>最少协调</strong>：避免全局 barrier 和 straggler 放大</li>
+<li><strong>最少数据搬运</strong>：源→目标 GPU 直传，无中间跳</li>
+<li><strong>无额外存储空间</strong>：TB 级权重不应有额外副本</li>
 </ul>
 
-<p><strong>核心技术壁垒</strong>：pipeline replication 的设计将传统 fan-out broadcast 问题转化为 self-amplifying 分发网络。关键在于识别 RDMA NIC 全双工特性（接收时上行空闲）可以零额外成本将接收节点转变为中继。Progress counter 机制使部分复制的 worker 能在数据仍在流入时就开始服务，时间维度上的流水化是带宽放大的关键——这不是简单的 BitTorrent chunk 分发，而是 tensor 粒度的 streaming relay。</p>
+<p>现有方案各有致命缺陷：</p>
+<ul>
+<li><strong>NCCL（集合通信）</strong>：高吞吐但需静态通信组，任何节点故障导致全组崩溃，broadcast 是全局 barrier</li>
+<li><strong>UCX（点对点）</strong>：灵活但缺乏全局拓扑视图，fan-out 下发送端带宽成为瓶颈</li>
+<li><strong>分布式存储（Parameter Server, Ray object store）</strong>：解耦好但 push-then-pull 翻倍数据搬运。Ray 传 40 GB 需 32 秒 vs GPU-direct RDMA ~0.2 秒（160× 差距）；>300 GB 时 Ray 频繁 OOM 崩溃</li>
+</ul>
+
+<p>根本原因：传统存储的<strong>数据所有权</strong>（ownership）带来的序列化、复制和带宽开销。</p>
+
+<h3 id="q2-方法：reference-oriented-storage-—-无所有权的存储抽象">Q2 方法：Reference-Oriented Storage — 无所有权的存储抽象</h3>
+
+<p><strong>核心洞察</strong>：RL 中的模型权重具有三个特性——(1) 数据并行导致<strong>高度复制</strong>（多个对等数据源），(2) 推理期间<strong>不可变</strong>（安全读取无需协调），(3) <strong>短生命周期</strong>（只关心最近几个版本）。因此可以不存储任何副本，仅追踪谁的 GPU 上持有哪个版本的权重，按需通过 RDMA 直接读取。</p>
+
+<p>ROS 的三个核心原语：</p>
+<ol>
+<li><strong>publish(version)</strong>：将 GPU 上的权重注册为某版本的引用（非复制），承诺不可变</li>
+<li><strong>replicate(version)</strong>：从任意持有该版本的 peer 直接 RDMA 读取到本地 GPU</li>
+<li><strong>unpublish()</strong>：撤销不可变承诺前，先 drain 所有进行中的传输</li>
+</ul>
+
+<p>两个关键协议：</p>
+<ul>
+<li><strong>Mutability Contract</strong>：publish 时承诺不修改，mutation 前必须 unpublish 并等待进行中传输完成</li>
+<li><strong>Retention Protocol</strong>：worker 声明需保留的版本（如最新 k 个）；当最后一个副本要 unpublish 时，offload 到 CPU 内存作为兜底。Offload 极少触发（PCIe ~48 GB/s，全 GPU offload <2s）</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：将 pipeline replication 与 ROS 结合实现带宽放大 DAG。利用 RDMA NIC 的全双工特性，正在接收数据的 worker 立即开始向下游提供已接收的部分（通过 progress counter 追踪），将 N-way fan-out 从单源瓶颈转化为带宽随参与者数量线性增长的 DAG 拓扑。这需要精确控制 RDMA 传输的 tensor 级粒度和并发调度，是外部团队最难复现的核心机制。</p>
 
 <h3 id="q3-结果">Q3 结果</h3>
 
 <table>
-<tr><th>场景</th><th>指标</th><th>改善</th><th>条件</th></tr>
-<tr><td>Standalone rollout</td><td>总 GPU stall time</td><td><strong>6.7×</strong> 降低 vs NCCL</td><td>1T model, 1024 GPU</td></tr>
-<tr><td>Elastic rollout</td><td>权重更新延迟</td><td><strong>4.8×</strong> 加速 vs UCX</td><td>260B model, spot instances</td></tr>
-<tr><td>Cross-DC rollout</td><td>GPU stall time</td><td><strong>19×</strong> 降低 vs UCX</td><td>9B model, 2 datacenters</td></tr>
-<tr><td>RDMA 带宽效率</td><td>吞吐</td><td><strong>22 GB/s</strong> (88% 理论值)</td><td>50 GB shard, 2 machines</td></tr>
-<tr><td>Pipeline replication</td><td>总 stall 扩展</td><td><strong>线性</strong> vs 无 pipeline 二次方</td><td>1-8 rollout groups</td></tr>
-<tr><td>工程集成量</td><td>代码改动</td><td><strong>~40 行</strong> vs ~450 (NCCL) / ~1200 (UCX)</td><td>ByteDance veRL</td></tr>
-<tr><td>故障恢复</td><td>透明掩盖</td><td>~4s RDMA timeout + 重路由</td><td>Pipeline 中间节点故障</td></tr>
+<tr><th>场景</th><th>指标</th><th>提升</th><th>条件</th></tr>
+<tr><td>Standalone rollout</td><td>Total GPU stall time</td><td><strong>6.7×</strong> reduction vs NCCL</td><td>1T model, 1024 GPUs</td></tr>
+<tr><td>Elastic rollout</td><td>Weight update latency</td><td><strong>4.8×</strong> faster vs UCX</td><td>260B model, 8+24 GPUs</td></tr>
+<tr><td>Cross-datacenter</td><td>GPU stall time</td><td><strong>19×</strong> reduction vs UCX</td><td>9B model, 16+8 GPUs</td></tr>
+<tr><td>RDMA bandwidth</td><td>Throughput</td><td><strong>22 GB/s</strong> (88% theoretical)</td><td>50 GB shard, 1:1</td></tr>
+<tr><td>Pipeline replication</td><td>Scaling</td><td><strong>Linear</strong> vs quadratic w/o pipeline</td><td>1-8 rollout groups</td></tr>
+<tr><td>Engineering effort</td><td>Lines of code</td><td><strong>~40 LoC</strong> vs ~450 (NCCL) / ~1200 (UCX)</td><td>veRL integration</td></tr>
 </table>
+
+<p>TensorHub 完全消除 trainer stall（publish 是轻量引用操作），standalone rollout stall 也始终低于 NCCL/UCX。在 elastic 场景中，stall time 与 GPU 数量无关（~1.5s 常数），而 UCX 呈阶梯状 CDF 尾部达 7.2s。跨数据中心通过 smart skipping + offload seeding 实现仅第一个 seeding replica 走 TCP，其余全走本地 RDMA。</p>
 
 <h2 id="§3-架构与方法">§3 架构与方法</h2>
 
 <h3 id="3-1-system-scope">3.1 System Scope</h3>
 
 <ul>
-<li><strong>Stage coverage</strong>：仅覆盖 RL 训练循环中的权重传输阶段（train → transfer → rollout），不涉及训练内核或推理引擎本身</li>
-<li><strong>Serving or training</strong>：专为 RL 训练设计（PPO 等算法的 weight sync loop），也支持故障恢复时的 weight pull</li>
-<li><strong>Parallelism</strong>：model parallelism 下每 GPU 持有一个 shard，TensorHub 原生支持分片（naming: model → version → replica → shard）。不涉及 TP/PP/EP/DP 的具体实现，仅处理跨 group 的权重同步</li>
-<li><strong>Deployment mode</strong>：multi-node，支持 standalone rollout（同 DC 专用 GPU）、elastic rollout（跨 stable + spot GPU）、cross-datacenter（TCP + RDMA 混合）</li>
+<li><strong>Stage coverage</strong>：覆盖 RL 训练中 trainer→rollout 的权重传输阶段（非推理 serving）</li>
+<li><strong>Serving or training</strong>：专为 RL 训练的权重分发设计，支持同步和异步 RL 框架</li>
+<li><strong>Parallelism</strong>：natively 支持 model parallelism（sharding），每个 model-parallel group 为一个 replica。评估覆盖 2-shard (9B) 到 16-shard (mocked 1T)</li>
+<li><strong>Deployment mode</strong>：多节点，跨多数据中心。评估规模从 16 GPU 到 1024 GPU</li>
 </ul>
 
-<h3 id="3-2-ros-数据通路">3.2 ROS 数据通路</h3>
+<h3 id="3-2-ros-架构">3.2 ROS 架构</h3>
 
-<div class="mermaid">
-sequenceDiagram
-    participant Trainer as Trainer (GPU)
-    participant Server as Reference Server
-    participant R1 as Rollout-1 (GPU)
-    participant R2 as Rollout-2 (GPU)
+<p><img src="/assets/2604.09107/fig2.png" alt="Figure 2: Reference-Oriented Storage workflow"></p>
 
-    Note over Trainer: 训练完成, 产出 version N
-    Trainer->>Server: publish(version=N, ref=GPU_addr)
-    Note over Server: 记录: version N → Trainer replica
+<p><em>Paper's Figure 2 (caption: "Reference-Oriented Storage Workflow. The server only operates on lightweight references. The bulk weight transfer is directly between clients."). 橙色箭头为轻量引用流（经 reference server），绿色箭头为批量 RDMA 数据流（client-to-client 直传）。Worker-0 publish 后 reference server 记录引用；Worker-1 replicate 时从 server 获取源引用，然后直接 RDMA 读取 Worker-0 的 GPU 内存。Server 从不触碰权重数据。</em></p>
 
-    R1->>Server: replicate(version="latest")
-    Server->>Server: 解析 "latest" → N, 选最低负载源 → Trainer
-    Server-->>R1: source_ref = Trainer.GPU_addr
-    R1->>Trainer: RDMA Read (GPU→GPU 直传)
-    Note over R1: 完成后自动成为 version N 的 replica
+<p>ROS 由两部分组成：(1) <strong>中心化 reference server</strong>：仅维护轻量引用元数据（版本→replica→shard 映射），不存储权重数据；(2) <strong>client library</strong>：嵌入每个 worker，执行 RDMA 数据传输。</p>
 
-    R2->>Server: replicate(version="latest")
-    Server->>Server: 选最低负载源 → R1 (pipeline replication)
-    Server-->>R2: source_ref = R1.GPU_addr
-    R2->>R1: RDMA Read (pipeline, 读 progress counter 前缀)
-    Note over R2: R1 仍在接收时已可提供已完成的前缀
-</div>
+<p>关键设计：所有 weight 副本（无论由 publish 还是 replicate 创建）被视为<strong>对等 replica</strong>。rollout 不必从 trainer 获取权重，可以从任意 peer 拉取。这使集群具备自愈能力——只要一个 replica 存活，重启的 worker 就能恢复。</p>
 
-<h3 id="3-3-核心组件">3.3 核心组件</h3>
+<h3 id="3-3-pipeline-replication">3.3 Pipeline Replication</h3>
 
-<p><strong>Reference Server</strong>：集中式轻量协调器，以 Ray named actor 实现，首次 <code>open()</code> 时惰性实例化。仅持有软状态（引用映射），不存储或转发任何权重数据。故障后无需状态恢复——新 server 等待下轮 publish 重建。单 server 可支撑数千 worker。</p>
+<p><img src="/assets/2604.09107/fig5.png" alt="Figure 5: Pipeline replication mechanism"></p>
 
-<p><strong>Transfer Engine</strong>：每客户端嵌入的数据平面组件，基于 Mooncake transfer engine 构建。三种传输模式：</p>
-<ul>
-<li><strong>RDMA Direct</strong>：长期存活的 tensor 直接注册到 RNIC，远端单边 RDMA Read，零拷贝绕过 CPU</li>
-<li><strong>RDMA Copy</strong>：频繁重分配场景下，后台线程分片拷贝到预注册 buffer 后 RDMA Write</li>
-<li><strong>TCP</strong>：跨 DC 无 RDMA 时 fallback</li>
-</ul>
+<p><em>Paper's Figure 5 (caption: "Pipeline Replication. Worker-0 is the only source, while both Worker-1 and Worker-2 are requesting data. To scale throughput, TensorHub schedules a pipeline where Worker-2 reads partially replicated data on Worker-1."). Worker-0 进度 6/6（完成），Worker-1 进度 4/6（部分完成），Worker-2 进度 1/6（刚开始）。Worker-2 可以从 Worker-1 的已完成部分读取（tensor 1~3 + progress counter），无需等待 Worker-1 全部完成。利用 RDMA NIC 全双工——接收时上行空闲可服务数据。</em></p>
 
-<p>Hardware affinity-aware：GPU tensor 选择最近 NIC，RDMA Copy 使用同 GPU device 的预注册区域。</p>
+<p>Pipeline replication 是 TensorHub 将 fan-out 从单源瓶颈转化为带宽放大 DAG 的核心机制。每个正在 replicate 的 worker 维护 progress counter（已接收 tensor 数），新 requester 从 least-loaded 的 source（可以是部分完成的 peer）读取已就绪的前缀，循环读取 counter 直到全部数据到达。</p>
 
-<p><strong>Tiny-Tensor Compaction</strong>：LLM 大量 <2 MB 小 tensor 合并到连续 buffer 统一注册传输。36B 模型约 500 tensor 中一半为小 tensor，合并后仅需 ~3 MB 额外内存。</p>
+<h3 id="3-4-sharding-consistency">3.4 Sharding Consistency</h3>
 
-<p><strong>Cross-node communication</strong>：同 DC 内 RDMA（400 Gbps/NIC × 4 NIC/node），跨 DC 走 VPC NIC TCP（200 Gbps/node）。Pipeline replication 仅在同 DC RDMA 上生效，跨 DC 采用两阶段 seeding。</p>
+<p><img src="/assets/2604.09107/fig6.png" alt="Figure 6: Sharding consistency example"></p>
 
-<h3 id="3-4-pipeline-replication-机制">3.4 Pipeline Replication 机制</h3>
+<p><em>Paper's Figure 6 (caption: "Sharding Consistency Example"). 左图（物理时间线）：replica-0 的 shard:0 在 T0 请求 latest 看到 version 12，但 replica-1 在 T1/T2 publish version 13，导致 shard:1 在 T3 看到 version 13——同一 replica 内两个 shard 看到不同版本，造成 SPMD 分歧。右图（事务时间线）：TensorHub 在 replica 粒度强制事务语义，确保 replica-0 的两个 shard 都看到 version 12。</em></p>
 
-<p>RDMA NIC 全双工，接收数据时上行链路空闲。每个 replicating worker 维护 tensor 粒度的 progress counter：</p>
-
-<ol>
-<li>Rollout-B 请求 version N，服务器选 Rollout-A（正在接收中）作为源</li>
-<li>B 读取 A 的 progress counter，获取已完成的 tensor 前缀</li>
-<li>B 通过 RDMA 读取该前缀</li>
-<li>B 重复步骤 2-3 直到所有 tensor 完成</li>
-</ul>
-
-<p>N 个 rollout 同时请求时，第一个从 trainer 获取（2.2s/50GB），后续每个加入都增加系统总带宽。总 stall time 线性增长而非二次方。</p>
+<p>LLM 权重超过单 GPU 内存，需 model parallelism。同一 model-parallel group 必须执行相同代码（SPMD），版本分歧会导致挂起或数据损坏。TensorHub 在 reference server 端以 replica 粒度强制事务语义：第一个 worker 的请求启动事务，后续同组 worker 消费事务缓存的状态。</p>
 
 <h3 id="3-5-cross-datacenter-replication">3.5 Cross-Datacenter Replication</h3>
 
-<p>两阶段模式：</p>
-<ol>
-<li><strong>Seeding</strong>：远端 DC 第一个 replica 通过 TCP 拉取全量权重</li>
-<li><strong>Local pipeline</strong>：seeding 完成后，该 DC 内后续 replica 通过 RDMA pipeline replication 获取</li>
-</ul>
+<p>两阶段模式：(1) <strong>Seeding</strong>：目标数据中心的第一个 replica 通过 TCP 从源数据中心获取权重；(2) <strong>Local pipeline</strong>：seeding 完成后，同数据中心内的其他 replica 通过 RDMA pipeline replication 获取。</p>
 
 <p>优化：</p>
 <ul>
-<li><strong>Smart Skipping</strong>：polling replica 发现 seeding replica 正在 TCP 传输中时，视新版本为暂时不可用，避免序列化在慢速 TCP 后面</li>
-<li><strong>Offload Seeding</strong>：将 TCP 接收缓冲放到 CPU 内存并后台传输，<code>update()</code> 立即返回让 GPU 继续计算。以有限 CPU 内存换取 GPU stall 消除</li>
+<li><strong>Smart skipping</strong>：polling 的 replica 发现 seeding 正在进行时，将新版本视为暂时不可用，避免被慢速 TCP 拖慢</li>
+<li><strong>Offload seeding</strong>：seeding replica 创建 CPU 内存 offload buffer，<code>update()</code> 立即返回，TCP 传输在后台进行。以有限 CPU 内存换取 GPU stall 消除</li>
 </ul>
 
-<h3 id="3-6-consistency-model">3.6 Consistency Model</h3>
+<h3 id="3-6-fault-tolerance">3.6 Fault Tolerance</h3>
 
-<p>Model-parallel group 内 N 个 shard worker 必须看到一致的版本状态（否则 SPMD 程序会 diverge）。服务器在 replica 粒度执行事务：第一个到达的 shard 请求开启事务、执行查询并缓存结果（如 "latest = 12"），后续 shard 请求消费缓存值。事务按开始顺序串行化。</p>
+<p>三级故障处理：</p>
+<ol>
+<li><strong>Client failure</strong>：heartbeat 超时后 server 移除整个 replica。进行中传输的源故障由接收方检测并报告，server 选择替代源</li>
+<li><strong>Spot churn</strong>：统计 retained 版本的 replica 数时排除 spot 实例。最后一个非 spot replica 失败时返回优雅错误，client 重试下一版本</li>
+<li><strong>Server failure</strong>：server 仅维护软状态（引用），client 重置为 unpublished 并连接备份 server，无需恢复前任状态——下一轮 publish 自然重建</li>
+</ul>
 
-<h3 id="3-7-fault-tolerance">3.7 Fault Tolerance</h3>
+<h3 id="3-7-请求生命周期">3.7 请求生命周期</h3>
 
-<table>
-<tr><th>故障类型</th><th>处理方式</th></tr>
-<tr><td>Client 故障（heartbeat 超时）</td><td>整个 replica 驱逐，释放关联资源</td></tr>
-<tr><td>接收方故障</td><td>服务器废弃不完整 replica，释放引用计数</td></tr>
-<tr><td>源方故障</td><td>接收方检测传输失败报告服务器，服务器标记源故障、选替代源</td></tr>
-<tr><td>Spot instance 抢占</td><td>retention 计数排除 spot replica；最后非 spot replica 故障时返回优雅错误</td></tr>
-<tr><td>Reference Server 故障</td><td>Client 重置为 unpublished 连接备用 server，新 server 无需恢复状态</td></tr>
-</table>
+<div class="mermaid">
+sequenceDiagram
+    participant Trainer as Trainer Worker
+    participant Server as Reference Server
+    participant Rollout as Rollout Worker
+    participant Peer as Peer Rollout
+
+    Trainer->>Server: publish(version=N) — 注册引用，立即返回
+    Note over Trainer: 继续 co-located rollout/training，无 stall
+
+    Rollout->>Server: replicate("latest") or update("latest")
+    Server->>Server: 事务语义：锁定 replica 内一致的版本视图
+    Server->>Server: 选择 least-loaded source（同 DC 优先）
+
+    alt 直接从 Trainer
+        Server-->>Rollout: 返回 Trainer 的 source reference
+        Rollout->>Trainer: RDMA Read（GPU-direct or Copy mode）
+    else Pipeline 从 Peer
+        Server-->>Rollout: 返回 Peer 的 source reference
+        Rollout->>Peer: 读取 progress counter
+        loop 直到所有 tensor 到达
+            Rollout->>Peer: RDMA Read 已就绪的 tensor prefix
+            Rollout->>Rollout: 更新本地 progress counter
+        end
+    end
+
+    Note over Rollout: replicate 完成，自身成为新 replica
+    Rollout->>Server: 自动注册为可服务的 replica
+</div>
+
+<h3 id="3-8-naming-scheme-api">3.8 Naming Scheme & API</h3>
+
+<p><img src="/assets/2604.09107/fig3.png" alt="Figure 3: TensorHub naming scheme"></p>
+
+<p><em>Paper's Figure 3 (caption: "TensorHub Naming Scheme"). 层级结构：model → version → replica → shard。Rollout-2 通过 replicate 获取 version 3 后，自身也成为可服务后续请求的 replica（虚线框变实线）。支持绝对版本号和相对版本（"latest", "latest-k"）。</em></p>
+
+<p>核心 API：<code>open</code> → <code>register</code> → <code>publish</code>/<code>replicate</code>/<code>update</code> → <code>unpublish</code> → <code>close</code>。<code>update("latest")</code> 是原子操作，检查版本可用性 + unpublish 旧版本 + replicate 新版本一步完成，避免轮询竞态。</p>
+
+<p><img src="/assets/2604.09107/fig4.png" alt="Figure 4: TensorHub code examples"></p>
+
+<p><em>Paper's Figure 4 (caption: "TensorHub Examples"). 左图 (a) co-located trainer & rollout：publish→rollout→unpublish→train 循环。右图 (b) standalone rollout：<code>replicate("latest")</code> 初始化后 <code>update("latest")</code> 轮询。两段代码简洁展示了 TensorHub ~40 行集成的核心——对比 NCCL ~450 行和 UCX ~1200 行。</em></p>
 
 <h2 id="§4-作者证明">§4 作者证明</h2>
 
 <p>无形式化作者证明 — 仅实证</p>
 
-<p>论文不包含数学方程或形式化性能模型（0 equations），设计论证完全基于协议级机制（mutability contract、retention protocol）和实验验证。</p>
+<p>本文是系统论文，无编号方程和形式化推导。所有性能声明均通过实验验证。</p>
 
-<p>一个形式化模型可以澄清的问题：</p>
-<ul>
-<li>Pipeline replication 的最优树形拓扑（当前是贪心最低负载，未证明最优性）</li>
-<li>Retention protocol 中 offload 触发频率的概率分析（依赖 publish/replicate 的时序分布）</li>
-<li>跨 DC seeding 延迟与 DC 内 pipeline 启动延迟的权衡模型</li>
-<li>Smart skipping 的版本跳过概率对训练 staleness 的影响</li>
+<h3 id="需要形式化模型但未提供的三个方面">需要形式化模型但未提供的三个方面</h3>
+
+<ol>
+<li><strong>Pipeline replication 吞吐模型</strong>：pipeline replication 在理论上应实现接近 $O(1)$ 的单 replica 传输延迟（independent of replica count），但论文未给出闭合表达式描述在 $N$ 个 rollout 同时请求时的精确吞吐量和完成时间分布。一个 $T(N) = T_{\text{seed}} + \frac{N-1}{k} \cdot T_{\text{transfer}}$ 形式的模型（$k$ 为并发 pipeline 深度）可以指导部署时的 trainer:rollout 比例选择。</li>
+</ul>
+
+<ol>
+<li><strong>GPU stall time 的解析上界</strong>：TensorHub 声明消除 trainer stall 且 rollout stall 低于 baseline，但未给出给定网络拓扑（NIC 数量、带宽、cross-DC 链路速率）和工作负载（模型大小、rollout 数量）下的 stall time 上界。类似 DualPath 的 CNIC 带宽约束分析（Eq. 1-9）可以明确 TensorHub 的 bottleneck-free 操作区间。</li>
+</ul>
+
+<ol>
+<li><strong>Retention protocol 的内存开销模型</strong>：offload 频率取决于 publish/replicate 的时序竞赛，论文仅声明"rarely triggered"但未量化在不同 trainer:rollout 比和版本更新频率下的触发概率和 CPU 内存峰值。</li>
 </ul>
 
 <h2 id="§5-实验与数据">§5 实验与数据</h2>
@@ -382,181 +387,205 @@ sequenceDiagram
 <h3 id="5-1-实验环境">5.1 实验环境</h3>
 
 <ul>
-<li><strong>硬件</strong>：NVIDIA Hopper GPU 集群，每节点 160 CPU + 8 GPU + 1800 GB 内存 + 4× 400 Gbps RDMA NIC + 1× 200 Gbps VPC NIC</li>
-<li><strong>软件栈</strong>：3.7K Python + 2.4K C++ 实现，Ray named actor (reference server)，Mooncake transfer engine (RDMA)</li>
-<li><strong>模型</strong>：9B / 36B / 260B / mocked 1T（260B 层权重 4× 复制）</li>
+<li><strong>硬件</strong>：NVIDIA Hopper GPU 集群，每节点 160 CPU + 8 GPU + 1800 GB Memory + 4× 400 Gbps RDMA NIC + 1× 200 Gbps VPC NIC</li>
+<li><strong>传输引擎</strong>：基于 Mooncake transfer engine（RDMA）</li>
+<li><strong>RL 框架</strong>：ByteDance 生产 RL 框架，基于 veRL (HybridFlow)</li>
+<li><strong>模型</strong>：9B (2 shards, 10 GB/shard)、36B (4 shards, 19 GB/shard)、260B (8 shards, 34 GB/shard)、mocked 1T (16 shards, 66 GB/shard)</li>
+<li><strong>Baselines</strong>：NCCL、UCX、Ray Plasma object store、RDMA ideal roofline</li>
 </ul>
 
-<table>
-<tr><th>Model size</th><th>9B</th><th>36B</th><th>260B</th><th>mocked 1T</th></tr>
-<tr><td># shards</td><td>2</td><td>4</td><td>8</td><td>16</td></tr>
-<tr><td>Shard size (GB)</td><td>10</td><td>19</td><td>34</td><td>66</td></tr>
-<tr><td>Trainer #GPUs</td><td>16</td><td>16</td><td>64</td><td>768</td></tr>
-<tr><td>Standalone #GPUs</td><td>8</td><td>8</td><td>16</td><td>256</td></tr>
-</table>
+<h3 id="5-2-微基准测试">5.2 微基准测试</h3>
 
-<h3 id="5-2-关键实验结果">5.2 关键实验结果</h3>
+<p><img src="/assets/2604.09107/fig7.png" alt="Figure 7: Microbenchmark results — three subfigures"></p>
 
-<p><strong>RDMA 带宽效率</strong>：TensorHub 50 GB 传输 2.2s，22 GB/s（88% 理论 25 GB/s）。NCCL 18.8 GB/s，UCX 18.1 GB/s。Ray Plasma 比直接传输慢两个数量级且 >35 GB 崩溃。</p>
+<p><em>Paper's Figure 7 (caption: "Microbenchmark Results"). 三个子图：(a) 不同 shard 大小下的传输延迟，(b) pipeline replication 的扩展性，(c) 故障时的传输延迟。</em></p>
 
-<p><strong>Pipeline Replication 扩展</strong>：1 trainer → 1-8 rollout groups，有 pipeline replication 时每 shard 固定 2.2s（不随 replica 数增加），总 stall 线性增长。无 pipeline 时所有 replica 争抢 trainer 带宽，总 stall 二次方增长。</p>
+<p><strong>Figure 7(a) — RDMA 带宽效率</strong>：TensorHub 始终最低延迟。50 GB shard 传输 2.2s，达 22 GB/s（理论 25 GB/s 的 88%）。NCCL 18.8 GB/s，UCX 18.1 GB/s。Ray object store 慢两个数量级（纵轴截断至 195s），且 >35 GB 时崩溃。TensorHub 的优势来自 RDMA Direct 零拷贝路径和 tiny-tensor compaction（<2 MB tensor 合并传输）。</p>
 
-<p><strong>故障掩盖</strong>：Pipeline 中 Rollout-A 故障后 Rollout-B 检测 RDMA timeout（~4s）并由服务器重路由到 trainer 完成传输。无数据丢失，延迟增量有限。</p>
+<p><strong>Figure 7(b) — Pipeline replication 扩展性</strong>：关键结果——有 pipeline 时 total GPU stall time 线性增长（斜率接近 RDMA ideal roofline），无 pipeline 时<strong>二次方增长</strong>。8 个 rollout group 时差距约 2×。这验证了 pipeline replication 将 N-way fan-out 转化为带宽放大 DAG 的核心机制。</p>
 
-<p><strong>Standalone Rollout（最多 1024 GPU）</strong>：TensorHub 的 <code>publish</code> 为轻量引用传递，trainer 立即恢复；NCCL/UCX 要求 Ray driver 全局协调阻塞至传输完成。1T 模型理想 66 GB 传输应 2.6s，NCCL stall 全部 1024 GPU 5.3s，UCX 4.0s，TensorHub mean 3.1s 且仅 standalone GPU stall → 总 stall 降低 <strong>6.7×</strong>。</p>
+<p><strong>Figure 7(c) — 故障透明恢复</strong>：pipeline 中 Worker-A 故障后 Worker-B 始终完成传输。故障立即发生时，RDMA 层 ~4s 保守超时后检测并重路由到 trainer 直读。故障发生越晚恢复越慢（因重传延迟），但 2.2s 后故障无影响（B 已完成）。峰值恢复延迟 ~10s（故障发生在 ~1.5s 时），可控。</p>
 
-<p><strong>Elastic Rollout（Spot Instance）</strong>：260B 模型，1 standalone + 3 elastic machines。UCX 下 elastic 必须等 standalone 先从 trainer 拉取，bandwidth contention 导致阶梯状 CDF，尾部 GPU 等待 7.2s。TensorHub 下所有 rollout 可从任意源获取，stall 恒定 ~1.5s 不随 elastic GPU 数变化，达 <strong>4.8×</strong> 加速。</p>
+<h3 id="5-3-standalone-rollout-—-主实验">5.3 Standalone Rollout — 主实验</h3>
 
-<p><strong>Cross-DC Rollout</strong>：9B 模型，2 DC（trainer DC + rollout DC），仅 200 Gbps VPC TCP 连接。UCX 每 GPU 等待 7.8s（所有 flow 争抢单 VPC NIC）。TensorHub + smart skipping 仅 seeding replica 等 2.5s，其余 RDMA 传输 0.45s。加 offload seeding 后 seeding stall 也可隐藏，总计 <strong>19×</strong> stall 降低。</p>
+<p><img src="/assets/2604.09107/fig9.png" alt="Figure 9: Standalone rollout workflow and results"></p>
 
-<h3 id="5-3-before-after-对比表">5.3 Before-After 对比表</h3>
+<p><em>Paper's Figure 8 & 9 (caption: "Weight Transfer Flows with Standalone" and "Standalone Rollout Results"). 上方 Table 3 列出四个模型的参数。中间 Figure 8 对比 baseline（Ray driver 协调 blocking send/recv）vs TensorHub（publish 后无等待，rollout 主动 pull）。下方 Figure 9 bar chart：红色（TensorHub）显著低于绿色（NCCL）和蓝色（UCX），且 TensorHub 无 trainer stall（solid bar），只有 standalone stall（hatched bar）。1T 模型最为突出——NCCL 和 UCX 分别 stall 全部 1024 GPU 达 ~5800s 和 ~4200s，TensorHub 仅 ~700s 且全部来自 standalone。</em></p>
 
-<table>
-<tr><th>场景</th><th>指标</th><th>Baseline</th><th>TensorHub</th><th>改善</th><th>条件</th></tr>
-<tr><td>Standalone 1T</td><td>总 GPU stall</td><td>NCCL 5.3s × 1024</td><td>3.1s × 256</td><td><strong>6.7×</strong></td><td>768 trainer + 256 standalone</td></tr>
-<tr><td>Standalone 260B</td><td>总 GPU stall</td><td>NCCL/UCX</td><td>~RDMA ideal</td><td>接近理论值</td><td>64 trainer + 16 standalone</td></tr>
-<tr><td>Elastic 260B</td><td>尾部 GPU 延迟</td><td>UCX 7.2s</td><td>~1.5s</td><td><strong>4.8×</strong></td><td>8 standalone + 24 elastic</td></tr>
-<tr><td>Cross-DC 9B</td><td>per-GPU stall</td><td>UCX 7.8s</td><td>0.45s (non-seed)</td><td><strong>19×</strong></td><td>2 DC, TCP inter-DC</td></tr>
-<tr><td>RDMA 效率</td><td>吞吐</td><td>NCCL 18.8 / UCX 18.1 GB/s</td><td>22 GB/s (88%)</td><td>+17%/+22%</td><td>50 GB, 2 machines</td></tr>
-<tr><td>集成工程量</td><td>代码行数</td><td>NCCL ~450 / UCX ~1200</td><td><strong>~40</strong></td><td>11×/30× 减少</td><td>veRL framework</td></tr>
-</table>
-
-<h3 id="5-4-瓶颈转移分析">5.4 瓶颈转移分析</h3>
-
-<pre><code>
-Baseline (NCCL/UCX):
-  全局协调 + straggler amplification (所有 GPU stall)
-  → TensorHub: publish 为轻量引用, 仅 rollout stall
-
-Fan-out contention (UCX, elastic):
-  所有 elastic 排队争抢 standalone 出口带宽 → 阶梯状延迟
-  → TensorHub: pipeline replication 将每个新 replica 转化为新数据源
-
-Cross-DC bandwidth (UCX):
-  每个 replica 独立跨 DC TCP 传输 → VPC NIC 拥塞
-  → TensorHub: 仅 1 次 TCP seeding, 后续全部 RDMA
-
-残余瓶颈:
-  - 1T 模型 TensorHub mean 3.1s vs ideal 2.6s → ~19% overhead (尾部 straggler)
-  - Cross-DC seeding replica 仍需 2.5s TCP (offload seeding 可隐藏但消耗 CPU mem)
-  - Reference server 单点 (论文提出分区方案作为 future work)
-</code></pre>
-
-<h3 id="5-5-scheduling-resource-management">5.5 Scheduling & Resource Management</h3>
-
-<p><strong>调度粒度</strong>：以 version（整个模型权重的一个版本）为调度单位。服务器为每个 replicate 请求选择源 replica（least-loaded, same-DC-first）。Pipeline replication 下每 replica 同时至多服务 1 个请求。</p>
-
-<p><strong>Preemption/admission</strong>：无显式 preemption。服务器通过 reference count 限制并发。Retention protocol 提供隐式 admission——offload 仅在最后一份被 unpublish 时触发。</p>
-
-<p><strong>Memory management</strong>：</p>
+<p>关键发现：</p>
 <ul>
-<li>GPU 侧：tensor buffer 由用户管理，通过 register/unregister 告知 TensorHub</li>
-<li>CPU 侧：retention offload 的 CPU buffer 为临时创建，offload 完成后自动释放</li>
-<li>RDMA 注册：长期 tensor 直接注册（RDMA Direct），频繁重分配用预注册 buffer 池（RDMA Copy）</li>
-<li>Tiny-tensor compaction buffer：<2 MB tensor 合并的临时 buffer，总开销 ~3 MB</li>
+<li>TensorHub <strong>完全消除 trainer stall</strong>：<code>publish</code> 是轻量引用传递，trainer 立即恢复训练。NCCL/UCX 需要 Ray driver 协调的全局 barrier</li>
+<li><strong>Straggler 放大效应</strong>：1T 模型理想传输 2.6s，但 NCCL stall 5.3s、UCX stall 4.0s（1024 GPU 全部等待最慢节点）。TensorHub 将 stall 局部化到 standalone worker（mean 3.1s），总 stall time 减少 6.7×</li>
+<li>模型越大优势越明显：9B 时优势约 3×，1T 时达 6.7×</li>
 </ul>
 
-<h3 id="5-6-workload-characterization">5.6 Workload Characterization</h3>
+<h3 id="5-4-elastic-rollout-—-spot-实例">5.4 Elastic Rollout — Spot 实例</h3>
+
+<p><img src="/assets/2604.09107/fig11.png" alt="Figure 11: Elastic rollout workflow and results"></p>
+
+<p><em>Paper's Figure 10 & 11 (caption: "Weight Transfer Flows with Standalone and Elastic" and "Elastic Rollout Results"). 上方 Figure 10：baseline（UCX）中 elastic worker 必须经 standalone 中转，产生 contention；TensorHub 中 elastic 可从任何源（trainer/standalone/peer elastic）获取，始终 load-balanced。下方 Figure 11(a)：随训练步进（x 轴），GPU 数量随 spot 扩缩变化（灰色阴影），UCX stall time（蓝色）剧烈波动 100-180s，TensorHub（红色）稳定 ~50s。下方 Figure 11(b)：step 10 的 per-GPU latency CDF，UCX 呈阶梯状（standalone 8 GPU ~1.5s，最后一批 elastic GPU 等待到 7.2s），TensorHub 近乎竖直跳跃到 ~1.5s。</em></p>
+
+<p>关键发现：</p>
+<ul>
+<li><strong>NCCL 不支持 elastic</strong>（静态通信组），只有 UCX 作为 baseline</li>
+<li>UCX 的阶梯 CDF 揭示了 standalone→elastic 的串行依赖：elastic 必须等 standalone 从 trainer 拉完，再从 standalone 拉取，多层排队</li>
+<li>TensorHub 的 stall time <strong>与 elastic GPU 数量无关</strong>（~1.5s 常数），逼近 RDMA ideal。Reference server 全局视图 + pipeline replication 使所有可用 replica 均匀分担负载</li>
+<li>4.8× 加速来自消除 UCX 的 stair-shaped 排队延迟</li>
+</ul>
+
+<h3 id="5-5-cross-datacenter-—-跨-dc-部署">5.5 Cross-Datacenter — 跨 DC 部署</h3>
+
+<p><img src="/assets/2604.09107/fig12.png" alt="Figure 12: Cross-datacenter rollout results"></p>
+
+<p><em>Paper's Figure 12 (caption: "Cross-Datacenter Rollout Results"). 三个子图。左：total standalone GPU stall time——UCX ~62s，TensorHub(skip) ~7.6s，TensorHub(skip+offload) ~3.2s。中：per-GPU latency CDF——UCX 所有 8 GPU 均 ~7.8s；TensorHub(skip) 的 2 GPU（seeding replica）~2.5s、其余 6 GPU ~0.45s；TensorHub(skip+offload) 几乎所有 GPU <1s。右：cross-DC network traffic——UCX ~80 GB/step（每个 replica 独立走 TCP），TensorHub ~20 GB/step（仅 seeding replica 走 TCP 一次）。</em></p>
+
+<p>关键发现：</p>
+<ul>
+<li>UCX baseline：每个 rollout replica 独立走 TCP over VPC NIC，所有流争抢单个 200 Gbps NIC，per-GPU stall 7.8s</li>
+<li>TensorHub <strong>smart skipping</strong>：仅 seeding replica（2 GPU）走 TCP 2.5s，其余 6 GPU 走本地 RDMA 0.45s。跨 DC 流量从 ~80 GB 降至 ~20 GB（4× 减少）</li>
+<li>TensorHub <strong>offload seeding</strong>：seeding replica 创建 CPU offload buffer 后 <code>update()</code> 立即返回，TCP 在后台传输。所有 GPU 的前台 stall 近零</li>
+<li>综合 19× stall time 减少</li>
+</ul>
+
+<h3 id="5-6-before-after-对比表">5.6 Before-After 对比表</h3>
 
 <table>
-<tr><th>Workload 场景</th><th>TensorHub 优势</th><th>Baseline</th><th>原因</th></tr>
-<tr><td>大模型 (>260B), 多 rollout worker</td><td><strong>显著优于</strong> (6.7×)</td><td>NCCL/UCX straggler amplification</td><td>publish 零协调 + pipeline replication</td></tr>
-<tr><td>Elastic/Spot 动态集群</td><td><strong>显著优于</strong> (4.8×)</td><td>UCX 阶梯延迟</td><td>动态拓扑发现 + 任意源选择</td></tr>
-<tr><td>Cross-DC 慢速互联</td><td><strong>显著优于</strong> (19×)</td><td>UCX 每 replica 独立 TCP</td><td>仅 1 次 TCP seeding + 本地 RDMA pipeline</td></tr>
-<tr><td>小模型 (<10B), 少 rollout</td><td>有限优势</td><td>传输快, 协调开销占比低</td><td>数据量小, 各方案都接近 RDMA ideal</td></tr>
-<tr><td>Co-located (trainer=rollout)</td><td>不适用</td><td>无需跨节点传输</td><td>同 GPU 上无网络传输需求</td></tr>
-<tr><td>需要版本持久化/历史回溯</td><td>不如传统存储</td><td>传统 PS 保留所有版本</td><td>ROS 不持久化, retention 仅保留最近 k 版</td></tr>
+<tr><th>优化</th><th>指标</th><th>Baseline</th><th>After</th><th>改善</th><th>条件</th></tr>
+<tr><td>ROS + Pipeline</td><td>Transfer latency</td><td>NCCL 2.7s</td><td>TensorHub 2.2s</td><td>22 GB/s (88% ideal)</td><td>50 GB, 1:1</td></tr>
+<tr><td>ROS + Pipeline</td><td>Transfer latency</td><td>Ray 195s</td><td>TensorHub 2.2s</td><td>~90×</td><td>50 GB, 1:1</td></tr>
+<tr><td>Pipeline replication</td><td>Stall scaling</td><td>Quadratic</td><td>Linear</td><td>N-way → DAG</td><td>1-8 groups</td></tr>
+<tr><td>Full system</td><td>Standalone stall</td><td>NCCL 5848s</td><td>TensorHub 673s</td><td><strong>6.7×</strong></td><td>1T, 1024 GPU</td></tr>
+<tr><td>Full system</td><td>Elastic stall</td><td>UCX ~150s/step</td><td>TensorHub ~50s/step</td><td><strong>4.8×</strong></td><td>260B, 32 GPU</td></tr>
+<tr><td>Full system</td><td>Cross-DC stall</td><td>UCX 62s</td><td>TensorHub 3.2s</td><td><strong>19×</strong></td><td>9B, 24 GPU</td></tr>
+<tr><td>Full system</td><td>Cross-DC traffic</td><td>~80 GB/step</td><td>~20 GB/step</td><td><strong>4×</strong></td><td>9B, 24 GPU</td></tr>
+<tr><td>Integration</td><td>Code changes</td><td>NCCL ~450 / UCX ~1200 LoC</td><td>TensorHub ~40 LoC</td><td><strong>11-30×</strong> simpler</td><td>veRL</td></tr>
 </table>
 
-<h3 id="5-7-baselines-公平性分析">5.7 Baselines 公平性分析</h3>
+<h3 id="5-7-scheduling-resource-management">5.7 Scheduling & Resource Management</h3>
+
+<p><strong>Server-side scheduling</strong>：</p>
+<ul>
+<li>同 DC 优先，DC 内 least-loaded（引用计数最低的 replica）</li>
+<li>Pipeline replication 下每个 replica 最多服务一个请求，保证 unpublish drain 快速</li>
+</ul>
+
+<p><strong>Transfer engine（三种模式）</strong>：</p>
+<ul>
+<li><strong>RDMA Direct</strong>：长期分配的 tensor 直接注册到 RNIC，一侧 RDMA Read 零拷贝（最佳性能）</li>
+<li><strong>RDMA Copy</strong>：频繁重分配的 tensor 用后台线程 slice-by-slice 复制到预注册 buffer 再 RDMA Write（避免频繁 RNIC 注册）</li>
+<li><strong>TCP</strong>：跨 DC 无 RDMA 时使用</li>
+<li><strong>硬件亲和</strong>：GPU tensor 选择最近的 NIC，RDMA Copy 用同 GPU 上的预注册 region</li>
+</ul>
+
+<p><strong>Tiny-tensor optimization</strong>：LLM 含大量 <2 MB tensor（36B 模型约 500 个 tensor 半数为 tiny），合并到连续 buffer 传输，仅需 ~3 MB 额外内存。</p>
+
+<p><strong>Memory management</strong>：无需额外存储空间（ROS 核心设计）。唯一的内存开销是 retention protocol 的 offload（极少触发，单副本 CPU 内存），和 cross-DC offload seeding（每 DC 一份，有限 CPU 内存）。</p>
+
+<h3 id="5-8-workload-characterization">5.8 Workload Characterization</h3>
+
+<table>
+<tr><th>Workload 区间</th><th>TensorHub</th><th>Baseline</th><th>原因</th></tr>
+<tr><td>大模型 + 多 rollout（1T, 1024 GPU）</td><td><strong>显著优于</strong>（6.7× vs NCCL）</td><td>全局 barrier + straggler</td><td>TensorHub 无 trainer stall + pipeline replication</td></tr>
+<tr><td>Elastic spot 实例（动态扩缩容）</td><td><strong>显著优于</strong>（4.8× vs UCX）</td><td>串行依赖 + 带宽争抢</td><td>全局调度 + pipeline，stall 与 GPU 数无关</td></tr>
+<tr><td>跨数据中心（TCP 瓶颈）</td><td><strong>显著优于</strong>（19× vs UCX）</td><td>每 replica 独立走 TCP</td><td>Smart skipping + offload seeding</td></tr>
+<tr><td>小模型少 rollout（9B, 1:1）</td><td>优势有限</td><td>NCCL/UCX 尚可</td><td>网络未饱和，协调开销占比小</td></tr>
+<tr><td>Co-located（trainer=rollout 同 GPU）</td><td>等价或更优</td><td>等价</td><td>权重在本地，publish/unpublish 开销极小</td></tr>
+<tr><td>RDMA 不可用（纯 TCP 环境）</td><td>降级为 TCP 传输</td><td>UCX-TCP</td><td>TensorHub 仍有调度和 pipeline 优势，但带宽增益消失</td></tr>
+</table>
+
+<h3 id="5-9-baselines-公平性分析">5.9 Baselines 公平性分析</h3>
 
 <ul>
-<li><strong>NCCL / UCX</strong>：公平——均为 ByteDance 生产实现，同一 veRL 框架上评估</li>
-<li><strong>Ray Plasma</strong>：仅 microbenchmark 对比后因两个数量级差距在 case study 中排除，合理</li>
-<li><strong>RDMA Ideal</strong>：理想 roofline 作为上界参考，非实际系统</li>
-<li>未对比的重要基线：(1) NCCL + 异步传输（避免全局 barrier 的 NCCL 改进版），(2) 异步 RL 框架（StreamRL, AReaL）的内置传输机制，(3) BytePS 等专用 parameter server 变种</li>
+<li><strong>TensorHub vs NCCL/UCX</strong>：公平。均在 ByteDance 生产 veRL 框架上测试，硬件相同。RDMA ideal roofline 作为参考上界。NCCL/UCX 的劣势主要来自协调开销（全局 barrier）而非传输效率</li>
+<li><strong>Ray object store</strong>：仅在微基准中对比，因其性能差距太大（~160× 慢）排除出 RL 实验。公平但也说明 Ray 不适合此场景</li>
+<li><strong>缺失 baseline</strong>：未对比 ByteCheckpoint（同公司，checkpointing 系统）和其他 RL 专用框架（如 StreamRL 的内部权重传输机制）</li>
 </ul>
 
 <h2 id="§6-论证链">§6 论证链</h2>
 
 <table>
 <tr><th>Step</th><th>论点</th><th>证据</th><th>依赖</th></tr>
-<tr><td>1</td><td>RL 训练需要高频 TB 级权重传输</td><td>典型 RL loop: generate→score→train→transfer, 模型达 1T 参数</td><td>—</td></tr>
-<tr><td>2</td><td>三类现有方案各有致命缺陷</td><td>Table 1 五目标对比; Ray 32s vs RDMA 0.2s (160×)</td><td>Step 1</td></tr>
-<tr><td>3</td><td>数据所有权是 storage 方案额外开销的根因</td><td>push-then-pull 必然引入额外拷贝和存储空间</td><td>Step 2</td></tr>
-<tr><td>4</td><td>RL 权重的三属性（高冗余、不可变、短寿命）使 ownership-free 存储可行</td><td>数据并行 → 多等价副本; inference immutable; 仅需最近 k 版</td><td>Step 3</td></tr>
-<tr><td>5</td><td>ROS 原语配合 mutability contract + retention protocol 保证正确性</td><td>publish/unpublish 纪律确保引用期内数据不变; offload 仅极端 corner case 触发</td><td>Step 4</td></tr>
-<tr><td>6</td><td>Pipeline replication 利用 RDMA 全双工将 fan-out 转为 bandwidth-amplifying DAG</td><td>Fig. 7(b): 线性 vs 二次方扩展; 2.2s/50GB 不随 replica 数增加</td><td>Step 5</td></tr>
-<tr><td>7</td><td>Topology-aware 调度 + transactional consistency + fault tolerance 形成生产级系统</td><td>Standalone 6.7× (Fig. 9); elastic ~1.5s 恒定 (Fig. 11); cross-DC 19× (Fig. 12)</td><td>Step 6</td></tr>
-<tr><td>8</td><td>极简 API (~40 行) + 强功能 = 生产可用</td><td>ByteDance 生产部署, 支撑 cutting-edge RL training</td><td>Step 7</td></tr>
+<tr><td>1</td><td>RL 训练中 rollout 占 >90% 时间，推动 standalone/elastic/cross-DC 扩展</td><td>引用 veRL、OpenRLHF 等；RLBoost 报告 elastic 可提升 1.97× (§2.1)</td><td>—</td></tr>
+<tr><td>2</td><td>权重传输需同时满足拓扑感知、弹性、最少协调、最少搬运、无额外空间五个目标</td><td>五目标定义 (§2.2)；Table 1 系统对比</td><td>Step 1</td></tr>
+<tr><td>3</td><td>现有方案均无法同时满足：NCCL 缺弹性+协调重，UCX 缺拓扑感知，Storage 翻倍搬运</td><td>Table 1 + §2.3 定性分析；Ray 32s vs RDMA 0.2s (§2.3)</td><td>Step 2</td></tr>
+<tr><td>4</td><td>数据所有权是 storage 方案额外搬运的根因；RL 权重的复制性+不变性+短命使无所有权可行</td><td>§3 开头三条属性观察</td><td>Step 3</td></tr>
+<tr><td>5</td><td>ROS 通过 publish/replicate/unpublish 原语 + mutability contract + retention protocol 实现无所有权存储</td><td>§3.1-3.3 设计</td><td>Step 4</td></tr>
+<tr><td>6</td><td>Pipeline replication 利用 RDMA 全双工将 fan-out 转为带宽放大 DAG，线性扩展</td><td>Fig 7(b)：linear vs quadratic scaling (§5.1.2)</td><td>Step 5</td></tr>
+<tr><td>7</td><td>中心化 server 的全局视图 + least-loaded 调度实现拓扑感知和弹性</td><td>Fig 11：elastic stall 与 GPU 数无关 (§5.3)；Fig 12：跨 DC smart skipping (§5.4)</td><td>Step 5 + 6</td></tr>
+<tr><td>8</td><td>事务语义 + 故障处理确保 model-parallel 一致性和动态集群正确性</td><td>Fig 6 consistency example (§4.4)；Fig 7(c) failure masking (§5.1.3)；1.3K 行 concurrency tests (§4.6)</td><td>Step 5</td></tr>
+<tr><td>9</td><td>完整系统在三种 rollout 策略下均显著优于 baseline，且集成极简</td><td>6.7× standalone、4.8× elastic、19× cross-DC、~40 LoC (§5.2-5.4)</td><td>Step 6 + 7 + 8</td></tr>
 </table>
 
 <h2 id="§7-实现与工程细节">§7 实现与工程细节</h2>
 
 <h3 id="7-1-代码-cross-reference">7.1 代码 Cross-Reference</h3>
 
-<p>[实现未公开] — TensorHub 为字节跳动内部系统，3.7K Python + 2.4K C++，代码未开源。</p>
+<p>[实现未公开] — TensorHub 为 ByteDance 内部系统，代码未开源。</p>
+
+<ul>
+<li><strong>实现规模</strong>：3.7K 行 Python + 2.4K 行 C++</li>
+<li><strong>Server</strong>：Ray named actor，lazy 实例化</li>
+<li><strong>Client↔Server 通信</strong>：Ray RPC</li>
+<li><strong>传输引擎</strong>：基于 Mooncake transfer engine（RDMA）</li>
+<li><strong>验证</strong>：1.3K 行 concurrency tests（受 FoundationDB 启发的确定性模拟测试）+ end-to-end checksum</li>
+</ul>
 
 <p>依赖的开源组件：</p>
 <ul>
-<li><strong>Mooncake transfer engine</strong> (Qin et al., 2025, FAST'25)：RDMA 传输引擎</li>
-<li><strong>Ray</strong> (Moritz et al., 2018, OSDI'18)：reference server 实现为 Ray named actor, client-server 通信走 Ray RPC</li>
-<li><strong>veRL</strong> (Sheng et al., 2025b, EuroSys'25)：评估使用的 RL 训练框架</li>
+<li><strong>Mooncake</strong> (Qin et al., 2025, FAST'25)：RDMA 传输引擎</li>
+<li><strong>veRL</strong> (Sheng et al., 2025b, EuroSys'25)：RL 训练框架</li>
+<li><strong>Ray</strong> (Moritz et al., 2018, OSDI'18)：分布式框架，用于 server actor 和 RPC</li>
 </ul>
 
 <h3 id="7-2-核心技术壁垒">7.2 核心技术壁垒</h3>
 
-<p>Pipeline replication 中将 progress counter 暴露为外部可读状态，使正在接收的 worker 能同时作为数据源。传统 BitTorrent 式 P2P 需等待完整 chunk 后才分发；TensorHub 利用 tensor 粒度的 progress tracking 实现时间维度的流水化，本质上是将接收窗口内的"已到达前缀"实时暴露为可服务状态。</p>
+<p>Pipeline replication 的精确实现是外部团队最难复现的部分。表面上 "partially-replicated worker 开始服务下游" 概念简单，但实际需要：</p>
 
-<p>这要求精确控制 RDMA 传输的数据一致性边界：只有 progress counter 指示"已完成"的 tensor 才可被远端读取。Counter 的更新必须在 RDMA completion 之后原子执行，否则可能暴露部分写入的 tensor 数据。</p>
+<ol>
+<li><strong>RDMA 全双工利用</strong>：接收和发送同时进行，需确保 NIC 的 RX 和 TX 路径不互相干扰。在 Mellanox ConnectX-7 上实测可达接近 2× 单向带宽（接收+发送并行），但需要仔细调优 QP 参数</li>
+<li><strong>Progress counter 的并发安全性</strong>：source worker 不断更新 counter，多个 requester 同时读取。需要原子操作保证一致性，且不能用锁（会打断 RDMA 流水线）</li>
+<li><strong>Partial-replica 的故障恢复</strong>：当 partially-replicated source 故障时，requester 需要 (a) 检测故障，(b) 确定已接收的 prefix 范围，(c) 从其他 source 续传剩余部分。这涉及 RDMA 层的保守超时 (~4s) 和 server-side 的状态清理</li>
+<li><strong>Tiny-tensor compaction 的 zero-copy 解包</strong>：compacted buffer 传输后需在 receiver 端解包到原始 tensor layout，这必须与 RDMA 传输重叠执行以隐藏开销</li>
+</ul>
 
 <h3 id="7-3-关键实现细节">7.3 关键实现细节</h3>
 
 <ol>
-<li><strong>FoundationDB 风格确定性测试</strong>：单进程模拟多客户端的请求交错，注入故障为停止特定 client 请求。无需 RDMA NIC 或 GPU，1.3K 行并发测试覆盖 model-parallel consistency 和故障场景。</li>
+<li><strong>Mutability contract 的 drain 机制</strong>：<code>unpublish()</code> 不立即生效——server 先标记 replica 不可见（不接受新请求），等待进行中传输完成（at most 1 inflight due to pipeline policy），然后确认。这保证了 buffer reuse 安全性，且等待有界。</li>
 </ul>
 
 <ol>
-<li><strong>End-to-end checksum</strong>：publish 时计算每 tensor checksum 附到引用上，replicate 完成后验证。GPU 上 checksum 计算快且可与 RDMA 传输重叠。同时用于验证 mutability contract 未被违反。</li>
+<li><strong>Server 的 stateless recovery</strong>：reference server 失败后，新 server 无需任何状态恢复。因为所有数据在 worker GPU 上，server 只需等待下一轮 publish 重建引用。这是 ownership-free 设计带来的优雅副作用——传统 PS 失败需要复杂的 checkpoint recovery。</li>
+</ul>
+
+<ol>
+<li><strong>RDMA Copy 模式的 slice-by-slice 设计</strong>：当 tensor 频繁重分配时，后台线程逐片复制到预注册 buffer 再 RDMA Write。这比重新 RNIC 注册便宜（注册是 heavy OS operation），但引入了 CPU 参与的复制开销。对于 long-lived tensor，RDMA Direct 完全绕过 CPU。</li>
 </ul>
 
 <h3 id="7-4-api-usability">7.4 API & Usability</h3>
 
 <ul>
-<li><strong>对外接口</strong>：Python API — <code>open / register / publish / unpublish / replicate / update / list / wait / close</code>，统一支持 CPU 和 GPU tensor</li>
-<li><strong>配置复杂度</strong>：低。主要参数为 model_name、replica_name、num_shards、shard_idx、retain 策略</li>
-<li><strong>集成成本</strong>：极低——~40 行代码，vs NCCL ~450 行 / UCX ~1200 行。无需修改 RL 框架的调度逻辑</li>
-<li><strong>迁移路径</strong>：从 NCCL/UCX 迁移仅需替换权重传输代码段，trainer 端改为 publish/unpublish，rollout 端改为 replicate/update</li>
+<li><strong>对外接口</strong>：Python API（<code>tensorhub.open</code>, <code>register</code>, <code>publish</code>, <code>replicate</code>, <code>update</code>, <code>unpublish</code>, <code>close</code>），支持 CPU 和 GPU tensor</li>
+<li><strong>集成复杂度</strong>：极低。veRL 框架上仅需 ~40 行代码修改（对比 NCCL ~450 行、UCX ~1200 行）</li>
+<li><strong>配置表面</strong>：相对简单——主要选择 transfer mode（RDMA Direct/Copy/TCP）和 retain 策略（latest k versions）</li>
 </ul>
 
 <h3 id="7-5-adoption-ecosystem">7.5 Adoption & Ecosystem</h3>
 
 <ul>
-<li><strong>开源状态</strong>：否。TensorHub 为字节跳动内部生产系统</li>
-<li><strong>生产部署</strong>：是。论文声明 "TensorHub has been deployed in ByteDance production to support cutting-edge RL training"</li>
-<li><strong>上游合并</strong>：未合并到任何开源框架。核心思想（ROS 抽象、pipeline replication）可独立实现</li>
-<li><strong>下游要求</strong>：需要 RDMA 网络（InfiniBand/RoCE），跨 DC 场景需 TCP fallback。对 GPU 类型无硬性要求（评估使用 NVIDIA Hopper）</li>
+<li><strong>开源状态</strong>：否。TensorHub 为 ByteDance 内部系统</li>
+<li><strong>生产部署</strong>：是。论文明确声明 "deployed in ByteDance production to support cutting-edge RL training"</li>
+<li><strong>底层依赖的开源</strong>：Mooncake 和 veRL 均已开源</li>
+<li><strong>迁移路径</strong>：对于使用 veRL/OpenRLHF 等框架的外部团队，核心思想（reference-passing + pipeline replication over RDMA）可在 ~2K 行内实现。关键壁垒是 Mooncake RDMA 传输引擎的集成和 pipeline replication 的并发控制</li>
 </ul>
 
 <h3 id="7-6-deployment-context">7.6 Deployment Context</h3>
 
 <ul>
-<li><strong>覆盖阶段</strong>：RL 训练循环中的权重同步阶段，不涉及训练或推理本身</li>
-<li><strong>并发规模</strong>：评估覆盖 16-1024 GPU，设计目标为数千 worker。单 reference server 已验证可支撑 1024 GPU</li>
-<li><strong>硬件亲和</strong>：最大收益在大 RDMA 带宽集群（400 Gbps × 4 NIC/node），跨 DC 场景下 TCP 带宽为瓶颈。NIC 拓扑感知（每 GPU 选最近 NIC）对多 NIC 节点很关键</li>
-<li><strong>Ecosystem integration</strong>：以 client library 形式嵌入 RL 框架，reference server 为独立 Ray actor。与 veRL 集成仅需 ~40 行改动；可嵌入 OpenRLHF、AReaL 等任何支持 Ray 的框架</li>
-<li><strong>迁移阻力</strong>：最小——纯 library 层面替换，不要求修改模型定义或训练逻辑</li>
-</ul>
-
-<h3 id="7-7-software-→-hardware-reverse-implication">7.7 Software → Hardware Reverse Implication</h3>
-
-<p>TensorHub 的 pipeline replication 假设 RDMA NIC 全双工（接收时上行空闲）——这是带宽放大的硬件基础。如果未来 NIC 架构改变全双工特性（如共享带宽调度），pipeline replication 的效果会降低。</p>
-
-<p>Cross-DC 依赖 TCP 的低带宽是系统的主要瓶颈之一。硬件层面的改进方向：</p>
-<ul>
-<li><strong>RDMA over WAN</strong>：跨 DC 部署 RoCE v2 或类似 RDMA 传输可大幅降低 seeding 延迟</li>
-<li><strong>NIC-integrated versioning</strong>：NIC 原生支持版本化数据读取（类似 RDMA extended atomics），progress counter 检查可在硬件层面完成</li>
-<li><strong>Smart NIC 辅助调度</strong>：将 least-loaded replica 选择下沉到 DPU/SmartNIC，消除 reference server 作为软件中间层的延迟</li>
+<li><strong>适用阶段</strong>：RL 训练中的 trainer→rollout 权重传输（非推理 serving）</li>
+<li><strong>并发规模</strong>：中到超大规模（16-1024 GPU evaluated；声明单 server 可支撑千级 worker）</li>
+<li><strong>硬件要求</strong>：RDMA NIC（InfiniBand/RoCE）；跨 DC 可降级 TCP 但性能降低</li>
+<li><strong>框架集成</strong>：与 veRL 深度集成；可适配其他 RL 框架（AReaL, OpenRLHF, Laminar 等）只要框架暴露 weight buffer access 点</li>
 </ul>
 
 </div>

@@ -195,116 +195,129 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 
 <h2 id="相关论文">相关论文</h2>
 
-<p>本篇选取 4 篇相关论文，覆盖 RL 训练框架、RDMA 通信原语、PD 分离推理和跨 DC 数据传输层面，与 TensorHub 形成多维对比。</p>
+<p>本篇选取 5 篇相关论文，覆盖 RL 训练框架、RDMA 通信层、推理 I/O 优化和 agentic 调度，与 TensorHub 在权重传输这一核心问题上形成多维对比。</p>
 
-<p><strong>HybridFlow / veRL (2409.19256)</strong> — TensorHub 的评估基座和直接 baseline。HybridFlow 提出了 RLHF 训练的分层混合编程模型（single-controller 编排 + multi-controller 分布式计算），开源为 veRL。TensorHub 在 veRL 框架上评估，仅用 ~40 行代码替换了 NCCL/UCX 权重传输层。两者的核心分工：HybridFlow 解决 RL 训练中多模型编排、并行策略搜索和 actor 权重 resharding 问题（3D-HybridEngine），TensorHub 解决训练完成后权重向 rollout worker 分发的带宽和弹性问题。HybridFlow 的 transfer protocol 抽象（<code>@register</code> 装饰器 + collect/distribute）恰好为 TensorHub 的集成提供了干净的插入点——TensorHub 的 publish/replicate 语义可以直接映射为一种新的 transfer protocol。Kind: baseline。</p>
+<p><strong>HybridFlow / veRL (2409.19256)</strong> — TensorHub 的直接 baseline 和集成目标。veRL 是 TensorHub 运行其上的 RLHF 训练框架，其 hybrid single/multi-controller 设计处理 RLHF dataflow 编排（model placement、parallel group 管理、transfer protocol 抽象），TensorHub 则替换 veRL 默认的权重传输机制（NCCL broadcast 或 UCX point-to-point）。veRL 的 <code>@register</code> + transfer protocol 抽象天然适配 ROS——TensorHub 仅需 ~40 行代码即可集成。两系统垂直互补：veRL 决定"何时传、传给谁"，TensorHub 决定"如何传、从哪传"。TensorHub 的实验 baseline 正是 veRL 的默认权重传输路径。Kind: baseline。</p>
 
-<p><strong>fabric-lib (2510.27656)</strong> — 通信层对照。两者都解决 LLM 系统中的 RDMA 点对点数据传输，但设计哲学不同。fabric-lib 追求硬件可移植性——用 ImmCounter 原语在 reliable-but-unordered 语义上统一了 ConnectX-7 和 AWS EFA，放弃了 RDMA Read 和 Atomic 操作以求最大公约数。TensorHub 追求极致性能——深度利用 RDMA Read 的单边语义（接收方主动拉取，发送方零感知）和 NIC 全双工特性实现 pipeline replication。fabric-lib 的 RL 权重传输方案同样利用全集群 NIC 带宽（P2P Write 替代 Rank0 AllGather），1T 参数仅需 1.3s；TensorHub 在 1T mocked 模型上 mean stall 3.1s，但 TensorHub 的核心优势在 pipeline replication 的带宽放大——fabric-lib 的 4 阶段流水线是 sender-initiated（Write），TensorHub 的 pipeline replication 是 receiver-initiated（Read）且部分完成的 worker 自动成为新源。Kind: related。</p>
+<p><strong>fabric-lib (2510.27656)</strong> — TensorHub 的通信层对照和潜在替代。两者都构建在 RDMA 之上实现 LLM 系统中的高吞吐数据传输。TensorHub 内部使用 Mooncake transfer engine（RDMA），fabric-lib 提供跨 ConnectX-7 和 AWS EFA 的可移植 RDMA P2P 抽象。fabric-lib 的 RL 权重传输 benchmark（1T 参数，1.3s，256→128 GPU）是最直接可比的数据点。更关键的是，fabric-lib 的 Table 5 延迟分解揭示了权重传输链路中的真实瓶颈分布：FSDP full_tensor() 占 42%，跨 rank 同步占 29%，RDMA submit 仅占 2.1%——这对评估 TensorHub pipeline replication 的实际贡献至关重要。Kind: related。</p>
 
-<p><strong>DualPath (2602.21548)</strong> — 架构方法论类比。两者都在生产级系统中利用 RDMA 解决大规模数据搬运瓶颈，都来自中国头部 AI 公司内部部署。DualPath 解决推理端 PD 分离架构中 PE 端 storage NIC 饱和问题——通过 CNIC-centric data path 将所有 GPU 数据传输统一走 InfiniBand，用 VL QoS 做流量隔离。TensorHub 解决训练端 RL 权重传输中的 fan-out 瓶颈——通过 Reference-Oriented Storage 消除数据所有权、用 pipeline replication 将 fan-out 转化为 bandwidth-amplifying DAG。两者共享的设计模式：(1) 集中式轻量协调器 + 分布式数据平面，(2) 利用 RDMA 硬件特性实现零拷贝数据移动，(3) topology-aware 调度减少网络拥塞。关键差异：DualPath 需要 InfiniBand VL QoS 硬件级流量隔离（GPU 不支持 PCIe QoS），TensorHub 不需要流量隔离（权重传输与训练计算在时间上天然分离）。Kind: related。</p>
+<p><strong>DualPath (2602.21548)</strong> — 共享 RDMA + InfiniBand 深度工程经验，但面向推理 I/O 而非训练权重传输。DualPath 聚合 decode engine 空闲 SNIC 带宽加速 KV-Cache 加载；TensorHub 聚合正在接收权重的 rollout worker 的 NIC 上行带宽加速权重分发。两者独立发现了同一个系统洞察：<strong>大规模 GPU 集群中存在大量空闲 NIC 带宽，可通过 DAG 拓扑聚合</strong>。DualPath 部署于 DeepSeek（1152 GPU），TensorHub 部署于 ByteDance（1024 GPU）——两者是当前公开报道中经过千 GPU 级生产验证的 RDMA 系统双雄。Kind: related。</p>
 
-<p><strong>PrfaaS (2604.15039)</strong> — 跨 DC 传输类比。两者都解决跨数据中心的大规模数据传输问题，且采用高度相似的两阶段策略。PrfaaS 的架构：compute-dense PrfaaS 集群做 prefill → 跨 DC Ethernet 回流 KV → 本地 PD 集群 decode；TensorHub 的跨 DC 模式：TCP seeding（第一个 replica 跨 DC 拉取全量权重）→ 本地 RDMA pipeline replication（后续 replica 从 seeding replica 获取）。两者都依赖层间/tensor 粒度的 pipeline 实现计算-传输重叠：PrfaaS 的 layer-wise prefill pipelining 使吞吐取 min(compute, egress)；TensorHub 的 progress counter 使传输中的 worker 可同时服务。PrfaaS 的核心前提是混合注意力将 $\Phi_{\text{kv}}$ 压到 ~3 Gbps 使跨 DC Ethernet 可行；TensorHub 没有这种模型约束，但 cross-DC 场景下 TCP seeding 延迟仍是 2.5s（offload seeding 可隐藏但消耗 CPU memory）。Kind: related。</p>
+<p><strong>Adaptive Placement / FlexRLHF (2312.11819)</strong> — 较早的 RLHF 框架，首先系统性识别"训练-推理分离"作为 RLHF 加速的关键策略。FlexRLHF 的 Disaggregated 策略通过 Shadow Actor/Critic 物理分离训练和推理运行时，创造了 standalone rollout 模式——正是 TensorHub 显式优化的场景。FlexRLHF 实现了 11× 加速，但其权重同步仅用"periodic parameter broadcast"一笔带过，完全未考虑传输效率。TensorHub 填补了 FlexRLHF 留下的这个空白：分离之后，权重怎么高效送达？Kind: related。</p>
+
+<p><strong>ThunderAgent (2602.13692)</strong> — 共享 RL rollout 服务场景。ThunderAgent 的 program-aware 调度优化 rollout 推理引擎侧（KV-cache 管理、workflow 生命周期、thrashing 防控），TensorHub 优化 rollout 权重分发侧（trainer→rollout 传输）。ThunderAgent 在 RL rollout 中实现 1.79–3.92× 吞吐提升（via 调度），TensorHub 在 elastic rollout 中实现 4.8×（via 传输）。两者服务同一个生产目标：最大化 rollout 吞吐以最小化 RL 训练的 policy lag。ThunderAgent 的发现"PD 分离在 agent workload 下退化"与 TensorHub 的部署上下文相关——TensorHub 在 RL rollout 中不使用 PD 分离，而是统一的 rollout engine。Kind: related。</p>
 
 <h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta</h2>
 
-<p>TensorHub 的核心 delta 是 Reference-Oriented Storage（ROS）抽象——在 RL 权重传输场景中彻底消除数据所有权开销。传统 distributed storage（包括 Ray Plasma、parameter server）必须先接管数据所有权再提供读取，push-then-pull 模式将网络流量翻倍且引入额外存储空间。ROS 识别 RL 训练中模型权重的三个可利用属性（数据并行→多等价副本，推理不可变，版本短暂），直接复用 GPU 上已有权重 in place，协调器仅追踪轻量级引用。</p>
+<p>TensorHub 的核心 delta 是 <strong>Reference-Oriented Storage (ROS)</strong> ——从存储层面彻底消除数据所有权，将 GPU 上已有的模型权重副本直接作为可 RDMA 读取的不可变引用，结合 pipeline replication 实现带宽随参与者线性增长的 DAG 传输拓扑。</p>
 
 <table>
-<tr><th>维度</th><th>TensorHub</th><th>HybridFlow/veRL</th><th>fabric-lib</th><th>DualPath</th><th>PrfaaS</th></tr>
-<tr><td>核心抽象</td><td>Reference-Oriented Storage</td><td>Hybrid programming model</td><td>TransferEngine (reliable-but-unordered)</td><td>Dual-path data loading</td><td>PrfaaS-PD + throughput model</td></tr>
-<tr><td>优化目标</td><td>RL 权重传输 stall</td><td>RLHF pipeline 吞吐</td><td>异构 RDMA P2P 通信</td><td>KV-Cache 存储 I/O 带宽</td><td>跨 DC prefill offload</td></tr>
-<tr><td>数据移动方向</td><td>Trainer→Rollout (weights)</td><td>Actor↔Critic/Ref/Reward (data)</td><td>任意 P2P</td><td>Storage→PE/DE (KV-Cache)</td><td>PrfaaS→PD (KV-Cache)</td></tr>
-<tr><td>Pipeline 机制</td><td>Progress counter + RDMA Read relay</td><td>3D-HybridEngine resharding</td><td>4-stage流水线 (H2D→full_tensor→RDMA→barrier)</td><td>Layerwise streaming (PE/DE read paths)</td><td>Layer-wise prefill pipelining</td></tr>
-<tr><td>带宽放大</td><td>是 (每个新 replica 成为新数据源)</td><td>否</td><td>是 (全集群 NIC 并行 Write)</td><td>是 (DE 端 SNIC 纳入)</td><td>否 (compute/egress 取 min)</td></tr>
-<tr><td>跨 DC 支持</td><td>TCP seeding + RDMA pipeline</td><td>否</td><td>否</td><td>否 (单集群)</td><td>Ethernet KV 回流 (核心卖点)</td></tr>
-<tr><td>弹性</td><td>Spot instance 动态加入/退出</td><td>固定 ResourcePool</td><td>无 (静态 peer)</td><td>固定 P/D ratio (长期可调)</td><td>长期 P↔D 转换</td></tr>
-<tr><td>故障容忍</td><td>Heartbeat + replica 粒度驱逐 + 软状态 server</td><td>无显式容错</td><td>Heartbeat + per-request cancel</td><td>未涉及</td><td>未涉及</td></tr>
-<tr><td>集成成本</td><td>~40 行 (veRL)</td><td>框架级 (全套)</td><td>Library 级</td><td>~5K 行 (内部框架)</td><td>未公开</td></tr>
-<tr><td>验证规模</td><td><strong>1024 GPU</strong></td><td>64 GPU</td><td>384 GPU</td><td>1152 GPU</td><td>96 GPU</td></tr>
-<tr><td>开源</td><td>否</td><td>是 (veRL)</td><td>是</td><td>否</td><td>否</td></tr>
+<tr><th>维度</th><th>TensorHub</th><th>HybridFlow/veRL</th><th>fabric-lib</th><th>DualPath</th><th>FlexRLHF</th><th>ThunderAgent</th></tr>
+<tr><td>优化目标</td><td>权重传输延迟</td><td>RLHF 训练吞吐</td><td>RDMA 可移植性</td><td>KV-Cache I/O 带宽</td><td>模型放置效率</td><td>RL rollout 调度</td></tr>
+<tr><td>核心抽象</td><td>ROS (无所有权引用)</td><td>Hybrid controller</td><td>TransferEngine</td><td>Dual-path data path</td><td>Placement ratio</td><td>Agentic program</td></tr>
+<tr><td>传输模型</td><td>Pull-based (任意 peer)</td><td>Push (NCCL/UCX barrier)</td><td>P2P WriteImm</td><td>Load + RDMA relay</td><td>Push (AllGather)</td><td>N/A (调度层)</td></tr>
+<tr><td>Fan-out 策略</td><td>Pipeline replication DAG</td><td>Broadcast barrier</td><td>Full-cluster P2P</td><td>Adaptive path selection</td><td>N/A</td><td>N/A</td></tr>
+<tr><td>Trainer stall</td><td><strong>消除</strong></td><td>有 (需 barrier)</td><td>有 (AllGather)</td><td>N/A (推理系统)</td><td>有 (同步发送)</td><td>N/A</td></tr>
+<tr><td>弹性支持</td><td>Spot-aware retention</td><td>无</td><td>无</td><td>无</td><td>异构 GPU</td><td>无</td></tr>
+<tr><td>跨 DC</td><td>TCP seeding + local RDMA</td><td>无</td><td>无</td><td>无</td><td>无</td><td>无</td></tr>
+<tr><td>容错</td><td>三级 (client/spot/server)</td><td>Checkpoint</td><td>依赖底层</td><td>未涉及</td><td>未提及</td><td>Release GC</td></tr>
+<tr><td>集成复杂度</td><td>~40 LoC</td><td>自身是框架</td><td>~2K LoC 估计</td><td>~5K LoC (内部)</td><td>中等</td><td>3 处改动</td></tr>
+<tr><td>规模验证</td><td><strong>1024 GPU</strong></td><td>64 GPU</td><td>384 GPU</td><td><strong>1152 GPU</strong></td><td>128 GPU</td><td>16 GPU</td></tr>
+<tr><td>开源</td><td>否</td><td>是 (veRL)</td><td>是</td><td>否</td><td>否</td><td>是</td></tr>
 </table>
 
-<p><strong>TensorHub vs HybridFlow — 垂直互补</strong>。HybridFlow 在 RL 训练的"宏观编排"层面创新（多模型 placement、并行策略搜索），TensorHub 在"微观数据传输"层面创新（权重如何从 trainer GPU 到达 rollout GPU）。两者的技术栈完全正交——HybridFlow 的 transfer protocol 层是 TensorHub 的插入点。值得注意的是，HybridFlow 的 3D-HybridEngine 在训练→generation 切换时需要 all-gather 权重（通信量 $M \cdot (t_p - t_g \cdot p_g) / (t_g \cdot p_g \cdot t_p)$），这个 resharding 通信发生在 actor 内部、与 TensorHub 的跨 group 权重同步是不同的瓶颈环节。两者组合（HybridFlow 编排 + TensorHub 传输）可以同时消除 intra-actor resharding 和 inter-group weight sync 两个开销。</p>
+<p><strong>TensorHub vs HybridFlow/veRL — 垂直互补的因果链</strong>。veRL 定义了 RLHF 训练的编排语义（hybrid single/multi-controller + 3D-HybridEngine + auto device mapping），TensorHub 优化了编排中"最重的一条边"——权重从 trainer GPU 到 rollout GPU 的传输。veRL 的 transfer protocol（<code>@register</code> + collect/distribute）天然适配 TensorHub：Actor 的 collect 从 NCCL AllGather 替换为 <code>tensorhub.publish()</code>，distribute 从 send/recv 替换为 <code>tensorhub.replicate()</code>。但这也暴露了 veRL 原始 transfer 设计的脆弱性——NCCL 的静态通信组和全局 barrier 在 elastic/cross-DC 场景完全失效（NCCL 任一节点故障导致全组崩溃），说明 veRL 的 transfer protocol 抽象当初没考虑 beyond-collective 的传输方案。TensorHub 的成功集成（~40 LoC）既证明了 veRL 抽象的可扩展性，也定义了下一代 RLHF 框架对 weight transfer 层的最低要求。</p>
 
-<p><strong>TensorHub vs fabric-lib — 数据传输的 Read vs Write 分歧</strong>。TensorHub 使用 RDMA Read（接收方主动拉取），fabric-lib 使用 RDMA Write + ImmCounter（发送方推送 + 完成通知）。这不是随意选择：TensorHub 的 pipeline replication 需要接收方在"数据到达多少"上有精确控制（progress counter 查询 + 前缀读取），RDMA Read 天然支持"读多少我决定"的语义。fabric-lib 的 Write 方案则更适合 sender-knows-destination 的场景（如 KvCache 逐层推送、MoE dispatch）。fabric-lib 的 RL 权重传输方案（§5, Table 5）显示瓶颈在 FSDP full_tensor()（42%）而非 RDMA（2.1%），这意味着 TensorHub 的 ROS 抽象（publish 时数据已在 GPU 上、无需 full_tensor）在数据准备环节可能有根本优势——但前提是 trainer 端的权重已经以全量形式存在于 GPU 上，而非 FSDP sharded 状态。</p>
+<p><strong>TensorHub vs fabric-lib — 权重传输的真实瓶颈在哪里？</strong> fabric-lib Table 5 的延迟分解提供了极具说服力的剖析：1T 参数传输 1.3s 中，full_tensor() FSDP unsharding 占 42%（518ms），跨 rank 同步占 29%（357ms），RDMA submit 仅占 2.1%（26ms）。如果这个瓶颈分布在 TensorHub 场景中也成立（TensorHub 基于 veRL，veRL 支持 FSDP/ZeRO），那么 pipeline replication 优化的是全链路中最小的环节。TensorHub 的 6.7× standalone stall reduction 可能主要来自两个非 pipeline 因素：(1) 消除 NCCL 全局 barrier（对应 fabric-lib 中 29% 的 "waiting for ranks"）和 (2) ROS 的 publish 零开销消除 trainer stall。Pipeline replication 的带宽放大效果可能被 full_tensor() 瓶颈吃掉。但 TensorHub 与 fabric-lib 有一个关键差异：TensorHub 可能使用 RDMA Direct 模式（长期分配的 tensor 直接注册到 RNIC），绕过了 FSDP unsharding。论文使用 Mooncake transfer engine 而非 FSDP，这个差异使 fabric-lib 的瓶颈分解不能直接套用——但论文缺乏同等粒度的 breakdown 来验证这一推测。</p>
 
-<p><strong>TensorHub vs DualPath — 训练端 vs 推理端的 RDMA 范式</strong>。两者代表 RDMA 在 LLM 基础设施中两个正交方向的深度应用。DualPath 的 CNIC-centric 设计解决的是"实时推理中数据搬运与模型计算的 PCIe 层面竞争"——需要硬件级流量隔离因为两者在时间上高度重叠。TensorHub 不面临这个问题——RL 训练中 train→transfer→rollout 是时序分离的阶段，权重传输期间 rollout worker 完全空闲等待。TensorHub 面临的独有挑战是 fan-out amplification（一份权重需要分发到数千 worker），DualPath 面临的独有挑战是带宽隔离（KV-Cache 传输不能干扰毫秒级集合通信）。</p>
+<p><strong>TensorHub vs DualPath — "找到空闲 NIC 带宽"的通用设计模式</strong>。两者独立发现了同一个系统洞察在不同场景的应用：DualPath 发现 DE 端 SNIC 空闲可帮 PE 读 KV-Cache；TensorHub 发现正在 replicate 的 rollout worker 其上行 NIC 空闲可帮后续 worker 读 weights。Pipeline replication 和 dual-path loading 在数学上是同一问题——将单源 fan-out 变成 DAG 拓扑以聚合带宽。但实现路径截然不同：DualPath 需要精密的 InfiniBand VL QoS 流量隔离（推理通信和 KV-Cache 传输共享 CNIC，必须硬件级区分优先级），TensorHub 利用 RDMA 全双工的天然双向性（接收和发送使用 NIC 不同物理通道，不需要 QoS 隔离）。TensorHub 的方案更 elegant——不需要额外硬件配置，不依赖 InfiniBand VL。从可复现性角度看，TensorHub 的 pipeline replication 原理更通用（仅需 RDMA 全双工），DualPath 的 CNIC-centric data path 更特化（需要 InfiniBand VL + PCIe 拓扑知识）。</p>
 
-<p><strong>TensorHub vs PrfaaS — 跨 DC 两阶段的同构性</strong>。两者的跨 DC 策略惊人相似：都是"一次慢速跨 DC 传输 → 本地快速复制"。PrfaaS 用 layer-wise prefill pipelining 实现计算-传输重叠使 $\Theta_{\text{prfaas}} = \min(\text{compute}, \text{egress})$；TensorHub 用 offload seeding 将 TCP 接收放到 CPU 后台使 <code>update()</code> 立即返回。但两者的"本地快速复制"机制不同：PrfaaS 依赖 intra-cluster RDMA（PD-P→PD-D），TensorHub 依赖 pipeline replication（seeding replica 通过 RDMA 向后续 replica 分发）。TensorHub 的 smart skipping 机制（polling replica 发现 seeding 进行中时跳过该版本）在 PrfaaS 中没有对应——PrfaaS 的所有请求都必须等待 prefill 完成后才能开始 decode。</p>
+<p><strong>TensorHub vs FlexRLHF — 两年半的技术演进链</strong>。FlexRLHF（2023-12）首先证明"训练-推理运行时分离可获 11× 加速"，但将权重同步视为已解决问题（"periodic parameter broadcast"）。到 TensorHub（2026-04），standalone rollout 已成为 production 标配（veRL、OpenRLHF 均默认支持），分离后的权重传输从"已解决"变成"核心瓶颈"——1T 模型的 NCCL broadcast 需要全部 1024 GPU 同步等待最慢节点，stall 达 ~5800s。这是一条清晰的因果链：FlexRLHF 证明"分离是对的" → veRL 实现"分离 + NCCL 同步" → TensorHub 实现"分离 + 无 barrier 同步"。FlexRLHF 的另一个遗留问题——异构 GPU 支持（仅 14.5% 额外加速）——在 TensorHub 的 cross-DC 方案中得到真正解决：跨数据中心部署天然支持异构硬件，且 TensorHub 的 19× stall reduction 远超 FlexRLHF 的异构收益。</p>
+
+<p><strong>TensorHub vs ThunderAgent — 同一 RL 循环的两端优化</strong>。RL rollout 端到端时间 = 权重更新延迟（TensorHub 优化） + rollout 推理延迟（ThunderAgent 优化）。两者收益理论上可叠加，但存在交互效应：ThunderAgent 的 program-aware 调度在 rollout 推理期间维护 workflow 状态（Reasoning/Acting），TensorHub 的权重更新会导致所有 in-progress workflows 使用过时的模型权重。ThunderAgent 面临的选择是——在权重更新时中断 workflow 还是用旧版本继续？TensorHub 的 smart skipping 机制（rollout 发现新版本正在 seeding 时跳过）和 ThunderAgent 的 program state machine 可以协同：用旧版本继续 Acting 状态的 program，用新版本开始新的 program，用 TensorHub 的 progress counter 追踪哪些 worker 已就绪。</p>
 
 <p><strong>TensorHub 的独有增量</strong>：</p>
 <ol>
-<li><strong>Reference-Oriented Storage 是全新的存储抽象</strong>——在 4 篇论文中独此一家。HybridFlow 用 NCCL 集合通信，fabric-lib 用 Write+ImmCounter 单次传输，DualPath 用双路径 Read 从 3FS，PrfaaS 用 TCP+RDMA 跨 DC。只有 TensorHub 识别并利用了 RL 权重的三个可利用属性（冗余、不可变、短寿命）来消除存储中间层。</li>
-<li><strong>Pipeline replication 的 bandwidth-amplifying DAG 是独有的带宽放大机制</strong>。fabric-lib 用全集群 NIC 并行 Write（线性扩展）；DualPath 用 DE 端 SNIC 翻倍（2× 带宽）；TensorHub 将每个完成复制的 worker 转化为新数据源，理论上 N 个 replica 的总分发带宽随 N 线性增长。</li>
-<li><strong>唯一同时支持 standalone/elastic/cross-DC 三种 rollout 策略的权重传输系统</strong>——其余方案要么仅限单 DC（HybridFlow、fabric-lib），要么不涉及弹性（DualPath），要么仅限跨 DC（PrfaaS）。</li>
+<li><strong>ROS 是全新的存储抽象</strong>——消除数据所有权后，publish 是 O(1) 引用传递（不搬数据），unpublish 只需 drain 进行中传输。五篇论文中只有 TensorHub 做到了<strong>零 trainer stall</strong>。NCCL 的 broadcast 需要 trainer 和 rollout 同步等待；UCX 需要 Ray driver 协调的全局 barrier；fabric-lib 的 AllGather 同样需要同步。ROS 的 publish 语义是革命性的。</li>
+<li><strong>Pipeline replication 是唯一实现"带宽随参与者线性增长"的权重传输方案</strong>——NCCL broadcast 是全局 barrier（所有 GPU 等待最慢者），UCX 是单源 fan-out（sender NIC 瓶颈）。TensorHub 的 DAG 拓扑利用 RDMA 全双工使每个正在接收的 worker 立即成为新数据源，Figure 7(b) 证明线性 vs 二次方扩展。fabric-lib 的 P2P 方案虽也利用全集群 NIC 带宽，但每个 training GPU 独立 Write 到对应推理 GPU——不是 DAG 拓扑，无法处理单源多目标的 fan-out 场景。</li>
+<li><strong>唯一提供完整弹性+跨 DC+容错能力的权重传输系统</strong>——spot instance churn（统计 retained 版本时排除 spot）、server failure（stateless recovery）、cross-DC（TCP seeding + smart skipping + offload seeding），三级故障处理形成完整体系。其余四篇在弹性和跨 DC 能力上均为空白。</li>
 </ul>
 
 <h2 id="可攻击面">可攻击面</h2>
 
 <p>以下攻击针对 TensorHub L2 §6 论证链中的具体步骤。</p>
 
-<p><strong>Attack 1: "三属性可利用"的前提条件限制 (L2 §6 step 4)</strong></p>
+<p><strong>Attack 1: "rollout 占 >90% 时间"的前提正在被异步 RL 侵蚀 (L2 §6 step 1)</strong></p>
 
-<p>TensorHub 的 ROS 抽象建立在 RL 权重的三个属性上：(1) 数据并行→多等价副本，(2) 推理期间不可变，(3) 版本短暂。但这三个属性并非在所有 RL 训练变体中都成立。属性 (1)：在 expert parallelism（如 DeepSeek-V3 的 EP）或 pipeline parallelism 下，每个 GPU 持有的权重 shard 不同，并非等价副本——fan-out 的源数量从"所有 DP workers"退化为"持有特定 shard 的少数 workers"，pipeline replication 的带宽放大效果被削弱。属性 (2)：异步 RL 算法（如 IMPALA、StreamRL）中 trainer 可能在 rollout 仍在使用旧版本权重时开始下一轮训练——mutability contract 的 publish/unpublish 纪律可能引入 trainer 端的额外等待。属性 (3)：在需要 policy gradient 回溯的算法（如 V-trace with off-policy correction）中，可能需要保留多个历史版本的权重用于 importance sampling ratio 计算——retention protocol 的"仅保留最近 k 版"假设可能不够。论文未对这些边界条件做实验验证，所有评估均在标准同步 PPO 下进行。</p>
+<p>TensorHub 的 motivation 建立在"rollout 时间远大于 training 时间，推动 standalone/elastic/cross-DC 扩展"的观察上。但这一数据点来自同步 RL 训练——trainer 必须等 rollout 全部完成才能执行下一步训练。2026 年的 RL 训练越来越倾向异步化：AReaL、StreamRL 等框架支持 asynchronous rollout，trainer 不再等待最慢的 rollout worker。在异步模式下，weight transfer latency 不再是 critical path——trainer 持续训练，rollout 用"稍旧"的权重即可（staleness tolerance 为 k 版本）。TensorHub 的 smart skipping 机制暗示团队已意识到这一趋势，但论文没有量化异步 RL 下的收益。如果 staleness tolerance 为 k=3 且 training step time 为 10s，则 weight transfer latency 只要低于 30s 即可——NCCL 的 ~5s stall 已远低于此阈值。6.7× stall reduction 在同步模式下意义重大，在异步模式下可能过度优化了非瓶颈环节。FlexRLHF 的 Disaggregated 策略也利用了 PPO 的 off-policy 特性——Shadow 模型参数周期性同步而非实时同步——这证明 RL 训练对权重延迟有天然的 tolerance，TensorHub 论文应讨论这一关键上下文。</p>
 
-<p><strong>Attack 2: Pipeline replication 最优性未证明 (L2 §6 step 6)</strong></p>
+<p><strong>Attack 2: Pipeline replication 的带宽放大被 FSDP unsharding 瓶颈抵消 (L2 §6 step 6)</strong></p>
 
-<p>论文声称 pipeline replication 将 fan-out 总 stall 从二次方降至线性，但调度策略（贪心选择最低负载 replica 作为源）的最优性未证明。在最坏情况下，如果多个 rollout worker 同时查询服务器并被分配到同一个刚完成少量 tensor 的 replica，该 replica 的上行带宽将被多个请求瓜分——progress counter 前缀读取的有效性取决于"已完成 tensor 数"与"并发请求数"的比值。论文的实验仅展示了 1-8 个 rollout group 的扩展性（Fig. 7b），但生产环境中 rollout worker 数量可达数千。1T 模型实验使用 mocked 权重（260B 层权重 4× 复制），未验证真实 1T 模型下 16 shard × 数百 worker 的 pipeline replication 行为。fabric-lib 的实验数据（Table 5）揭示了一个 TensorHub 未讨论的瓶颈：FSDP full_tensor() 占总传输时间 42%——如果 trainer 端权重是 sharded 状态（FSDP/ZeRO），publish 前可能需要 all-gather，而 TensorHub 的 "publish 为轻量引用" 假设前提是权重已经以全量形式存在于 GPU 上。</p>
+<p>论文声称 pipeline replication 将 fan-out 从单源瓶颈转为带宽放大 DAG，Figure 7(b) 证明线性 vs 二次方扩展。但 fabric-lib Table 5 揭示了隐藏瓶颈：1T 参数传输中 FSDP full_tensor() 占 42%，跨 rank 同步占 29%，RDMA submit 仅占 2.1%。如果 TensorHub 也使用类似的模型并行分片策略（论文说 "mocked 1T" 用 16 shards），那么每个 rollout worker 收到 shard 后可能还需要本地 reshape/unpack——这些本地操作不受 pipeline replication 影响。论文的 microbenchmark Figure 7(a) 使用预分配的连续 50 GB tensor，完全绕过了 real-world 的 weight layout 转换开销。端到端 standalone 实验（Figure 9）中 TensorHub 的 6.7× 优势包含三个不可分的因素：(a) RDMA vs NCCL 的传输效率差异，(b) 消除全局 barrier 的协调改善，(c) pipeline replication 的带宽放大。缺乏 fabric-lib 级别的 breakdown 使我们无法判断 pipeline replication 到底贡献了多少——也许 (a)+(b) 就足以解释 6× 以上的改善，pipeline replication 是锦上添花而非雪中送炭。</p>
 
-<p><strong>Attack 3: Reference Server 单点可扩展性上界 (L2 §6 step 7)</strong></p>
+<p><strong>Attack 3: 中心化 reference server 的扩展性和可用性 (L2 §6 step 7)</strong></p>
 
-<p>TensorHub 的 Reference Server 实现为单个 Ray named actor。论文声称"单 server 可支撑数千 worker"但未给出延迟数据。每个 replicate 请求需要经过 server 做源选择（least-loaded, same-DC-first）、事务语义处理（model-parallel group 内首个请求开启事务缓存状态）和 in-flight reference counting。在 1024 GPU × 16 shard 的配置下，一轮权重更新可能产生 16384 个 replicate 请求同时涌入 server。Ray actor 的 RPC 延迟在高并发下非线性增长——Ray 的 actor 调用是串行化的（单线程处理请求队列）。论文自己承认 server 分区是 future work，但未量化当前单 server 在大规模下的排队延迟对总 stall 的贡献。比较 DualPath 的 Central Scheduler（<10 核 CPU 开销）和 PrfaaS 的 Global Scheduler（grid search + 实时调度），TensorHub 的 server 设计在协调复杂度上最低但扩展性上界也最低。</p>
+<p>TensorHub 的弹性和拓扑感知能力依赖中心化 reference server。论文声称 server 仅处理轻量引用元数据，但没有给出 server throughput 上限。以 1T 模型 1024 GPU 为例：16-shard model-parallel 下每个 replica 包含 16 个 worker，每个 training step 可能产生 ~64 个 replicate 事务（64 个 rollout replica × 1 次 update）、~4 个 publish 事务（4 trainer replica）、相应的 unpublish + consistency transaction。Server 使用 Ray named actor（单线程 Python），若 training step 为 10s，server 需每秒处理 ~10 个事务——在 1024 GPU 下尚可。但 frontier model training 趋势为 10K+ GPU：10× 规模下 server 每秒 ~100 事务，且每个事务涉及 replica 枚举、load-based source selection、consistency check。更严重的是 server failure：论文的 stateless recovery 设计虽优雅（所有 client 重置为 unpublished，下一轮 publish 重建），但意味着 server 故障会中断所有进行中的 pipeline replication。对 cross-DC 场景尤其致命——正在 TCP seeding 的 replica 被中断后必须从头开始，cross-DC stall 可能从 ~3s 暴涨到 seeding duration 级别。论文未测试 server failure 在 cross-DC 场景下的恢复代价。</p>
 
-<p><strong>Attack 4: 跨 DC 场景的 TCP seeding 瓶颈未充分缓解 (L2 §6 step 7)</strong></p>
+<p><strong>Attack 4: ROS "无额外存储空间"忽略了 retention offload 的隐藏成本 (L2 §6 step 5)</strong></p>
 
-<p>Cross-DC 实验使用 9B 模型（shard 10 GB），seeding replica 通过 200 Gbps VPC TCP 传输需 2.5s。对于 260B 模型（shard 34 GB），按带宽线性推算 seeding 需 ~8.5s。论文提出的 offload seeding 机制将 TCP 接收缓冲放到 CPU 内存、<code>update()</code> 立即返回让 GPU 继续计算——但这只是隐藏延迟而非消除。如果 RL 训练的迭代间隔（train→rollout→score→train）短于 seeding 时间，offload seeding 的 CPU 缓冲区可能积压多个版本的权重（每个版本 34 GB × 8 shard = 272 GB），消耗大量 CPU 内存。论文未量化 offload seeding 的 CPU 内存占用上界，也未讨论版本积压时的策略（是否跳过中间版本、staleness 对训练收敛的影响）。PrfaaS 的分析（§8.2 working set model）表明跨 DC 场景下 working set 随延迟 $r^2$ 增长——TensorHub 的 seeding 延迟可能导致远端 DC 的权重版本持续 stale，但论文完全未分析 staleness 对 RL 训练效果的影响。</p>
+<p>ROS 声称满足"无额外存储空间"目标（五目标之一），因为它直接引用 GPU 上已有权重。但 retention protocol 要求：当最后一个非 spot replica 要 unpublish 时，offload 到 CPU 内存作为兜底。论文声称"极少触发"但未量化。在以下场景中 offload 可能频繁发生：(1) 快速训练循环（step time <10s）中 trainer publish 新版本后立即 unpublish 旧版本，如果慢速 rollout worker 还在 replicate 旧版本，offload 被触发；(2) elastic 场景中 spot 实例大规模被抢占，大量 replica 消失后剩余非 spot replica 要 unpublish 时必须 offload。以 1T 模型 66 GB/shard × 16 shard = ~1 TB 为例，offload 需要 PCIe 传输 ~1 TB 到 CPU memory。论文实验节点有 1800 GB CPU memory，但这个 memory 同时被 RL optimizer states（可达数百 GB for Adam）、数据 pipeline、Python/Ray runtime 竞争。fabric-lib 的分析也证实 FSDP unsharding 本身就需要大量 CPU staging memory。</p>
 
-<p><strong>Attack 5: Baseline 对比缺失异步 RL 框架 (L2 §6 step 2)</strong></p>
+<p><strong>Attack 5: Baseline 对比缺少关键中间方案 (L2 §6 step 9)</strong></p>
 
-<p>论文将 NCCL、UCX 和 Ray Plasma 作为 baseline，但这三者都是通信原语而非权重传输系统。未对比的关键 baseline 包括：(1) fabric-lib 的 RL 权重传输方案——1T 参数 1.3s 完成（vs TensorHub 的 "3.1s mean stall"），利用全集群 NIC P2P Write 替代 Rank0 AllGather；(2) StreamRL/AReaL 等异步 RL 框架的内置权重分发机制——异步框架通过允许 rollout 使用稍旧版本权重来避免同步 stall，这是一条完全不同的技术路线；(3) BytePS 等 parameter server 变种——论文自己在 §5.7 承认"未对比 BytePS 等专用 parameter server"。缺失这些 baseline 使得 TensorHub 的 6.7× 改善数字难以放入更广泛的技术 landscape 中评估。</p>
+<p>TensorHub 的 baseline 是 NCCL broadcast 和 UCX point-to-point（均通过 Ray driver 协调）——这是 2023-2024 年的 standard practice。但论文自身基于 Mooncake transfer engine（RDMA），存在一个未被评估的中间 baseline："Mooncake P2P direct"——不使用 ROS 抽象，直接用 Mooncake 的 RDMA Write 做点对点传输（类似 fabric-lib 的 RL weight transfer 方案）。fabric-lib 已证明这种 direct P2P 方案可达 1T 参数 1.3s（利用全集群 NIC 带宽）。如果 "Mooncake P2P direct" 也能达到类似性能，那 TensorHub 的 6.7× 优势大部分来自"RDMA 替代 NCCL"的技术选型差异，而非 ROS + pipeline replication 的抽象创新。论文需要这个中间 baseline 来分离两个贡献。此外缺少与 ByteCheckpoint（同公司的 checkpoint 系统，Table 1 提到但未评估）和 StreamRL（异步 RL 权重同步）的对比。veRL 自身的 FSDP-based weight sync 作为 TensorHub 的 "nearest neighbor" baseline 也未被单独评估。</p>
 
-<p><strong>Attack 6: Mutability contract 在生产环境的鲁棒性 (L2 §6 step 5)</strong></p>
+<p><strong>Attack 6: 事务语义在大规模 model-parallel 下的开销 (L2 §6 step 8)</strong></p>
 
-<p>Mutability contract 要求 publish 和 unpublish 之间数据不被修改——这是 ROS 正确性的核心保障。但在生产环境中，以下场景可能违反 contract：(1) GPU 内存压力下 PyTorch 的 caching allocator 可能回收看似"空闲"的 tensor buffer——如果 publish 后、replicate 完成前 allocator 回收了注册的 buffer，RDMA Read 将读到被覆盖的数据。论文提到了 end-to-end checksum 验证，但 checksum 只能事后检测而非预防——此时 replicate 已完成、错误数据已到达 rollout worker。(2) Mixed precision training 中 optimizer step 可能在 GPU 上原地更新 FP16 权重——如果 unpublish 调用时机不精确（发生在 optimizer 开始更新后但在权重完全更新前），retention protocol 的 offload 可能保存了半更新的权重。论文的确定性测试（§7.3, 1.3K 行）模拟多客户端请求交错和故障注入，但未模拟 GPU 内存管理层面的竞态条件。</p>
+<p>Sharding consistency 的事务语义（Figure 6）在 model-parallel 场景引入同步开销。1T 模型有 16 shard，每个 replica 的 replicate 需 16 个 worker 参与同一事务。事务中第一个 worker 的请求锁定版本视图，后续 15 个 worker 消费缓存状态。如果第一个 worker 和最后一个 worker 的 replicate 请求之间存在时间差（因 GPU 异构性、网络拥塞或 pipeline replication 的到达时间差异），事务窗口会拉长。在事务窗口期间，trainer 要 unpublish 该版本必须等待（因为 unpublish 需要 drain 进行中传输 + 事务中的所有 worker 完成）。论文 microbenchmark 用 1:1 source:target（Figure 7a），不能展示 16-shard × 多 replica 下的事务争用行为。DualPath 的 closed-form 分析（Eq. 1-9）在类似的并发场景下给出了 bottleneck-free 区间——TensorHub 缺乏同等的形式化分析来保证在给定 shard 数、replica 数和网络拓扑下事务不会成为新瓶颈。</p>
 
 <h2 id="生态位">生态位</h2>
 
-<p><strong>范式定位</strong>：TensorHub 代表 RL 训练权重传输从"通信原语级"到"存储抽象级"的范式跃迁。NCCL/UCX 在通信原语级操作——调用者管理 buffer、建立通信组、同步收发；Ray Plasma 在分布式存储级操作——push 数据到 store 再 pull。TensorHub 在"引用级"操作——不搬运数据，只追踪哪个 GPU 有什么数据。这个抽象层级的提升使得 TensorHub 能够同时满足五个设计目标（拓扑感知、弹性、最小协调、最小数据搬运、无额外存储），而 NCCL/UCX/PS 在更低的抽象层级上只能顾此失彼。</p>
+<p><strong>范式定位</strong>：TensorHub 代表 RL 训练基础设施从"搬运数据"到"引用数据"的范式转变。传统 parameter server、NCCL broadcast、Ray object store 都遵循"数据所有权"模型——数据必须被序列化、复制、存储到某处，接收方从该处取回。ROS 消除了所有权概念：数据始终在原地（GPU HBM），只是注册了一个轻量引用允许远端 RDMA 直读。publish 的语义从"把数据推到 store"变成"把地址告诉 server"——这是一个类似 RDMA 对 TCP 的革命性简化：不是在旧抽象上优化传输效率，而是消除了传输的必要性本身。Pipeline replication 进一步放大了这个范式：每个 replica 既是消费者又是生产者，数据"涟漪式扩散"而非"广播式分发"。</p>
 
-<p><strong>字节跳动 RL 基础设施绑定</strong>：TensorHub 与 HybridFlow/veRL 的关系是"传输层 + 框架层"的垂直整合。veRL 在 EuroSys 2025 发表并开源，是社区主流 RLHF 框架之一。TensorHub 以 ~40 行代码集成到 veRL——这个极低集成成本是 ROS 抽象设计成功的直接证据。但 TensorHub 依赖的 Mooncake transfer engine（RDMA 传输引擎）来自另一个字节跳动/清华项目，代码未完全开源，形成隐性技术依赖链：veRL (开源) → TensorHub (未开源) → Mooncake transfer engine (部分开源)。</p>
+<p><strong>ByteDance RL 生态集成</strong>：TensorHub 的依赖栈由三层组成：</p>
+<ul>
+<li><strong>veRL (HybridFlow)</strong>：RLHF 训练编排层，已开源。TensorHub ~40 LoC 集成证明了 API 兼容性</li>
+<li><strong>Mooncake transfer engine</strong>：RDMA 传输引擎，已开源（FAST'25）。TensorHub 的 RDMA Direct/Copy/TCP 三种模式构建其上</li>
+<li><strong>Ray</strong>：server actor + RPC 通信层，通用开源框架</li>
+</ul>
+
+<p>相比 DualPath 对 DeepSeek 内部组件（3FS、FlashMLA、DeepGEMM、DeepEP）的深度绑定，TensorHub 的依赖栈对外部团队显著更友好——三个依赖全部已开源。论文估计外部复现核心思想 ~2K 行代码，关键壁垒是 pipeline replication 的并发控制（progress counter 原子性、partial-replica 故障恢复、tiny-tensor compaction 的 zero-copy 解包），而非生态锁定。</p>
 
 <p><strong>采纳信号</strong>：</p>
 <ul>
-<li><strong>正面</strong>：(1) 论文声明 "deployed in ByteDance production to support cutting-edge RL training"；(2) 评估规模达 1024 GPU，覆盖 9B–1T 模型；(3) ~40 行集成代码使迁移成本极低；(4) 故障恢复设计成熟——heartbeat 检测、replica 粒度驱逐、reference server 软状态无需恢复。</li>
-<li><strong>障碍</strong>：(1) 代码未开源；(2) 依赖 RDMA 硬件（InfiniBand/RoCE），纯 Ethernet 集群无法使用；(3) Reference Server 单点设计在超大规模（>1024 GPU）下可能成为瓶颈；(4) pipeline replication 的 progress counter 机制与 RDMA Read 语义绑定，迁移到 Write-based 方案（如 fabric-lib）需要重新设计。</li>
+<li><strong>正面</strong>：(1) 声明 "deployed in ByteDance production to support cutting-edge RL training"；(2) 依赖栈全部已开源（veRL + Mooncake + Ray）；(3) 集成极简（~40 LoC，对比 NCCL ~450 / UCX ~1200）；(4) 声明兼容 veRL、OpenRLHF、AReaL、Laminar 等主流 RL 框架</li>
+<li><strong>障碍</strong>：(1) 代码未开源——最大的采纳阻碍；(2) 需要 RDMA NIC（但可降级 TCP，仅丧失带宽优势）；(3) pipeline replication 的并发控制工程量不小（3.7K Python + 2.4K C++ + 1.3K 行 concurrency tests）；(4) reference server 的 production-grade HA 运维（备份 server 切换、监控）</li>
 </ul>
 
 <p><strong>竞争方案生态位对比</strong>：</p>
 
 <table>
-<tr><th>生态位</th><th>方案</th><th>TensorHub 的相对优势</th><th>TensorHub 的相对劣势</th></tr>
-<tr><td>RL 训练框架级权重传输</td><td>NCCL/UCX (veRL 内置)</td><td>6.7× stall 降低；弹性+容错</td><td>NCCL 是事实标准，TensorHub 未开源</td></tr>
-<tr><td>通用 P2P RDMA</td><td>fabric-lib</td><td>Pipeline replication 带宽放大；ROS 消除数据准备开销</td><td>fabric-lib 跨 ConnectX/EFA 可移植</td></tr>
-<tr><td>异步 RL 训练</td><td>StreamRL / AReaL</td><td>同步语义下最优传输</td><td>异步框架通过 staleness tolerance 完全绕开传输瓶颈</td></tr>
-<tr><td>Parameter Server</td><td>BytePS / Ray Object Store</td><td>零额外存储、零额外拷贝</td><td>PS 方案更通用（不限 RL 权重属性）</td></tr>
-<tr><td>跨 DC 权重分发</td><td>TensorHub cross-DC mode</td><td>同一系统统一处理三种 rollout</td><td>TCP seeding 延迟未根本解决</td></tr>
+<tr><th>生态位</th><th>方案</th><th>TensorHub 相对优势</th><th>TensorHub 相对劣势</th></tr>
+<tr><td>RL 权重同步</td><td>NCCL broadcast</td><td>消除全局 barrier + trainer stall + elastic 支持</td><td>NCCL 更简单、通用、已有完善工具链</td></tr>
+<tr><td>RDMA P2P 传输</td><td>fabric-lib direct P2P</td><td>Pipeline replication DAG 带宽放大 + 全局调度</td><td>fabric-lib 跨 vendor（EFA+CX）且已开源</td></tr>
+<tr><td>分布式存储</td><td>Ray object store</td><td>160× 更快（RDMA vs serialize-deserialize）</td><td>Ray 不需要 RDMA 硬件</td></tr>
+<tr><td>弹性训练</td><td>Elastic Horovod/NCCL</td><td>Spot churn 无 barrier + server stateless recovery</td><td>Elastic NCCL 不需要中心化 server</td></tr>
+<tr><td>跨 DC 训练</td><td>TCP direct</td><td>Smart skipping + offload seeding 减 19× stall</td><td>TCP 不需要 RDMA 基础设施</td></tr>
+<tr><td>RL 编排层</td><td>veRL native</td><td>垂直集成、互补</td><td>TensorHub 是 veRL 的可选 plugin，非必需</td></tr>
+<tr><td>Rollout 推理</td><td>ThunderAgent</td><td>正交互补——可叠加</td><td>不优化推理调度和 KV-cache 管理</td></tr>
 </table>
 
-<p><strong>定位判断</strong>：TensorHub 是当前公开报道中针对 RL 权重传输设计最精细的系统——ROS 抽象、pipeline replication、topology-aware scheduling 三者组合形成技术护城河。对外部研究者的价值在于三个可移植的设计思想：(1) 识别数据的领域属性（冗余/不可变/短寿命）来选择存储抽象层级；(2) 利用 RDMA NIC 全双工特性将接收中的节点转变为中继；(3) 集中式软状态协调器 + 分布式数据平面的架构模式。这三个思想不依赖 TensorHub 的具体实现，可在 fabric-lib + veRL 上渐进式复现。</p>
+<p><strong>定位判断</strong>：TensorHub 在同步 RL 训练、大模型（>100B）、大规模 rollout（>100 GPU）的交集场景下价值最大——此时 NCCL broadcast 的全局 barrier 和 straggler 放大效应导致数千秒级 stall，TensorHub 的 ROS + pipeline replication 可将其压缩到数百秒级。对外部团队的价值主要在三个可移植设计思想：(1) ROS 的无所有权引用——可在任何 P2P 通信层上实现；(2) pipeline replication 的 DAG 带宽放大——利用 RDMA 全双工的通用原理；(3) reference server 的轻量全局视图——实现拓扑感知和弹性而不引入全局 barrier。这三个思想的外部价值不依赖 ByteDance 的具体实现，可在 fabric-lib + veRL/OpenRLHF 上渐进式实现。</p>
 
 <h2 id="未探索方向">未探索方向</h2>
 
-<p><strong>方向 1: TensorHub + fabric-lib 融合——可移植的 pipeline replication</strong>。TensorHub 的 pipeline replication 依赖 RDMA Read（接收方拉取 progress counter 前缀），而 fabric-lib 只暴露 Send/Recv 和 WriteImm 不支持 Read。但 pipeline replication 的核心逻辑——"部分完成的节点作为新数据源"——可以在 Write 语义上实现：sender 端 tensor-by-tensor 地 WriteImm 到 receiver，receiver 完成 N 个 tensor 后向 server 报告自己可作为源、等待下一个 consumer 发起 Recv。ImmCounter 天然提供 tensor 粒度的完成通知（比 progress counter polling 更精确）。具体路径：在 fabric-lib 的 TransferEngine 上增加 "relay mode"——receiver 完成部分传输后自动注册为 sender，server 在 relay chain 上做 least-loaded 选择。这样 pipeline replication 可运行在 EFA 上——打破 TensorHub 的 InfiniBand 锁定，使 AWS 上的 RL 训练也能受益于带宽放大。</p>
+<p><strong>方向 1: TensorHub + ThunderAgent 联合优化 RL 循环</strong>。当前 RL 循环中 TensorHub 优化 trainer→rollout 权重传输，ThunderAgent 优化 rollout 内的 LLM 推理调度，两者独立运行。但存在协同空间：TensorHub 的 pipeline replication 使不同 rollout worker 在不同时间完成权重更新——worker A 完成 replicate 可立即开始推理，而 worker B 还在等待。如果 ThunderAgent 的 global waiting queue 能订阅 TensorHub 的 progress counter 事件，就可以实现"权重到达即推理"的细粒度流水线：worker A 完成后 ThunderAgent 立即分配新 workflow，无需等待全部 worker 就绪。具体实现：TensorHub 的 reference server 在 replica 注册为新 source 时发出事件→ThunderAgent scheduler 收到后将该 worker 标记为 "ready for version N+1"→新 agentic program 被路由到该 worker。这将 pipeline replication 的"增量就绪"特性暴露给调度层，有望进一步削减 RL 的 weight update bubble。</p>
 
-<p><strong>方向 2: 自适应 pipeline topology 优化</strong>。当前 pipeline replication 的拓扑由 server 贪心决定（最低负载 replica），形成隐式的"链式"结构。但在 N 个 rollout group、M 个 NIC/node 的集群中，最优拓扑可能是"树形"——某些 replica 成为 fan-out hub、其余为 leaf。这是一个在线最优广播树问题，可以用 DualPath 的 CNIC 带宽分析框架形式化：给定网络拓扑图 $G=(V,E)$、每条边带宽 $B_e$、trainer 为根，求最小化 max leaf completion time 的 broadcast tree。静态场景下这是经典最优广播问题（$O(n \log n)$ 可解）；动态场景下（replica 随时加入/退出、pipeline 传输进度实时变化）需要增量更新策略。Progress counter 机制天然提供每条边的实时吞吐反馈，可作为 online tree optimization 的信号。</p>
+<p><strong>方向 2: ROS 抽象扩展到 KV-Cache 传输</strong>。TensorHub 的 ROS 为 RL 权重设计，但其核心设计假设（数据高度复制、计算期间不可变、短生命期）在 PD 分离推理的 KV-Cache 中同样成立——agentic workload 的 KV-Cache 在 prefill 完成后不可变（只追加新 token 的 KV），DualPath 报告 98.7% 命中率意味着同一 KV-Cache 被多次引用，生命期由 decode 完成决定。如果把 DualPath 的 KV-Cache 管理替换为 ROS——prefill 完成后 publish KV 引用，decode engine 通过 replicate 获取——ROS 的 reference server 自动做 least-loaded 调度（无需 DualPath 的三级分类 scheduler），pipeline replication 甚至可以让已获取 KV-Cache 的 decode engine 向其他 PE 提供服务（DualPath 未探索的"decode engine 互帮互助"模式）。关键挑战：KV-Cache 比权重大得多（数百 GB for 64K context）且更新频率更高（每 64 token 写一次），ROS 的 mutability contract 需要适配 append-only 语义。</p>
 
-<p><strong>方向 3: ROS 抽象扩展到 KV-Cache 传输</strong>。TensorHub 的 ROS 三原语（publish/replicate/unpublish）和 RL 权重的三属性在 KV-Cache 场景下部分成立：(1) prefix cache 在多请求间高度冗余（DualPath 的 98.7% 命中率证实），(2) KV-Cache 在 decode 阶段不可变（只追加不修改），(3) KV-Cache 版本短暂（旧请求完成后可释放）。如果在 DualPath 或 PrfaaS 的架构中引入 ROS——PE 端 GPU 上已有的 KV-Cache 直接通过引用提供给其他 engine 读取，而非先写入 3FS 再从 3FS 读取——可以消除 3FS 存储的读写开销。Pipeline replication 在此场景下变为"PE-A 的 KV-Cache 正在被 DE-1 读取时，DE-2 可以从 DE-1 的接收缓冲中读取已到达的前缀"。DualPath 的 layerwise streaming 已提供了层粒度的传输基础，与 TensorHub 的 tensor 粒度 progress counter 高度类似。</p>
+<p><strong>方向 3: 基于 fabric-lib 的可移植 TensorHub</strong>。TensorHub 使用 Mooncake transfer engine，Mooncake 不支持 AWS EFA。fabric-lib 的 TransferEngine 提供跨 ConnectX-7 和 EFA 的统一抽象（ImmCounter + reliable-but-unordered）。将 TensorHub 的 ROS client library 构建在 fabric-lib 之上可使 TensorHub 从 ConnectX-only 扩展到云原生 RDMA。关键技术契合点：pipeline replication 需要 polling progress counter 的低延迟机制——fabric-lib 的 WriteImm + ImmCounter 天然支持（每个 tensor chunk 传输完成后 ImmCounter 递增，downstream worker poll ImmCounter 判断 prefix 就绪程度）。fabric-lib 的 UVM Watcher 甚至可以实现 CUDA-graph-compatible 的 progress tracking。fabric-lib 在 RL 权重传输场景已达 1T 参数 1.3s——在此之上叠加 TensorHub 的 pipeline replication 和 ROS 全局调度，有望在 EFA 上也实现线性扩展的带宽放大。</p>
 
-<p><strong>方向 4: Publish-time 数据变换流水线</strong>。TensorHub 的 publish 假设 GPU 上的权重已经是最终形式——但 fabric-lib 的分析（Table 5）表明真实场景下 FSDP full_tensor() 占传输时间 42%、量化占 7%。如果在 ROS 的 publish 阶段引入"变换流水线"——publish(shard) 自动触发 all-gather → quantize → register，每完成一个 tensor 立即注册为可引用——可以将 fabric-lib 的 4 阶段流水线融入 ROS 语义中。这消除了"数据准备"与"数据分发"的边界：trainer 在 optimizer step 完成后调用 publish(sharded_params)，ROS 内部自动执行 all-gather + pipeline replication，rollout 端感知不到 sharding 的存在。需要解决的关键问题是 mutability contract 的扩展——all-gather 期间原始 shard 不可修改，但 gathered tensor 是临时创建的，其生命周期需要与 pipeline replication 的引用计数关联。</p>
+<p><strong>方向 4: 异步 RL 下的 version-aware pipeline</strong>。TensorHub 的 smart skipping 允许 rollout 跳过正在 seeding 的版本。更激进的设计是 version-aware pipeline：不同 rollout worker 同时获取不同版本的权重——worker A 正在用 version N 做 rollout，worker B 在获取 version N+1，worker C 在获取 version N+2。ROS 的 retention protocol 天然支持保留最近 k 个版本。结合异步 RL 的 staleness tolerance，version-aware pipeline 可消除所有权重更新等待——每个 worker 总在获取"自己能用的最新版本"，trainer 永远不 stall，rollout 永远不 stall。FlexRLHF 的 Shadow Model periodic sync 和 TensorHub 的 smart skipping 都是这个方向的初步探索，但未走到"完全异步 multi-version pipeline"。关键设计问题：(a) retention 策略需平衡版本多样性和 GPU memory（保留 k 个版本需 k 倍 GPU memory），(b) RL 算法对 staleness 的 tolerance 需要形式化建模——PPO 的 clipped objective 对旧策略有天然约束，GRPO 更宽松。</p>
 
-<p><strong>方向 5: 异步 RL × ROS 的 staleness-aware 调度</strong>。当前 TensorHub 服务同步 PPO——所有 rollout 拉取相同版本。在异步 RL（IMPALA、V-trace）中，不同 rollout 可以使用不同版本权重，staleness 通过 importance sampling ratio 校正。ROS 的版本管理（retain 最近 k 版）天然支持异步场景：rollout worker 可以 replicate(version="latest") 获取最新版，也可以 replicate(version=N) 获取特定版本。但当前 server 的 topology-aware scheduling 未考虑 staleness——如果 latest 版本只有 trainer 持有、上一版有 10 个 replica，staleness-aware 调度应该优先分配上一版以减少 fan-out 压力，只让"staleness-sensitive"的 rollout（如 on-policy 用途）等待 latest。这需要在 replicate API 中增加 staleness tolerance 参数，server 根据全局 staleness 分布和版本可用 replica 数联合优化分配策略。PrfaaS 的 throughput model（Eq.6 的 min 语义）可以扩展为"含 staleness penalty 的加权吞吐模型"来指导此类调度。</p>
+<p><strong>方向 5: 形式化 pipeline replication 吞吐模型</strong>。TensorHub L2 §4 明确指出缺乏 pipeline replication 的 $T(N)$ 闭合表达式。DualPath 的 Eq. 1-9 为 dual-path 操作区间提供了完整的 closed-form 分析——类似的形式化对 TensorHub 至关重要。一个可行的模型：给定 $N$ 个 rollout worker 同时请求 shard 大小 $S$、NIC 带宽 $B$、pipeline 并发深度 $k$（每个 source 同时服务的最大 requester 数），completion time 近似为 $T(N) = S/B + \lceil (N-1)/k \rceil \cdot S/B$。结合 Mooncake RDMA 88% 实际效率（Figure 7a），可推导给定 $N$、$S$、$B$、$k$ 下的 stall time 上界。进一步引入 shard consistency 的事务窗口 $\Delta_{\text{txn}}$ 和 retention offload probability $p_{\text{off}}$，可以得到端到端的 stall time 期望和尾部分布——指导 production 部署的 trainer:rollout 比例和 retain 策略选择。</p>
 
-<p><strong>方向 6: 跨训练-推理统一的权重传输层</strong>。TensorHub 解决 RL 训练中 trainer→rollout 的权重传输，fabric-lib 解决 RL 训练中 training GPU→inference GPU 的权重传输，两者本质上是同一问题的两个实例。更广泛地看，LLM 生命周期中权重在多个系统间流动：SFT trainer → checkpoint → RL trainer → rollout → serving cluster → edge。目前每个边界都有独立的传输机制。一个统一的"权重总线"抽象——以 ROS 的 publish/replicate 语义为核心、以 fabric-lib 的跨硬件 TransferEngine 为数据平面——可以在整个 LLM 生命周期中消除重复的数据搬运。关键挑战是 serving cluster 中权重是"长期驻留"的（与 RL 的"短寿命版本"不同），需要扩展 ROS 的版本管理语义以支持模型热更新（serving 端的 unpublish + 新版本 replicate 需要保证零停机）。</p>
+<p><strong>方向 6: 分层 ROS — GPU + DRAM + SSD 权重存储</strong>。当前 ROS 假设权重始终在 GPU HBM（publish 注册 GPU memory reference）。但 1T+ 模型的 ZeRO-Offload 将 optimizer states 和部分权重 offload 到 CPU DRAM 是常见实践。扩展 ROS 到多层存储：GPU 上的 hot weight shard（RDMA Direct 零拷贝）→ DRAM 上的 warm offload copy（DMA + RDMA 二跳）→ SSD 上的 cold checkpoint（io_uring + RDMA 三跳）。publish 可注册任意层级的 reference，replicate 时自动选择最快可用源——peer GPU 有 hot copy 则直接 RDMA Read，只有 DRAM copy 则 H2D→RDMA 两跳。TensorHub 的 retention protocol offload 已涉及 GPU→DRAM 降级，DualPath 的 3FS 存储层提供了 SSD 级别的参考。将两者统一：ROS 成为跨 HBM→DRAM→SSD→distributed storage 的通用引用存储层，retention 策略控制数据在各层的生命期——hot→warm→cold 的自然降级路径。</p>
 
 </div>
 <div class="link-area">
@@ -312,7 +325,8 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 <a href="/papers/2409.19256.html">2409.19256</a> (baseline) 
 <a href="/papers/2510.27656.html">2510.27656</a> (related) 
 <a href="/papers/2602.21548.html">2602.21548</a> (related) 
-<a href="/papers/2604.15039.html">2604.15039</a> (related) 
+<a href="/papers/2312.11819.html">2312.11819</a> (related) 
+<a href="/papers/2602.13692.html">2602.13692</a> (related) 
 </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
