@@ -717,6 +717,277 @@ X_{l+1} = B_l X_l + C_l F_l(A_l X_l)
 <li><strong>未来方向</strong>：模型稀疏性的新维度探索（sparse embedding）、低延迟架构、更好的数据合成策略</li>
 </ul>
 
+<hr>
+
+<h2 id="appendix-模型架构图（基于-inference-model-py）">Appendix: 模型架构图（基于 inference/model.py）</h2>
+
+<blockquote>
+代码来源：https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/inference/model.py
+</blockquote>
+
+<h3 id="a1-top-level-模型流">A1. Top-Level 模型流</h3>
+
+<div class="mermaid">
+flowchart TB
+    IN["Input Tokens"]
+    EMB["ParallelEmbedding<br/>vocab=129280, d=4096"]
+    HC_EXP["HC Expand<br/>unsqueeze(2).repeat(1,1,hc_mult=4,1)<br/>→ [b, s, 4, d]"]
+
+    subgraph BLOCKS["× L layers (Block)"]
+        direction TB
+        B_HC1["mHC Pre (Attn)<br/>hc_attn_fn → Sinkhorn → pre/post/comb"]
+        B_NORM1["attn_norm: RMSNorm"]
+        B_ATTN["Attention<br/>CSA(ratio=4) / HCA(ratio=128) / SWA(ratio=0)"]
+        B_HCP1["mHC Post (Attn)<br/>post×output + comb×residual"]
+        B_HC2["mHC Pre (FFN)<br/>hc_ffn_fn → Sinkhorn"]
+        B_NORM2["ffn_norm: RMSNorm"]
+        B_MOE["MoE FFN<br/>Gate(√softplus) → top-6 routed + 1 shared"]
+        B_HCP2["mHC Post (FFN) → [b,s,4,d]"]
+        B_HC1 --> B_NORM1 --> B_ATTN --> B_HCP1
+        B_HCP1 --> B_HC2 --> B_NORM2 --> B_MOE --> B_HCP2
+    end
+
+    HC_HEAD["HC Head<br/>hc_head → weighted sum → [b,s,d]"]
+    LOGITS["RMSNorm → lm_head → Logits [b,s,V]"]
+    MTP["MTP Block<br/>e_proj(embed) + h_proj(h) → Block → logits"]
+
+    IN --> EMB --> HC_EXP --> BLOCKS --> HC_HEAD --> LOGITS
+    BLOCKS -.-> MTP
+</div>
+
+<h3 id="a2-block-—-transformer-layer-with-mhc">A2. Block — Transformer Layer with mHC</h3>
+
+<div class="mermaid">
+flowchart TB
+    X_IN["X ∈ [b, s, hc=4, d]"]
+
+    subgraph ATTN_BRANCH["Attention Branch"]
+        direction TB
+        HC_PRE_A["mHC Pre<br/>flatten→RMSNorm→F.linear(hc_attn_fn)×rsqrt<br/>→ hc_split_sinkhorn → pre,post,comb"]
+        ANORM["attn_norm: RMSNorm(d)"]
+        ATTN["Attention<br/>compress_ratios[layer_id]:<br/>0→SWA only | 4→CSA | 128→HCA"]
+        HC_POST_A["mHC Post<br/>post×output + Σ comb×residual"]
+        HC_PRE_A --> ANORM --> ATTN --> HC_POST_A
+    end
+
+    subgraph FFN_BRANCH["FFN Branch"]
+        direction TB
+        HC_PRE_F["mHC Pre (FFN)"]
+        FNORM["ffn_norm: RMSNorm(d)"]
+        MOE["MoE<br/>Gate: sqrtsoftplus + bias (routing)<br/>Hash routing for first n_hash_layers<br/>6 active / 256 routed + 1 shared<br/>Expert: SwiGLU (clamp ±10)"]
+        HC_POST_F["mHC Post (FFN)"]
+        HC_PRE_F --> FNORM --> MOE --> HC_POST_F
+    end
+
+    X_IN --> ATTN_BRANCH --> FFN_BRANCH
+    X_IN -.->|residual| HC_POST_A
+    HC_POST_A -.->|residual| HC_POST_F
+</div>
+
+<h3 id="a3-csa-—-compressed-sparse-attention-compressratio4">A3. CSA — Compressed Sparse Attention (compress_ratio=4)</h3>
+
+<div class="mermaid">
+flowchart TB
+    X["x ∈ [b, s, d]"]
+
+    subgraph Q_PATH["Q Path"]
+        direction TB
+        WQA["wq_a: Linear(d → q_lora_rank)"]
+        QN["q_norm: RMSNorm(q_lora_rank)"]
+        WQB["wq_b: ColParallel(q_lora → n_h×c)<br/>reshape → [n_h=64, c=512]"]
+        QNORM["per-head RMSNorm"]
+        QROPE["RoPE(last 64d)"]
+        WQA --> QN --> WQB --> QNORM --> QROPE
+    end
+
+    subgraph SWA_KV["SWA KV Path"]
+        direction TB
+        WKV["wkv: Linear(d → c=512)"]
+        KVN["kv_norm: RMSNorm(c)"]
+        KVROPE["RoPE(last 64d) + FP8 quant(non-rope)"]
+        WIN_CACHE["Window KV Cache<br/>circular buffer, size=128"]
+        WKV --> KVN --> KVROPE --> WIN_CACHE
+    end
+
+    subgraph COMPRESSOR["Compressor (m=4, overlap=True)"]
+        direction TB
+        C_WKV["wkv: Linear(d → 2×c=1024)<br/>两半: overlap half + current half"]
+        C_WGATE["wgate: Linear(d → 2×c=1024)"]
+        C_APE["+ APE: learnable [m, 2×c]"]
+        C_OVL["overlap_transform: 拼接前一块的 first half"]
+        C_SOFT["softmax(gate+APE) × kv → weighted sum<br/>2m=8 entries → 1 compressed entry"]
+        C_NORM["RMSNorm → RoPE(last 64d) → FP8 quant"]
+        C_CACHE["Compressed KV Cache<br/>n/4 entries, c=512 each"]
+        C_WKV --> C_WGATE --> C_APE --> C_OVL --> C_SOFT --> C_NORM --> C_CACHE
+    end
+
+    subgraph INDEXER["Lightning Indexer"]
+        direction TB
+        I_COMP["Own Compressor(c_I=128)<br/>Hadamard rotation + FP4 quant"]
+        I_Q["wq_b(qr) → [n_h^I=64, c_I=128]<br/>RoPE → Hadamard → FP4"]
+        I_W["weights_proj(x) → [n_h^I]"]
+        I_SCORE["score = Σ w·ReLU(q·K^IComp)<br/>across n_h^I heads"]
+        I_TOPK["top-k (k=512/1024)"]
+        I_COMP --> I_SCORE
+        I_Q --> I_SCORE
+        I_W --> I_SCORE
+        I_SCORE --> I_TOPK
+    end
+
+    SPARSE["sparse_attn(q, kv, attn_sink, topk_idxs)<br/>topk_idxs = SWA window idxs ∪ Indexer top-k idxs<br/>gather KV → MQA (shared key-value) → output"]
+    INV_ROPE["inverse RoPE(output, last 64d)"]
+
+    subgraph O_PROJ["Grouped Output Projection"]
+        direction TB
+        O_RESHAPE["reshape [g=8 groups, n_h/g × c]"]
+        O_WOA["wo_a per group: [n_h/g×c → o_lora=1024]"]
+        O_WOB["wo_b: RowParallel(g×o_lora → d)"]
+        O_RESHAPE --> O_WOA --> O_WOB
+    end
+
+    X --> Q_PATH & SWA_KV & COMPRESSOR & INDEXER
+    Q_PATH --> SPARSE
+    SWA_KV --> SPARSE
+    COMPRESSOR --> SPARSE
+    INDEXER --> SPARSE
+    SPARSE --> INV_ROPE --> O_PROJ
+</div>
+
+<h3 id="a4-hca-—-heavily-compressed-attention-compressratio128">A4. HCA — Heavily Compressed Attention (compress_ratio=128)</h3>
+
+<div class="mermaid">
+flowchart TB
+    X["x ∈ [b, s, d]"]
+
+    subgraph Q_PATH["Q Path (same as CSA)"]
+        direction TB
+        WQA["wq_a → q_norm → wq_b"]
+        QNORM["reshape [n_h, c=512] → RMSNorm → RoPE(64d)"]
+        WQA --> QNORM
+    end
+
+    subgraph SWA_KV["SWA KV (same as CSA)"]
+        direction TB
+        WKV["wkv → kv_norm → RoPE → FP8"]
+        WIN["Window Cache (circular, 128)"]
+        WKV --> WIN
+    end
+
+    subgraph COMPRESSOR["Compressor (m'=128, overlap=False)"]
+        direction TB
+        C_WKV2["wkv: Linear(d → c=512)<br/>NO overlap (coff=1)"]
+        C_WGATE2["wgate: Linear(d → c=512)"]
+        C_APE2["+ APE: learnable [128, 512]"]
+        C_SOFT2["softmax(gate+APE) × kv<br/>128 entries → 1 compressed"]
+        C_NORM2["RMSNorm → RoPE → FP8"]
+        C_CACHE2["Compressed KV Cache<br/>n/128 entries (1M→~7.8K)"]
+        C_WKV2 --> C_WGATE2 --> C_APE2 --> C_SOFT2 --> C_NORM2 --> C_CACHE2
+    end
+
+    NO_IDX["No Indexer — dense attend ALL entries<br/>get_compress_topk_idxs: all indices"]
+
+    DENSE["sparse_attn(q, kv, attn_sink, all_idxs)<br/>SWA window ∪ ALL compressed entries → dense attend"]
+    OPROJ["inverse RoPE → Grouped O Proj"]
+
+    X --> Q_PATH & SWA_KV & COMPRESSOR
+    COMPRESSOR --> NO_IDX
+    Q_PATH --> DENSE
+    SWA_KV --> DENSE
+    NO_IDX --> DENSE
+    DENSE --> OPROJ
+</div>
+
+<h3 id="a5-lightning-indexer-内部">A5. Lightning Indexer 内部</h3>
+
+<div class="mermaid">
+flowchart TB
+    X["x ∈ [b, s, d]"]
+    QR["qr (from wq_a + q_norm)"]
+
+    subgraph IDX_KV["Indexer 自有 Compressor (c_I=128)"]
+        direction TB
+        IK_WKV["wkv: Linear(d → 2×128)"]
+        IK_WGATE["wgate: Linear(d → 2×128)"]
+        IK_OVERLAP["overlap softmax + weighted sum<br/>m=4 tokens → 1 entry"]
+        IK_NORM["RMSNorm → RoPE(64d)"]
+        IK_HAD["Hadamard rotation (fast_hadamard_transform)"]
+        IK_FP4["FP4 in-place quantize"]
+        IK_CACHE["K^IComp cache [n/4, c_I=128]"]
+        IK_WKV --> IK_WGATE --> IK_OVERLAP --> IK_NORM --> IK_HAD --> IK_FP4 --> IK_CACHE
+    end
+
+    subgraph IDX_Q["Indexer Query"]
+        direction TB
+        IQ_WQB["wq_b: ColParallel(q_lora → n_h^I × c_I)<br/>= q_lora → 64×128"]
+        IQ_ROPE["RoPE(last 64d)"]
+        IQ_HAD2["Hadamard rotation"]
+        IQ_FP4_2["FP4 in-place quantize"]
+        IQ_WQB --> IQ_ROPE --> IQ_HAD2 --> IQ_FP4_2
+    end
+
+    W_PROJ["weights_proj: Linear(d → n_h^I=64)<br/>× softmax_scale × n_heads^{-0.5}"]
+
+    SCORE["einsum('bshd,btd->bsht', q, K^IComp)<br/>→ ReLU → × weights → sum over heads<br/>→ index_score [b, s, n/4]"]
+    TOPK["top-k selection<br/>k=512 (Flash) / 1024 (Pro)"]
+    OUT["topk_idxs + offset → sparse_attn"]
+
+    X --> IDX_KV
+    QR --> IDX_Q
+    X --> W_PROJ
+    IDX_KV --> SCORE
+    IDX_Q --> SCORE
+    W_PROJ --> SCORE
+    SCORE --> TOPK --> OUT
+</div>
+
+<h3 id="a6-mhc-—-manifold-constrained-hyper-connections">A6. mHC — Manifold-Constrained Hyper-Connections</h3>
+
+<div class="mermaid">
+flowchart LR
+    subgraph HC_PRE["hc_pre (入口: [b,s,4,d] → [b,s,d])"]
+        direction TB
+        P_IN["X ∈ [b, s, hc=4, d]<br/>残差流: 4 copies"]
+        P_FLAT["flatten → [b, s, 4×d]"]
+        P_RSQRT["rsqrt(mean(x²) + eps)<br/>manual RMSNorm"]
+        P_LINEAR["F.linear(x, hc_fn) × rsqrt<br/>hc_fn: [mix_hc=24, 4×d]"]
+        P_SINK["hc_split_sinkhorn(mixes, scale, base, 4, 20, eps)"]
+        P_PRE["pre = σ(Ã) ∈ [b,s,4]<br/>input mixing weights"]
+        P_POST["post = 2σ(C̃) ∈ [b,s,4]<br/>output expansion weights"]
+        P_COMB["comb = Sinkhorn(exp(B̃), 20 iters)<br/>∈ [b,s,4,4] doubly stochastic"]
+        P_SUM["y = Σᵢ pre[i] × X[:,:,i,:]<br/>→ [b, s, d]"]
+        P_IN --> P_FLAT --> P_RSQRT --> P_LINEAR --> P_SINK
+        P_SINK --> P_PRE & P_POST & P_COMB
+        P_PRE --> P_SUM
+    end
+
+    LAYER["Norm → Attention/MoE<br/>→ output ∈ [b,s,d]"]
+
+    subgraph HC_POST["hc_post (出口: [b,s,d] → [b,s,4,d])"]
+        direction TB
+        Q_OUT["output ∈ [b,s,d]"]
+        Q_RES["residual ∈ [b,s,4,d]"]
+        Q_EXPAND["Y[i] = post[i]×output<br/>     + Σⱼ comb[i,j]×residual[j]<br/>→ [b, s, 4, d]"]
+        Q_OUT --> Q_EXPAND
+        Q_RES --> Q_EXPAND
+    end
+
+    HC_PRE --> LAYER --> HC_POST
+</div>
+
+<h3 id="关键代码-图对照">关键代码-图对照</h3>
+
+<table>
+<tr><th>代码构件</th><th>对应图</th><th>关键实现细节</th></tr>
+<tr><td><code>Transformer.__init__</code></td><td>A1</td><td><code>h = embed(x).unsqueeze(2).repeat(1,1,hc_mult,1)</code> 创建 4 份副本</td></tr>
+<tr><td><code>Block.forward</code></td><td>A2</td><td>每个 Block 对 Attn 和 FFN 各做一次 <code>hc_pre</code> / <code>hc_post</code></td></tr>
+<tr><td><code>Attention.forward</code></td><td>A3/A4</td><td><code>compress_ratio</code> 决定层类型: 0=SWA, 4=CSA, 128=HCA</td></tr>
+<tr><td><code>Compressor.forward</code></td><td>A3/A4</td><td><code>overlap = (compress_ratio == 4)</code>: CSA 有 overlap, HCA 无</td></tr>
+<tr><td><code>Indexer.forward</code></td><td>A5</td><td>自有 Compressor 用 <code>rotate=True</code> (Hadamard) + FP4</td></tr>
+<tr><td><code>Block.hc_pre/hc_post</code></td><td>A6</td><td><code>hc_split_sinkhorn</code> 是 kernel 调用, 分裂出 pre/post/comb</td></tr>
+<tr><td><code>Gate.forward</code></td><td>A2</td><td><code>sqrtsoftplus = sqrt(softplus(x))</code>, bias 仅影响选 expert 不影响权重</td></tr>
+<tr><td><code>Expert.forward</code></td><td>A2</td><td>SwiGLU: <code>silu(gate)×clamp(up)</code>, shared expert 无 clamp</td></tr>
+</table>
+
 </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
