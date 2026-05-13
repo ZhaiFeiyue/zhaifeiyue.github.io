@@ -204,6 +204,10 @@ Category: framework | Tags: MoE, prefill-only, expert-parallelism, weight-stream
 
 <h2 id="§2-summary">§2 Summary</h2>
 
+<p><img src="/assets/2605.02960/fig1.png" alt="Figure 1: Prefill-only workloads dominate production traffic"></p>
+
+<p><em>Figure 1: 匿名生产集群中 prefill-only 工作负载占 65.3% 的 input token 流量。</em></p>
+
 <p>生产 LLM 工作负载中 65.3% 的 input tokens 属于 prefill-only（分类、推荐、验证等判别式任务），其答案完全由单次 prefill 的 logits 决定，无需自回归解码。这类工作负载面向吞吐、大 batch、长 compute-bound forward、丰富 prefix sharing——但现有 MoE 分布式策略（EP/TP/PP）为了装下模型引入了三重冗余：计算（sub-saturated GEMMs + routing 不均衡 stragglers）、内存（全驻留 expert weights + k 倍 activation 膨胀 + 重复 prefix KV）、通信（每层两次同步 AllToAll）。</p>
 
 <p>ZeRO-Prefill 的核心观察：大 batch prefill 的长 compute window 足以在后台完成 expert weight 的 AllGather。因此反转传统 EP 的数据流方向——不再把 activation 路由到 expert 所在的 GPU，而是把 expert weight 流式搬运到计算所在的 GPU，使每个 GPU 在每层都持有完整 expert 集合，所有 top-k dispatch 变为本地操作。Backend 侧的 AsyncEP 用 D2D AllGather（可选 H2D offload）替代 AllToAll；Frontend 侧强制饱和阈值 T = t_EP × F_GPU × γ，通过 prefix-aware routing、true-FLOPs tracking、overlap-aware balancing 三规则保证每 GPU batch 的 compute window 足够大。</p>
@@ -212,7 +216,11 @@ Category: framework | Tags: MoE, prefill-only, expert-parallelism, weight-stream
 
 <h3 id="q1-痛点：moe-prefill-serving-的三重冗余">Q1 痛点：MoE prefill serving 的三重冗余</h3>
 
-<p>MoE 总参数量增速远超单 GPU HBM（Qwen3-235B 需 235 GB FP8 / 470 GB BF16，超出任何单卡），迫使运营商使用分布式执行。但所有现有策略都在 prefill 关键路径上引入冗余：</p>
+<p><img src="/assets/2605.02960/fig2.png" alt="Figure 2: MoE model size vs per-GPU HBM"></p>
+
+<p><em>Figure 2: MoE 模型总参数量 vs 单 GPU HBM 容量。即使 FP8 下，结构性 gap 持续存在。Qwen3-235B 需 235 GB FP8 / 470 GB BF16，超出任何单卡。</em></p>
+
+<p>MoE 总参数量增速远超单 GPU HBM，迫使运营商使用分布式执行。但所有现有策略都在 prefill 关键路径上引入冗余：</p>
 
 <table>
 <tr><th>策略</th><th>计算冗余</th><th>内存冗余</th><th>通信冗余</th></tr>
@@ -225,9 +233,21 @@ Category: framework | Tags: MoE, prefill-only, expert-parallelism, weight-stream
 
 <p>量化结果：在 8×A100 上，所有主流策略 MFU < 16%，多个 baseline 在 4 GPU 以上 plateau 或退化。</p>
 
+<p><img src="/assets/2605.02960/fig4.png" alt="Figure 4: Expert routing imbalance"></p>
+
+<p><em>Figure 4: Qwen3-30B-A3B 的 expert routing 不均衡。(a) 聚合 48 层的 expert load，max/min 达 16.15×；(b) 单层内的 expert load 分布更加偏斜。不均衡使 per-expert GEMMs 碎片化，最重 GPU 成为 per-layer straggler。</em></p>
+
 <p>根因：EP 的同步 AllToAll 将 expert 放置与 activation 路由<strong>耦合</strong>——这是 decoding 时代的设计遗产，decoding 时每 step 只处理 1 token 没有足够 compute window 来 overlap 任何传输。但 prefill 不同。</p>
 
 <h3 id="q2-方法：asyncep-—-按-weight-聚集，而非按-activation-路由">Q2 方法：AsyncEP — 按 weight 聚集，而非按 activation 路由</h3>
+
+<p><img src="/assets/2605.02960/fig6.png" alt="Figure 6: Conventional synchronous DP+EP"></p>
+
+<p><em>Figure 6: 传统同步 DP+EP（4 GPUs）。每 GPU 持有 1/N experts，每层两次同步 AllToAll 在 critical path 上。</em></p>
+
+<p><img src="/assets/2605.02960/fig7.png" alt="Figure 7: AsyncEP execution models"></p>
+
+<p><em>Figure 7: AsyncEP 执行模型。(a) D2D-only：每 GPU 为第一层复制全部 experts，后续层通过后台 NVLink AllGather 收集，与当前层 compute overlap。(b) 带 offloading：仅保留 upcoming 几层的 1/N shards on GPU，H2D PCIe 预取与 D2D AllGather 并行两通道流水。</em></p>
 
 <p><strong>核心反转</strong>：</p>
 
@@ -248,6 +268,10 @@ AsyncEP:  expert weights → AllGather(后台) → 本地 GPU 完整 expert → 
 
 <p>含义：只要每 GPU 每 batch 的 FLOPs ≥ T，当前层 compute 一定覆盖下一层 weight AllGather。Prefill-only 的大 batch 天然满足此条件，frontend 进一步强制。</p>
 
+<p><img src="/assets/2605.02960/fig5.png" alt="Figure 5: ZeRO-Prefill system architecture"></p>
+
+<p><em>Figure 5: ZeRO-Prefill 系统架构和端到端 workflow。Frontend 将任务标准化为 prefill-only 并按 saturation 规则组 batch；Backend 以 DP attention + AsyncEP 执行，返回 logits，不进入任何 decode 循环。</em></p>
+
 <p><strong>Frontend 三规则</strong>（co-design 闭环）：</p>
 
 <ol>
@@ -255,6 +279,10 @@ AsyncEP:  expert weights → AllGather(后台) → 本地 GPU 完整 expert → 
 <li><strong>F2 Compute-aware tracking</strong>：用 true-FLOPs 计量负载——N 个同 prefix 请求的 cost = 1× prefix pass + N× suffix pass，而非 N× 全量</li>
 <li><strong>F3 Overlap-aware balancing</strong>：每 GPU 累计 FLOPs 达到 T 即标记 saturated，停止接收新请求。load balance 作为 saturation 的结构副产品自动涌现</li>
 </ul>
+
+<p><img src="/assets/2605.02960/fig8.png" alt="Figure 8: Frontend scheduling"></p>
+
+<p><em>Figure 8: Frontend 调度三阶段。(1) Prefix-aware routing 选最长 block-level cache 匹配的 GPU；(2) Compute-aware tracking 按 true-FLOPs（扣除 prefix sharing credit）更新负载；(3) Overlap-aware balancing 在负载达到 T 时标记 GPU 为 saturated。</em></p>
 
 <p><strong>Memory knobs</strong>（正交可组合）：</p>
 
@@ -265,6 +293,14 @@ AsyncEP:  expert weights → AllGather(后台) → 本地 GPU 完整 expert → 
 
 <h3 id="q3-结果">Q3 结果</h3>
 
+<p><img src="/assets/2605.02960/fig9.png" alt="Figure 9: End-to-end throughput on aggregated real-world workload"></p>
+
+<p><em>Figure 9: 端到端吞吐（聚合真实 workload）。四个 panel 分别对应 8×A100 BF16、8×H100 BF16、8×H100 FP8、8×H200 FP8。ZeRO-Prefill 在每个 (hardware, precision, parallel degree) cell 均为最优。</em></p>
+
+<p><img src="/assets/2605.02960/fig12.png" alt="Figure 12: MFU across configurations"></p>
+
+<p><em>Figure 12: MFU（H100 FP8, synthetic no-prefix-reuse）。N/A cells 表示 baseline 因内存不足无法运行——仅 ZeRO-Prefill 可在 1–2 GPU 上部署 Qwen3-235B-A22B。全 sweep 最差值（29.84%）仍高于所有 baseline 的最佳值（20.09%）。</em></p>
+
 <table>
 <tr><th>指标</th><th>数值</th><th>条件</th></tr>
 <tr><td>Throughput vs best baseline</td><td><strong>1.35–1.37×</strong></td><td>Qwen3-235B-A22B, 聚合真实 workload, 4 hw/precision configs</td></tr>
@@ -272,7 +308,13 @@ AsyncEP:  expert weights → AllGather(后台) → 本地 GPU 完整 expert → 
 <tr><td>MFU (per-GPU)</td><td><strong>29.8–36.2%</strong></td><td>1–8 GPUs, H100 FP8</td></tr>
 <tr><td>Deployable envelope</td><td><strong>1–8 GPUs</strong> (vs ≥4)</td><td>4× 更宽硬件范围</td></tr>
 <tr><td>Frontend 增量贡献</td><td><strong>+16–18%</strong></td><td>backend-only → full co-design, 8 GPU</td></tr>
-<tr><td>Prefill-only 精度</td><td><strong>±3.6 pp</strong> on 7/9 tasks</td><td>vs AR decoding, 生产分类 harness</td></tr>
+</table>
+
+<p><img src="/assets/2605.02960/fig10.png" alt="Figure 10: Contribution decomposition"></p>
+
+<p><em>Figure 10: 两层设计的增量贡献分解。DP+AsyncEP（backend-only）已解决通信瓶颈，Frontend 在此基础上额外贡献 +16–18%（8 GPU），且增益随 parallel degree 增长。</em></p>
+<table>
+<tr><th>Prefill-only 精度</th><th><strong>±3.6 pp</strong> on 7/9 tasks</th><th>vs AR decoding, 生产分类 harness</th></tr>
 <tr><td>同模型 decode mode gap</td><td><strong>~1 pp</strong></td><td>IMDB 25K, gpt-oss-120B</td></tr>
 <tr><td>Implementation</td><td><strong>vLLM v0.11.0</strong> 上单 flag 启用</td><td>—</td></tr>
 </table>
@@ -338,6 +380,12 @@ AsyncEP:  expert weights → AllGather(后台) → 本地 GPU 完整 expert → 
 <li>在 8×A100/H100/H200 全部 4 个硬件/精度组合中，ZeRO-Prefill 在每个 parallel-degree cell 都是最优——1.35–1.37× 提升<strong>跨精度稳定</strong>（FP8 双倍绝对吞吐但相对增益不变，因为 AllToAll 通信量与 element size 无关）</li>
 <li>Frontend 贡献随 parallel degree 增长：2 GPU 时 ~8%，8 GPU 时 +16–18%——因为更多 GPU 下 random dispatch 更多散射 prefix，prefix-aware routing 的边际价值更高</li>
 <li>即使<strong>无 prefix sharing</strong>（random prompts synthetic workload），backend-only AsyncEP 仍提升 1.30–1.59×——验证通信冗余消除（P3）独立于计算冗余消除（P1）产生增益</li>
+</ul>
+
+<p><img src="/assets/2605.02960/fig11.png" alt="Figure 11: Synthetic workloads across context regimes"></p>
+
+<p><em>Figure 11: 无 prefix sharing 的 synthetic workloads（8×H100 FP8）。四个 context regime：short(256), medium(4K), long(32K), ultra-long(128K)。AsyncEP 在 long context 下优势更大（1.52×），因 baseline 的 AllToAll 通信量与 B·S 成正比。</em></p>
+<ul>
 <li>MFU 1–8 GPU 范围内仅波动 1.03–1.09×：baseline 的最佳 8-GPU cell（TP+TP 128K, 20.09%）低于 ZeRO-Prefill 全 sweep 最差值（29.84%）</li>
 <li>AsyncEP 的 weight 传输完全隐藏——deployment 从 "≥4 GPU 才能装下 Qwen3-235B" 扩展到 "1 GPU 即可"（hybrid offloading + KV-cache-free），不牺牲 MFU</li>
 <li>Prefill-only logit scoring 与 AR decoding 的精度差仅 ~1 pp（同模型同 prompt 下），decoding mode 贡献远小于 prompt design 贡献</li>
