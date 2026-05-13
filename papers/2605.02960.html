@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: ZeRO-Prefill: Zero Redundancy Overheads in MoE Prefill Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>ZeRO-Prefill: Zero Redundancy Overheads in MoE Prefill Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2605.02960 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2605.02960/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+<h1 id="zero-prefill-vs-相关论文：跨篇综合">ZeRO-Prefill vs 相关论文：跨篇综合</h1>
+
+<h2 id="相关论文">相关论文</h2>
+
+<p>本篇选取 8 篇相关论文/系统，覆盖 MoE 模型设计、MoE 推理负载均衡、serving 框架、prefill 优化、compute-communication overlap、多智能体 KV 共享、MoE 引擎设计和存储带宽优化，与 ZeRO-Prefill 在 MoE prefill serving 这一核心问题上形成多维对比。</p>
+
+<p><strong>DeepSeek-V3 (2412.19437)</strong> — ZeRO-Prefill 的直接 baseline 模型和 EP 范式来源。DeepSeek-V3 使用 256 routed experts + 64-way EP 的 MoE 架构，配合 auxiliary-loss-free load balancing 在 training 时优化 routing 均衡。其 DualPipe 算法通过双向 pipeline + warp specialization 实现 all-to-all 与计算完全重叠——但这是 training 时代的解决方案（计算:通信 ≈ 1:1 且 micro-batch 可双向调度）。ZeRO-Prefill 的评估模型 Qwen3-235B 继承了相同的 MoE 范式（128 experts, top-8），但 serving 时 routing 不均仍在——DeepSeek-V3 的 training-time balancing 不保证 inference-time 均衡。ZeRO-Prefill 从根本上消除了 routing imbalance 的影响：不是让 routing 更均匀，而是让不均匀不再重要（本地 dispatch，无远程通信）。Kind: baseline。</p>
+
+<p><strong>MoE Load Balancing (moe-lb-interai25)</strong> — 与 ZeRO-Prefill 解决同一问题（MoE serving 中的 routing imbalance straggler）但方向完全对立。该论文用 ILP + polynomial heuristic 联合优化 expert replication 与 reallocation，在 EP 框架内动态调整 expert-to-device 映射，实现 12.5% latency reduction 和 2× 更频繁 rebalancing。其核心假设是："EP 框架不可改变，只能在其中做最优调度"。ZeRO-Prefill 则跳出 EP 框架——用 weight streaming 消除 EP 本身，使 routing imbalance 从"需要优化的问题"变成"不存在的问题"。两者的代价截然不同：MoE-LB 需要频繁搬运 expert weights（data movement overhead 是其论文的核心挑战），ZeRO-Prefill 需要持续流式传输全部 expert weights（但利用 compute window 隐藏）。在 expert 数量小（<64）或 top-k 低（top-2）时，MoE-LB 的 imbalance 问题本身较轻，ZeRO-Prefill 的 weight streaming overhead 相对更大——此时 MoE-LB 可能更优。Kind: related。</p>
+
+<p><strong>DynaServe (2504.09285)</strong> — 共享 serving 效率优化目标，但从完全不同的维度切入。DynaServe 解决 prefill-decode 干扰问题，通过微请求（micro-request）抽象在任意 token 边界分割请求，用自适应分区调度统一 colocation 和 disaggregation。ZeRO-Prefill 的前提是 prefill-only（无 decode 阶段），绕开了 DynaServe 解决的核心矛盾。但两者有互补空间：DynaServe 的 disaggregation 可以为混合工作负载隔离出 prefill tier，ZeRO-Prefill 的 AsyncEP 可以加速该 prefill tier 的 MoE 执行。DynaServe 的 SLO-aware 调度（P99 TBT）与 ZeRO-Prefill 的 throughput-oriented 设计代表 serving 系统的两极——latency-critical vs throughput-first。Kind: related。</p>
+
+<p><strong>Prefill-as-a-Service / PrfaaS (2604.15039)</strong> — 与 ZeRO-Prefill 共享"prefill 优化"主题，但作用域完全不同。PrfaaS 把 prefill 从单集群 RDMA 岛扩展到跨 DC commodity Ethernet，通过 hybrid attention 降 KV 吞吐 4–13×，用长度阈值路由 + 双时间尺度调度做 prefill offload。ZeRO-Prefill 聚焦单集群内 MoE prefill 的执行栈优化——两者正交且可叠加：PrfaaS 决定"哪些 prefill 在哪里执行"（跨 DC 路由），ZeRO-Prefill 决定"单个 prefill 在 GPU 上如何高效执行"（execution strategy）。PrfaaS 的 compute-dense PrfaaS 集群正是 ZeRO-Prefill 的理想部署位置。两者共同暗示一个趋势：prefill serving 正在从 "AR serving 的副产品" 独立为有专属优化栈的一等 serving 模式。Kind: related。</p>
+
+<p><strong>Compute-Communication Overlap / ConCCL (2412.14335)</strong> — 共享 ZeRO-Prefill 的核心技术手段（overlap），但在 overlap 的机制和粒度上有根本差异。ConCCL 用 GPU DMA 引擎 offload collective 操作，消除 CU 级竞争，在 GEMM 粒度实现 C3（Concurrent Computation and Communication），最高达 1.67× speedup。ZeRO-Prefill 的 AsyncEP 在更高粒度实现 overlap——整层 MoE computation 与下一层 weight AllGather 的重叠。ConCCL 的 DMA offload 解决的是"同一 layer 内 compute 和 comm 争抢 CU"，ZeRO-Prefill 解决的是"跨层的 compute window 是否足够宽以隐藏 weight transfer"。两者可能互补：如果 AsyncEP 的 D2D AllGather 也使用 DMA 引擎而非 CU-based kernel，当前层 compute 可获得更多 CU 资源。但 ConCCL 论文发现 DMA 引擎在大 message size（>256MB）时效率下降——而 expert layer weights 可达数 GB，超出 DMA 引擎最优区间。Kind: related。</p>
+
+<p><strong>TokenDance (2604.03143)</strong> — 共享 prefix 复用的技术方向，但面向完全不同的工作负载。TokenDance 优化多智能体 All-Gather 轮次中的 KV Cache 集体复用，将 N 个 agent 的重复 PIC 开销从 O(N) 降到 O(1)。ZeRO-Prefill 的 prefix-aware routing 将同前缀请求聚合到同一 GPU，prefix KV 只算一次——本质上也是 prefix 去重，但在调度层而非 KV 存储层。两者揭示了同一个趋势的两个维度：TokenDance 说"跨 agent 的 KV 内容高度重复，存储是瓶颈"，ZeRO-Prefill 说"跨请求的 prefix 计算高度重复，FLOPs 度量失准是瓶颈"。ZeRO-Prefill 的 true-FLOPs tracking（N 个同 prefix 请求 cost = 1× prefix + N× suffix）与 TokenDance 的 Master-Mirror diff 思想异曲同工——都在挖掘冗余的结构性消除。Kind: related。</p>
+
+<p><strong>TokenSpeed (tokenspeed)</strong> — ZeRO-Prefill 的 frontend co-design 与 TokenSpeed 的 FSM 调度器代表两种 scheduler-engine 耦合哲学。TokenSpeed 用 C++ <code>std::variant<13 states></code> FSM + RAII 建模请求生命周期，通过编译期类型安全保证 KV cache 正确性；其内核注册表用 5-band 优先级系统根据 saturated/unsaturated 状态选择最优 kernel。ZeRO-Prefill 的 frontend 用饱和阈值 T 强制 per-GPU FLOPs ≥ T，saturation 是调度的结果而非输入。两者的"饱和"概念互补：TokenSpeed 的 saturation 是 KV/batch 资源压力指标（触发 Retraction），ZeRO-Prefill 的 saturation 是 compute window 充足性指标（保证 overlap）。ZeRO-Prefill 实现在 vLLM v0.11.0 上，TokenSpeed 是独立引擎——如果 ZeRO-Prefill 的 AsyncEP 要移植到 TokenSpeed，需要适配 TokenSpeed 的 FSM 状态机（增加 "WeightStreaming" 状态）和 Placement 编译器（增加 AsyncEP 的 AllGather pattern）。Kind: related。</p>
+
+<p><strong>DualPath (2602.21548)</strong> — 与 ZeRO-Prefill 共享"利用空闲带宽通道"的系统洞察，但面向不同资源。DualPath 发现 decode engine 的 SNIC 空闲，用它加载 KV-Cache 缓解 prefill engine 的存储带宽瓶颈。ZeRO-Prefill 发现 prefill 大 batch 的 compute window 空闲（对通信而言），用它 overlap weight AllGather。两者独立发现了同一个设计模式："找到时间/空间维度上的空闲资源，将原本在 critical path 上的传输搬到空闲通道"。DualPath 用 InfiniBand VL 的 WRR 策略做流量隔离（KV-Cache 走低优先级 VL），ZeRO-Prefill 不需要流量隔离——weight AllGather 和 compute 走完全不同的硬件单元（NVLink D2D vs SM compute），物理隔离天然存在。ZeRO-Prefill 的方案硬件要求更低（只需 NVLink，不需 InfiniBand VL 配置）但场景更窄（仅 prefill-only）。Kind: related。</p>
+
+<h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta</h2>
+
+<p>ZeRO-Prefill 的核心 delta 是 <strong>AsyncEP + 饱和阈值 T 的 frontend-backend co-design</strong> ——将 MoE 的分布式执行从"activation 路由到 expert"反转为"expert weight 流入计算节点"，利用 prefill 大 batch 的 compute window 完全隐藏 weight AllGather，同时用物理量 T 在 frontend 强制 overlap 条件，使 load balance 作为 saturation 的结构副产品自动涌现。</p>
+
+<table>
+<tr><th>维度</th><th>ZeRO-Prefill</th><th>DeepSeek-V3 EP</th><th>MoE-LB</th><th>DynaServe</th><th>PrfaaS</th><th>ConCCL</th><th>TokenSpeed</th><th>DualPath</th></tr>
+<tr><td>优化目标</td><td>MoE prefill 吞吐</td><td>MoE training 效率</td><td>EP serving 延迟</td><td>PD 干扰隔离</td><td>跨 DC prefill offload</td><td>C3 overlap 效率</td><td>Agent inference 全链路</td><td>KV-Cache I/O 带宽</td></tr>
+<tr><td>核心技术</td><td>AsyncEP (weight streaming)</td><td>DualPipe + aux-free LB</td><td>ILP expert replication</td><td>micro-request + APS</td><td>hybrid attention + 阈值路由</td><td>DMA offload collectives</td><td>FSM + 5-band kernel registry</td><td>Dual-path + VL isolation</td></tr>
+<tr><td>Overlap 粒度</td><td>跨层 (layer N compute ↔ layer N+1 AllGather)</td><td>micro-batch 双向交错</td><td>N/A (同步框架内)</td><td>N/A</td><td>层间 prefill pipeline</td><td>单层内 (GEMM ↔ collective)</td><td>N/A (调度层)</td><td>逐层 (KV load ↔ attention)</td></tr>
+<tr><td>Routing imbalance 处理</td><td>消除 (本地 dispatch)</td><td>Training-time LB</td><td>Runtime replication</td><td>N/A</td><td>N/A</td><td>N/A</td><td>继承底层 EP</td><td>N/A</td></tr>
+<tr><td>Frontend-backend 耦合</td><td>强耦合 (物理量 T 接口)</td><td>N/A (training)</td><td>松耦合 (独立 rebalancer)</td><td>双层调度</td><td>全局路由 + 本地调度</td><td>N/A (kernel 级)</td><td>C++ FSM ↔ Python exec</td><td>三级分类 scheduler</td></tr>
+<tr><td>部署弹性</td><td>1–8 GPU (4× 范围)</td><td>固定 64-way EP</td><td>固定 EP degree</td><td>动态 disaggregation ratio</td><td>跨 DC 弹性</td><td>N/A</td><td>固定 TP/EP</td><td>线性扩展到 1152 GPU</td></tr>
+<tr><td>Prefix 利用</td><td>主动 routing + true-FLOPs</td><td>无</td><td>无</td><td>无</td><td>按长度路由</td><td>无</td><td>Radix prefix sharing</td><td>无</td></tr>
+<tr><td>适用场景</td><td>Prefill-only 大 batch</td><td>Training</td><td>EP inference (general)</td><td>混合 PD serving</td><td>长 context prefill offload</td><td>任意 C3 workload</td><td>Agent decode-heavy</td><td>Agentic PD inference</td></tr>
+<tr><td>实现平台</td><td>vLLM v0.11.0</td><td>内部框架</td><td>独立 optimizer</td><td>vLLM-based</td><td>内部 (Moonshot)</td><td>AMD GPU PoC</td><td>独立引擎</td><td>SGLang + 3FS</td></tr>
+</table>
+
+<p><strong>ZeRO-Prefill vs DeepSeek-V3 — 同一 MoE 范式的 training vs serving 两面</strong>。DeepSeek-V3 的 DualPipe 在 training 时实现 all-to-all 与计算完全 overlap，依赖双向 pipeline 调度的"会车点"——forward 的通信和 backward 的计算在时间上错位。但 serving 时没有 backward pass，DualPipe 的核心机制不适用。ZeRO-Prefill 找到了 serving 场景的等价洞察：prefill 大 batch 的 compute window 是"另一个方向的计算"——不是 backward，而是 attention + FFN 的长序列处理。DeepSeek-V3 用 warp specialization 在 SM 内划分 compute/comm 资源，ZeRO-Prefill 利用 NVLink D2D AllGather 与 SM compute 的天然物理隔离（不同硬件单元）——后者更干净，不需要 SM 级资源管理。但 ZeRO-Prefill 受限于 prefill-only 场景，DeepSeek-V3 的 DualPipe 对 training 通用。</p>
+
+<p><strong>ZeRO-Prefill vs MoE-LB — 消除问题 vs 优化问题的哲学对比</strong>。MoE-LB 在 EP 框架内做最优 expert 放置——这是一个 NP-hard 优化问题，论文用 ILP+heuristic 近似。ZeRO-Prefill 直接消除 EP，使 expert 放置问题不复存在。但消除的代价是 weight streaming bandwidth——每层需要传输 (N-1)/N × expert_weights 的数据量。在 NVLink 带宽充足时（如 H100 SXM 900 GB/s inter-GPU），compute window 轻松覆盖；但在低带宽互联（PCIe-only, 64 GB/s）下，T 可能暴涨到不可满足。MoE-LB 的 12.5% latency reduction 看似温和，但它在任意互联拓扑和 batch size 下都适用——ZeRO-Prefill 的 1.35× 提升需要"大 batch + 高速互联"的双重前提。</p>
+
+<p><strong>ZeRO-Prefill vs ConCCL — 两层 overlap 可叠加</strong>。ConCCL 消除 CU 级 compute-comm 干扰，ZeRO-Prefill 消除跨层 weight transfer 暴露。两者在不同硬件层面解决 overlap 问题：ConCCL 的 DMA offload 在 GPU 内部（CU vs DMA engine），ZeRO-Prefill 的 AsyncEP 在 GPU 间（SM compute vs NVLink）。理论上可叠加：当前层的 attention compute 使用全部 CU（ConCCL 保证无干扰），同时 NVLink 后台传输下一层 expert weights（AsyncEP 保证隐藏）。但实现中可能有微妙交互：NVLink D2D AllGather 最终需要写入 GPU HBM，与 attention kernel 竞争 HBM 带宽。ConCCL 的 DMA 路径绕过 L1/L2 但不绕过 HBM——在 HBM 带宽饱和的大 batch prefill 中，叠加两层 overlap 的 HBM 竞争需要量化评估。</p>
+
+<p><strong>ZeRO-Prefill vs TokenSpeed — 饱和阈值的两种语义</strong>。ZeRO-Prefill 的 T = t_EP × F_GPU × γ 是一个<strong>下界</strong>——每 GPU batch FLOPs 必须 ≥ T 才能保证 overlap。TokenSpeed 的 saturation 是一个<strong>上界</strong>——KV cache 占用或 batch token 数达到阈值时触发 Retraction 释放资源。ZeRO-Prefill 的 frontend 通过 F3 rule（累计 FLOPs ≥ T 后停止接收）精确控制下界；TokenSpeed 的 FSM 通过 Draining/Retracting 状态控制上界。两者代表 scheduler 设计的两种风格：ZeRO-Prefill 是"保证条件满足后放手执行"（物理量驱动），TokenSpeed 是"持续监控并在违反时介入"（状态机驱动）。如果 AsyncEP 集成到 TokenSpeed 中，需要在 FSM 中增加一个新的不变量：<code>scheduled_flops >= T</code> 作为 Prefilling 状态的准入条件。</p>
+
+<p><strong>ZeRO-Prefill vs DualPath — "找到空闲通道"的通用设计模式在不同资源上的表现</strong>。DualPath 找到的空闲通道是 DE 的 SNIC（物理网口），利用方式是 RDMA Write 转发 KV-Cache。ZeRO-Prefill 找到的空闲通道是 prefill compute window 中的 NVLink 带宽（时间窗口），利用方式是后台 D2D AllGather 传输 weights。DualPath 的 challenge 是流量隔离（KV-Cache 流和模型通信流共享 CNIC），ZeRO-Prefill 的 challenge 是保证 compute window 足够宽（T 的物理约束）。DualPath 需要 InfiniBand VL 硬件级 QoS，ZeRO-Prefill 只需 NVLink——后者的硬件依赖更轻但场景更窄。有趣的是，两者在 MoE 推理中可能存在组合空间：DualPath 加速 KV-Cache 加载（prefill 的 I/O 前端），ZeRO-Prefill 加速 MoE forward（prefill 的 compute 后端），联合优化 agentic MoE serving 的端到端 prefill 延迟。</p>
+
+<h2 id="可攻击面">可攻击面</h2>
+
+<p>以下攻击针对 ZeRO-Prefill L2 中的具体论证步骤和声明。</p>
+
+<p><strong>Attack 1: 饱和阈值 T 静态标定——workload drift 下的退化窗口不可忽视</strong></p>
+
+<p>T = t_EP × F_GPU × γ 在启动时一次性标定（profile run 测量 layer-0 和 layer-i wall-clock）。论文承认 workload 剧烈漂移时存在"短暂不匹配窗口"，但声称"prefill-only batch 补充速度快"可缓解。这个论证有三个漏洞：(1) 生产 prefill-only 服务的请求到达是 bursty 的（分类任务按 batch 下发，batch 间有间隔），burst 间隙内 batch 可能远小于 T 要求——此时 overlap 条件不满足，weight AllGather 暴露到 critical path，吞吐可能瞬间退化到 baseline 以下（因为 AllGather 通信量 > AllToAll）。(2) 模型混合部署时（同一集群交替服务不同 MoE 模型），不同模型的 expert 数和 weight size 不同，T 值也不同——要么对每个模型分别标定（增加启动开销），要么用最大 T 做保守调度（牺牲小模型的 batch 灵活性）。(3) GPU throttling（温度/功耗降频）会使 F_GPU 实时下降，但 T 基于 peak F_GPU 标定——当 GPU 降频 20% 时 effective compute window 缩短 20%，部分层可能从"完全隐藏"退化为"部分暴露"。论文缺乏动态 T 调整机制或退化行为的量化分析。</p>
+
+<p><strong>Attack 2: "65.3% prefill-only"声明来自匿名集群——不可复现且可能不代表行业分布</strong></p>
+
+<p>论文的核心 motivation（"生产集群 65.3% input tokens 属于 prefill-only"）来自"anonymized production cluster"的 Figure 1 测量。这个数据点有三个问题：(1) 不可复现——匿名集群不公开，无法验证测量方法、workload 组成、时间窗口长度。(2) 选择偏差——如果该集群专门服务分类/审核类任务，65.3% 可能是该特定业务的特征而非行业共性。对话式 AI（ChatGPT、Claude）的 prefill-only 比例可能远低于 10%。(3) 边界定义模糊——"prefill-only"的定义（答案完全由单次 prefill 的 logits 决定）在 prompt engineering 和 tool-use 场景下越来越模糊：一个分类任务可能需要 CoT reasoning（多 token 输出），推荐任务可能需要生成多个候选（autoregressive）。论文的 Table 3 也显示部分"prefill-only"任务需要 decode mode 才能达到最佳精度，暗示 prefill-only 的适用边界比声称的更窄。</p>
+
+<p><strong>Attack 3: Frontend-backend 强耦合——可移植性是系统存活的生命线</strong></p>
+
+<p>ZeRO-Prefill 的物理量 T 建立了 frontend 与 backend 之间的强接口：frontend 必须知道 backend 的 AllGather 延迟（t_EP）、GPU 峰值 FLOP rate（F_GPU）和安全余量（γ）。这个设计有三个可移植性问题：(1) 绑定 vLLM v0.11.0 的 scheduler-engine 架构——vLLM 的 scheduler 可直接访问 engine 的 profile 数据，但 SGLang 的 RadixAttention scheduler 和 TokenSpeed 的 C++ FSM 没有等价接口，移植需要重新设计 scheduler-engine 通信协议。(2) T 的标定依赖 engine 的 weight streaming 实现细节——不同 engine 的 D2D AllGather 实现（NCCL vs 自定义 kernel vs DMA offload）有不同的 t_EP 特征（latency curve、throughput 拐点），frontend 必须适配每种实现。(3) prefix-aware routing 的"true-FLOPs"计量依赖对 engine 内部 prefix caching 行为的精确建模——如果 engine 的 cache eviction policy 改变（如 TokenSpeed 的 Retraction 会 evict KV），frontend 的 FLOPs 估计会失准。论文声称"单 flag 启用"只在 vLLM 上验证——对 serving 引擎快速迭代（vLLM 每 2 周一个版本）的生态来说，这种 engine 绑定是系统存活的风险。</p>
+
+<p><strong>Attack 4: KV-cache-free 模式的适用窗口远比声称的窄</strong></p>
+
+<p>论文将 KV-cache-free 作为"正交可组合的 memory knob"之一，允许对 prefix-sparse workload 关闭 KV 存储释放 HBM。但 KV-cache-free 意味着：每个同 prefix 的后续请求必须重新计算 prefix 的 attention——这正是 ZeRO-Prefill 的 F2 rule（true-FLOPs tracking）试图避免的。当 KV-cache-free 开启时，N 个同 prefix 请求的 cost 从 "1× prefix + N× suffix" 退化为 "N× (prefix + suffix)"，F2 rule 的计量基础崩塌。论文没有讨论这个矛盾。更实际地看：PrfaaS 和 TokenDance 的分析都表明，生产 workload 中 prefix 复用率极高（PrfaaS 的 hybrid attention 假设 prefix 占 >60% context，TokenDance 的 All-Gather 场景有 91–97% 块级重叠）。在这些高复用场景下开启 KV-cache-free 是逆向优化——强制重算 90%+ 的已有 KV。论文声称 KV-cache-free 适合"prefix-sparse workloads"，但 Table 2 的评估 workload 大多有丰富 prefix sharing——实际生产中何时会遇到"prefix-sparse + prefill-only + 大 batch + MoE"这四重条件同时满足的场景？</p>
+
+<p><strong>Attack 5: 与 Offloading-based MoE 系统的对比缺失——ZeRO-Prefill 的 hybrid offloading 本质上是 Fiddler/SwapMoE 的改良</strong></p>
+
+<p>ZeRO-Prefill 的 hybrid offloading（每 GPU 仅保留 upcoming 几层的 expert shards，其余从 CPU pinned memory H2D 预取）与 Fiddler（CPU-GPU expert offloading with prediction）和 SwapMoE（expert weight swapping）在技术路径上高度相似——都是"只把当前需要的 experts 放在 GPU 上"。ZeRO-Prefill 的改进是将 H2D PCIe 与 D2D NVLink 双通道并行流水，但论文没有与这些先前工作进行直接性能对比。Fiddler 在 single-GPU MoE serving 上已实现 8.2× throughput improvement（vs loading all experts），SwapMoE 用 expert 预测实现近零 swap overhead。如果 ZeRO-Prefill 的 single-GPU deployment（Table in §8.5）主要收益来自 hybrid offloading 而非 AsyncEP 的通信消除，那么其 novelty 主要在多 GPU 场景——但论文将 single-GPU deployment 作为 4× 部署弹性的关键卖点。缺乏与 Fiddler/SwapMoE 的对比使读者无法判断 hybrid offloading 贡献 vs AsyncEP 贡献的边界。</p>
+
+<p><strong>Attack 6: AllGather 通信量比 AllToAll 更大——"零冗余"只在 overlap 完美时成立</strong></p>
+
+<p>论文标题 "Zero Redundancy Overheads" 暗示 AsyncEP 消除了所有冗余。但从绝对通信量看：传统 EP 的 AllToAll 每层搬运 ~4kBSHb（activation tokens），AsyncEP 的 AllGather 每层搬运 (N-1)/N × expert_weights（所有 expert 的完整 weight tensor）。对 Qwen3-235B（128 experts × ~1.5 GB/expert FP8 = ~192 GB total experts），8-GPU AllGather 每层传输 ~168 GB；而 AllToAll 在 batch=4K tokens 时仅传输 ~数十 MB。AsyncEP 的绝对通信量比 AllToAll 大 <strong>3 个数量级以上</strong>——"零冗余"的前提是 overlap 100% 隐藏所有传输。一旦 overlap 条件不满足（T 不满足、GPU throttling、NVLink congestion），暴露的通信延迟将远超 AllToAll。论文的 MFU 测量中 overlap 确实完美（NVLink 900 GB/s 下 168 GB 仅需 ~187ms，而 4K tokens × 128K context 的 compute window 远超此值），但这个完美 overlap 严重依赖 NVLink 带宽——在 PCIe-only 拓扑（64 GB/s）下同样传输需要 ~2.6s，可能超出 compute window。</p>
+
+<h2 id="生态位">生态位</h2>
+
+<p><strong>范式定位</strong>：ZeRO-Prefill 代表 MoE serving 从"EP 框架内优化"到"跳出 EP 框架"的范式转变。传统 EP 的设计遗产来自 decoding 时代——每 step 只处理 1 token，compute window 太短无法 overlap 任何传输，expert 必须静态放置、activation 必须路由。MoE-LB、DeepEP、Lancet 等工作都在 EP 框架内做增量优化（更好的 routing、更快的 AllToAll、更均匀的放置）。ZeRO-Prefill 观察到 prefill 场景的质变条件——大 batch 产生的长 compute window——后直接反转数据流方向，从"把小数据（activation）送到大数据（weights）"变为"把大数据（weights）送到小数据（activation）"。这个反转只在 prefill-only + 大 batch + 高速互联的三重条件下成立，但恰好覆盖了论文声称的 65.3% 生产流量。</p>
+
+<p><strong>与 serving 引擎生态的关系</strong>：</p>
+<ul>
+<li><strong>vLLM</strong>：ZeRO-Prefill 基于 vLLM v0.11.0 实现，用"单 flag 启用"的方式集成——这暗示其作为 vLLM 的一个 execution mode 而非独立系统存在</li>
+<li><strong>TokenSpeed</strong>：TokenSpeed 的 SPMD 编译器和 MoE 内核注册表为 AsyncEP 模式提供了潜在的更优实现路径（Placement 注解可表达 AsyncEP 的 AllGather pattern），但需要适配其 FSM</li>
+<li><strong>SGLang</strong>：SGLang 的 RadixAttention 与 ZeRO-Prefill 的 prefix-aware routing 目标一致，但 SGLang 没有等价的"强制饱和"调度接口</li>
+</ul>
+
+<p><strong>竞争方案生态位对比</strong>：</p>
+
+<table>
+<tr><th>生态位</th><th>方案</th><th>ZeRO-Prefill 优势</th><th>ZeRO-Prefill 劣势</th></tr>
+<tr><td>MoE prefill execution</td><td>传统 EP (AllToAll)</td><td>消除 routing straggler + 通信隐藏 + 4× 部署弹性</td><td>仅限 prefill-only，不适用 decode</td></tr>
+<tr><td>MoE load balance</td><td>MoE-LB (replication)</td><td>消除问题本身而非优化问题</td><td>需大 batch + NVLink，适用窗口更窄</td></tr>
+<tr><td>Prefill 调度</td><td>PrfaaS (cross-DC)</td><td>执行栈级优化（MFU 30%+ vs baseline <16%）</td><td>不做跨 DC 路由，scope 更窄</td></tr>
+<tr><td>MoE 引擎</td><td>TokenSpeed (FSM)</td><td>物理量 T 保证 overlap 而非状态机反应式</td><td>强耦合 vLLM，可移植性差</td></tr>
+<tr><td>Compute-comm overlap</td><td>ConCCL (DMA)</td><td>跨层粒度 overlap（更大 window）</td><td>不解决 GPU 内部 CU-comm 干扰</td></tr>
+<tr><td>KV-Cache I/O</td><td>DualPath (dual-path)</td><td>不需要 InfiniBand VL 硬件 QoS</td><td>不解决 KV 存储带宽问题</td></tr>
+<tr><td>Serving flexibility</td><td>DynaServe (micro-req)</td><td>MFU 远高（30% vs DynaServe 未报 MFU）</td><td>不处理 PD 混合工作负载</td></tr>
+</table>
+
+<p><strong>定位判断</strong>：ZeRO-Prefill 在 prefill-only + MoE + 大 batch + NVLink 互联的四重交集场景下价值最大——此时传统 EP 的三重冗余（routing straggler + AllToAll 通信 + weight 冗余存储）被完全消除，MFU 从 <16% 提升到 30%+。对外部团队的核心可移植思想：(1) "大 compute window 可以隐藏 weight streaming"的物理洞察——适用于任何 compute-bound phase 足够长的 MoE workload；(2) "饱和阈值作为 scheduler-engine 接口"——用物理量而非启发式建立调度约束；(3) "load balance 作为 saturation 的副产品"——不再把 balance 作为独立优化目标，而是通过保证每 GPU 工作量下界自动实现。</p>
+
+<h2 id="未探索方向">未探索方向</h2>
+
+<p><strong>方向 1: 动态 T 适配——从静态标定到 runtime adaptive overlap</strong>。当前 T 启动时一次标定，但生产场景中 F_GPU 会因温度/功耗动态变化（A100 thermal throttle 可降频 20%），NVLink 带宽可能因其他流量（如 TP AllReduce）被部分占用导致 t_EP 增大。将 T 改为 runtime adaptive：每 K 个 batch 用 exponential moving average 更新 effective_T = observed_compute_time × (1/α)，frontend 用 effective_T 替代 static T 做 saturation 判断。更进一步：引入 ConCCL 的 DMA offload 作为 fallback——当 runtime 检测到 overlap 条件接近临界（compute_time / transfer_time < 1.05）时，自动切换 AllGather 实现从 CU-based 到 DMA-based，释放更多 CU 给 compute 从而扩展 effective compute window。这将 ZeRO-Prefill 从"静态保证 overlap"演进到"动态维护 overlap"。</p>
+
+<p><strong>方向 2: AsyncEP + MoE-LB 的混合策略——按 expert popularity 选择性 streaming</strong>。完全 weight streaming（AsyncEP）和完全 expert-in-place（EP + MoE-LB）是两个极端。中间策略：将 experts 按 popularity 分为 hot/cold——hot experts（top 10%，接收 >50% tokens）常驻本地 GPU（无需 streaming），cold experts（bottom 50%，接收 <5% tokens）按需 streaming。这降低了 AllGather 通信量（只传 cold experts）、减小 T 要求（只需覆盖 cold expert streaming）、保留 MoE-LB 对 hot experts 的 replication 优化。实现可基于 MoE-LB 的 ILP formulation 扩展：决策变量从"expert 放在哪个 device"变为"expert 是 resident 还是 streamed"，目标函数加入 streaming bandwidth constraint。Qwen3-235B 的 16.15× max/min imbalance 数据表明 popularity 分布高度偏斜——hot experts 常驻仅需少量 HBM，大部分 experts 可安全 stream。</p>
+
+<p><strong>方向 3: ZeRO-Prefill + PrfaaS 的垂直整合——跨 DC 的 MoE prefill serving 专用集群</strong>。PrfaaS 已证明跨 DC prefill offload 的可行性（hybrid attention 降 KV 吞吐 4–13×），ZeRO-Prefill 证明 MoE prefill 可用 1–8 GPU 高效执行（hybrid offloading + KV-cache-free）。组合两者：在远端 DC 部署"MoE prefill 专用小集群"（2–4 GPU/instance，ZeRO-Prefill 保证 MFU 30%+），PrfaaS 的长度阈值路由将大 batch 长 context MoE prefill offload 到这些专用集群。关键适配：PrfaaS 的 layer-by-layer prefill pipeline 与 ZeRO-Prefill 的 AsyncEP 在 pipeline 粒度上天然对齐——PrfaaS 逐层发送 KV，AsyncEP 逐层 streaming weights，两者可共享同一个 layer-level pipeline 控制器。挑战：跨 DC 延迟使得 PrfaaS 回流 KV 的时间窗口和 AsyncEP 的 weight AllGather 时间窗口可能冲突——需要在 layer pipeline 中交错调度两者。</p>
+
+<p><strong>方向 4: TokenSpeed FSM 中集成 AsyncEP 状态——类型安全的 weight streaming lifecycle</strong>。将 AsyncEP 的 weight streaming lifecycle 建模为 TokenSpeed FSM 的一等公民。新增状态：<code>WeightPrefetching</code>（下一层 AllGather 进行中）、<code>WeightReady</code>（下一层 weights 已就位）。状态转移约束：<code>Prefilling</code> 只能从 <code>WeightReady</code> 转入——编译期保证"不会在 weights 未就绪时开始 MoE compute"。TokenSpeed 的 RAII 机制可同时管理 KV cache 和 streamed weights 的生命周期——<code>unique_ptr<StreamedExpertRef></code> 在状态析构时自动释放 HBM。内核注册表增加 <code>mode=async_ep</code> 选项，5-band 优先级中 SPECIALIZED band 注册 AsyncEP-aware MoE kernels（配合 event-based synchronization 等待 AllGather 完成再触发 compute）。这比 vLLM 的"单 flag"集成更优雅——编译期类型安全防止了"weight 未就绪就开始计算"这类 race condition。</p>
+
+<p><strong>方向 5: 利用 TokenDance 的 collective reuse 思想扩展 ZeRO-Prefill 的 true-FLOPs model</strong>。ZeRO-Prefill 的 F2 rule 将 N 个同 prefix 请求的 cost 计为 "1× prefix + N× suffix"——但只考虑了 attention 的 prefix 复用。在 MoE 层面，同 prefix 请求的 router 输出高度相关（相同 prefix tokens 激活相同 experts），但 suffix tokens 可能分散到不同 experts——这意味着 routing 在 prefix 部分是确定性的、在 suffix 部分是随机的。扩展 true-FLOPs model：prefix 部分不仅"注意力计算共享"，expert 激活 pattern 也共享（MoE compute = 1× 对于 prefix experts）；suffix 部分的 expert 分布可用 exponential moving average 在线估计。这给 frontend 更精确的 per-GPU workload 预测——特别是在 prefix 很长（>32K）而 suffix 很短（<1K）的分类任务中，99% 的 expert activation pattern 由 prefix 决定、完全可预测。TokenDance 的 "round-aware" 思想启发：按"一个 prefix group"而非"单个请求"为单位做 saturation check 和 GPU routing。</p>
+
+<p><strong>方向 6: PCIe-only 拓扑下的 AsyncEP——用 pipeline 分层传输替代全量 AllGather</strong>。ZeRO-Prefill 绑定 NVLink 的根本原因是 AllGather 需要在一个 compute window 内传输完整 expert layer weights。在 PCIe-only 拓扑下（~64 GB/s bidirectional），传输时间约为 NVLink 的 14×，compute window 不够覆盖。解法：不传完整 layer，而是将 expert layer 拆为 K 个 sub-blocks，pipeline 式传输——当前 sub-block 计算时传输下一个 sub-block。这将 "1 layer compute overlaps 1 layer AllGather" 降级为 "1/K layer compute overlaps 1/K layer transfer"。K 的选择取决于 PCIe 带宽和 sub-block compute time。对 Qwen3-235B 的 128 experts：每个 expert ~1.5 GB FP8，单 GPU 8 experts/layer，sub-block 可以是 1 expert（~1.5 GB，PCIe 传输 ~23ms，单 expert compute for 4K tokens ~数十 ms）——pipeline 粒度可行。代价：(1) pipeline startup bubble（K-1 个 sub-block 的延迟）；(2) 更复杂的 weight buffer 管理（ping-pong buffer for K sub-blocks）；(3) T 的标定从 per-layer 变为 per-sub-block。但这使 ZeRO-Prefill 从"NVLink 专属"扩展到"任意互联"，显著扩大适用范围。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2412.19437.html">2412.19437</a> (baseline) 
+<a href="/papers/moe-lb-interai25.html">moe-lb-interai25</a> (related) 
+<a href="/papers/2504.09285.html">2504.09285</a> (related) 
+<a href="/papers/2604.15039.html">2604.15039</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
