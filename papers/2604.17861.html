@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: GPUOS: A GPU Operating System Primitive for Transparent Operation Fusion — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>GPUOS: A GPU Operating System Primitive for Transparent Operation Fusion</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2604.17861 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2604.17861/detail.html">→ Detail (L2)</a>
+<a href="/overview/kernel.html">← kernel Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+<h1 id="gpuos-vs-相关论文：跨篇综合">GPUOS vs 相关论文：跨篇综合</h1>
+
+<h2 id="相关论文">相关论文</h2>
+
+<p>本篇选取 3 篇相关论文，覆盖 persistent megakernel + chiplet-aware L2 优化、GPU DMA 引擎通信 offload、chiplet NUMA-aware attention 调度，与 GPUOS 在 "GPU 执行效率优化" 这一核心问题上形成多维对比。三篇论文从不同角度回应了同一时代命题——当 GPU 架构从 monolithic die 演进到 chiplet、当 workload 从大 batch 训练演进到 micro-batch serving 时，传统的 "one operation = one kernel launch" 编程模型和 "L2 cache = uniform shared resource" 的假设同时失效，各论文分别在调度层、通信层、存储层提出解法。</p>
+
+<p><strong>Fleet: Hierarchical Task-based Abstraction for Megakernels on Multi-Die GPUs (2604.15379)</strong> — 与 GPUOS 共享 persistent kernel 的核心哲学（"launch once, dispatch many"），但目标完全不同：Fleet 以 chiplet-aware L2 cache 复用为主要优化轴，通过 M-major 协作式 tiling 让同 XCD 内多个 worker 共享权重列，在 AMD MI350 8-XCD 架构上实现 bs=32 时 L2 hit rate 从 39% 提升到 51%、HBM 读降 37%；GPUOS 以 CPU-GPU launch boundary 消除为主要优化轴，通过 ring buffer + device function dispatch 将 per-op 提交延迟从 3-7 μs 压缩到 <100 ns。两者消除 kernel launch 开销的路径截然不同——Fleet 用静态编译的 megakernel + task graph 预定义所有 operator，GPUOS 用 NVRTC JIT + dual-slot aliasing 实现 runtime 动态 operator injection。Fleet 绑定 AMD CDNA3/4 的 XCD 拓扑和 per-instruction cache modifier，GPUOS 绑定 NVIDIA 的 NVRTC/PTX/CUDA Driver API。Kind: related。</p>
+
+<p><strong>Optimizing ML Concurrent Computation and Communication with GPU DMA Engines / ConCCL (2412.14335)</strong> — 与 GPUOS 解决同层级问题（GPU 执行效率），但切入点正交：ConCCL 解决计算-通信并发时 CU 资源竞争，将 collective 操作 offload 到 DMA 引擎以消除 compute interference（baseline 21% → ConCCL 72% of ideal speedup）；GPUOS 解决 host-device 边界的高频穿越开销，将调度从 host 迁移到 device 以消除 launch overhead。两者都属于"减少协调开销"的大论题——ConCCL 减少的是 GPU 内部 CU-to-CU 的资源争抢协调，GPUOS 减少的是 CPU-to-GPU 的命令下发协调。在 multi-GPU serving 中两者可组合使用：GPUOS 消除单 GPU 内的 per-op launch 开销，ConCCL 消除 GPU 间通信对计算的干扰。Kind: related。</p>
+
+<p><strong>Optimizing Attention on GPUs by Exploiting GPU Architectural NUMA Effects / NUMA Attention (2511.02132)</strong> — 与 GPUOS 共享"利用 GPU 架构特性消除性能瓶颈"的方法论，但在架构层级上完全不同：NUMA Attention 利用 MI300X 8-XCD 的 L2 cache 分区特性，通过 workgroup swizzle 将同一 attention head 的 blocks 映射到同一 XCD 以实现 L2 复用（L2 hit rate 从 ~1% 提升到 90-97%，性能提升 50%）；GPUOS 利用 CPU-GPU 边界的固有开销结构，通过 persistent kernel 将 per-op 调度从 μs 级降到 ns 级。NUMA Attention 的优化是"让数据流向正确的缓存"，GPUOS 的优化是"让命令不再穿越昂贵的边界"。两者针对不同的架构瓶颈——一个是存储层级的 NUMA 效应，一个是控制路径的 launch 开销。Kind: related。</p>
+
+<h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta</h2>
+
+<p>GPUOS 的核心 delta 是 <strong>persistent kernel + runtime dynamic operator injection 的组合</strong>——在消除 kernel launch overhead 的同时保持了 production-grade 的灵活性（零停机热更新 operator、PyTorch eager mode 透明集成）。相比 Fleet 的静态 megakernel（需要编译时确定所有 operator）和 CUDA Graphs 的 capture-replay（需要 shape 稳定），GPUOS 用 NVRTC JIT + dual-slot aliasing + version counter 实现了"消除 launch 但不牺牲动态性"的独特价值定位。相比 ConCCL 和 NUMA Attention 这类"单一维度优化"，GPUOS 提出了一个更通用的 device-side scheduling primitive——理论上任何适合在 persistent kernel 上执行的 micro-op 都可以通过 ring buffer 注入。</p>
+
+<table>
+<tr><th>维度</th><th>GPUOS</th><th>Fleet</th><th>ConCCL</th><th>NUMA Attention</th></tr>
+<tr><td>优化目标</td><td>消除 kernel launch overhead</td><td>Chiplet-aware L2 cache 复用</td><td>消除 C3 compute interference</td><td>Chiplet NUMA-aware attention 调度</td></tr>
+<tr><td>核心技术</td><td>Persistent kernel + ring buffer + JIT operator injection</td><td>Persistent megakernel + M-major tiling + 两级事件同步</td><td>DMA engine offload collectives</td><td>Workgroup swizzle (head-first mapping)</td></tr>
+<tr><td>Persistent kernel 用法</td><td>轻量级 dispatcher（每 SM 1 block，2-4% 线程），接收 ring buffer 命令分发到 device function</td><td>重量级 megakernel（256 CU 全占），融合所有 decode ops</td><td>无（不使用 persistent kernel）</td><td>无（不使用 persistent kernel）</td></tr>
+<tr><td>Hardware target</td><td>NVIDIA H100 / RTX 5090 / GB10</td><td>AMD MI350X (8 XCD, CDNA4)</td><td>AMD MI300X (8 XCD, CDNA3)</td><td>AMD MI300X (8 XCD, CDNA3)</td></tr>
+<tr><td>Launch overhead 方案</td><td>完全消除（<100 ns device dispatch vs 3-7 μs host launch）</td><td>完全消除（single megakernel lifetime = decode sequence）</td><td>不解决（DMA 仍由 CPU 编排）</td><td>不解决（不改变 launch 模式）</td></tr>
+<tr><td>Runtime flexibility</td><td>极高：NVRTC JIT 零停机注入新 operator</td><td>低：task graph 编译时确定，新 op 需重编译</td><td>中等：collective 算法可配置</td><td>低：swizzle 参数需手动调整</td></tr>
+<tr><td>Scope</td><td>单 GPU micro-batch inference（element-wise, small matmul, attention, cache ops）</td><td>单 GPU LLM decode（linear GEMM 为主）</td><td>单 node 多 GPU 训练/推理</td><td>单 GPU attention forward/backward</td></tr>
+<tr><td>实现平台</td><td>PyTorch TorchDispatch plugin (3793 行 C++/Python)</td><td>Mirage MPK AMD 后端（未开源）</td><td>AMD HSA API PoC</td><td>Triton FA2 (~15 行 swizzle)</td></tr>
+<tr><td>加速幅度</td><td>15.3× element-wise, 8.7× attention, 23.1× mixed (H100)</td><td>1.3-1.56× decode TPOT (MI350)</td><td>最高 1.67× C3 speedup</td><td>最高 1.50× attention (MI300X)</td></tr>
+<tr><td>能耗影响</td><td>20-22% 节省（消除 idle power）</td><td>未量化</td><td>未评估</td><td>未评估</td></tr>
+</table>
+
+<h2 id="pairwise-deep-analysis">Pairwise Deep Analysis</h2>
+
+<h3 id="gpuos-vs-fleet：persistent-kernel-哲学的两极">GPUOS vs Fleet：Persistent Kernel 哲学的两极</h3>
+
+<p>GPUOS 和 Fleet 代表了 persistent kernel 范式的两种极端设计选择：<strong>轻量级 dispatcher</strong> vs <strong>重量级 megakernel</strong>。</p>
+
+<p><strong>资源分配哲学的根本分歧</strong>。GPUOS 的 persistent kernel 极其保守——每 SM 仅 1 个 thread block（2-4% 总线程），不饱和 shared memory / registers，明确定位为"填谷"而非"占满"。大 GEMM 仍走传统 cuBLAS launch 路径，persistent kernel 只处理 launch-overhead-dominated 的微操作。Fleet 走向另一个极端——persistent megakernel 占满所有 256 CU（减 3.1% scheduler），将整个 decode forward pass 的所有 operator（GEMM、attention、RMSNorm、SiLU）融合为一个不退出的 kernel。这两种选择反映了不同的 workload 假设：GPUOS 假设 workload 是"大量异构操作的混合流"（大 GEMM + 小 elementwise + attention），需要 hybrid execution；Fleet 假设 workload 是"规则的 LLM decode pipeline"，所有 operator 类型已知且可预编译。</p>
+
+<p><strong>动态性 vs 静态性的 trade-off</strong>。GPUOS 的 NVRTC JIT + dual-slot aliasing 实现了零停机 operator 热更新——新 operator 从编译到全设备可调用仅需 ms 级。这对 production ML 系统中频繁的模型迭代（新 attention variant、novel activation function）至关重要。Fleet 的 megakernel 在编译时确定所有 task 类型和 task graph，添加新 operator 需要重新编译 Mirage task graph 和 megakernel binary。在 ML 生态快速迭代的现实下（PyTorch 每 2 周一个版本、新论文每天引入新算子），GPUOS 的动态方案更适合 "exploration-heavy" 的研发阶段，Fleet 的静态方案更适合 "deployment-stable" 的生产阶段。</p>
+
+<p><strong>加速机制的本质差异</strong>。GPUOS 的加速来自纯"消除固定开销"的算术效果——baseline 中 launch 占 62.5%（5/8 μs per op），消除后 per-op 从 8 μs → 3.1 μs。Fleet 的加速来自两个独立机制：(1) 小 batch 下消除 250 次/token 的 launch overhead（1.15×-1.56×），和 (2) 大 batch 下 M-major 协作式 L2 复用（额外 1.27×）。两者的加速曲线在不同 workload 区间有交叉——GPUOS 在 micro-op 密集的 mixed pipeline 中获益最大（23.1×），Fleet 在 bs≥32 的 memory-bound decode 中获益最大。</p>
+
+<p><strong>互补而非竞争</strong>。两者实际上解决了同一个 persistent kernel 设计空间的不同子问题：GPUOS 回答了"如何让 persistent kernel 兼容动态 workload"，Fleet 回答了"如何让 persistent kernel 在 chiplet 架构上高效利用 L2"。如果将两者结合——在 GPUOS 的 persistent kernel 框架中引入 Fleet 的 chiplet-aware task routing——可能产生一个既动态又 L2-friendly 的方案。但实现上的挑战在于：GPUOS 绑定 NVIDIA，Fleet 绑定 AMD。</p>
+
+<h3 id="gpuos-vs-conccl：overhead-消除的两个层面">GPUOS vs ConCCL：Overhead 消除的两个层面</h3>
+
+<p>GPUOS 和 ConCCL 代表了"减少 GPU 协调开销"这一大论题的两个正交维度。</p>
+
+<p><strong>开销的物理位置不同</strong>。GPUOS 消除的开销位于 <strong>CPU-GPU 边界</strong>——每次 <code>cudaLaunchKernel</code> 需要穿越 user space → kernel mode → driver → stream queue → hardware scheduler 的完整链路。ConCCL 消除的开销位于 <strong>GPU 内部 CU 之间</strong>——当 GEMM kernel 和 communication kernel 同时占用 CU 时产生的 cache pollution 和 compute contention。两种开销在物理路径上完全不重叠——前者是 PCIe/NVLink 控制路径上的 latency，后者是 SM/CU 数据路径上的 bandwidth contention。</p>
+
+<p><strong>解法的对称性</strong>。GPUOS 的核心 insight 是"调度不需要穿越 host-device 边界"——把 dispatcher 搬到 device 端。ConCCL 的核心 insight 是"通信不需要占用计算单元"——把数据搬运搬到 DMA 引擎。两者都是"将不属于该硬件单元的工作 offload 到更合适的执行器"：GPUOS 把调度从 CPU（不适合高频小任务调度）offload 到 GPU device threads（ns 级 function call）；ConCCL 把数据搬运从 GPU CU（过于昂贵的搬运工）offload 到 DMA 引擎（专用搬运硬件）。</p>
+
+<p><strong>CPU 编排的矛盾</strong>。有趣的是，ConCCL 的 DMA offload 仍然由 CPU 编排（通过 HSA API <code>hsa_amd_memory_async_copy_on_engine</code>），在小传输 (<32MB) 时因 CPU launch/sync overhead 慢 4×。GPUOS 正好解决了这类 CPU 编排开销问题——如果 ConCCL 的 DMA 调度也能通过 GPUOS 的 ring buffer 从 device 端触发，小传输的 CPU overhead 可能被消除。这暗示了一个潜在的组合方案：GPUOS 的 device-side scheduler 不仅分发 compute tasks，还分发 DMA transfer descriptors。</p>
+
+<p><strong>Multi-GPU 组合的想象空间</strong>。在 multi-GPU micro-batch serving 中，两者的组合覆盖了完整的开销谱：GPUOS 消除单 GPU 内每 token 上百次 micro-op 的 launch overhead（500 μs → ~16 μs per token），ConCCL 消除 GPU 间 collective 对 GEMM 的 interference（21% → 72% of ideal overlap）。但 GPUOS 目前未评估 multi-GPU 场景，其 persistent kernel 如何与 NCCL/RCCL 的 GPU kernel + proxy thread 模式共存是一个未解的工程问题。</p>
+
+<h3 id="gpuos-vs-numa-attention：架构感知的不同层级">GPUOS vs NUMA Attention：架构感知的不同层级</h3>
+
+<p>GPUOS 和 NUMA Attention 都属于"利用 GPU 架构特性消除性能瓶颈"，但在架构层级树上的位置完全不同。</p>
+
+<p><strong>瓶颈层级的差异</strong>。NUMA Attention 的瓶颈在 <strong>存储层级</strong>——MI300X 的 per-XCD 4MB L2 cache 是物理分区且不 coherent 的，round-robin workgroup 调度导致同一 attention head 的 K/V 数据在 8 个 XCD 上各加载一份，L2 hit rate 暴跌至 ~1%。GPUOS 的瓶颈在 <strong>控制路径</strong>——kernel launch 的固有开销（driver 调用 + kernel mode 切换 + stream queue 更新 + hardware scheduler 编程）在 3-7 μs，当操作本身仅需 3-10 μs compute 时，控制开销占 30-100%。两者揭示了 GPU 同时存在多个并行的性能悬崖——即使解决了 launch overhead（GPUOS），如果 L2 cache NUMA 效应未处理（NUMA Attention），attention kernel 仍会退化；反之亦然。</p>
+
+<p><strong>代码改动量的戏剧性对比</strong>。NUMA Attention 的解法极其轻量——~15 行 Triton swizzle 代码，不修改 FA2 的计算逻辑，纯调度优化。GPUOS 的解法是一个完整的 runtime system——3793 行 C++/Python，包含 ring buffer、persistent kernel executor、NVRTC JIT compiler、dual-slot operator table、TorchDispatch integration。这反映了两种截然不同的优化范式："精确手术刀"（NUMA Attention：找到一个 swizzle 映射就解决问题）vs "系统重构"（GPUOS：重新定义 host-device 交互的基本抽象）。</p>
+
+<p><strong>硬件厂商的分立</strong>。NUMA Attention 明确只适用于 AMD MI300X/MI350（NVIDIA Blackwell 在硬件层面维持跨 die cache coherency，不暴露 NUMA）。GPUOS 明确绑定 NVIDIA（NVRTC、CUDA Driver API、PTX）。这两个优化在当前 GPU 生态中属于不同阵营的"必修课"——AMD 用户需要 NUMA-aware scheduling，NVIDIA 用户需要 launch overhead elimination。但如果未来 AMD GPU 也面临 launch overhead 问题（当前证据不足），或 NVIDIA GPU 走向多 chiplet（Rubin Ultra 可能是 4 die），两类优化的边界可能模糊化。</p>
+
+<p><strong>组合可能性</strong>。在一个假设的全栈优化系统中：GPUOS 的 persistent kernel 消除 launch overhead + NUMA Attention 的 swizzle 确保 attention 的 K/V 数据在正确的 L2 分区 + Fleet 的 M-major tiling 确保 linear 权重在 XCD 间协作复用。三者在同一个 persistent kernel 框架内可以共存，但这需要一个统一的跨硬件抽象层——目前不存在。</p>
+
+<h2 id="可攻击面">可攻击面</h2>
+
+<h3 id="attack-1-加速数字的算术膨胀——15-3times-是-launch-overhead-占比的直接翻译而非系统级改善">Attack 1: 加速数字的算术膨胀——$15.3\times$ 是 launch overhead 占比的直接翻译而非系统级改善</h3>
+
+<p>GPUOS 论文报告的 $15.3\times$ element-wise 加速在数学上等价于"消除 62.5% 的固定开销"（baseline 8 μs/op 中 5 μs 是 launch → 消除后 3.1 μs/op）。这个数字的含义是：在<strong>纯 micro-op 流</strong>中，每个操作节省 4.9 μs。但在实际 LLM inference pipeline 中，element-wise micro-ops 的累计时间仅占端到端延迟的一部分——大 GEMM（占 compute 的 60-80%）仍走传统 launch 路径不受影响。</p>
+
+<p>与 Fleet 的对比使这一攻击更有说服力：Fleet 在完整 LLM decode pipeline（linear 占 95% 时间）上报告 1.56× end-to-end 加速——这是一个更"诚实"的数字，因为它反映了 pipeline 中所有组件的加权平均。GPUOS 的 $23.1\times$ mixed pipeline 数字可能膨胀在于：(1) "mixed pipeline" 的组成未明确——如果全由 micro-ops 构成（无大 GEMM），则不代表实际推理负载；(2) 论文未提供 end-to-end LLM inference 的加速数字（如 TPOT、TTFT），而这正是 production 最关心的指标。</p>
+
+<p><strong>证据对比</strong>：Fleet 明确报告了 Qwen3-8B 的 TPOT（6.73 ms vs 10.51 ms baseline = 1.56×）；NUMA Attention 报告了 DeepSeek-V3 prefill 的 attention kernel 加速（1.35-1.50×）。两者都在实际模型上做了 end-to-end 验证。GPUOS 缺乏等价的 full-model benchmark——它的数字停留在 microbenchmark 级别。</p>
+
+<h3 id="attack-2-gb10-的警示——硬件厂商正在从-silicon-层面解决-launch-overhead">Attack 2: GB10 的警示——硬件厂商正在从 silicon 层面解决 launch overhead</h3>
+
+<p>GPUOS 在 NVIDIA Digit Spark (GB10) 上加速仅 $2.1\times$–$3.1\times$，论文解释为 GB10 的 CPU-GPU fabric 已硬件优化 launch path。这个数据点具有深刻的战略含义：如果 NVIDIA 在 consumer/edge 产品上已经部分解决了 launch overhead，那么 datacenter GPU 的未来架构（Blackwell Ultra、Rubin）很可能也会引入类似硬件优化。</p>
+
+<p><strong>对比 NUMA Attention 的论证</strong>：NUMA Attention 明确指出 NVIDIA Blackwell 已在硬件层面维持跨 die cache coherency——这是硬件厂商"抢先解决"软件优化目标的直接先例。GPUOS 面临同样的风险：如果 Rubin 代 GPU 将 launch overhead 从 3-7 μs 压缩到 <500 ns（通过 on-chip task queue 或 dedicated launch accelerator），GPUOS 的 ring buffer + persistent kernel 方案将变得无关紧要。论文缺乏对这一战略风险的量化评估——从 GB10 的 $2.8\times$ 推算，当硬件 launch latency 降到 ~1 μs 时，GPUOS 的加速将不足 $3\times$，此时系统复杂性（persistent kernel 管理、TorchDispatch hook、JIT 编译）的成本可能超过收益。</p>
+
+<h3 id="attack-3-与-lithos-缺乏-head-to-head-对比——最关键的-prior-art-被回避">Attack 3: 与 LithOS 缺乏 head-to-head 对比——最关键的 prior art 被回避</h3>
+
+<p>论文在 related work 中提及 LithOS (SOSP 2025) 但未提供直接性能对比。LithOS 同样做 device-side task scheduling 用于 ML workload，是 GPUOS 最直接的竞争者。这个缺失极为关键：</p>
+
+<p><strong>论文声称 GPUOS 的差异化在于</strong>：(1) NVRTC-based dynamic operator injection，(2) 轻量 PyTorch 集成，(3) production 导向的安全设计。但如果不与 LithOS 做 head-to-head 对比，读者无法判断：(a) LithOS 的 device-side scheduling 在相同 workload 上性能如何？(b) GPUOS 的 ring buffer + function pointer dispatch 是否比 LithOS 的 task queue 更高效？(c) dynamic operator injection 的额外灵活性在实际 workload 中是否转化为性能优势？</p>
+
+<p><strong>对比 Fleet 论文的处理方式</strong>：Fleet 明确给出了与 Mirage MPK（最接近的 prior art）的 head-to-head 对比，精确量化了 chiplet-aware scheduling 相对于 chiplet-unaware megakernel 的增量收益。GPUOS 缺乏等价的对比使得其"新颖性"无法被独立验证。</p>
+
+<h3 id="attack-4-template-based-jit-的-expressiveness-天花板——无法覆盖真正需要-custom-kernel-的场景">Attack 4: Template-based JIT 的 expressiveness 天花板——无法覆盖真正需要 custom kernel 的场景</h3>
+
+<p>GPUOS 的 dynamic operator injection 限于 "template-based compilation"——只能实例化预定义模板的参数变体（如不同 size 的 element-wise op），而非任意 CUDA code。这个安全-灵活性 trade-off 产生了一个隐含的覆盖率天花板：</p>
+
+<p><strong>对比 Fleet 和 ConCCL</strong>：Fleet 的 megakernel 虽然静态编译，但编译时可以使用完整的 HIP 语义（包括 cache modifier、ISA-level atomic、自定义同步原语）。ConCCL 虽然受限于 DMA 引擎的功能集，但在其适用范围内（all-gather, all-to-all）提供了接近硬件极限的性能。GPUOS 的 template-based JIT 处于一个尴尬的中间地带——比 Fleet 灵活（不需要重编译）但比真正的自定义 kernel 能力弱。</p>
+
+<p><strong>实际影响</strong>：当 production 系统需要引入一个真正新的 kernel（如 Flash-MLA、paged attention variant、custom sparse attention），GPUOS 的 template 系统无法直接注入这类需要精细控制 shared memory layout 和 warp-level primitive 的 kernel。此时要么 fallback 到传统 launch（恢复 3-7 μs 开销），要么等待模板库更新——这使得 GPUOS 的"零停机热更新"承诺在最需要它的场景（真正的 novel operator）上失效。</p>
+
+<h3 id="attack-5-单-gpu-评估——persistent-kernel-与-collective-communication-的共存完全未验证">Attack 5: 单 GPU 评估——persistent kernel 与 collective communication 的共存完全未验证</h3>
+
+<p>GPUOS 的全部评估在单 GPU 上完成，而 production LLM serving 必然是 multi-GPU（至少 TP=2-8）。Persistent kernel（每 SM 1 block 永不退出）与 NCCL collective kernel（需要占用所有 SM 做 AllReduce/AllGather）之间的资源竞争是一个严重的未知。</p>
+
+<p><strong>对比 ConCCL</strong>：ConCCL 的 DMA offload 方案专门解决了 compute-communication 共存问题——正是因为 collective 不再占 CU，GEMM 才能全速运行。如果 GPUOS 的 persistent kernel 的 1 block/SM 与 NCCL 的 full-SM collective 冲突（NCCL 期望 SM 全部可用），可能导致 NCCL 性能退化或需要特殊的共存协议。论文声称"每 SM 仅 1 block，不与大 kernel 争资源"——但这未在 NCCL collective + persistent kernel 同时运行的场景下验证。</p>
+
+<p><strong>证据空白</strong>：Fleet 虽然也仅评估单 GPU，但明确承认"未评测多卡 TP"并将其列为 limitation。GPUOS 论文同样列了这个 limitation，但问题更严重——因为 GPUOS 的目标场景（micro-batch inference）在 production 中几乎必然是 multi-GPU 的（LLM > 7B 都需要至少 TP=2），而 Fleet 的目标场景（single-GPU decode for 8B model）确实可以单 GPU 完成。</p>
+
+<h2 id="生态位">生态位</h2>
+
+<p><strong>范式定位</strong>：GPUOS 代表了从"优化每次 launch"到"消除 launch 概念"的范式跳跃。传统优化路径（CUDA Graphs、torch.compile kernel fusion、CUTLASS persistent GEMM）都在"减少 launch 次数或降低 per-launch 成本"的框架内工作。GPUOS 跳出这个框架——"进程启动时 launch 一次，此后永远不再 launch"。这个思路与 Fleet 的 persistent megakernel 共享同一个哲学基础（"launch once"），但 GPUOS 的独特贡献在于用 runtime injection 保持了灵活性。</p>
+
+<p><strong>定位判断</strong>：GPUOS 在"NVIDIA GPU + micro-batch inference + 高度动态 workload（shape 变化、新 operator 频繁引入）"的三重交集中价值最大——此时 CUDA Graphs 退化（shape 变化）、torch.compile 难以覆盖（新 operator）、传统 eager mode 被 launch overhead 主导。对外部团队的核心可移植思想：(1) "don't launch, call"——device-side function dispatch 取代 host-device 边界穿越；(2) "dual-slot + version counter"——lock-free 零停机更新的通用模式；(3) "hybrid execution"——四维 filter 决定路由，大 kernel 走传统路径不强求。</p>
+
+<p><strong>竞争方案生态位对比</strong>：</p>
+
+<table>
+<tr><th>生态位</th><th>方案</th><th>GPUOS 优势</th><th>GPUOS 劣势</th></tr>
+<tr><td>Micro-op launch elimination</td><td>CUDA Graphs</td><td>动态 workload 不退化（15.3× vs 2.1× under shape change）</td><td>比 CUDA Graphs 更复杂的部署模型（persistent kernel 管理）</td></tr>
+<tr><td>Persistent kernel scheduling</td><td>Fleet megakernel</td><td>Runtime operator injection（零停机热更新）</td><td>无 chiplet-aware L2 优化能力；绑定 NVIDIA</td></tr>
+<tr><td>Persistent kernel scheduling</td><td>LithOS (SOSP'25)</td><td>PyTorch transparent integration + lighter weight</td><td>无 head-to-head 性能对比证明优越性</td></tr>
+<tr><td>GPU execution optimization</td><td>ConCCL (DMA offload)</td><td>消除 launch overhead（比消除 CU contention 影响范围更广）</td><td>不解决 multi-GPU collective overhead</td></tr>
+<tr><td>Chiplet-aware optimization</td><td>NUMA Attention</td><td>更通用（不限于 attention kernel）</td><td>不解决 L2 NUMA 问题（但 NVIDIA GPU 也不需要）</td></tr>
+<tr><td>Compiler-based fusion</td><td>torch.compile / TVM</td><td>保持 eager semantics + 支持动态 shape</td><td>加速有硬限（仅消除 launch，不做 cross-op fusion）</td></tr>
+<tr><td>Eager execution acceleration</td><td>CUDA Graph + management</td><td>无 graph variant 管理开销</td><td>系统复杂性更高（ring buffer、JIT、persistent kernel 生命周期）</td></tr>
+</table>
+
+<h2 id="未探索方向">未探索方向</h2>
+
+<p><strong>方向 1: GPUOS + Fleet 的统一 persistent kernel runtime——动态注入 × chiplet-aware dispatch</strong>。GPUOS 的 ring buffer + device function dispatch 和 Fleet 的 chiplet-aware task routing 理论上可以统一为一个跨厂商的 device-side scheduling 框架。核心设计：persistent kernel 的每个 SM/CU block 不仅按 GPUOS 的方式 poll ring buffer 获取 task descriptor，还按 Fleet 的方式感知自己所在的 chiplet/XCD 并只处理该 chiplet 亲和的 task。在 NVIDIA 上 chiplet 概念映射到 GPC (Graphics Processing Cluster)——Blackwell 的 2 die 各有多个 GPC，L2 在 GPC 间有 NUMA 效应（虽然逻辑 coherent 但物理 NUMA 延迟不同）。这个方向的技术挑战：(1) NVIDIA 不暴露等价于 AMD HW_ID 的 GPC affinity 信息——需要通过 SM index 推断；(2) GPUOS 的 operator table 需要扩展为 "chiplet-local operator table"——让不同 chiplet 上的 persistent thread 执行 chiplet-affine 的 operators；(3) dual-slot aliasing 需要与 chiplet-scope cache modifier 交互（新 operator 加载时的 cache flush 策略需要 chiplet-aware）。</p>
+
+<p><strong>方向 2: Device-initiated DMA——用 GPUOS 的 persistent kernel 解决 ConCCL 的 CPU 编排开销</strong>。ConCCL 的核心局限是 DMA 传输由 CPU 编排（HSA API call），小传输 (<32MB) 时 CPU launch/sync overhead 导致 4× 退化。如果 GPUOS 的 persistent kernel 不仅分发 compute tasks 到 device function，还能分发 DMA descriptors 到 DMA 引擎——即 device-initiated DMA——则可以消除 CPU 编排开销。具体实现路径：在 NVIDIA 上通过 <code>cudaLaunchHostFunc</code> 或 persistent kernel 内的 memory-mapped I/O 触发 copy engine（H100 的 copy engine 可通过 <code>cudaMemcpyAsync</code> 在 stream 上排队，但能否从 device thread 直接触发尚未公开文档）；在 AMD 上利用 MI300X 的 14 SDMA 引擎的 doorbell register（理论上 device thread 可以 MMIO 写 doorbell）。这将 ConCCL + GPUOS 统一为一个完全 device-side 的 scheduling + communication runtime。</p>
+
+<p><strong>方向 3: Multi-scale persistent kernel——按操作粒度动态调整 persistent thread 数量</strong>。GPUOS 固定使用每 SM 1 block（2-4% 线程）的保守配置。但不同操作对并行度的需求差异巨大：element-wise add 仅需 1 warp、attention decode 可能需要多个 block 协作、softmax 需要 cross-block reduction。Fleet 的方案是把所有 SM 都给 persistent kernel——牺牲了与非 persistent 工作负载的共存。中间方案：persistent kernel 维护一个 "thread pool" 可以动态扩展/收缩——当 ring buffer 中出现需要高并行度的 operator 时，persistent kernel 通过 cooperative group 的 dynamic parallelism 或 simple device-side malloc + kernel launch 临时扩展 thread 数（从 2-4% 扩展到 50-100%）；当大 GEMM 需要全部 SM 时，persistent kernel 缩减到最小状态（仅保留 polling thread）。这需要解决的核心问题是 NVIDIA 的 thread block scheduling 是否允许 persistent thread block 主动"让出"SM（当前 CUDA 不支持 cooperative thread block yield）。</p>
+
+<p><strong>方向 4: GPUOS 的 ring buffer 协议扩展——从单 GPU scheduler 到 multi-GPU distributed scheduler</strong>。当前 GPUOS 的 ring buffer 是 host-to-device 单向通信。在 multi-GPU serving 中，可以扩展为 device-to-device ring buffer——GPU 0 的 persistent kernel 可以直接向 GPU 1 的 ring buffer 写入 task descriptor（通过 NVLink P2P 访问 device-mapped memory），实现跨 GPU 的 device-side task routing。这消除了 multi-GPU 调度中 CPU 参与的需要——当前 NCCL 的 proxy thread 仍在 CPU 上做跨 GPU 调度。结合 GPUOS 的 dynamic operator injection：每个 GPU 的 operator table 独立更新，但 task descriptor 中的 op_id 跨 GPU 统一——实现了一个 "分布式 GPU function call" 的抽象。与 NUMA Attention 的潜在协同：如果 ring buffer descriptor 中包含 "target chiplet" 字段，不同 XCD 的 persistent thread 可以选择性处理映射到自己 L2 分区的 task，实现跨 GPU + 跨 chiplet 的双层亲和调度。</p>
+
+<p><strong>方向 5: Adaptive filter 学习——从四维 heuristics 到 learned routing policy</strong>。GPUOS 当前的 TorchDispatch 四维 filter（operation type × tensor size × execution context × ring buffer load）使用手动 heuristics 决定是否路由到 persistent kernel。这些 heuristics 的最优参数高度依赖 model architecture、serving pattern、hardware generation。可以用 lightweight RL（如 contextual bandit）在线学习路由策略：state = (op type, tensor shape, current ring buffer occupancy, recent dispatch latency moving average)；action = route to persistent kernel vs traditional launch；reward = -wall_clock_time。学习可以在 warmup phase 完成（数千次操作后收敛），之后固定 policy。Fleet 论文中 bs=32 是 M-major 协作的"拐点"（Table 4 清晰证明）；GPUOS 的等价拐点（"tensor size 多大时 launch overhead 不再主导"）缺乏量化分析——learned policy 可以自动发现这个拐点并适应不同硬件。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2604.15379.html">2604.15379</a> (related) 
+<a href="/papers/2412.14335.html">2412.14335</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

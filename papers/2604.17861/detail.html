@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>GPUOS: A GPU Operating System Primitive for Transparent Operation Fusion — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>GPUOS: A GPU Operating System Primitive for Transparent Operation Fusion</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2604.17861</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">GPU-runtime</span><span class="tag">persistent-kernel</span><span class="tag">kernel-launch-overhead</span><span class="tag">JIT-compilation</span><span class="tag">operator-injection</span><span class="tag">PyTorch</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2604.17861.html">← Synthesis</a>
+<a href="/overview/kernel.html">← kernel Survey</a>
+<a href="https://arxiv.org/abs/2604.17861" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="gpuos-a-gpu-operating-system-primitive-for-transparent-operation-fusion">GPUOS: A GPU Operating System Primitive for Transparent Operation Fusion</h1>
+<blockquote>
+Yiwei Yang et al. (UC Santa Cruz, U Washington, UC Berkeley) | 2026-04 | https://arxiv.org/abs/2604.17861
+Category: kernel | Tags: GPU-runtime, persistent-kernel, kernel-launch-overhead, JIT-compilation, operator-injection, PyTorch, NVRTC
+</blockquote>
+
+<h2 id="§1-core-contribution">§1 Core Contribution</h2>
+
+<p>GPU 上的微操作（element-wise、小 reduction、KV cache 更新等）在 micro-batch inference 中产生的 kernel launch 开销（每次 3–7 μs）可超过计算本身数量级。GPUOS 提出一套 persistent kernel + runtime operator injection 原语：进程启动时发射一个永不退出的持久 kernel（每 SM 1 个 block），通过设备可见的 lock-free ring buffer 接收 task descriptor，经 device function pointer table 分发执行——将 per-operation 调度开销从 μs 级 host 提交压缩到 ns 级 device 函数调用。新 operator 可通过 NVRTC JIT 编译为 PTX、经 CUDA Driver API 加载、写入 dual-slot aliasing 的 operator table inactive slot 后由 version counter store-release 原子切换，实现零停机热更新。系统以 PyTorch TorchDispatch 透明集成，在 H100 上实现 element-wise $15.3\times$、attention decoding $8.7\times$、mixed pipeline $23.1\times$ 加速及 20–22% 能耗节省，仅 3793 行 C++/Python。</p>
+
+<h2 id="§2-summary">§2 Summary</h2>
+
+<p><em>Figure 1（论文中唯一的架构图）展示 GPUOS 三组件架构：host 侧通过 ring buffer 写入 task descriptor，persistent kernel executor（每 SM 1 block）以 warp 为粒度 poll-claim-dispatch，dynamic operator table 保存 device function pointer 数组并支持 runtime 更新。</em></p>
+
+<p>现代推理工作负载已从大 batch 训练转向 latency-sensitive 的 micro-batch serving：单次 token 生成可能触发上百个 μs 级小 kernel，每个 kernel 的 launch 开销（driver 调用、user-kernel 态切换、stream queue 更新、硬件 scheduler 编程）在 3–7 μs，100 次累计 300–700 μs——常超过实际计算时间。CUDA Graphs 在 shape 稳定时有效（$6.2\times$），但动态 workload（变长 prompt、条件分支、runtime 新 operator）下退化至 $2.1\times$，且 graph variant 管理本身引入复杂度和延迟。问题根源不在单次 launch 的绝对代价，而在 host-device 边界被高频穿越。</p>
+
+<p>GPUOS 的核心思路朴素而直接——"don't launch, call"：将调度从 host CPU 迁移到 device 侧。persistent kernel 在进程生命周期内仅 launch 一次，此后所有小操作以 device function call（ns 级）取代 kernel launch（μs 级）。Ring buffer 使用 store-release / load-acquire 语义同步，descriptor 仅 64–128 bytes（op_id + tensor pointers + dims + flags）。动态 operator injection 通过 NVRTC → PTX → CUDA Driver API → inactive slot → version counter flip 实现，全过程 ms 级完成且不中断 in-flight tasks。PyTorch TorchDispatch 层根据 operation type、tensor size、execution context、ring buffer load 四维 filter 决定是否路由到 GPUOS，保证大 GEMM 仍走传统 launch 路径。</p>
+
+<h2 id="§3-核心三问">§3 核心三问</h2>
+
+<h3 id="q1-痛点：kernel-launch-overhead-主导微操作推理">Q1 痛点：kernel launch overhead 主导微操作推理</h3>
+
+<p>GPU kernel launch 的固有开销：host 侧 <code>cudaLaunchKernel</code> 经 runtime → driver API → kernel mode → stream queue → hardware scheduler，即使 null kernel 也需 3–7 μs。当操作本身仅需 3–10 μs compute 时，launch 开销占 30–100%。</p>
+
+<p>量化场景（论文 §2.1 production case study）：</p>
+<ul>
+<li>单 token 生成需 ~100 个微操作（attention QKV、softmax、ReLU、LayerNorm、KV cache update 等）</li>
+<li>每操作 5 μs launch → <strong>500 μs 纯协调开销 / token</strong>，与实际计算时间可比甚至超出</li>
+<li>GPU profiler timeline 呈"梳齿形"——计算 burst 之间是 host 提交的空白期</li>
+</ul>
+
+<p>CUDA Graphs 的局限：</p>
+<ul>
+<li>shape 稳定时 $6.2\times$（element-wise benchmark）</li>
+<li>shape 变化时退化至 $2.1\times$（recapture 开销）</li>
+<li>attention decoding（dynamic sequence length）下 $4.3\times$，需维护多个 graph variant + fallback to eager</li>
+<li>graph 管理逻辑本身成为延迟和复杂度来源</li>
+</ul>
+
+<p>根因：传统 GPU computing model 将每个操作建模为一次独立的 host → device 提交。当操作粒度从 ms 级缩小到 μs 级，host-device 边界的穿越频率从"可忽略的固定成本"变为"主导性瓶颈"。</p>
+
+<h3 id="q2-方法：persistent-kernel-ring-buffer-dynamic-operator-injection">Q2 方法：persistent kernel + ring buffer + dynamic operator injection</h3>
+
+<p><strong>架构三组件</strong>（Figure 1）：</p>
+
+<p><strong>1. Ring Buffer Communication Channel</strong></p>
+
+<p>Lock-free 单生产者-单消费者环形缓冲区，位于 device-mapped memory：</p>
+
+<pre><code>
+Host:  prepare descriptor → acquire slot → write → commit (store-release)
+Device: poll (load-acquire) → claim atomically → dispatch → release slot
+</code></pre>
+
+<ul>
+<li>Descriptor 64–128 bytes：<code>{op_id, input_a, input_b, output, size, flags}</code></li>
+<li>默认 4096 entries，contention 在 >64 并发 host threads 前可忽略</li>
+<li>Submission latency <strong><100 ns</strong>（vs 3–7 μs traditional = <strong>30–70× reduction</strong>）</li>
+</ul>
+
+<p><strong>2. Persistent Kernel Executor</strong></p>
+
+<ul>
+<li>进程启动时 launch 一次，永不退出</li>
+<li>每 SM 1 个 thread block（约占 2–4% 总线程），保守占用以与大 kernel 共存</li>
+<li>每 warp 独立 poll ring buffer → atomic claim → <code>operator_table<a href="desc">desc.op_id</a></code> dispatch → 回到 polling</li>
+<li>Polling 策略：高吞吐时纯 spin-poll；低负载时 exponential backoff 降功耗</li>
+</ul>
+
+<p><strong>3. Dynamic Operator Table</strong></p>
+
+<p>Device-resident function pointer 数组，indexed by operator ID。Runtime 更新协议：</p>
+
+<pre><code>
+(1) NVRTC compile new operator → PTX
+(2) CUDA Driver API load PTX module
+(3) Resolve function symbol → device function pointer
+(4) Write to inactive slot in operator table
+(5) Atomic flip version counter (store-release)
+→ All device threads observe version change at polling loop → switch to updated table
+</code></pre>
+
+<ul>
+<li><strong>Dual-slot aliasing</strong>：新旧 operator 共存于 active/inactive slot，version counter 原子切换保证无 thread 看到 partially-updated table</li>
+<li>Injection latency：ms 级，零停机</li>
+<li>Safety：template-based compilation（非任意代码）+ signed cache + bounds checking + audit logging</li>
+</ul>
+
+<p><strong>PyTorch 集成</strong>：</p>
+
+<p>TorchDispatch hook 在 autograd engine 层拦截操作，四维 filter 决定路由：</p>
+<ol>
+<li>Operation type：element-wise、小 reduction、cache update 优先</li>
+<li>Tensor size：小 tensor 获益最大</li>
+<li>Execution context：高频内循环操作优先</li>
+<li>Current load：ring buffer 满时 fallback 到传统 launch</li>
+</ul>
+
+<p>不符合条件的操作（如大 GEMM）仍走 PyTorch 正常路径——<strong>hybrid execution</strong>。</p>
+
+<p><strong>Operator 库</strong>覆盖：</p>
+<ul>
+<li>Element-wise：add, mul, ReLU, GELU, softmax, LayerNorm</li>
+<li>Small matrix：vector-matrix products, small matmuls（不值得走 CUBLAS）</li>
+<li>Attention：SDPA, rotary embeddings, attention masking</li>
+<li>Cache：KV cache update, prefix matching, cache compression</li>
+<li>Reductions：sum, max, min（small dims）</li>
+</ul>
+
+<h3 id="q3-结果">Q3 结果</h3>
+
+<p><em>Table 2（论文核心结果表）：End-to-end speedup vs. eager PyTorch baseline，跨三个硬件平台。</em></p>
+
+<table>
+<tr><th>Workload</th><th>H100 (96GB)</th><th>RTX 5090 (32GB)</th><th>GB10 (128GB)</th><th>Energy Saving</th></tr>
+<tr><td>Element-wise ops</td><td>$15.3\times$</td><td>$11.3\times$</td><td>$2.8\times$</td><td>22%</td></tr>
+<tr><td>Attention decoding</td><td>$8.7\times$</td><td>$2.5\times$</td><td>$2.1\times$</td><td>21%</td></tr>
+<tr><td>Mixed pipeline</td><td>$23.1\times$</td><td>$15.3\times$</td><td>$3.1\times$</td><td>20%</td></tr>
+</table>
+
+<p><strong>延迟分解</strong>（H100）：</p>
+
+<table>
+<tr><th>指标</th><th>Baseline (Eager)</th><th>GPUOS</th><th>改善</th></tr>
+<tr><td>Per-op latency (element-wise)</td><td>~8 μs (5 μs launch + 3 μs compute)</td><td>~3.1 μs (100 ns dispatch + 3 μs compute)</td><td>$2.6\times$ per-op → $15.3\times$ aggregate</td></tr>
+<tr><td>Per-token latency (attention)</td><td>~140 μs</td><td>~16 μs</td><td>$8.7\times$</td></tr>
+</table>
+
+<p><strong>vs CUDA Graphs</strong>（§6.3）：</p>
+
+<table>
+<tr><th>Scenario</th><th>CUDA Graphs</th><th>GPUOS</th></tr>
+<tr><td>Element-wise (stable shapes)</td><td>$6.2\times$</td><td>$15.3\times$</td></tr>
+<tr><td>Element-wise (variable shapes)</td><td>$2.1\times$ (recapture)</td><td>$15.3\times$ (consistent)</td></tr>
+<tr><td>Attention decoding (dynamic seq)</td><td>$4.3\times$ (graph variants)</td><td>$8.7\times$ (no management)</td></tr>
+</table>
+
+<p><strong>吞吐与可扩展性</strong>（§6.4）：</p>
+<ul>
+<li>GB10 throughput：800K ops/sec vs 67K ops/sec baseline = $12\times$</li>
+<li>Ring buffer contention minimal until >64 concurrent host threads</li>
+</ul>
+
+<p><strong>MPS / MIG 兼容性</strong>：</p>
+<ul>
+<li>MPS 下多进程共享 GPU 保持 strong scaling</li>
+<li>MIG 模拟分区下保持 proportional performance + $3.4\times$ speedup</li>
+</ul>
+
+<p><strong>能耗</strong>：20–22% 节省，来源不是降压降频，而是消除 launch-idle-launch 循环的 idle power waste。</p>
+
+<h2 id="§4-逻辑故事还原">§4 逻辑故事还原</h2>
+
+<h3 id="时代定位">时代定位</h3>
+
+<p>2026 年，GPU inference 工作负载已从训练时代的大 batch、规则 shape、可预测 execution pattern 全面转向 latency-sensitive 的 micro-batch serving。Token-by-token decoding 中每个 token 需要上百个 μs 级小 kernel（attention QKV、softmax、activation、LayerNorm、KV cache update），而 GPU 的 kernel launch 机制仍然是为 ms 级大 kernel 设计的——每次穿越 user space → kernel mode → driver → hardware scheduler 的固定开销在 3–7 μs。这是一个 workload 粒度演化（ms → μs）与 system interface 粒度（ms 级 launch）之间的结构性错配。</p>
+
+<h3 id="背景">背景</h3>
+
+<p>三股趋势使这一错配变得不可忽视：(1) LLM 推理中 decode phase 的操作粒度极细——每 token 一次 forward 仅涉及少量数据但大量操作；(2) 模型和 serving 系统持续演化——新 operator（custom attention variant、novel activation）频繁引入，使 CUDA Graphs 的 static capture 模型难以维护；(3) 多租户 cloud serving 要求每个 inference session 的 tail latency 可控——launch overhead 的不确定性直接影响 P99。</p>
+
+<h3 id="约束推导">约束推导</h3>
+
+<p><strong>为什么 CUDA Graphs 不够？</strong> Graphs 将 DAG capture-replay 替代逐次 launch，但要求 execution pattern 稳定。生产 inference 中 prompt 长度变化、control flow 分支、streaming input、runtime 新 operator 使 graph 频繁失效。维护多个 graph variant + fallback to eager 的混合策略引入管理复杂度，且 fallback 路径"悄悄"恢复了原始开销。核心约束：graphs 要求的<strong>可预测性</strong>与 production ML 的<strong>动态性</strong>根本矛盾。</p>
+
+<p><strong>为什么 Dynamic Parallelism 不够？</strong> CDP 将 launch initiator 从 host 搬到 device，但 launch cost 本身未消除——只是由 device 而非 host 支付。且引入同步和资源管理的额外复杂度。</p>
+
+<p><strong>为什么 torch.compile / TVM 不够？</strong> 编译器优化在 graph 可提取时有效，但对 input-dependent control flow、dynamic shapes、operator polymorphism 的工作负载效果递减。编译器在 graph level 工作，graph fusion 之后仍有大量小操作无法合并。</p>
+
+<p><strong>核心约束</strong>：所有现有方案的共同假设是——每个操作对应一次 host→device 提交。当操作粒度小到 μs 级，这个假设本身成为瓶颈。需要的不是"优化每次 launch"，而是"消除 launch 的概念"。</p>
+
+<h3 id="破局">破局</h3>
+
+<p><strong>将调度从 host 迁移到 device</strong>——persistent kernel + device-side function dispatch。</p>
+
+<ol>
+<li><strong>Launch exactly once</strong>：进程启动时发射一个持久 kernel，此后所有微操作以 device function call 执行，不再穿越 host-device 边界</li>
+<li><strong>Ring buffer 取代 kernel launch</strong>：host 仅写 64–128 bytes descriptor 到 device-mapped memory（store-release），device threads 已经醒着并 polling（load-acquire）——提交延迟从 3–7 μs 压缩到 <100 ns</li>
+<li><strong>Dynamic operator injection 取代 static compilation</strong>：NVRTC JIT + dual-slot aliasing + version counter 实现零停机 operator 热更新，兼容 production 中模型持续演化的现实</li>
+</ul>
+
+<p>为什么可行？因为 persistent kernel 的 resource footprint 极小（每 SM 1 block ≈ 2–4% threads），不与大 kernel 争资源——它"填谷"而非"占满"。大 GEMM 仍走传统路径，micro-ops 走 GPUOS——hybrid execution 取每种路径各自的最优。</p>
+
+<h3 id="核心技术壁垒">核心技术壁垒</h3>
+
+<ol>
+<li><strong>Dual-slot aliasing 的 lock-free 安全更新</strong>：operator table 有 active / inactive 两个 slot，新 operator 写入 inactive slot 后由 version counter store-release 原子切换。任何 device thread 在 polling loop 的 well-defined point 检测 version 变化并切换——保证无 thread 看到 partially-updated table。这是一个经典的 RCU-like 机制在 GPU device memory 上的实现，需要精确的 memory ordering semantics。</li>
+</ul>
+
+<ol>
+<li><strong>Template-based JIT 的安全-灵活性 trade-off</strong>：NVRTC 编译限制在 curated templates + parameter substitution，而非任意 CUDA code。这限制了 expressiveness（只能实例化预定义模板的参数变体）但确保了安全性——生产环境不能接受任意 device code injection。Signed cache + audit logging 提供 defense-in-depth。</li>
+</ul>
+
+<ol>
+<li><strong>TorchDispatch 层的四维 filter heuristics</strong>：决定哪些操作路由到 GPUOS 是一个微妙的优化问题——过于激进可能将 large kernel 路由到 persistent kernel 的受限线程资源上导致退化，过于保守则错失加速机会。论文的 filter 基于 operation type、tensor size、execution context、ring buffer load 四个维度，但这些 heuristics 的调参对性能影响未被充分量化。</li>
+</ul>
+
+<h3 id="设计绑定批判">设计绑定批判</h3>
+
+<ul>
+<li><strong>绑定小操作 workload</strong>：GPUOS 的加速来自"消除固定开销"的算术效果——当 compute >> launch overhead 时无增益。$15.3\times$ 是因为 baseline 中 launch 占 62.5%（5/8 μs），这意味着只有在"launch overhead 占比 > compute 本身"的操作上才有数量级加速。Mixed pipeline 的 $23.1\times$ 可能因为 baseline 中大量微操作被 launch 开销主导而膨胀——实际 wall-clock 改善取决于微操作在整体 pipeline 中的占比</li>
+<li><strong>绑定单 GPU</strong>：论文全部评估在单 GPU 上，无 multi-GPU 或分布式场景。多 GPU 下 persistent kernel 如何与 NCCL collective 共存？ring buffer 如何跨 GPU 扩展？这些问题未被探讨</li>
+<li><strong>绑定 NVIDIA 生态</strong>：NVRTC、CUDA Driver API、PTX 均为 NVIDIA 专有。AMD ROCm 或 Intel oneAPI 上需要完全重写 operator injection 机制。论文的 3793 行代码中相当比例是 NVIDIA-specific</li>
+<li><strong>绑定 eager execution pattern</strong>：GPUOS 本质是 eager execution 的优化——保留了 PyTorch 的 eager semantics 但消除了 launch overhead。对于已经被 torch.compile 或 CUDA Graphs 覆盖的 workload segment，GPUOS 与这些方案的交互（priority、fallback、scheduling）未被系统分析</li>
+<li><strong>绑定保守 resource allocation</strong>：每 SM 1 block 的设计保证了与大 kernel 的共存，但也意味着 persistent kernel 的并行度受限。operator 库中的 attention、softmax 等操作在大 context 下需要更多并行度——论文未讨论 persistent kernel 内部的 multi-block cooperative 执行</li>
+<li><strong>GB10 的警示信号</strong>：NVIDIA Digit Spark (GB10) 上加速仅 $2.1\times$–$3.1\times$，论文解释为硬件已优化 launch path。这暗示 NVIDIA 在新一代硬件上可能从 silicon 层面解决 launch overhead——如果未来 datacenter GPU 也获得类似优化，GPUOS 的价值主张将大幅削弱</li>
+</ul>
+
+<h2 id="§5-key-findings">§5 Key Findings</h2>
+
+<ul>
+<li><strong>launch overhead 是当前 GPU micro-batch inference 的头号瓶颈</strong>：null kernel 3–7 μs，100 ops/token → 300–700 μs 纯协调开销。GPUOS 通过 persistent kernel 将 per-op dispatch 降至 <100 ns，实现 $15.3\times$（element-wise）、$8.7\times$（attention）、$23.1\times$（mixed）加速——这些数字本质上是"消除固定开销的算术结果"（8 μs → 3.1 μs per op）</li>
+<li><strong>Dynamic operator injection 实现生产级热更新</strong>：NVRTC JIT + dual-slot aliasing + version counter 使新 operator 从编译到全设备可调用仅需 ms，不中断 in-flight tasks。这对于 ML 推理服务中频繁的模型迭代和 operator 实验至关重要</li>
+<li><strong>GPUOS 在动态 workload 下全面优于 CUDA Graphs</strong>：shape 变化时 CUDA Graphs 退化至 $2.1\times$（vs GPUOS 稳定 $15.3\times$）；attention decoding 时 Graphs $4.3\times$（vs GPUOS $8.7\times$）。GPUOS 不依赖 pre-captured pattern，天然适应动态 workload</li>
+<li><strong>resource footprint 极其保守但效果显著</strong>：每 SM 仅 1 block（2–4% 线程），不饱和 shared memory / registers——"填谷"而非"占满"策略。证明 GPU 大部分时间不是在算而是在"等下一次 launch"</li>
+<li><strong>能耗节省 20–22% 纯来自消除 idle waste</strong>：不降压、不降频，仅消除 launch-idle-launch 循环中的 idle power 消耗——这是一个被广泛忽视的能效损失源</li>
+<li><strong>GB10 上加速仅 $2.1\times$–$3.1\times$</strong>：CPU-GPU fabric 硬件优化已部分解决 launch overhead。暗示 NVIDIA 在 consumer/edge 产品上已意识到此问题，但 datacenter GPU（H100）尚未获得同等硬件优化——GPUOS 的软件方案填补了这一 gap</li>
+<li><strong>MPS / MIG 兼容性验证</strong>：persistent kernel 在 MIG 分区下保持 proportional scaling + $3.4\times$ speedup，可与 MPS 多进程共享 GPU 共存——证明 persistent kernel 与 NVIDIA 的多租户机制正交</li>
+</ul>
+
+<h2 id="§6-limitations">§6 Limitations</h2>
+
+<ul>
+<li><strong>仅评估单 GPU</strong>：无 multi-GPU、NVLink、分布式场景。persistent kernel 与 NCCL collective 的共存未验证，ring buffer 跨 GPU 扩展未探讨</li>
+<li><strong>加速高度 workload-dependent</strong>：$15.3\times$–$23.1\times$ 仅在 launch-overhead-dominated workload 上成立。当操作粒度变大（compute >> launch overhead），加速趋向 $1\times$。论文未给出"breakeven 操作规模"的量化分析</li>
+<li><strong>operator 库覆盖有限</strong>：初始库仅涵盖 element-wise、小 matmul、attention、KV cache、小 reduction。不支持 CUBLAS-level 大矩阵运算、通信 primitive、自定义 backward。生产部署需大幅扩展</li>
+<li><strong>GB10 结果暗示硬件层解法</strong>：如果未来 datacenter GPU 在硬件上优化 launch path（如 GB10 的 CPU-GPU fabric），GPUOS 的软件方案价值将大幅缩小</li>
+<li><strong>安全模型受限</strong>：template-based compilation 限制了 expressiveness（不能注入任意 CUDA code），但论文也承认这不是完整的安全方案——需要 signed cache、audit logging、MIG sandboxing 等多层防护</li>
+<li><strong>filter heuristics 未被量化</strong>：TorchDispatch 层的四维 filter 决定了 GPUOS 的实际效果，但论文未提供 filter 参数的 sensitivity analysis 或自动调优机制</li>
+<li><strong>ring buffer 在极端并发下有瓶颈</strong>：>64 concurrent host threads 时出现 contention，4096-entry buffer 在极端 burst 下可能不足</li>
+<li><strong>NVIDIA 专有依赖</strong>：NVRTC、PTX、CUDA Driver API 绑定 NVIDIA。AMD ROCm 或 Intel 平台需完全重写</li>
+<li><strong>无与 LithOS 的直接对比</strong>：论文在 related work 中提及 LithOS (SOSP 2025) 但未提供 head-to-head 性能对比——LithOS 同样做 device-side task scheduling，直接对比是验证 GPUOS 新颖性的关键缺失</li>
+</ul>
+
+<h2 id="§7-infrastructure-impact">§7 Infrastructure Impact</h2>
+
+<ul>
+<li><strong>Kernel</strong>: GPUOS 提出的 persistent kernel + device function dispatch 范式挑战了 "one operation = one kernel launch" 的基础假设。如果这一范式推广，kernel 的概念将从"独立的 GPU 程序"演变为"device-resident runtime 中的 callable function"——这对 kernel profiling、debugging、scheduling 工具链有深远影响</li>
+<li><strong>Framework</strong>: PyTorch TorchDispatch 集成展示了"透明加速"的可行路径——用户代码无需修改，dispatch hook 自动路由。这为 PyTorch/JAX 等框架提供了在 eager mode 下获得 graph-like 性能的新思路，可能影响 eager vs compiled execution 的设计哲学</li>
+<li><strong>Serving</strong>: micro-batch inference（特别是 token-by-token decode）是 launch overhead 问题最严重的场景。GPUOS 的 500 μs → ~16 μs per-token latency 改善直接影响 user-facing 推理服务的 P50/P99。与 vLLM/SGLang 等 serving engine 的集成是明显的 follow-up</li>
+<li><strong>Hardware</strong>: GB10 上 $2.1\times$–$3.1\times$ 加速（vs H100 $15.3\times$）暗示 NVIDIA 在 consumer silicon 上已部分硬件化 launch optimization。如果 datacenter GPU 的未来架构（Blackwell+）也引入类似硬件优化（如 dedicated launch accelerator 或 on-chip task queue），GPUOS 的软件方案可能被 subsume——但这也验证了其 problem statement 的正确性</li>
+<li><strong>Ecosystem</strong>: 3793 行开源实现（GitHub: Multi-V-VM/GPUOS）+ PyTorch plugin 设计降低了采用门槛。但 NVIDIA-specific 依赖限制了 cross-vendor 可移植性——AMD 的 HIP runtime 和 Intel 的 Level Zero API 均有不同的 JIT compilation 和 function pointer 机制</li>
+</ul>
+
+<h2 id="§8-comparison-with-related-work">§8 Comparison with Related Work</h2>
+
+<table>
+<tr><th>维度</th><th>Eager PyTorch</th><th>CUDA Graphs</th><th>torch.compile</th><th>CDP (Dynamic Parallelism)</th><th>LithOS (SOSP'25)</th><th>GPUOS</th></tr>
+<tr><td>Launch model</td><td>每 op 一次 host launch</td><td>DAG capture → single replay</td><td>编译时 fusion → reduced launches</td><td>Device-initiated launch</td><td>Device-side task queue</td><td>Persistent kernel + device function call</td></tr>
+<tr><td>Per-op overhead</td><td>3–7 μs</td><td>amortized（graph 内）</td><td>reduced（fusion 后）</td><td>仍有 launch cost（device 侧）</td><td>device dispatch（ns 级）</td><td><strong><100 ns</strong></td></tr>
+<tr><td>Dynamic workload</td><td>原生支持</td><td>退化（recapture / fallback）</td><td>partial（input-dependent 退化）</td><td>支持</td><td>支持</td><td><strong>原生支持</strong></td></tr>
+<tr><td>Runtime operator update</td><td>需重编译/重启</td><td>需 recapture</td><td>需 recompile</td><td>需 recompile</td><td>未明确</td><td><strong>零停机热更新</strong> (ms 级)</td></tr>
+<tr><td>Resource footprint</td><td>N/A</td><td>额外 graph memory</td><td>编译开销</td><td>runtime stack overhead</td><td>unknown</td><td>每 SM 1 block (2–4% threads)</td></tr>
+<tr><td>PyTorch integration</td><td>原生</td><td>需 graph capture 逻辑</td><td>torch.compile() API</td><td>需自定义 kernel</td><td>需系统级集成</td><td><strong>TorchDispatch 透明</strong></td></tr>
+<tr><td>Shape flexibility</td><td>完全灵活</td><td>需 per-shape graph</td><td>需 dynamic shape 支持</td><td>灵活</td><td>灵活</td><td><strong>完全灵活</strong></td></tr>
+<tr><td>Element-wise speedup</td><td>1×</td><td>$6.2\times$ (stable) / $2.1\times$ (variable)</td><td>moderate</td><td>N/A</td><td>N/A</td><td><strong>$15.3\times$ (consistent)</strong></td></tr>
+</table>
+
+<p><strong>vs Fleet (2604.15379) — persistent megakernel approach</strong></p>
+
+<p>Fleet 采用 persistent megakernel 思路将多个 operator 合并为一个长驻 kernel 执行，与 GPUOS 共享 "launch once, dispatch many" 的基本理念。关键差异在于可扩展性模型：Fleet 的 megakernel 在编译时确定 operator 集合，添加新 operator 需要重编译和重启；GPUOS 通过 NVRTC JIT + dual-slot aliasing 实现 runtime 动态注入。在 production ML 系统中，模型演化和 operator 实验的频率使得 static megakernel 的维护成本远高于动态注入方案。但 Fleet 的静态编译可能获得更好的编译器优化（如跨 operator 寄存器分配），而 GPUOS 的 JIT 编译限于 per-operator 粒度的模板实例化。</p>
+
+<p><strong>vs ConCCL (2412.14335) — GPU DMA overlap</strong></p>
+
+<p>ConCCL 关注 GPU-initiated DMA 与 compute 的 overlap，属于通信优化范畴。GPUOS 关注 CPU-GPU launch boundary 的消除，属于调度优化范畴。两者正交且互补：ConCCL 解决的是"计算与通信重叠"，GPUOS 解决的是"消除计算之间的协调间隙"。在 multi-GPU serving 中，两者可组合使用——GPUOS 消除单 GPU 内的 launch overhead，ConCCL 隐藏 GPU 间的通信延迟。但 GPUOS 目前未提供 multi-GPU 支持，实际组合需要额外工程。</p>
+
+<p><strong>vs CUDA Graphs — the primary comparison target</strong></p>
+
+<p>论文的核心对比对象。CUDA Graphs 在 shape 稳定时高效（$6.2\times$），但其 "capture-replay" 模型要求 execution pattern 的可预测性——这与 production inference 的动态性矛盾。GPUOS 的优势在于：(1) shape 变化时性能不退化（$15.3\times$ vs $2.1\times$），(2) 不需要 graph variant 管理，(3) 支持 runtime operator 更新。但 CUDA Graphs 的优势在于：(1) 更简单的部署模型（无 persistent kernel 管理），(2) NVIDIA 官方支持和持续优化（constant-time launch in CUDA 12.3），(3) 对规则 workload 可能有更好的 end-to-end 性能（graph-internal 优化如 kernel fusion）。在实践中，两者应共存——graphs 覆盖规则段，GPUOS 覆盖动态段。</p>
+
+<p><strong>vs LithOS — GPU OS work (SOSP 2025)</strong></p>
+
+<p>LithOS 是最直接的竞争者——同样提出 device-side task scheduling 用于 ML workload 的 GPU OS 层。LithOS 发表于 SOSP 2025，具有更强的 systems 背景和 OS-level 抽象。GPUOS 的差异化在于：(1) NVRTC-based dynamic operator injection（LithOS 未明确提供等价能力），(2) 轻量 PyTorch 集成（3793 行 plugin vs OS-level 重构），(3) production 导向的安全和可观测性设计。但论文的关键缺失是<strong>未提供与 LithOS 的直接性能对比</strong>——在同类 device-side scheduling 系统中，不与最接近的 prior art 做 head-to-head 对比显著削弱了论文的说服力。</p>
+
+<h2 id="§9-key-numbers-with-evidence">§9 Key Numbers with Evidence</h2>
+
+<table>
+<tr><th>数值</th><th>含义</th><th>来源</th></tr>
+<tr><td>3–7 μs</td><td>Null kernel launch overhead（传统 <code>cudaLaunchKernel</code>）</td><td>§3.1, NVIDIA Developer Forums 2023</td></tr>
+<tr><td><100 ns</td><td>GPUOS per-operation submission latency</td><td>§4.2 设计分析</td></tr>
+<tr><td>30–70×</td><td>Submission latency reduction (3–7 μs → <100 ns)</td><td>§4.2</td></tr>
+<tr><td>$15.3\times$</td><td>Element-wise speedup (H100)</td><td>Table 2, §6.2</td></tr>
+<tr><td>$11.3\times$</td><td>Element-wise speedup (RTX 5090)</td><td>Table 2, §6.2</td></tr>
+<tr><td>$2.8\times$</td><td>Element-wise speedup (GB10)</td><td>Table 2, §6.2</td></tr>
+<tr><td>$8.7\times$</td><td>Attention decoding speedup (H100)</td><td>Table 2, §6.2</td></tr>
+<tr><td>$23.1\times$</td><td>Mixed pipeline speedup (H100)</td><td>Table 2, §6.2</td></tr>
+<tr><td>$15.3\times$</td><td>Mixed pipeline speedup (RTX 5090)</td><td>Table 2, §6.2</td></tr>
+<tr><td>~8 μs → ~3.1 μs</td><td>Per-operation latency reduction (element-wise, H100)</td><td>§6.2 para 2</td></tr>
+<tr><td>~140 μs → ~16 μs</td><td>Per-token latency reduction (attention, H100)</td><td>§6.2 para 3</td></tr>
+<tr><td>$6.2\times$</td><td>CUDA Graphs speedup (stable shapes)</td><td>§6.3</td></tr>
+<tr><td>$2.1\times$</td><td>CUDA Graphs speedup (variable shapes)</td><td>§6.3</td></tr>
+<tr><td>$4.3\times$</td><td>CUDA Graphs speedup (attention decoding)</td><td>§6.3</td></tr>
+<tr><td>800K ops/sec</td><td>GPUOS throughput (GB10)</td><td>§6.4</td></tr>
+<tr><td>67K ops/sec</td><td>Eager execution throughput (GB10)</td><td>§6.4</td></tr>
+<tr><td>$12\times$</td><td>Throughput improvement (800K / 67K)</td><td>§6.4</td></tr>
+<tr><td>$3.4\times$</td><td>MIG partition speedup</td><td>§6.2, Figure 4</td></tr>
+<tr><td>20–22%</td><td>Energy savings</td><td>Table 2, §6.2</td></tr>
+<tr><td>2–4%</td><td>Persistent kernel resource footprint (% of total threads)</td><td>§7.1</td></tr>
+<tr><td>64–128 bytes</td><td>Task descriptor size</td><td>§4.1</td></tr>
+<tr><td>4096 entries</td><td>Default ring buffer capacity</td><td>§6.4</td></tr>
+<tr><td>>64 threads</td><td>Ring buffer contention threshold</td><td>§6.4</td></tr>
+<tr><td>3793</td><td>Lines of code (C++ + Python)</td><td>§5</td></tr>
+<tr><td>100 ops / token</td><td>Typical micro-operations per token (production case)</td><td>§2.1, §3.1</td></tr>
+<tr><td>500 μs</td><td>Cumulative launch overhead per token (100 × 5 μs)</td><td>§2.1</td></tr>
+</table>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
