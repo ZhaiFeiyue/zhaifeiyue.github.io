@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>KVServe: Service-aware KV-cache Compression for Bandwidth-efficient Disaggregated LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>KVServe: Service-aware KV-cache Compression for Bandwidth-efficient Disaggregated LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> kvserve</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">KV-cache-compression</span><span class="tag">disaggregated-serving</span><span class="tag">vLLM-connector</span><span class="tag">quantization</span><span class="tag">PD-serving</span><span class="tag">nvCOMP</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/kvserve" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="kvserve-—-代码解读报告">KVServe — 代码解读报告</h1>
+
+<p><strong>Date</strong>: 2026-05-20</p>
+<p><strong>URL</strong>: https://github.com/hpdps-group/KVServe</p>
+<p><strong>Version</strong>: v1 branch</p>
+<p><strong>Domain</strong>: framework | <strong>Language</strong>: Python 100% | <strong>LOC</strong>: ~12.6K</p>
+<p><strong>License</strong>: Apache-2.0 | <strong>Org</strong>: HPDPS Group</p>
+<p><strong>Branch</strong>: v1 | ~64 Python files in kvserve_v1/</p>
+
+<hr>
+
+<h2 id="§1-core-contribution">§1 Core Contribution</h2>
+
+<p>KVServe 是第一个以 <strong>vLLM V1 external connector</strong> 形式实现的 service-aware KV-cache 压缩框架。核心创新在于：(1) 将 KV 压缩抽象为三阶段模块化 pipeline（Transform → Quantizer → Codec），每阶段可独立配置替换；(2) 引入基于 analytical model + ε-greedy bandit 的两层在线 controller，根据实时 bandwidth/SLO/accuracy budget 动态选择最优 compression profile；(3) 以 <strong>zero-fork</strong> 方式接入 vLLM——不修改 vLLM 调度器和 KV block 管理，仅通过 <code>kv_connector_module_path</code> 机制注入压缩逻辑。这种设计在 PD 分离架构下实现了 up to 10x KV 压缩、9x PD 通信加速和 8.5x 端到端延迟降低，同时保持 accuracy。项目规模不大（~12.6K LOC），但其模块化抽象和 service-aware 决策层为 KV-cache 压缩在生产 PD serving 中的落地提供了完整的工程参考。</p>
+
+<hr>
+
+<h2 id="§2-summary">§2 Summary</h2>
+
+<p>KVServe 针对 disaggregated prefill/decode (PD) serving 中的 KV-cache 传输带宽瓶颈，构建了一个端到端的压缩框架。在 PD 分离架构中，prefill engine 生成的 KV cache 需要通过网络传输到 decode engine，传输量与 <code>num_layers × 2 × num_blocks × block_size × num_kv_heads × head_size</code> 成正比——对于 7B 级模型、千 token 级输入，单次传输即可达到百 MB 量级。在 cross-datacenter（10-100 Gbps）或 edge deployment（≤10 Gbps）场景下，KV 传输成为 TTFT 的主要瓶颈。</p>
+
+<p>框架的核心是三阶段 compression pipeline：<strong>Hadamard Transform</strong>（randomized rotation 消除 outlier）→ <strong>Hybrid Precision Quantizer</strong>（基于 DuoAttention head scores 的非均匀量化，重要 head 保持 4-bit，不重要 head 降到 2-3 bit）→ <strong>nvCOMP Codec</strong>（GPU-side ANS lossless 压缩）。三阶段全部在 GPU 上执行，避免 GPU↔CPU 数据搬运。在此基础上，service-aware controller 采用 Tier-1 analytical model 做 Pareto 筛选 + Tier-2 ε-greedy bandit 在线学习残差，实现 per-request 级别的 profile 自适应——当带宽充裕时自动跳过压缩，当带宽紧张时选择激进 profile。</p>
+
+<p>KVServe 的工程价值在于它以 external connector 身份"寄生"在 vLLM 上：vLLM 保持完整的调度和 KV 管理权，KVServe 仅在 <code>save_kv_layer</code> / <code>start_load_kv</code> 路径上拦截 KV 数据做压缩/解压。这意味着 (a) 无需维护 vLLM fork，版本跟进成本低；(b) 可独立升级压缩策略而不影响 serving 逻辑。代价是只能利用 connector API 暴露的信息，看不到 scheduler 内部状态。</p>
+
+<hr>
+
+<h2 id="§3-核心三问">§3 核心三问</h2>
+
+<h3 id="q1-痛点：pd-分离架构的-kv-传输带宽瓶颈">Q1 痛点：PD 分离架构的 KV 传输带宽瓶颈</h3>
+
+<p>Disaggregated PD serving（如 DistServe、Splitwise、Mooncake）将 prefill 和 decode 分离到不同 GPU/节点以优化资源利用率，但引入了新的瓶颈——KV cache 传输。一个 7B 模型、1K token 输入的 KV cache 可达 ~250 MB（fp16），32K 长 context 下轻松超过 GB 级。在 cross-datacenter Ethernet（10-100 Gbps）或 edge wireless（≤10 Gbps）场景下，传输延迟远超 prefill 计算本身。</p>
+
+<p>更关键的问题是：<strong>静态压缩策略无法适应动态的 serving 环境</strong>。不同 bandwidth 条件、不同 SLO 要求下，最优的 compression aggressiveness 不同——带宽高时压缩 overhead 可能超过传输节省，带宽低时需要激进压缩。现有 KV 压缩方案（CacheGen、KIVI）是静态配置，无法做这种动态权衡。</p>
+
+<h3 id="q2-方法：模块化压缩-pipeline-service-aware-在线决策">Q2 方法：模块化压缩 pipeline + service-aware 在线决策</h3>
+
+<p><strong>Pipeline 架构</strong>:</p>
+<pre><code>
+Raw KV [fp16/bf16] → Hadamard Transform → Hybrid Quantizer → nvCOMP ANS → Compressed KV [uint8+lossless]
+</code></pre>
+
+<p>三阶段各自的设计要点：</p>
+<ul>
+<li><strong>Transform</strong>: Randomized Hadamard rotation 使 KV 值分布更均匀，降低 quantization 误差。支持非 power-of-2 head_dim（拆分为多段 power-of-2 子 transform）。Rademacher signs 确定性 cached，inverse 只需再做一次 FWHT</li>
+<li><strong>Quantizer</strong>: 基于 DuoAttention head importance scores（offline profiled CSV），将 head 分为高精度组（4-bit, max_value=12-16）和低精度组（2-3 bit, max_value=4-6），<code>hybrid_ratio</code> 控制低精度比例。支持 per-head/per-token/per-tensor 三种 axis 策略</li>
+<li><strong>Codec</strong>: 调用 NVIDIA nvCOMP 做 GPU-side lossless 压缩，支持 7 种算法（ANS/Bitcomp/Cascaded/Deflate/GDeflate/LZ4/Zstd），默认 ANS 对低熵 quantized 数据效果最佳</li>
+</ul>
+
+<p><strong>Service-aware Controller</strong>:</p>
+<ul>
+<li><strong>Tier-1 Analytical Model</strong>: 预测 <code>T_p = T_model + V/S + V·cr/B</code>，用 Theorem 1 <code>B < (1 - 1/cr)·S</code> 判断压缩是否有益，筛除不值得压缩的 profile</li>
+<li><strong>Tier-2 ε-greedy Bandit</strong>: 在 <code>(accuracy_bucket, bandwidth_interval)</code> 空间中维护 Pareto 前沿 candidates，用 EWMA（α=0.2）在线学习 analytical model 的系统性残差（如 GPU contention 导致的偏差），校正后选最优 profile</li>
+<li><strong>Profile Library</strong>: 离线 profiling 构建的 JSON 文件，按 accuracy → bandwidth 分桶，每个桶关联 2-3 个 Pareto 前沿 candidates</li>
+</ul>
+
+<p><strong>vLLM 集成</strong>:</p>
+<p>通过 <code>kv_connector_module_path</code> 注册 <code>CompressedKVConnector</code>，实现 <code>KVConnectorBase_V1</code> 协议。Producer 侧在 <code>wait_for_save()</code> 中拦截 6D KV tensor、压缩、通过 NCCL+ZMQ transport 发送；Consumer 侧在 <code>start_load_kv()</code> 中接收、解压、inject 回 KV cache。</p>
+
+<h3 id="q3-结果：高压缩、低延迟、零修改接入">Q3 结果：高压缩、低延迟、零修改接入</h3>
+
+<table>
+<tr><th>指标</th><th>数值</th><th>条件</th></tr>
+<tr><td>KV 压缩比</td><td><strong>up to 10x</strong></td><td>Hadamard + aggressive quantization + ANS</td></tr>
+<tr><td>PD 通信时间</td><td><strong>9x 降低</strong></td><td>vs 无压缩 raw transfer</td></tr>
+<tr><td>端到端延迟</td><td><strong>8.5x 降低</strong></td><td>bandwidth-limited 场景</td></tr>
+<tr><td>Accuracy</td><td><strong>preserved</strong></td><td>基于 DuoAttention scores 的 head-aware quantization</td></tr>
+<tr><td>vLLM 修改量</td><td><strong>0 行</strong></td><td>external connector 机制</td></tr>
+<tr><td>支持 TP</td><td><strong>homogeneous TP</strong></td><td>per-TP-rank NCCL channel</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§4-逻辑故事还原">§4 逻辑故事还原</h2>
+
+<h3 id="时代定位">时代定位</h3>
+
+<p>2026 年中，disaggregated PD serving 已成为 LLM 推理基础设施的主流架构选择。Mooncake、DistServe、Splitwise 等系统证明了 prefill/decode 分离在资源利用率上的优势，vLLM 也原生支持了 PD connector 机制。但随着 PD 分离从"同节点不同 GPU"扩展到"跨节点"甚至"跨数据中心"，KV cache 传输带宽开始成为新的系统瓶颈——尤其是在 edge deployment 和 remote KV storage 场景下。</p>
+
+<h3 id="背景">背景</h3>
+
+<p>KV-cache 压缩本身不是新概念。CacheGen (SIGCOMM'24) 提出用 delta coding + entropy coding 压缩 KV cache，KIVI 提出 per-channel key quantization + per-token value quantization。但这些方案有两个共同问题：(1) 压缩策略是静态的，无法适应变化的带宽条件；(2) 与推理引擎深度耦合，需要修改引擎内部逻辑。</p>
+
+<h3 id="约束推导">约束推导</h3>
+
+<p><strong>为什么需要 service-aware?</strong> 因为同一个 compression profile 在不同 bandwidth 下的效用完全不同。从 analytical model 推导：当 <code>B > B_crit = (1-1/cr)·S</code> 时，compression overhead（codec 时间 V/S）超过传输节省（(1-1/cr)·V/B），压缩反而增加延迟。这意味着必须根据实时 bandwidth 动态决定是否压缩、压缩到什么程度。</p>
+
+<p><strong>为什么选择 external connector 而非 fork?</strong> vLLM 迭代速度极快（平均每周多个 breaking change），维护 fork 的成本远高于追踪 connector API 的变化。且 KV 压缩只涉及传输路径，不需要修改调度逻辑，connector 接口提供的信息已经足够。</p>
+
+<p><strong>为什么用 DuoAttention scores?</strong> 不同 attention head 对 quantization 的敏感度差异极大——"retrieval heads"（负责信息检索的 head）丢失精度会显著影响 accuracy，而"streaming heads"（负责局部模式的 head）即使大幅压缩也影响甚微。DuoAttention 的 offline profiling 提供了这种差异的量化指标，使 hybrid precision 成为可能。</p>
+
+<h3 id="破局">破局</h3>
+
+<p>KVServe 的核心 insight 是：<strong>KV-cache 压缩不是一个纯算法问题，而是一个系统级的 service-aware 优化问题</strong>。正确的压缩策略取决于当前的带宽条件、SLO 要求和 accuracy budget——这三者在 serving 过程中是动态变化的。因此需要 (a) 模块化的压缩 pipeline 以支持不同 aggressiveness 的 profile 组合，(b) 基于理论模型的在线决策器以实时选择最优 profile。</p>
+
+<h3 id="核心技术壁垒">核心技术壁垒</h3>
+
+<ol>
+<li><strong>Analytical model 的 benefit condition</strong>: <code>B < (1-1/cr)·S</code> 提供了压缩是否有益的精确判据，将搜索空间从"所有 profile"缩减到"在当前 bandwidth 下有益的 profile"。这不是启发式的——是从延迟公式严格推导的。</li>
+</ul>
+
+<ol>
+<li><strong>Wire protocol 的 GPU-resident 设计</strong>: 压缩后的 KV body 和 quantization params（min_val, scale）全部留在 GPU 上，通过 NCCL 直接传输。metadata 中的 GPU tensor 用 <code>["__kvserve_aux_tensor__", idx]</code> placeholder 替换后 msgpack 序列化走 ZMQ，实现了控制面和数据面的分离。</li>
+</ul>
+
+<ol>
+<li><strong>Bandit 残差学习</strong>: analytical model 预测的是理论延迟，实际存在 GPU contention、scheduling jitter 等系统性偏差。ε-greedy bandit 用 EWMA（α=0.2）在线学习这个 delta，使决策越来越准确。</li>
+</ul>
+
+<h3 id="设计绑定批判">设计绑定批判</h3>
+
+<ul>
+<li><strong>绑定 DuoAttention</strong>: hybrid quantization 依赖 offline profiled head scores CSV，新模型需先跑一遍 DuoAttention profiling。这个 offline 步骤是落地的主要门槛</li>
+<li><strong>绑定 nvCOMP</strong>: codec 阶段只支持 NVIDIA nvCOMP GPU 压缩库，AMD GPU 或 CPU-only 场景无法使用</li>
+<li><strong>绑定 NHD layout</strong>: <code>get_required_kvcache_layout()</code> 强制返回 NHD，MLA 架构（DeepSeek V3/V4）直接跳过，降低了框架的通用性</li>
+<li><strong>绑定 1-to-1 PD</strong>: 当前只支持一个 producer → 一个 consumer per TP rank，不支持 1-to-N fan-out 或 N-to-1 aggregation</li>
+</ul>
+
+<hr>
+
+<h2 id="§5-key-findings">§5 Key Findings</h2>
+
+<ul>
+<li><strong>模块化三阶段 pipeline 的正交性得到验证</strong>: Transform/Quantizer/Codec 三阶段可独立开关——default config 不含 Transform（只用 Quantizer+Codec），custom config 可按需加入 Hadamard，controller mode 可在 profile 间自由切换组合，说明抽象边界划分合理</li>
+<li><strong>Hybrid precision quantization 利用了 head importance 的长尾分布</strong>: 默认 <code>hybrid_ratio=0.8</code> 意味着 80% 的 head 使用低精度（2-3 bit），仅 20% 使用高精度（4 bit）。DuoAttention scores 的经验分布表明大多数 head 对 quantization 不敏感，这是高压缩比的信息论基础</li>
+<li><strong>nvCOMP ANS 在 quantized uint8 数据上的额外压缩效果显著</strong>: 量化后的 uint8 数据（实际只使用 2-4 bit 有效位）有大量冗余，ANS 编码可进一步无损压缩约 2-3x，将总体压缩比从 ~4x（纯量化）提升到 ~10x</li>
+<li><strong>Controller 的 analytical model 提供了明确的 go/no-go 判据</strong>: Theorem 1 <code>B < (1-1/cr)·S</code> 将"是否压缩"从工程直觉转化为可计算的物理条件，避免了在高带宽场景下做无益压缩</li>
+<li><strong>Wire protocol 的 placeholder 设计实现了 zero-copy GPU 传输</strong>: 通过将 GPU tensor 从 metadata 中分离为 <code>aux_tensors</code>，整个 compressed payload 全程在 GPU 上流动，仅 msgpack 序列化走 ZMQ 控制面，数据面走 NCCL</li>
+<li><strong>Chunked auto-split at 500MB 控制 GPU memory peak</strong>: 对于长 context 产生的大 KV cache，自动分 8-layer chunk 压缩，避免全 buffer 压缩导致的 OOM</li>
+</ul>
+
+<hr>
+
+<h2 id="§6-limitations">§6 Limitations</h2>
+
+<ul>
+<li><strong>MLA 不支持</strong>: <code>get_required_kvcache_layout()</code> 遇到 MLA 直接返回 None，fallback 到 vLLM 默认行为。这意味着 DeepSeek V3/V4、Kimi K2.5 等 MLA 模型无法使用 KVServe 的压缩功能——而这些正是当前最重要的开源模型</li>
+<li><strong>DuoAttention CSV 硬依赖</strong>: quantizer 需要预计算的 per-head importance scores CSV，新模型上线前必须运行离线 profiling 生成。这个步骤的自动化程度不明，且不同 prompt 分布下 head importance 可能漂移</li>
+<li><strong>nvCOMP 单点依赖</strong>: codec 阶段只支持 nvCOMP，没有 CPU fallback 或 AMD ROCm 替代。如果 nvCOMP 版本不兼容或环境中缺少该库，整个压缩 pipeline 失效</li>
+<li><strong>Controller 冷启动</strong>: bandit state 初始为零，前期 ε-greedy 的 explore 阶段（默认 ε 未见公开，推测 0.1-0.3）可能选择次优 profile。对于短生命周期 serving 实例，controller 可能全程处于学习阶段而未收敛</li>
+<li><strong>单一传输拓扑</strong>: 当前仅支持 1-to-1 PD mapping。实际生产中常见 1 prefill → N decode（fan-out）或 N prefill → 1 decode（aggregation），需要额外的路由层</li>
+<li><strong>Compression stats 是旁路非集成</strong>: 通过环境变量 <code>KVSERVE_COMPRESSION_STATS_PATH</code> 写 JSONL 文件，没有集成到 vLLM 的 metrics 系统（Prometheus/OpenMetrics），生产监控需要额外适配</li>
+<li><strong>无生产验证</strong>: 代码库以 test harness 为主（<code>test_kvserve.py</code> 在同节点创建双引擎测试），未见跨节点真实部署的 benchmark 数据</li>
+</ul>
+
+<hr>
+
+<h2 id="§7-infrastructure-impact">§7 Infrastructure Impact</h2>
+
+<h3 id="serving-层">Serving 层</h3>
+
+<p>KVServe 验证了 <strong>KV-cache 压缩作为 disaggregated serving 的一等组件</strong> 的可行性。在 PD 分离架构日益普及的趋势下，KV 传输优化将成为标配——KVServe 的 connector-based 设计展示了如何在不侵入引擎的前提下完成这一目标。service-aware controller 的 analytical model + bandit 两层决策架构，为其他 serving 系统中的在线自适应组件提供了参考模式。</p>
+
+<h3 id="framework-层">Framework 层</h3>
+
+<p><strong>External connector 作为扩展点</strong>：KVServe 对 vLLM V1 <code>KVConnectorBase_V1</code> 接口的使用，验证了 vLLM 的 connector 扩展机制在复杂场景（压缩、chunked prefill、TP）下的可用性。这对 vLLM 生态的插件化发展有正向意义——更多功能（如 KV caching to remote storage、KV migration）可以通过类似的 external connector 实现。</p>
+
+<h3 id="kernel-层">Kernel 层</h3>
+
+<p><strong>GPU-side compression pipeline</strong>：全流程在 GPU 上执行（Hadamard transform via fast_hadamard_transform、quantization via CUDA tensor ops、codec via nvCOMP），验证了 GPU 压缩的延迟可以低于 CPU 压缩 + GPU↔CPU 数据搬运的延迟。这对 GPU 上的数据压缩（不限于 KV cache）有参考意义。</p>
+
+<hr>
+
+<h2 id="§8-comparison-with-related-work">§8 Comparison with Related Work</h2>
+
+<table>
+<tr><th>维度</th><th>KVServe</th><th>DualPath (2602.21548)</th><th>PrfaaS (2604.15039)</th><th>DynaServe (2504.09285)</th><th>CacheGen</th><th>KIVI</th></tr>
+<tr><td>核心目标</td><td>PD 间 KV 传输压缩</td><td>PD 分离的通信优化</td><td>Prefill-as-a-Service</td><td>动态 expert 放置</td><td>KV cache 流式压缩</td><td>KV cache 量化</td></tr>
+<tr><td>压缩方法</td><td>Transform + Quantizer + Codec 模块化 pipeline</td><td>—</td><td>—</td><td>—</td><td>Delta coding + entropy coding</td><td>Per-channel key + per-token value quantization</td></tr>
+<tr><td>Service-aware</td><td>✅ Analytical model + Bandit 在线决策</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td>引擎集成方式</td><td>vLLM external connector（zero-fork）</td><td>vLLM fork</td><td>vLLM-based</td><td>vLLM-based</td><td>独立实现</td><td>独立实现</td></tr>
+<tr><td>Hybrid precision</td><td>✅ DuoAttention head scores</td><td>❌</td><td>—</td><td>—</td><td>❌</td><td>❌</td></tr>
+<tr><td>GPU-side codec</td><td>✅ nvCOMP（全 GPU 流）</td><td>—</td><td>—</td><td>—</td><td>❌（CPU entropy coding）</td><td>❌（无 lossless）</td></tr>
+<tr><td>适用场景</td><td>Cross-node/datacenter PD serving</td><td>Same-cluster PD</td><td>Prefill-only workloads</td><td>MoE serving</td><td>KV cache streaming</td><td>KV cache inference</td></tr>
+<tr><td>压缩比</td><td>Up to 10x</td><td>—</td><td>—</td><td>—</td><td>~3-5x (reported)</td><td>~4x (4-bit uniform)</td></tr>
+<tr><td>TP 支持</td><td>✅ Homogeneous</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td></tr>
+<tr><td>MLA 支持</td><td>❌</td><td>Depends on vLLM</td><td>Depends on vLLM</td><td>Depends on vLLM</td><td>❌</td><td>❌</td></tr>
+</table>
+
+<p><strong>vs CacheGen</strong>: CacheGen 在 CPU 上做 delta coding + entropy coding，需要 GPU↔CPU 数据搬运。KVServe 全流程 GPU-resident，避免了搬运开销。且 CacheGen 的压缩策略是静态的，KVServe 的 controller 可以在线自适应。CacheGen 的优势在于 delta coding 利用了相邻层/token 的 KV 相关性，可能在特定分布下获得更好的无损压缩率。</p>
+
+<p><strong>vs KIVI</strong>: KIVI 使用 uniform quantization（per-channel key / per-token value），所有 head 同等对待。KVServe 基于 DuoAttention scores 做 hybrid precision，对不重要 head 更激进（2-3 bit vs KIVI 的 4 bit），对重要 head 更保守（4 bit），在相同 accuracy 约束下可获得更高压缩比。</p>
+
+<p><strong>vs DynaServe</strong>: DynaServe 解决的是 MoE 模型中 expert 动态放置问题，与 KV-cache 压缩是正交的。两者可以组合使用——KVServe 压缩 PD 间的 KV 传输，DynaServe 优化 MoE 的 expert 通信。</p>
+
+<hr>
+
+<h2 id="§9-key-numbers-with-evidence">§9 Key Numbers with Evidence</h2>
+
+<table>
+<tr><th>数值</th><th>含义</th><th>来源</th></tr>
+<tr><td>up to 10x</td><td>KV 总压缩比</td><td>README badge; hybrid quantization (~4x) + ANS lossless (~2.5x)</td></tr>
+<tr><td>9x</td><td>PD 通信时间降低</td><td>README badge</td></tr>
+<tr><td>8.5x</td><td>端到端延迟降低</td><td>README badge; bandwidth-limited 场景</td></tr>
+<tr><td>0.8</td><td>默认 hybrid_ratio（低精度 head 比例）</td><td><code>DEFAULT_COMPRESSION_CONFIG</code>, compression_manager.py:20</td></tr>
+<tr><td>12 / 8</td><td>High precision key / value max_value（~4 bit effective）</td><td><code>DEFAULT_COMPRESSION_CONFIG</code>, compression_manager.py:21-22</td></tr>
+<tr><td>6 / 4</td><td>Low precision key / value max_value（~2-3 bit effective）</td><td><code>DEFAULT_COMPRESSION_CONFIG</code>, compression_manager.py:23-24</td></tr>
+<tr><td>500 MB</td><td>Auto-chunking 阈值</td><td>compression_manager.py, chunked mode threshold</td></tr>
+<tr><td>8 layers</td><td>Chunk 大小</td><td>compression_manager.py, per-chunk layer count</td></tr>
+<tr><td>512 MB</td><td>Wire body max_chunk_bytes</td><td>wire.py, <code>_max_nccl_chunk_bytes</code> default</td></tr>
+<tr><td>1024 bytes</td><td>Min compress size 阈值</td><td><code>DEFAULT_COMPRESSION_CONFIG</code>, compression_manager.py:34</td></tr>
+<tr><td>α = 0.2</td><td>Bandit EWMA 学习率</td><td>bandit_state.py; 最近观测权重 20%</td></tr>
+<tr><td>5 min</td><td>Controller context TTL</td><td>online_controller.py; 防止未更新 request 的内存泄漏</td></tr>
+<tr><td>7</td><td>支持的 nvCOMP 算法数</td><td>ANS, Bitcomp, Cascaded, Deflate, GDeflate, LZ4, Zstd</td></tr>
+<tr><td>~12.6K LOC</td><td>总代码量</td><td>kvserve_v1/ 目录下所有 .py 文件</td></tr>
+<tr><td>0 行</td><td>vLLM 修改量</td><td>external connector 机制，zero-fork</td></tr>
+</table>
+
+<hr>
+
+<h2 id="deep-analysis-code">Deep Analysis (code)</h2>
+
+<h3 id="1-project-identity">1. Project Identity</h3>
+
+<ul>
+<li><strong>Name</strong>: KVServe</li>
+<li><strong>One-liner</strong>: Service-aware KV-cache compression for bandwidth-efficient disaggregated LLM serving</li>
+<li><strong>Domain</strong>: framework (KV-cache compression for PD serving)</li>
+<li><strong>Owner</strong>: HPDPS Group</li>
+<li><strong>Scale</strong>: ~12.6K LOC (64 Python files)</li>
+<li><strong>License</strong>: Apache-2.0</li>
+<li><strong>GitHub</strong>: https://github.com/hpdps-group/KVServe</li>
+<li><strong>Branch</strong>: v1</li>
+</ul>
+
+<h3 id="2-architecture-module-map">2. Architecture & Module Map</h3>
+
+<table>
+<tr><th>Package</th><th>LOC (approx)</th><th>Responsibility</th></tr>
+<tr><td><code>kvserve_v1/connector/</code></td><td>~600</td><td>CompressedKVConnector: vLLM V1 connector 协议实现</td></tr>
+<tr><td><code>kvserve_v1/compression/</code></td><td>~2500</td><td>CompressionManager + Pipeline 组件（Transform, Quantizer, Codec）</td></tr>
+<tr><td><code>kvserve_v1/compression/controller/</code></td><td>~800</td><td>Service-aware controller: OnlineController + AnalyticalModel + BanditState + ProfileLibrary</td></tr>
+<tr><td><code>kvserve_v1/transport/</code></td><td>~500</td><td>NCCL data transport + ZMQ control signaling</td></tr>
+<tr><td><code>kvserve_v1/compression/wire.py</code></td><td>~200</td><td>GPU-resident wire protocol for compressed payload packing</td></tr>
+<tr><td><code>kvserve_v1/utils/</code></td><td>~180</td><td>KV extraction/injection + logging</td></tr>
+<tr><td><code>kvserve_v1/offline_search/</code></td><td>~7000</td><td>Offline profiling: accuracy eval, compression ratio eval, speed eval, param search</td></tr>
+<tr><td><code>tests/</code></td><td>~500</td><td>End-to-end PD test harness</td></tr>
+</table>
+
+<h3 id="3-key-design-decisions">3. Key Design Decisions</h3>
+
+<p><strong>1. Zero-fork vLLM 集成 via external connector</strong>:</p>
+
+<p>选择通过 <code>kv_connector_module_path</code> 注入而非 fork vLLM，以最小化维护成本。代价是受限于 connector API 的信息边界——无法访问 scheduler 内部状态（如 pending queue 长度、memory pressure level），controller 的决策只能基于 request-level 信息。这个 trade-off 在当前阶段是合理的：KV 压缩的决策主要依赖 bandwidth 和 data size，scheduler state 只是 nice-to-have。</p>
+
+<p><strong>2. Per-request compression (非 batched)</strong>:</p>
+
+<p>每个 request 独立压缩/解压，不做跨 request batching。好处是简化了 controller mode 的实现（每个 request 可用不同 profile）和 error handling（一个 request 失败不影响其他）。代价是无法利用跨 request 的 KV 冗余（如共享 prefix 的 requests），也无法摊薄 codec 的固定开销。</p>
+
+<p><strong>3. 6D tensor 统一表示</strong>:</p>
+
+<p>所有 KV 数据统一为 <code>[num_layers, 2, num_blocks, block_size, num_kv_heads, head_size]</code> 6D tensor 进行压缩。这简化了 pipeline 的 shape 处理，但要求 connector 在 <code>wait_for_save()</code> 时做一次 <code>torch.stack</code>——对于 100+ 层模型这是一个非平凡的内存开销（需要完整的 staging buffer）。</p>
+
+<p><strong>4. 控制面/数据面分离（ZMQ + NCCL）</strong>:</p>
+
+<p>ZMQ 传输 metadata（msgpack 序列化，KB 级），NCCL 传输 compressed KV body 和 quantization params（GPU tensor，MB-GB 级）。ncclRecv 只在 ZMQ 信号到达后才发起，避免 recv_stream 上有 pending ops 影响 CUDA graph capture。</p>
+
+<p><strong>5. Sentinel-based 协议</strong>:</p>
+
+<p><code>"__compressed__"</code> sentinel 在 layer_names 中标记压缩消息，consumer 据此决定走解压路径还是 raw path。这种 in-band signaling 简洁但脆弱——如果 layer_name 碰撞了 sentinel string 会静默出错。</p>
+
+<h3 id="4-critical-path-kv-compress-transfer">4. Critical Path: KV Compress & Transfer</h3>
+
+<pre><code>
+[Prefill Engine]
+  → vLLM forward pass → save_kv_layer() per layer
+    → 缓存到 _layer_buffers
+  → wait_for_save()
+    → torch.stack all layers → 6D tensor
+    → KVCompressionAdapter.compress()
+      → Shape normalize → 6D
+      → (Controller: select profile)
+      → CompressionManager.compress_all_layers()
+        → check min_compress_size
+        → (if &gt;500MB: auto-chunk by 8 layers)
+        → per-layer: Transform → Quantize (collect qparams)
+        → permute → write to pre-allocated buffer
+        → Codec encode (nvCOMP ANS)
+      → return CompressedKVData
+    → build_wire(): separate GPU tensors as aux_tensors
+    → transport.send_bundle() → ZMQ meta + NCCL body + NCCL aux
+
+[Decode Engine]
+  → start_load_kv()
+    → transport.recv_bundle()
+    → restore_wire(): reconstruct tensor refs from placeholders
+    → KVCompressionAdapter.decompress()
+      → (Controller: resolve profile from metadata)
+      → Codec decode → Dequantize → Inverse Transform
+    → inject_kv_into_layer_by_blocks() → vLLM KV cache
+</code></pre>
+
+<p><strong>瓶颈分析</strong>: 在 bandwidth-limited 场景下，bottleneck 从 NCCL send/recv 转移到 compress/decompress。compress 中 quantize 和 codec 是主要开销（Hadamard 相对轻量）。在 high-bandwidth 场景下，controller 可跳过压缩直接传输。</p>
+
+<h3 id="5-offline-profiling-toolchain">5. Offline Profiling Toolchain</h3>
+
+<p><code>offline_search/</code> 提供了完整的离线 profiling 工具链，是构建 Profile Library 的基础：</p>
+
+<table>
+<tr><th>工具</th><th>功能</th></tr>
+<tr><td><code>lm_eval/lm_evaluator.py</code></td><td>基于 lm-eval-harness 的 accuracy 评估，支持 KVServe/KIVI/DuoAttn/CacheGen 配置</td></tr>
+<tr><td><code>compression_ratio/</code></td><td>在真实 prompt 上测量不同 config 的压缩比</td></tr>
+<tr><td><code>component_speed/</code></td><td>测量各组件 throughput（ANS, Bitcomp, Hadamard, quantizer）</td></tr>
+<tr><td><code>param_search/test_search.py</code></td><td>超参搜索：遍历 hybrid_ratio × max_value × axis 组合，输出 Pareto 前沿</td></tr>
+</table>
+
+<p>这套工具链的成熟度相当高（~7K LOC，占总代码量 >50%），反映了该项目的研究性质——大量工作在 offline profiling 而非 runtime。</p>
+
+<h3 id="6-verdict">6. Verdict</h3>
+
+<p><strong>应该关注的场景</strong>:</p>
+<ul>
+<li>如果你的 PD serving 跨越低带宽链路（edge、cross-datacenter），KVServe 展示了当前最完整的 KV 压缩 pipeline 设计</li>
+<li>如果你在设计 vLLM external connector，KVServe 是目前最复杂的 connector 实现参考（压缩、chunked prefill、TP、controller）</li>
+<li>如果你在研究 service-aware compression，analytical model + bandit 的两层决策架构值得借鉴</li>
+</ul>
+
+<p><strong>风险</strong>:</p>
+<ul>
+<li>学术项目特征明显：大量 offline profiling 代码、同节点测试、无跨节点 benchmark</li>
+<li>nvCOMP + DuoAttention CSV 双重外部依赖限制了开箱即用性</li>
+<li>MLA 不支持意味着当前最流行的 DeepSeek 系列模型无法使用</li>
+</ul>
+
+<p><strong>Top 3 值得学习的设计</strong>:</p>
+<ol>
+<li><strong>模块化三阶段 pipeline 的 ABC 抽象</strong>——Transform/Quantizer/Codec 接口定义清晰，新组件只需实现接口即可插入，不需要理解其他阶段的细节</li>
+<li><strong>Analytical model 的 benefit condition</strong>——<code>B < (1-1/cr)·S</code> 将"是否压缩"从 tuning 转化为 theorem，是 system + theory co-design 的范例</li>
+<li><strong>Wire protocol 的 GPU-resident placeholder 设计</strong>——巧妙地解决了"metadata 需要 msgpack 序列化但 qparams 是 GPU tensor"的矛盾</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
