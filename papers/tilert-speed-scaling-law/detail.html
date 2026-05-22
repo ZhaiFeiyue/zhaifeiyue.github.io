@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Topics — Feiyue KB</title>
+<title>Speed as the Next Scaling Law — Feiyue KB</title>
 <link rel="icon" type="image/png" href="/assets/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
@@ -173,9 +173,9 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 <body>
 <nav>
   <span class="logo"><a href="/">Feiyue Zhai</a></span>
-  <a href="/">Papers</a>
+  <a href="/" class="active">Papers</a>
   <a href="/overview/">Overview</a>
-  <a href="/topics/" class="active">Topics</a>
+  <a href="/topics/">Topics</a>
   <a href="/knowledge/">Knowledge</a>
   <a href="/knowledge-graph.html">Graph</a>
   <a href="/tools/">Tools</a>
@@ -183,24 +183,186 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 </nav>
 
 <div class="w">
-<div class="stats"><strong>3</strong> cross-category topics</div>
-<input type="text" class="search-box" placeholder="Search topics...">
-<div class="grid">
-<div class="card">
-<div class="card-head"><a class="card-title" href="/topics/agent-system.html">agent-system</a><span class="card-date">17 papers</span></div>
-<div class="card-summary">2025–2026 年，LLM 的主流使用模式正从**单请求问答**转向**多轮自主工具调用**。这一转变引发了贯穿 model、framework、agent、code 四个领域的系统性重构需求。</div>
-<div class="card-foot"><a href="/topics/agent-system.html">View →</a></div>
+<h1>Speed as the Next Scaling Law</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> tilert-speed-scaling-law</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">persistent-kernel</span><span class="tag">warp-specialization</span><span class="tag">inference-latency</span><span class="tag">aot-compilation</span><span class="tag">heterogeneous-worker</span><span class="tag">gpu-resident-scheduling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/tilert-speed-scaling-law" target="_blank">Source ↗</a>
 </div>
-<div class="card">
-<div class="card-head"><a class="card-title" href="/topics/cluster-llm-deployment.html">cluster-llm-deployment</a><span class="card-date">18 papers</span></div>
-<div class="card-summary">大规模 LLM 集群部署正在经历从"单节点单模型"到"千 GPU 级多模态流水线"的范式跃迁。这一跃迁受到四股力量的同时驱动。</div>
-<div class="card-foot"><a href="/topics/cluster-llm-deployment.html">View →</a></div>
+<div class="detail-content">
+
+<h1 id="speed-as-the-next-scaling-law-—-l2">Speed as the Next Scaling Law — L2</h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR</h2>
+
+<p>TileRT 用 AOT 编译将模型静态展开为单个 Persistent Engine Kernel，以 tile 为调度粒度、warp/block/GPU 三级特化持续重叠 load/compute/communication，消除近 BS=1 decode 下的 inter-kernel idle，弥合 8×H200 NVL 理论 ~1000 tok/s 与实际几十 tok/s 的量级差距。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3</h2>
+
+<h3 id="q1-痛点">Q1 痛点</h3>
+
+<p>近 BS=1 decode 下，attention kernel 执行时间压缩到 μs 级，但 kernel 间的 launch gap、cross-kernel barrier、global memory round-trip 和 TP synchronization 重新进入关键路径。8×H200 NVL 聚合内存带宽 ~38 TB/s，GLM-5.1 每 decode token 激活参数量 ~42 GB，纯带宽约束下理论吞吐可达 ~1000 tok/s，而实际系统仅输出几十 tok/s——差距达一个数量级。</p>
+
+<p>根因不是算力不足，而是执行边界：GPU 反复执行 launch→load→compute→store→synchronize 循环，每次 kernel boundary 打断数据流、销毁局部性、强制重新同步。Profiler trace 显示 kernel 在"热身完成前就已结束"。</p>
+
+<h3 id="q2-方法">Q2 方法</h3>
+
+<p><strong>Persistent Engine Kernel</strong>：AOT 编译期将整个模型静态展开为单个持续驻留的 Engine Kernel。Host 仅启动一次，GPU 执行在整个 decode 生命周期内保持驻留。运行时编排逻辑大部分迁入编译期。</p>
+
+<p><strong>Tile-level scheduling</strong>：operator 分解为 tile，tile 成为调度抽象本身——compute、communication、async I/O 均为 tile-level task，在 GPU 内部持续推进。中间结果驻留寄存器、shared memory 和 L2 cache，不 spill 到 global memory。</p>
+
+<p><strong>Warp / Block / GPU 三级特化</strong>：Engine Kernel 内部，不同 warp group 承担不同职责（异步数据搬运 / tensor 计算 / 通信重叠）。原来的串行 load→barrier→compute→barrier 变为 tile 粒度持续重叠。这一特化向上扩展到 GPU 级别（Heterogeneous Workers）：在 GLM-5.1 attention 层中，GPU0 运行 Sparse Indexer Worker（Top-K 选择、sparse index 构建、路由决策），GPU1–7 运行 MLA Workers（RMSNorm、GEMM、Flash Sparse Attention、AllReduce）。</p>
+
+<p><strong>GPU-resident orchestration</strong>：调度、同步、通信从 host runtime 迁入 persistent kernel。整个 attention 层 = 单次 Engine Kernel launch，broadcast/reduce/synchronization 在 tile pipeline 内部执行，取代 NCCL 式外部编排。</p>
+
+<p><strong>核心技术壁垒</strong>：AOT 将完整 transformer 模型静态展开为单个 persistent Engine Kernel，并在其中实现 warp/block/GPU 三级异构特化。这不是在现有 operator fusion 或 graph compilation 上的增量改进——需要从零共同设计 compiler IR、tile scheduler、通信原语和执行模型，工程表面积极大。与 GPUOS 的 persistent kernel 管理和 Fleet 的 megakernel 方向相关，但 TileRT 将持续执行与异构特化结合到了产品级。</p>
+
+<h3 id="q3-结果">Q3 结果</h3>
+
+<p>TileRT 驱动 GLM-5.1 在 MaaS 平台的原生超快推理服务——首个由 TileRT 驱动的模型厂商上线。博客未提供与基线系统的定量性能对比，但展示了在真实生产流量下（混合序列长度、KV 碎片化、MTP 动态 reshape）的部署稳定性。</p>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图</h2>
+
+<div class="mermaid">
+graph TD
+    subgraph "Traditional: graph → operator → kernel"
+        H[Host Runtime] -->|"launch #1"| K1["Kernel: RMSNorm"]
+        K1 -->|"sync · global mem"| K2["Kernel: QKV GEMM"]
+        K2 -->|"sync · global mem"| K3["Kernel: Attention"]
+        K3 -->|"sync · global mem"| K4["Kernel: AllReduce"]
+        K4 -->|"sync · global mem"| K5["Kernel: FFN ..."]
+    end
 </div>
-<div class="card">
-<div class="card-head"><a class="card-title" href="/topics/frontier-open-moe.html">frontier-open-moe</a><span class="card-date">4 papers</span></div>
-<div class="card-summary">2024 年 12 月到 2026 年 4 月的 16 个月里，开源 MoE 大模型经历了两代跨越式演进，产生了两条截然不同的技术路线。这三款模型——DeepSeek-V3、DeepSeek-V4、Kimi K2.6——都达到了与闭源前沿可比的性能水平，但它们的路径选择揭示了 2026 年开源 LLM 竞争的根本张力。</div>
-<div class="card-foot"><a href="/topics/frontier-open-moe.html">View →</a></div>
+
+<div class="mermaid">
+graph TD
+    subgraph "TileRT: Persistent Engine Kernel"
+        H2[Host Runtime] -->|"launch once"| EK["Engine Kernel (GPU-resident)"]
+        EK --> TP["Tile Pipeline · continuously advancing"]
+        TP --> W1["Warp Group A: async data movement (TMA)"]
+        TP --> W2["Warp Group B: tensor core compute"]
+        TP --> W3["Warp Group C: communication overlap"]
+        W1 -.->|"tile-granularity overlap"| W2
+        W2 -.->|"tile-granularity overlap"| W3
+        W3 -.->|"next tile"| W1
+    end
 </div>
+
+<p>传统模型将推理拆为独立 operator，每个 operator 启动独立 kernel，kernel 之间经过 host synchronization 和 global memory 往返。TileRT 将整个模型 AOT 编译为单个 Persistent Engine Kernel，内部以 tile 为调度粒度，warp group 分工执行数据搬运、张量计算、通信，三者在 tile pipeline 内持续重叠。</p>
+
+<p>Heterogeneous Workers 将 warp specialization 从 SM 内扩展到 NVL 域：</p>
+
+<div class="mermaid">
+graph LR
+    subgraph "8×H200 NVL — GLM-5.1 Attention Layer (single Engine Kernel launch)"
+        GPU0["GPU0 · Sparse Indexer Worker\nTop-K · sparse index · routing"]
+        GPU17["GPU1–7 · MLA Workers\nRMSNorm · GEMM · Flash Sparse Attn · AllReduce"]
+        GPU0 -->|"in-pipeline broadcast via NVLink"| GPU17
+        GPU17 -->|"in-pipeline reduce via NVLink"| GPU0
+    end
+</div>
+
+<p>GPU0 集中处理全局依赖重的 Top-K 选择和路由决策（同步/全局信息密集），GPU1–7 并行执行计算密集的 MLA 前向（天然适合 TP 分发）。通信不经 NCCL 外部编排，而是直接嵌入 tile pipeline 内部执行——整个 attention 层从 host 视角仅为一次 Engine Kernel launch。</p>
+
+<h2 id="§4-作者证明">§4 作者证明</h2>
+
+<p>无形式化作者证明 — 仅实证。</p>
+
+<p>本文为技术博客，未提供数学模型、性能方程或形式化推导。论证完全基于定性分析和架构描述。</p>
+
+<table>
+<tr><th>检查项</th><th>状态</th></tr>
+<tr><td>理论带宽 vs 实际性能的量级差距计算</td><td>提供具体数字（38 TB/s → ~1000 tok/s 理论 vs 几十 tok/s 实际），推导合理</td></tr>
+<tr><td>Profiler trace 证据</td><td>引用但未公开原始 trace 数据</td></tr>
+<tr><td>性能模型 / 解析方程</td><td>无</td></tr>
+<tr><td>消融实验</td><td>无（未隔离各优化的单独贡献）</td></tr>
+<tr><td>定量基线对比</td><td>无（未与 vLLM/TRT-LLM/SGLang 定量比较）</td></tr>
+<tr><td>生产部署验证</td><td>声称 GLM-5/5.1 生产上线，未提供延迟/吞吐 SLA 数据</td></tr>
+</table>
+
+<p>如果存在性能模型，应刻画：persistent kernel 消除的 idle time 占比 $f_{\text{idle}}(B)$ 作为 batch size $B$ 的函数；tile pipeline overlap efficiency 与 operator 粒度的关系；heterogeneous worker vs homogeneous TP 的通信量 $C_{\text{hetero}} / C_{\text{homo}}$ 缩减比。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据</h2>
+
+<p>博客未提供对照实验或基准测试数据，仅给出以下关键数据点和定性描述。</p>
+
+<h3 id="关键数据点">关键数据点</h3>
+
+<table>
+<tr><th>数据点</th><th>值</th><th>来源/上下文</th></tr>
+<tr><td>硬件平台</td><td>8×H200 NVL</td><td>聚合内存带宽 ~38 TB/s</td></tr>
+<tr><td>目标模型</td><td>GLM-5.1</td><td>每 decode token 激活参数量 ~42 GB</td></tr>
+<tr><td>理论 decode 吞吐（带宽约束）</td><td>~1000 tok/s</td><td>无 MTP，纯带宽除以参数量</td></tr>
+<tr><td>实际 decode 吞吐（传统框架）</td><td>几十 tok/s</td><td>未指明具体框架和配置</td></tr>
+<tr><td>性能差距</td><td>~10×</td><td>inter-kernel overhead 归因</td></tr>
+<tr><td>生产部署模型</td><td>GLM-5, GLM-5.1</td><td>MaaS 平台，首个 TileRT 驱动的模型厂商上线</td></tr>
+</table>
+
+<h3 id="生产稳定性挑战（定性）">生产稳定性挑战（定性）</h3>
+
+<ul>
+<li><strong>KV 缓存碎片化</strong>：长短上下文交错导致 KV cache 持续增长/碎片化/迁移，内存局部性退化</li>
+<li><strong>MTP 动态 reshape</strong>：draft/verify 阶段的 accept/reject 路径持续动态重塑 pipeline，引入新的同步依赖</li>
+<li><strong>GLM-5 FP8 + 超长上下文</strong>：通信放大成为新瓶颈</li>
+<li><strong>v0.1.1 改进方向</strong>：进一步压缩 idle interval，引入更细粒度的 Engine Kernel 内部 overlap pipeline，主要改善 tail latency 而非理论吞吐</li>
+</ul>
+
+<h3 id="缺失数据">缺失数据</h3>
+
+<ul>
+<li>TileRT vs 基线系统的定量延迟/吞吐对比</li>
+<li>各优化（persistent kernel / warp specialization / heterogeneous workers）的独立消融</li>
+<li>生产环境 p50/p99 延迟及 SLA 达标率</li>
+<li>Heterogeneous Workers vs homogeneous TP 的通信量/延迟定量对比</li>
+</ul>
+
+<h2 id="§6-论证链">§6 论证链</h2>
+
+<table>
+<tr><th>#</th><th>论证步骤</th><th>支撑证据</th><th>推出</th></tr>
+<tr><td>1</td><td>AI 推理需求从质量→吞吐→速度演进，Agent/TTS/voice 场景推动近 BS=1 延迟优先工作负载</td><td>产品趋势观察（ChatGPT → Cursor/Claude Code → 自主系统）</td><td>批处理摊销空间被压缩，原来隐藏在大 batch 中的固定开销进入关键路径</td></tr>
+<tr><td>2</td><td>Test-Time Scaling 使推理速度直接影响推理能力：固定延迟预算下，更快推理 = 更多 rollout / 更深推理链</td><td>TTS 机制推理</td><td>速度不再只影响成本，而是决定推理深度——速度成为 scaling 维度</td></tr>
+<tr><td>3</td><td>8×H200 NVL 理论带宽 ~38 TB/s 应支持 ~1000 tok/s，实际仅几十 tok/s，差距达 10×</td><td>硬件规格 + GLM-5.1 参数量 42 GB 的带宽约束计算</td><td>性能瓶颈不在计算能力，在 kernel 间的执行边界</td></tr>
+<tr><td>4</td><td>Profiler 显示 BS≈1 下 kernel 执行仅 μs 级，"热身完成前就已结束"，launch/sync 开销占比反超</td><td>引用 profiler trace 观察</td><td>优化单个 kernel 不够，必须消除 kernel 之间的 overhead</td></tr>
+<tr><td>5</td><td>TileRT 用 AOT 将模型静态展开为单个 Persistent Engine Kernel，host 仅启动一次</td><td>架构设计</td><td>消除所有 inter-kernel launch gap 和 host-device synchronization</td></tr>
+<tr><td>6</td><td>Tile-level scheduling + warp specialization 使 load/compute/comm 在 tile 粒度持续重叠</td><td>架构设计</td><td>中间结果驻留寄存器/SMEM/L2，不 spill 到 global memory</td></tr>
+<tr><td>7</td><td>Warp specialization 扩展到 GPU 级别：GPU0 = Sparse Indexer, GPU1–7 = MLA Workers</td><td>GLM-5.1 attention 层部署实例</td><td>打破对称 TP 假设，按通信代价和数据依赖分配异构角色</td></tr>
+<tr><td>8</td><td>通信从 NCCL 外部编排迁入 tile pipeline 内部，整个 attention 层 = 单次 kernel launch</td><td>架构设计</td><td>compute ↔ communication 持续重叠，不再有 compute→sync→compute 串行瓶颈</td></tr>
+<tr><td>9</td><td>生产流量下维持稳定性比峰值性能更重要（KV 碎片、MTP reshape、混合负载）</td><td>GLM-5/5.1 上线经验</td><td>接近硬件极限后，最难的问题从 kernel 优化转为执行稳定性和系统全栈共同设计</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference</h2>
+
+<p><strong>开源仓库</strong>：<a href="https://github.com/tile-ai/TileRT">github.com/tile-ai/TileRT</a>（选择性模块开源，博客未说明开源范围和具体模块）。</p>
+
+<h3 id="关键实现细节">关键实现细节</h3>
+
+<p><strong>细节 1 — Tile pipeline 内的异步数据搬运与计算重叠</strong>：Persistent Engine Kernel 内部将 TMA 异步 copy 与 tensor core 计算在 warp group 级别交错执行。pipeline 深度（同时 in-flight 的 tile 数量）必须足够覆盖 TMA latency，否则 compute warp 仍会 stall——这直接受限于 shared memory 容量和 register pressure，是 tile size 选择的核心约束。</p>
+
+<p><strong>细节 2 — Heterogeneous Worker 间的 in-pipeline 通信</strong>：GPU0（Sparse Indexer）与 GPU1–7（MLA Workers）之间的 broadcast/reduce 不走 NCCL collective call，而是嵌入 tile pipeline 作为 tile-level 通信任务执行。这要求 AOT 编译期静态规划 GPU 间通信的 tile 对齐和数据依赖，运行时无法动态调整 GPU 角色分配或通信拓扑。</p>
+
+<h3 id="部署上下文">部署上下文</h3>
+
+<table>
+<tr><th>维度</th><th>具体情况</th></tr>
+<tr><td>服务阶段</td><td>以 decode 为主（latency-first），prefill 细节未展开</td></tr>
+<tr><td>并发模式</td><td>近 BS=1 低并发（博客论述核心场景）</td></tr>
+<tr><td>硬件亲和性</td><td>8×H200 NVL（NVLink 域内 persistent kernel + heterogeneous workers）</td></tr>
+<tr><td>生态集成</td><td>独立推理系统，非 vLLM/SGLang/TRT-LLM 插件</td></tr>
+<tr><td>迁移路径</td><td>完整框架替换，非增量配置变更</td></tr>
+</table>
+
+<h3 id="硬件反向推论">硬件反向推论</h3>
+
+<p>TileRT 的软件复杂度暗示以下硬件原语如果存在将大幅简化实现：</p>
+
+<ul>
+<li><strong>原生 persistent CTA / long-running workgroup 模式</strong>：当前 persistent kernel 通过软件 trick 占据 SM 不释放实现，与 GPU driver/scheduler 存在对抗。如果硬件提供原生支持（GPUOS 论文探讨的方向），可以消除这一层的工程脆弱性。</li>
+<li><strong>跨 SM 的轻量 tile 信号原语</strong>：warp specialization 依赖 shared memory barrier 进行 SM 内同步；tile pipeline 跨 SM 协调目前需要经过 L2/global memory。硬件级跨 SM signal/wait 可以扩大 tile pipeline 的有效并行度。</li>
+<li><strong>NVLink 上的细粒度同步硬件</strong>：Heterogeneous Workers 间的 tile-level 通信可能基于 NVLink 上的 flag polling，原生硬件同步原语可以降低同步延迟和 CPU cycle 开销。</li>
+</ul>
+
 </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>

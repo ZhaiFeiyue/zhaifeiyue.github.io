@@ -184,36 +184,38 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 
 <div class="w">
 <h1>cluster-llm-deployment</h1>
-<div class="card-meta">Cross-category topic | 17 sources</div>
+<div class="card-meta">Cross-category topic | 18 sources</div>
 <div class="link-area" style="border-top:none;margin-top:8px">
 <a href="/topics/">← All Topics</a>
 </div>
 <div class="detail-content">
-<h1 id="cluster-llm-部署：存储、计算与成本">Cluster LLM 部署：存储、计算与成本</h1>
+<h1 id="cluster-llm-部署：存储、计算、执行与成本">Cluster LLM 部署：存储、计算、执行与成本</h1>
 
 <h2 id="§1-主题缘起">§1 主题缘起</h2>
 
-<p>大规模 LLM 集群部署正在经历从"单节点单模型"到"千 GPU 级多模态流水线"的范式跃迁。这一跃迁受到三股力量的同时驱动。</p>
+<p>大规模 LLM 集群部署正在经历从"单节点单模型"到"千 GPU 级多模态流水线"的范式跃迁。这一跃迁受到四股力量的同时驱动。</p>
 
 <p><strong>存储维度</strong>：Agentic workload 的兴起使 KV-Cache 命中率极高（DeepSeek 生产 coding agent trace 显示 98.7% 命中率 <a href="/papers/2602.21548/detail.html#1-tl-dr" class="ref-link" title="L2:2602.21548#1-tl-dr">[L2:2602.21548]</a>），prefill 从计算密集退化为 I/O 密集。与此同时，PD 分离架构将所有存储读取集中在 prefill engine 的 SNIC 上，使存储带宽成为单点瓶颈 <a href="/papers/2602.21548/detail.html#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈" class="ref-link" title="L2:2602.21548#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈">[L2:2602.21548]</a>。新一代 hybrid attention 模型（KDA:MLA 混合）将单实例 KV 吞吐从 60 Gbps 压缩到 3 Gbps，使跨数据中心 PD 分离从不可行变为可行 <a href="/papers/2604.15039/detail.html#q1-q2-q3" class="ref-link" title="L2:2604.15039#q1-q2-q3">[L2:2604.15039]</a>。RL 训练中的权重传输同样面临 TB 级数据搬运的挑战——Ray object store 传 40 GB 需要 32 秒，而 GPU-direct RDMA 只需 0.2 秒 <a href="/papers/2604.09107/detail.html#q1-痛点-llm-rl-训练中权重传输的效率-灵活性困境" class="ref-link" title="L2:2604.09107#q1-痛点-llm-rl-训练中权重传输的效率-灵活性困境">[L2:2604.09107]</a>。</p>
 
 <p><strong>计算维度</strong>：硬件规格的代际提升未能自动转化为实际性能。MI300X 虽然理论 FP8 峰值 2615 TFLOPS 超过 H100 的 1979 TFLOPS，但实际利用率仅 45%（对比 NVIDIA 93%），根因是软件栈成熟度不足 <a href="/papers/2510.27583/detail.html#核心三问" class="ref-link" title="L2:2510.27583#核心三问">[L2:2510.27583]</a>。Blackwell B200 通过 TMEM 和第五代 Tensor Core 实现了从训练专用到推理优化的架构转换 <a href="/papers/2512.02189/detail.html#core-contribution" class="ref-link" title="L2:2512.02189#core-contribution">[L2:2512.02189]</a>，但 BSP 编程模型在分布式执行中引入三类性能税——kernel launch、全局同步、数据局部性丧失——消耗掉潜在的并行加速 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>。MoE 架构下，跨节点 all-to-all 通信几乎等于计算时间 <a href="/papers/2412.19437/detail.html#核心三问" class="ref-link" title="L2:2412.19437#核心三问">[L2:2412.19437]</a>。</p>
 
+<p><strong>执行效率维度</strong>：即使存储和硬件不是瓶颈，kernel 间的执行边界本身也在消耗一个数量级的性能。8×H200 NVL 聚合内存带宽 ~38 TB/s，GLM-5.1 每 decode token 激活参数量 ~42 GB，纯带宽约束下理论吞吐可达 ~1000 tok/s，而实际系统仅输出几十 tok/s <a href="/papers/tilert-speed-scaling-law/detail.html#q1-痛点" class="ref-link" title="L2:tilert-speed-scaling-law#q1-痛点">[L2:tilert-speed-scaling-law]</a>。根因不是算力不足，而是 GPU 反复执行 launch→load→compute→store→synchronize 循环，每次 kernel boundary 打断数据流、销毁局部性、强制重新同步 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。这一发现将优化目标从"如何让每个 kernel 更快"扩展到"如何消除 kernel 边界本身"，催生了 AOT 编译全模型为单个持久化 Engine Kernel 的新范式。</p>
+
 <p><strong>成本维度</strong>：SLO 达标率与吞吐量之间的 Pareto 前沿尚未被有效推进。Colocation 方案在 P99 TBT 上表现糟糕，disaggregation 方案的 GPU 利用率低至 0.2% <a href="/papers/2504.09285/detail.html#核心三问" class="ref-link" title="L2:2504.09285#核心三问">[L2:2504.09285]</a>。Agentic workflow 将单个用户查询拆成 19–21 次 LLM 调用，现有独立请求调度器既不懂阶段依赖也不懂异构 GPU 分配 <a href="/papers/2505.05286/detail.html#summary" class="ref-link" title="L2:2505.05286#summary">[L2:2505.05286]</a>。配置空间爆炸使手动调优需要数天 GPU 时间 <a href="/papers/2601.06288/detail.html#核心三问" class="ref-link" title="L2:2601.06288#核心三问">[L2:2601.06288]</a>。</p>
 
-<p>这三个维度的矛盾在 2024-2026 年同时激化，催生了本主题的 17 篇跨 framework/hardware/cluster/kernel 四大类别的系统性工作。</p>
+<p>这四个维度的矛盾在 2024–2026 年同时激化，催生了本主题的 18 篇跨 framework/hardware/cluster/kernel 四大类别的系统性工作。</p>
 
 <h2 id="§2-覆盖的-category-分布">§2 覆盖的 category 分布</h2>
 
 <table>
 <tr><th>Category</th><th>论文数</th><th>代表性工作</th></tr>
-<tr><td>framework</td><td>11</td><td>DualPath <a href="/papers/2602.21548/detail.html#1-tl-dr" class="ref-link" title="L2:2602.21548#1-tl-dr">[L2:2602.21548]</a>、PrfaaS <a href="/papers/2604.15039/detail.html#1-tl-dr" class="ref-link" title="L2:2604.15039#1-tl-dr">[L2:2604.15039]</a>、DynaServe <a href="/papers/2504.09285/detail.html#核心三问" class="ref-link" title="L2:2504.09285#核心三问">[L2:2504.09285]</a></td></tr>
+<tr><td>framework</td><td>12</td><td>DualPath <a href="/papers/2602.21548/detail.html#1-tl-dr" class="ref-link" title="L2:2602.21548#1-tl-dr">[L2:2602.21548]</a>、PrfaaS <a href="/papers/2604.15039/detail.html#1-tl-dr" class="ref-link" title="L2:2604.15039#1-tl-dr">[L2:2604.15039]</a>、DynaServe <a href="/papers/2504.09285/detail.html#核心三问" class="ref-link" title="L2:2504.09285#核心三问">[L2:2504.09285]</a>、TileRT <a href="/papers/tilert-speed-scaling-law/detail.html#1-tl-dr" class="ref-link" title="L2:tilert-speed-scaling-law#1-tl-dr">[L2:tilert-speed-scaling-law]</a></td></tr>
 <tr><td>hardware</td><td>3</td><td>MI300X 性能分析 <a href="/papers/2510.27583/detail.html#核心三问" class="ref-link" title="L2:2510.27583#核心三问">[L2:2510.27583]</a>、Blackwell 微架构 <a href="/papers/2512.02189/detail.html#core-contribution" class="ref-link" title="L2:2512.02189#core-contribution">[L2:2512.02189]</a>、GPU 架构对比 <a href="/papers/gpu-arch-comparison-2025/detail.html#core-contribution" class="ref-link" title="L2:gpu-arch-comparison-2025#core-contribution">[L2:gpu-arch-comparison-2025]</a></td></tr>
 <tr><td>cluster</td><td>2</td><td>Multi-GPU 性能税 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>、fabric-lib <a href="/papers/2510.27656/detail.html#核心三问" class="ref-link" title="L2:2510.27656#核心三问">[L2:2510.27656]</a></td></tr>
 <tr><td>kernel</td><td>1</td><td>ConCCL DMA Offload <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a></td></tr>
 </table>
 
-<p>Framework 占绝对多数（11/17），反映当前优化空间主要在系统软件层。Hardware 提供基础约束，cluster 和 kernel 提供底层原语。</p>
+<p>Framework 占绝对多数（12/18），反映当前优化空间主要在系统软件层。TileRT 的加入强化了 framework 类别中"执行模型创新"这一方向——它不是传统的请求调度或 KV 管理框架，而是从编译器到运行时的全栈执行引擎，代表 framework 类别正在向下侵入 kernel 层的边界 <a href="/papers/tilert-speed-scaling-law.html#生态位" class="ref-link" title="L3:tilert-speed-scaling-law#生态位">[L3:tilert-speed-scaling-law]</a>。Hardware 提供基础约束，cluster 和 kernel 提供底层原语。</p>
 
 <h2 id="§3-时间线">§3 时间线</h2>
 
@@ -235,6 +237,7 @@ h3 { font-size: 1.05rem; margin: 16px 0 6px; }
 <tr><td>2026-04</td><td>PrfaaS</td><td>跨 DC PD 分离，hybrid attention 使 KV 吞吐降至 3 Gbps，+54% 吞吐 <a href="/papers/2604.15039/detail.html#q1-q2-q3" class="ref-link" title="L2:2604.15039#q1-q2-q3">[L2:2604.15039]</a></td></tr>
 <tr><td>2026-04</td><td>TensorHub</td><td>ROS 无所有权存储 + pipeline replication，RL 权重传输 stall 减少 6.7× <a href="/papers/2604.09107/detail.html#q3-结果" class="ref-link" title="L2:2604.09107#q3-结果">[L2:2604.09107]</a></td></tr>
 <tr><td>2026-04</td><td>Scepsy</td><td>Aggregate LLM Pipeline 抽象 + 分数 GPU 调度，吞吐提升 2.4× <a href="/papers/2604.15186/detail.html#core-contribution" class="ref-link" title="L2:2604.15186#core-contribution">[L2:2604.15186]</a></td></tr>
+<tr><td>2026-05</td><td>TileRT</td><td>AOT 编译全模型为单个 Persistent Engine Kernel，warp/block/GPU 三级特化消除 inter-kernel idle，驱动 GLM-5.1 生产上线 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a></td></tr>
 </table>
 
 <h2 id="§4-evolution-timeline-技术谱系">§4 Evolution timeline (技术谱系)</h2>
@@ -251,16 +254,18 @@ flowchart TB
         UCX["UCX P2P"] --> TH
     end
 
-    subgraph Compute["计算演进"]
+    subgraph Compute["计算与执行演进"]
         direction TB
         Hopper["Hopper H100/H200<br/>hardware"] --> BWell["Blackwell B200: TMEM+tcgen05<br/>hardware"]
         CDNA3["MI300X CDNA3<br/>hardware"] --> Bench["MI300X 45% 利用率诊断<br/>hardware"]
         Bench --> CDNA4["MI355X CDNA4 追平 FP8<br/>hardware"]
         BSP["BSP 编程模型"] --> Taxes["Three Taxes 分析<br/>cluster+kernel"]
         Taxes --> Iris["Iris compute-comm fusion<br/>kernel"]
+        Iris --> TileRT["TileRT: 全模型 AOT<br/>Persistent Engine Kernel<br/>framework+kernel"]
         RCCL["RCCL/NCCL Collectives"] --> FL["fabric-lib: P2P RDMA<br/>cluster"]
         FL --> Iris
-        DSv3_Comm["DeepSeek-V3 custom all-to-all<br/>framework+kernel"] --> Taxes
+        DSv3_Comm["DeepSeek-V3 custom all-to-all<br/>warp specialization<br/>framework+kernel"] --> Taxes
+        DSv3_Comm --> TileRT
     end
 
     subgraph Cost["成本演进"]
@@ -280,14 +285,17 @@ flowchart TB
     DP -.->|"存储 I/O 约束<br/>驱动调度"| DS
     BWell -.->|"FP4/FP6 新精度<br/>改变 ops:byte"| AIC
     MoELB -.->|"expert 放置优化"| Scp
+    Taxes -.->|"inter-kernel idle 诊断<br/>motivate persistent engine"| TileRT
+    TileRT -.->|"GPU-resident 通信<br/>替代外部编排"| FL
 </div>
 
 <p>关键谱系节点：</p>
 
 <ul>
+<li><strong>Three Taxes → Iris → TileRT 的持续执行演进链</strong>：BSP 模型是分布式 GPU 编程的事实标准 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>，Three Taxes 诊断了三类性能税，Iris 用 in-kernel primitive 在 tile 级别融合 compute-comm，而 TileRT 将这一思路推至逻辑极限——AOT 编译将整个模型静态展开为单个 Persistent Engine Kernel，host 仅启动一次，所有调度和通信在 GPU 内部持续推进 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。这条演进链从"消除单个 kernel 内的低效"走到"消除 kernel 边界本身"。</li>
+<li><strong>DeepSeek-V3 DualPipe 的 warp specialization 向 TileRT 的 GPU-level specialization 扩展</strong>：DualPipe 在 SM 级别用 20/132 SM（15%）专门分配给通信 <a href="/papers/2412.19437/detail.html#关键技术细节" class="ref-link" title="L2:2412.19437#关键技术细节">[L2:2412.19437]</a>，TileRT 将这一思路从 warp 级扩展到 GPU 级——GPU0 运行 Sparse Indexer Worker，GPU1–7 运行 MLA Workers，通信从 NCCL 外部编排迁入 tile pipeline 内部 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。</li>
 <li><strong>DualPath 与 TensorHub 独立发现同一洞察</strong>：集群中存在大量空闲 NIC 带宽可通过 DAG 拓扑聚合。DualPath 利用 DE 端 SNIC 空闲帮 PE 读 KV-Cache <a href="/papers/2602.21548/detail.html#q2-方法-双路径-kv-cache-加载-cnic-centric-流量隔离-自适应调度" class="ref-link" title="L2:2602.21548#q2-方法-双路径-kv-cache-加载-cnic-centric-流量隔离-自适应调度">[L2:2602.21548]</a>，TensorHub 利用正在接收权重的 rollout worker NIC 上行空闲帮后续 worker 读 weights <a href="/papers/2604.09107.html#本篇-vs-相关论文的-delta" class="ref-link" title="L3:2604.09107#本篇-vs-相关论文的-delta">[L3:2604.09107]</a>。</li>
-<li><strong>BSP → Three Taxes → Iris/ConCCL 的 kernel-level 演进链</strong>：BSP 模型是分布式 GPU 编程的事实标准 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>，ConCCL 用 DMA offload 消除 compute interference <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>，Iris 用 in-kernel primitive 消除 kernel launch overhead。</li>
-<li><strong>DeepSeek-V3 DualPipe 是多条演进线的汇聚点</strong>：细粒度组件拆分 + 双向调度实现 all-to-all 完全隐藏 <a href="/papers/2412.19437/detail.html#核心三问" class="ref-link" title="L2:2412.19437#核心三问">[L2:2412.19437]</a>，其通信-计算重叠思想被 DynaServe、fabric-lib 等后续工作继承。</li>
+<li><strong>DeepSeek-V3 DualPipe 是多条演进线的汇聚点</strong>：细粒度组件拆分 + 双向调度实现 all-to-all 完全隐藏 <a href="/papers/2412.19437/detail.html#核心三问" class="ref-link" title="L2:2412.19437#核心三问">[L2:2412.19437]</a>，其通信-计算重叠思想被 DynaServe、fabric-lib、TileRT 等后续工作继承。</li>
 </ul>
 
 <h2 id="§5-技术线交错">§5 技术线交错</h2>
@@ -304,37 +312,58 @@ flowchart TB
 
 <p>DeepSeek-V3 的 256 routed experts + 64-way EP 使跨节点 all-to-all 通信时间几乎等于计算时间 <a href="/papers/2412.19437/detail.html#核心三问" class="ref-link" title="L2:2412.19437#核心三问">[L2:2412.19437]</a>。DualPipe 通过双向调度和 warp specialization 将 20/132 SM（15%）专门分配给通信才能实现完全隐藏 <a href="/papers/2412.19437/detail.html#关键技术细节" class="ref-link" title="L2:2412.19437#关键技术细节">[L2:2412.19437]</a>。Hybrid attention（KDA:MLA 混合）将 KV 吞吐压缩 4–13× <a href="/papers/2604.15039/detail.html#q1-q2-q3" class="ref-link" title="L2:2604.15039#q1-q2-q3">[L2:2604.15039]</a>，使 PrfaaS 的跨 DC 方案成为可能——但这反过来要求 PD 集群内必须同构才能做 P↔D 角色转换 <a href="/papers/2604.15039/detail.html#7-4-关键实现细节-key-technical-details-易错点" class="ref-link" title="L2:2604.15039#7-4-关键实现细节-key-technical-details-易错点">[L2:2604.15039]</a>。MoE 的动态 token 路由使静态 expert 放置注定产生 straggler，推动了运行时负载均衡算法的发展 <a href="/papers/moe-lb-interai25/detail.html#summary" class="ref-link" title="L2:moe-lb-interai25#summary">[L2:moe-lb-interai25]</a>。</p>
 
-<h3 id="5-4-调度器与通信库的纵向协同">5.4 调度器与通信库的纵向协同</h3>
+<h3 id="5-4-持续执行范式如何跨越-framework-kernel-hardware-边界">5.4 持续执行范式如何跨越 framework-kernel-hardware 边界</h3>
 
-<p>fabric-lib 证明 P2P 通信是 collective 的必要补充 <a href="/papers/2510.27656/detail.html#summary" class="ref-link" title="L2:2510.27656#summary">[L2:2510.27656]</a>，而 TensorHub 的 ROS 利用 fabric-lib 类的 RDMA 引擎实现零 trainer stall <a href="/papers/2604.09107.html#本篇-vs-相关论文的-delta" class="ref-link" title="L3:2604.09107#本篇-vs-相关论文的-delta">[L3:2604.09107]</a>。在推理侧，KVFlow 的 workflow-aware 驱逐需要 serving 层开始感知 application-layer graph <a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="L2:2507.07400#core-contribution">[L2:2507.07400]</a>，JITServe 则进一步要求调度器理解多阶段 compound 请求的 DAG 依赖 <a href="/papers/2504.20068/detail.html#summary" class="ref-link" title="L2:2504.20068#summary">[L2:2504.20068]</a>。这种"应用语义下沉到基础设施"的趋势是存储、计算和成本三条线同时推进的结果。</p>
+<p>TileRT 的 Persistent Engine Kernel 是 framework 层（系统设计）和 kernel 层（GPU 编程模型）深度融合的产物——AOT 编译器将整个 transformer 模型静态展开为单个 kernel，在编译期规划 tile 调度、warp 特化和通信时序 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。这一设计隐式依赖 hardware 层的能力：persistent kernel 通过软件 trick 占据 SM 不释放实现 GPU-resident 执行，如果硬件提供原生 persistent CTA 支持可以消除工程脆弱性；NVLink 上的 tile-level 通信目前基于 flag polling，原生硬件同步原语可以降低延迟 <a href="/papers/tilert-speed-scaling-law/detail.html#硬件反向推论" class="ref-link" title="L2:tilert-speed-scaling-law#硬件反向推论">[L2:tilert-speed-scaling-law]</a>。同时，Three Taxes 的 BSP 性能税诊断 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a> 直接激发了 TileRT "消除所有 kernel 边界"的设计目标。这形成了一条从 cluster（性能税诊断）到 kernel（in-kernel fusion）到 framework（全模型 AOT）再到 hardware（硬件原语反推）的完整技术线交错。</p>
+
+<h3 id="5-5-调度器与通信库的纵向协同">5.5 调度器与通信库的纵向协同</h3>
+
+<p>fabric-lib 证明 P2P 通信是 collective 的必要补充 <a href="/papers/2510.27656/detail.html#summary" class="ref-link" title="L2:2510.27656#summary">[L2:2510.27656]</a>，而 TensorHub 的 ROS 利用 fabric-lib 类的 RDMA 引擎实现零 trainer stall <a href="/papers/2604.09107.html#本篇-vs-相关论文的-delta" class="ref-link" title="L3:2604.09107#本篇-vs-相关论文的-delta">[L3:2604.09107]</a>。在推理侧，KVFlow 的 workflow-aware 驱逐需要 serving 层开始感知 application-layer graph <a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="L2:2507.07400#core-contribution">[L2:2507.07400]</a>，JITServe 则进一步要求调度器理解多阶段 compound 请求的 DAG 依赖 <a href="/papers/2504.20068/detail.html#summary" class="ref-link" title="L2:2504.20068#summary">[L2:2504.20068]</a>。TileRT 以相反方向推进这一趋势——将通信从外部编排"下沉"到 GPU-resident pipeline 内部，整个 attention 层从 host 视角仅为一次 Engine Kernel launch <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。"应用语义下沉到基础设施"（KVFlow/JITServe）与"基础设施编排下沉到 GPU"（TileRT）是同一趋势的两个互补方向。</p>
 
 <h2 id="§6-共识与分歧">§6 共识与分歧</h2>
 
 <h3 id="共识">共识</h3>
 
 <ol>
-<li><strong>PD 分离是必要的基础架构</strong>：所有 17 篇工作中涉及推理 serving 的 7 篇（DualPath、PrfaaS、DynaServe、JITServe、KVFlow、HexGen-Flow、Scepsy）均建立在 prefill 与 decode 分离的前提上 <a href="/papers/2602.21548/detail.html#1-tl-dr" class="ref-link" title="L2:2602.21548#1-tl-dr">[L2:2602.21548]</a> <a href="/papers/2604.15039/detail.html#1-tl-dr" class="ref-link" title="L2:2604.15039#1-tl-dr">[L2:2604.15039]</a> <a href="/papers/2504.09285/detail.html#核心三问" class="ref-link" title="L2:2504.09285#核心三问">[L2:2504.09285]</a>。</li>
+<li><strong>PD 分离是必要的基础架构</strong>：所有 18 篇工作中涉及推理 serving 的 8 篇（DualPath、PrfaaS、DynaServe、JITServe、KVFlow、HexGen-Flow、Scepsy、TileRT）均建立在 prefill 与 decode 分离或至少 decode-first 优化的前提上 <a href="/papers/2602.21548/detail.html#1-tl-dr" class="ref-link" title="L2:2602.21548#1-tl-dr">[L2:2602.21548]</a> <a href="/papers/2604.15039/detail.html#1-tl-dr" class="ref-link" title="L2:2604.15039#1-tl-dr">[L2:2604.15039]</a> <a href="/papers/2504.09285/detail.html#核心三问" class="ref-link" title="L2:2504.09285#核心三问">[L2:2504.09285]</a>。TileRT 虽以 decode 延迟为核心目标而非显式 PD 分离，其设计本质上是 decode-first 的极致优化 <a href="/papers/tilert-speed-scaling-law/detail.html#7-实现-cross-reference" class="ref-link" title="L2:tilert-speed-scaling-law#7-实现-cross-reference">[L2:tilert-speed-scaling-law]</a>。</li>
+</ul>
+
+<ol>
 <li><strong>RDMA 是大规模 GPU 集群数据搬运的必需原语</strong>：DualPath <a href="/papers/2602.21548/detail.html#q2-方法-双路径-kv-cache-加载-cnic-centric-流量隔离-自适应调度" class="ref-link" title="L2:2602.21548#q2-方法-双路径-kv-cache-加载-cnic-centric-流量隔离-自适应调度">[L2:2602.21548]</a>、TensorHub <a href="/papers/2604.09107/detail.html#q2-方法-reference-oriented-storage-无所有权的存储抽象" class="ref-link" title="L2:2604.09107#q2-方法-reference-oriented-storage-无所有权的存储抽象">[L2:2604.09107]</a>、fabric-lib <a href="/papers/2510.27656/detail.html#核心三问" class="ref-link" title="L2:2510.27656#核心三问">[L2:2510.27656]</a> 三篇独立工作均选择 RDMA 作为核心传输机制。</li>
-<li><strong>Agentic workload 正在重塑 serving 系统假设</strong>：KVFlow 证明 LRU 在 agentic workflow 中系统性驱逐热数据 <a href="/papers/2507.07400/detail.html#key-findings" class="ref-link" title="L2:2507.07400#key-findings">[L2:2507.07400]</a>，DualPath 展示 agentic trace 的 98.7% KV-Cache 命中率 <a href="/papers/2602.21548/detail.html#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈" class="ref-link" title="L2:2602.21548#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈">[L2:2602.21548]</a>，HexGen-Flow 指出单个 Text-to-SQL 查询触发约 20 次 LLM 调用 <a href="/papers/2505.05286/detail.html#summary" class="ref-link" title="L2:2505.05286#summary">[L2:2505.05286]</a>。</li>
+</ul>
+
+<ol>
+<li><strong>Agentic workload 正在重塑 serving 系统假设</strong>：KVFlow 证明 LRU 在 agentic workflow 中系统性驱逐热数据 <a href="/papers/2507.07400/detail.html#key-findings" class="ref-link" title="L2:2507.07400#key-findings">[L2:2507.07400]</a>，DualPath 展示 agentic trace 的 98.7% KV-Cache 命中率 <a href="/papers/2602.21548/detail.html#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈" class="ref-link" title="L2:2602.21548#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈">[L2:2602.21548]</a>，HexGen-Flow 指出单个 Text-to-SQL 查询触发约 20 次 LLM 调用 <a href="/papers/2505.05286/detail.html#summary" class="ref-link" title="L2:2505.05286#summary">[L2:2505.05286]</a>。TileRT 则从另一角度呼应：Agent/TTS/voice 场景推动近 BS=1 延迟优先工作负载成为主流，批处理摊销空间被压缩 <a href="/papers/tilert-speed-scaling-law/detail.html#6-论证链" class="ref-link" title="L2:tilert-speed-scaling-law#6-论证链">[L2:tilert-speed-scaling-law]</a>。</li>
+</ul>
+
+<ol>
 <li><strong>软件栈效率是当前 AMD 平台的主要瓶颈，而非硬件设计</strong>：MI300X 的频率-效率分离实验精确量化了软件效率 80–85% 和频率降低约 42% 各自的贡献 <a href="/papers/2510.27583/detail.html#核心三问" class="ref-link" title="L2:2510.27583#核心三问">[L2:2510.27583]</a>。</li>
+</ul>
+
+<ol>
+<li><strong>Inter-kernel overhead 在低 batch size 下是性能主要瓶颈</strong>：Three Taxes 将 BSP 模型的开销分解为 kernel launch tax、bulk synchronous tax、data locality tax 三类 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>，TileRT 量化了 8×H200 NVL 上理论 ~1000 tok/s 与实际几十 tok/s 的量级差距并归因于 inter-kernel idle <a href="/papers/tilert-speed-scaling-law/detail.html#q1-痛点" class="ref-link" title="L2:tilert-speed-scaling-law#q1-痛点">[L2:tilert-speed-scaling-law]</a>，ConCCL 的 DMA offload 从另一角度验证了 compute interference 是 kernel 并发执行的关键障碍 <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>。三篇工作从诊断、消除、融合三个层面达成共识。</li>
 </ul>
 
 <h3 id="分歧">分歧</h3>
 
 <ol>
-<li><strong>存储层方案选择：DRAM pool vs SSD + NIC 聚合</strong>。Mooncake 用分布式 DRAM pool 缓存 KV-Cache，但 DualPath 论证 DRAM 在 RL training rollout 时被 optimizer state offload 占用，且 working set 成本以 $r^3$ 扩展 <a href="/papers/2602.21548/detail.html#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈" class="ref-link" title="L2:2602.21548#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈">[L2:2602.21548]</a>，因此选择 SSD 存储 + NIC 带宽聚合路线。PrfaaS 则走第三条路——hybrid attention 压缩 KV 体积后用 commodity Ethernet 跨 DC 传输 <a href="/papers/2604.15039/detail.html#q1-q2-q3" class="ref-link" title="L2:2604.15039#q1-q2-q3">[L2:2604.15039]</a>。三者假设的硬件基础和成本结构完全不同。</li>
+<li><strong>存储层方案选择：DRAM pool vs SSD + NIC 聚合 vs 模型压缩</strong>。Mooncake 用分布式 DRAM pool 缓存 KV-Cache，但 DualPath 论证 DRAM 在 RL training rollout 时被 optimizer state offload 占用，且 working set 成本以 $r^3$ 扩展 <a href="/papers/2602.21548/detail.html#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈" class="ref-link" title="L2:2602.21548#q1-痛点-pd-分离架构下-agentic-推理的存储带宽单点瓶颈">[L2:2602.21548]</a>，因此选择 SSD 存储 + NIC 带宽聚合路线。PrfaaS 则走第三条路——hybrid attention 压缩 KV 体积后用 commodity Ethernet 跨 DC 传输 <a href="/papers/2604.15039/detail.html#q1-q2-q3" class="ref-link" title="L2:2604.15039#q1-q2-q3">[L2:2604.15039]</a>。三者假设的硬件基础和成本结构完全不同。</li>
 </ul>
 
 <ol>
-<li><strong>通信融合粒度：kernel-level vs framework-level</strong>。Three Taxes 工作主张将通信逻辑直接嵌入 compute kernel 实现 tile-level pipeline <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>，而 DeepSeek-V3 的 DualPipe 在 framework 层通过双向调度实现组件级重叠 <a href="/papers/2412.19437/detail.html#核心三问" class="ref-link" title="L2:2412.19437#核心三问">[L2:2412.19437]</a>。两者在 MI300X/H800 上分别获得 10–20% 和约 60%+ 的 bubble 减少，但设计哲学截然不同——前者需要重写每个 kernel，后者需要全局调度逻辑。</li>
+<li><strong>通信融合粒度：kernel-level vs framework-level vs full-model AOT</strong>。Three Taxes 工作主张将通信逻辑直接嵌入 compute kernel 实现 tile-level pipeline <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>，DeepSeek-V3 的 DualPipe 在 framework 层通过双向调度实现组件级重叠 <a href="/papers/2412.19437/detail.html#核心三问" class="ref-link" title="L2:2412.19437#核心三问">[L2:2412.19437]</a>，TileRT 则走到极端——AOT 将完整模型编译为单个 Persistent Engine Kernel，通信从 NCCL 外部编排迁入 tile pipeline 内部 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。三者在 MI300X/H800/H200 NVL 上分别获得 10–20%、约 60%+ 和（声称的）量级级别的改善，但设计哲学从增量到激进逐级升级——前者需重写单个 kernel，中者需全局调度逻辑，后者需从零设计 compiler IR、tile scheduler、通信原语和执行模型。</li>
 </ul>
 
 <ol>
-<li><strong>GPU-initiated vs host-proxy RDMA</strong>。DeepEP 用 IBGDA（GPU-initiated RDMA）<a href="/papers/2510.27656/detail.html#核心三问" class="ref-link" title="L2:2510.27656#核心三问">[L2:2510.27656]</a>，fabric-lib 证明 host proxy 方案在 ConnectX-7 上反而超越 GPU-initiated（因 bulk transfer 和流水线策略补偿了 PCIe 往返延迟）<a href="/papers/2510.27656/detail.html#key-findings" class="ref-link" title="L2:2510.27656#key-findings">[L2:2510.27656]</a>。这一分歧反映了当前 GPU 的 RDMA 原生支持尚不成熟。</li>
+<li><strong>GPU-initiated vs host-proxy RDMA</strong>。DeepEP 用 IBGDA（GPU-initiated RDMA）<a href="/papers/2510.27656/detail.html#核心三问" class="ref-link" title="L2:2510.27656#核心三问">[L2:2510.27656]</a>，fabric-lib 证明 host proxy 方案在 ConnectX-7 上反而超越 GPU-initiated（因 bulk transfer 和流水线策略补偿了 PCIe 往返延迟）<a href="/papers/2510.27656/detail.html#key-findings" class="ref-link" title="L2:2510.27656#key-findings">[L2:2510.27656]</a>。TileRT 走第三条路——彻底绕开 RDMA，通信嵌入 persistent kernel 内部直接通过 NVLink 在 GPU 间执行 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。这一分歧反映了不同通信范围的最佳策略不同：NVLink 域内持续执行、跨节点 host-proxy P2P、特殊硬件 GPU-initiated 各有适用场景。</li>
 </ul>
 
 <ol>
 <li><strong>FP8 vs FP16 的精度-性能权衡</strong>。MI300X 上 FP16 推理相对表现优于 FP8，因 FP16 的更大 memory footprint 恰好落在 MI300X 高带宽区间 <a href="/papers/2510.27583/detail.html#key-findings" class="ref-link" title="L2:2510.27583#key-findings">[L2:2510.27583]</a>。这与 Blackwell 上 FP4 达到 96.3% 峰值利用率但 perplexity 退化 8.2% 的发现 <a href="/papers/2512.02189/detail.html#key-findings" class="ref-link" title="L2:2512.02189#key-findings">[L2:2512.02189]</a> 形成对照——精度选择高度依赖硬件平台和工作负载特征。</li>
+</ul>
+
+<ol>
+<li><strong>AOT 静态编译 vs JIT 动态调度</strong>。TileRT 用 AOT 将完整 transformer 编译为单个 Engine Kernel，运行时不存在 host-device 交互 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。GPUOS 采取对立策略——JIT 动态 operator injection 保留 PyTorch eager semantics，大操作仍走传统 launch <a href="/papers/tilert-speed-scaling-law.html#本篇-vs-相关论文的-delta" class="ref-link" title="L3:tilert-speed-scaling-law#本篇-vs-相关论文的-delta">[L3:tilert-speed-scaling-law]</a>。TileRT 的代价是放弃了动态性——模型结构变更需要 recompile，而 MoE routing 的 input-dependent 路径决策、KV cache 的动态增长、speculative decoding 的条件分支都对静态编译构成结构性挑战 <a href="/papers/tilert-speed-scaling-law.html#可攻击面" class="ref-link" title="L3:tilert-speed-scaling-law#可攻击面">[L3:tilert-speed-scaling-law]</a>。Fleet 在 AMD MI350 上的 persistent megakernel 是两者之间的中间地带——per-operator 编译但 per-chiplet 软件调度 <a href="/papers/tilert-speed-scaling-law.html#tilert-vs-fleet-nvlink-域-vs-chiplet-域的异构特化" class="ref-link" title="L3:tilert-speed-scaling-law#tilert-vs-fleet-nvlink-域-vs-chiplet-域的异构特化">[L3:tilert-speed-scaling-law]</a>。</li>
 </ul>
 
 <h2 id="§7-open-challenges-根本性困难">§7 Open challenges (根本性困难)</h2>
@@ -345,7 +374,7 @@ flowchart TB
 
 <h3 id="7-2-异构硬件下的通用性能可移植">7.2 异构硬件下的通用性能可移植</h3>
 
-<p>DualPath 的 CNIC-centric 方案深度绑定 InfiniBand VL QoS <a href="/papers/2602.21548/detail.html#7-2-核心技术壁垒" class="ref-link" title="L2:2602.21548#7-2-核心技术壁垒">[L2:2602.21548]</a>；DeepSeek-V3 的 all-to-all kernel 绑定 H800 NVLink+IB 拓扑 <a href="/papers/2412.19437/detail.html#关键技术细节" class="ref-link" title="L2:2412.19437#关键技术细节">[L2:2412.19437]</a>；ConCCL 绑定 AMD MI300X 的 SDMA 引擎 <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>。fabric-lib 尝试统一 ConnectX-7 和 EFA <a href="/papers/2510.27656/detail.html#核心三问" class="ref-link" title="L2:2510.27656#核心三问">[L2:2510.27656]</a>，但仍受限于两种 NIC。当前没有任何通信库能同时在 InfiniBand、RoCE、EFA、CXL 上提供一致的高性能 RDMA 语义。这需要 hardware（标准化接口）和 cluster（统一抽象）层的协同，预估难度：2–3 年。</p>
+<p>DualPath 的 CNIC-centric 方案深度绑定 InfiniBand VL QoS <a href="/papers/2602.21548/detail.html#7-2-核心技术壁垒" class="ref-link" title="L2:2602.21548#7-2-核心技术壁垒">[L2:2602.21548]</a>；DeepSeek-V3 的 all-to-all kernel 绑定 H800 NVLink+IB 拓扑 <a href="/papers/2412.19437/detail.html#关键技术细节" class="ref-link" title="L2:2412.19437#关键技术细节">[L2:2412.19437]</a>；ConCCL 绑定 AMD MI300X 的 SDMA 引擎 <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>；TileRT 的 Persistent Engine Kernel 深度绑定 8×H200 NVL 的 NVLink 域和 TMA 异步引擎 <a href="/papers/tilert-speed-scaling-law/detail.html#7-实现-cross-reference" class="ref-link" title="L2:tilert-speed-scaling-law#7-实现-cross-reference">[L2:tilert-speed-scaling-law]</a>。fabric-lib 尝试统一 ConnectX-7 和 EFA <a href="/papers/2510.27656/detail.html#核心三问" class="ref-link" title="L2:2510.27656#核心三问">[L2:2510.27656]</a>，但仍受限于两种 NIC。当前没有任何通信库或执行引擎能跨 InfiniBand、RoCE、EFA、CXL 和不同 GPU 架构提供一致的高性能语义。这需要 hardware（标准化接口）和 cluster（统一抽象）层的协同，预估难度：2–3 年。</p>
 
 <h3 id="7-3-动态-agentic-workflow-的在线资源分配">7.3 动态 agentic workflow 的在线资源分配</h3>
 
@@ -355,20 +384,25 @@ flowchart TB
 
 <p>DualPath 部署于 1152 GPU <a href="/papers/2602.21548/detail.html#q3-结果" class="ref-link" title="L2:2602.21548#q3-结果">[L2:2602.21548]</a>，TensorHub 部署于 1024 GPU <a href="/papers/2604.09107/detail.html#q3-结果" class="ref-link" title="L2:2604.09107#q3-结果">[L2:2604.09107]</a>，DeepSeek-V3 训练用 2048 GPU <a href="/papers/2412.19437/detail.html#核心三问" class="ref-link" title="L2:2412.19437#核心三问">[L2:2412.19437]</a>——但这些系统的容错机制均未充分披露。TensorHub 的中心化 reference server 在 10K+ GPU 规模下可能成为瓶颈 <a href="/papers/2604.09107.html#可攻击面" class="ref-link" title="L3:2604.09107#可攻击面">[L3:2604.09107]</a>，DualPath 论文完全未讨论 server failure 对跨 DC 场景的影响。Pipeline replication 中 partial-replica 的故障恢复涉及 RDMA 层 4 秒保守超时后的状态清理 <a href="/papers/2604.09107/detail.html#7-2-核心技术壁垒" class="ref-link" title="L2:2604.09107#7-2-核心技术壁垒">[L2:2604.09107]</a>。这不是单一系统能解决的问题，需要 framework（分布式状态管理）+ cluster（网络容错）+ hardware（可靠性保证）的共同推进，预估难度：3–5 年。</p>
 
+<h3 id="7-5-aot-静态编译-vs-动态工作负载的根本性张力">7.5 AOT 静态编译 vs 动态工作负载的根本性张力</h3>
+
+<p>TileRT 的 AOT 全模型编译实现了 inter-kernel overhead 的彻底消除，但现代 LLM 的动态性不断增加：MoE routing 每 token 激活不同 expert（input-dependent），KV cache 随序列长度动态增长，speculative decoding 的 draft/verify 路径引入条件分支 <a href="/papers/tilert-speed-scaling-law.html#可攻击面" class="ref-link" title="L3:tilert-speed-scaling-law#可攻击面">[L3:tilert-speed-scaling-law]</a>。AOT 编译必须预编译所有可能路径或在 kernel 内部实现动态分发——前者编译产物爆炸，后者本质上回到了运行时调度。Fleet 的 persistent megakernel 在 batch size ≥ 64 时被 hipBLASLt 反超 <a href="/papers/tilert-speed-scaling-law.html#可攻击面" class="ref-link" title="L3:tilert-speed-scaling-law#可攻击面">[L3:tilert-speed-scaling-law]</a>，证明 compute-bound 区间单 kernel 极致调优优于跨 kernel 持久化。这不是工程问题——静态优化与动态负载之间存在根本性的 information-theoretic 张力：编译器在编译期能获取的信息严格少于运行时。解决此问题需要 framework（AOT/JIT 混合执行）+ kernel（adaptive fusion 粒度）+ hardware（原生 persistent CTA 支持）的协同创新，预估难度：2–4 年。</p>
+
 <h2 id="§8-成熟度判断">§8 成熟度判断</h2>
 
 <table>
 <tr><th>技术方向</th><th>成熟度</th><th>证据</th><th>趋势</th></tr>
 <tr><td>PD 分离推理</td><td><strong>Production-ready</strong></td><td>DualPath 已在 DeepSeek 1152 GPU 生产部署 <a href="/papers/2602.21548/detail.html#7-5-adoption-ecosystem" class="ref-link" title="L2:2602.21548#7-5-adoption-ecosystem">[L2:2602.21548]</a>；PrfaaS 基于 Moonshot AI 生产环境 <a href="/papers/2604.15039/detail.html#5-1-hardware-workload-setup-4-1" class="ref-link" title="L2:2604.15039#5-1-hardware-workload-setup-4-1">[L2:2604.15039]</a></td><td>加速</td></tr>
 <tr><td>RDMA P2P 通信</td><td><strong>Production-ready</strong></td><td>fabric-lib 部署于 Perplexity AI <a href="/papers/2510.27656/detail.html#summary" class="ref-link" title="L2:2510.27656#summary">[L2:2510.27656]</a>；TensorHub 部署于 ByteDance RL 训练 <a href="/papers/2604.09107/detail.html#7-5-adoption-ecosystem" class="ref-link" title="L2:2604.09107#7-5-adoption-ecosystem">[L2:2604.09107]</a></td><td>加速</td></tr>
+<tr><td>Persistent Kernel / AOT 引擎</td><td><strong>Early production</strong></td><td>TileRT 驱动 GLM-5.1 在 MaaS 平台生产上线，但缺乏与 vLLM/TRT-LLM/SGLang 的定量对比 <a href="/papers/tilert-speed-scaling-law/detail.html#q3-结果" class="ref-link" title="L2:tilert-speed-scaling-law#q3-结果">[L2:tilert-speed-scaling-law]</a> <a href="/papers/tilert-speed-scaling-law.html#可攻击面" class="ref-link" title="L3:tilert-speed-scaling-law#可攻击面">[L3:tilert-speed-scaling-law]</a>；GPUOS 和 Fleet 仍停留在 benchmark 和实验室阶段 <a href="/papers/tilert-speed-scaling-law.html#生态位" class="ref-link" title="L3:tilert-speed-scaling-law#生态位">[L3:tilert-speed-scaling-law]</a></td><td>加速</td></tr>
 <tr><td>SLO-aware 调度</td><td><strong>Research-frontier</strong></td><td>JITServe 提供 1/8.55 竞争比理论保证 <a href="/papers/2504.20068/detail.html#key-findings" class="ref-link" title="L2:2504.20068#key-findings">[L2:2504.20068]</a>，但尚未有大规模生产部署报告</td><td>加速</td></tr>
-<tr><td>Compute-comm fusion</td><td><strong>Research-frontier</strong></td><td>Three Taxes + Iris 在 AMD 上获得 10–20% 加速 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>，但未验证跨节点和端到端场景</td><td>平稳</td></tr>
-<tr><td>异构 GPU 调度</td><td><strong>Research-frontier</strong></td><td>HexGen-Flow <a href="/papers/2505.05286/detail.html#core-contribution" class="ref-link" title="L2:2505.05286#core-contribution">[L2:2505.05286]</a> 和 Scepsy <a href="/papers/2604.15186/detail.html#core-contribution" class="ref-link" title="L2:2604.15186#core-contribution">[L2:2604.15186]</a> 展示了原型级成果，离生产仍有距离</td><td>加速</td></tr>
+<tr><td>Compute-comm fusion</td><td><strong>Research-frontier</strong></td><td>Three Taxes + Iris 在 AMD 上获得 10–20% 加速 <a href="/papers/2511.02168/detail.html#core-contribution" class="ref-link" title="L2:2511.02168#core-contribution">[L2:2511.02168]</a>，TileRT 在 H200 NVL 上声称量级提升但无定量对比 <a href="/papers/tilert-speed-scaling-law.html#可攻击面" class="ref-link" title="L3:tilert-speed-scaling-law#可攻击面">[L3:tilert-speed-scaling-law]</a>，整体未验证跨节点和端到端场景</td><td>加速</td></tr>
+<tr><td>异构 GPU 调度</td><td><strong>Research-frontier</strong></td><td>HexGen-Flow <a href="/papers/2505.05286/detail.html#core-contribution" class="ref-link" title="L2:2505.05286#core-contribution">[L2:2505.05286]</a> 和 Scepsy <a href="/papers/2604.15186/detail.html#core-contribution" class="ref-link" title="L2:2604.15186#core-contribution">[L2:2604.15186]</a> 展示了原型级成果，TileRT 的 Heterogeneous Workers 在 NVL 域内实现了 GPU 级异构特化 <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>，离通用化仍有距离</td><td>加速</td></tr>
 <tr><td>Agentic workflow 缓存</td><td><strong>Early research</strong></td><td>KVFlow 验证于单 GPU <a href="/papers/2507.07400/detail.html#limitations" class="ref-link" title="L2:2507.07400#limitations">[L2:2507.07400]</a>，分布式 workflow-aware 缓存是开放问题</td><td>加速</td></tr>
 <tr><td>AMD 软件栈效率</td><td><strong>Migrating</strong></td><td>从 45% 利用率向 NVIDIA 93% 追赶 <a href="/papers/2510.27583/detail.html#核心三问" class="ref-link" title="L2:2510.27583#核心三问">[L2:2510.27583]</a>；CDNA4 在 FP8 算力上追平 <a href="/papers/gpu-arch-comparison-2025/detail.html#key-findings" class="ref-link" title="L2:gpu-arch-comparison-2025#key-findings">[L2:gpu-arch-comparison-2025]</a>，但软件差距仍在</td><td>加速</td></tr>
 </table>
 
-<p>整体判断：存储和 RDMA 通信层已进入生产化阶段，成本优化（SLO-aware 调度 + 异构管理）处于快速推进的研究前沿，compute-comm fusion 在理论上有价值但实际影响受限于 scope 狭窄。</p>
+<p>整体判断：存储和 RDMA 通信层已进入生产化阶段，成本优化（SLO-aware 调度 + 异构管理）处于快速推进的研究前沿，持续执行范式（persistent kernel / AOT engine）正在从实验室走向首批生产部署——TileRT 是这一转变的标志性事件，但其证据标准（缺乏定量基线对比）使成熟度判断需谨慎。</p>
 
 <h2 id="§9-邻接-topic">§9 邻接 topic</h2>
 
@@ -386,6 +420,10 @@ flowchart TB
 
 <ol>
 <li><strong>GPU 架构演进</strong>：MI300X/Blackwell/GPU 对比三篇提供硬件基础约束。更深入的 ISA 级分析和下一代架构（CXL、photonic interconnect）属于独立的 hardware-evolution topic。</li>
+</ul>
+
+<ol>
+<li><strong>Persistent Kernel 执行范式</strong>：TileRT、GPUOS、Fleet 构成了一条从 per-op fusion 到 full-model persistent engine 的技术演进链 <a href="/papers/tilert-speed-scaling-law.html#本篇-vs-相关论文的-delta" class="ref-link" title="L3:tilert-speed-scaling-law#本篇-vs-相关论文的-delta">[L3:tilert-speed-scaling-law]</a>。这一方向与本 topic 在"执行效率优化"上重叠，但其编译器设计、tile scheduling 理论、chiplet-aware 调度等问题跨越了 framework/kernel 边界，可能在更多相关工作出现后独立为"persistent-execution"topic。</li>
 </ul>
 
 <h2 id="§10-参考">§10 参考</h2>
@@ -410,6 +448,8 @@ flowchart TB
 <tr><td><a href="/papers/2505.05286/detail.html#core-contribution" class="ref-link" title="L2:2505.05286#core-contribution">[L2:2505.05286]</a></td><td>framework</td><td>成本</td><td>异构 GPU 两层调度 agentic workflow，P95 延迟降低 1.42–1.56×</td></tr>
 <tr><td><a href="/papers/2604.15186/detail.html#core-contribution" class="ref-link" title="L2:2604.15186#core-contribution">[L2:2604.15186]</a></td><td>framework</td><td>成本</td><td>Aggregate LLM Pipeline + 分数 GPU，吞吐提升 2.4×</td></tr>
 <tr><td><a href="/papers/gpu-arch-comparison-2025/detail.html#core-contribution" class="ref-link" title="L2:gpu-arch-comparison-2025#core-contribution">[L2:gpu-arch-comparison-2025]</a></td><td>hardware</td><td>计算+成本</td><td>AMD vs NVIDIA 四代架构对比，FP8 追平但互联差距 67%</td></tr>
+<tr><td><a href="/papers/tilert-speed-scaling-law/detail.html#1-tl-dr" class="ref-link" title="L2:tilert-speed-scaling-law#1-tl-dr">[L2:tilert-speed-scaling-law]</a></td><td>framework</td><td>执行效率</td><td>AOT 编译全模型为 Persistent Engine Kernel，warp/block/GPU 三级特化，GLM-5.1 生产上线</td></tr>
+<tr><td><a href="/papers/tilert-speed-scaling-law.html#本篇-vs-相关论文的-delta" class="ref-link" title="L3:tilert-speed-scaling-law#本篇-vs-相关论文的-delta">[L3:tilert-speed-scaling-law]</a></td><td>framework</td><td>执行效率综合</td><td>TileRT 与 GPUOS/Fleet/DeepSeek-V4 的持续执行范式对比</td></tr>
 </table>
 
 </div>
