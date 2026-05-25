@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>vLLM Semantic Router: System Level Intelligent Router for Mixture-of-Models — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1>vLLM Semantic Router: System Level Intelligent Router for Mixture-of-Models</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> vllm-project-semantic-router</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">semantic-routing</span><span class="tag">mixture-of-models</span><span class="tag">llm-router</span><span class="tag">ai-gateway</span><span class="tag">kubernetes</span><span class="tag">mcp</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://github.com/vllm-project/semantic-router" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="vllm-semantic-router-—-l2-蒸馏笔记">vLLM Semantic Router — L2 蒸馏笔记</h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR</h2>
+
+<p>Signal-driven intelligent router for mixture-of-models, deployed as Envoy ExtProc gRPC sidecar. Uses a DecisionEngine that evaluates recursive boolean expression trees over 20+ signal types to route LLM requests across heterogeneous model fleets, balancing cost, privacy, safety, and capability. Kubernetes-native, MCP-compatible, with embedded ML inference via Rust/Candle FFI in the Go runtime.</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3</h2>
+
+<h3 id="q1-痛点">Q1 痛点</h3>
+
+<p>LLM 模型爆炸式增长，不同模型在能力、规模、成本、隐私边界上差异显著。生产环境需要同时使用多个模型（local / private / frontier），但缺乏系统级智能路由层来根据请求语义、安全性、用户权限等维度自动选择最优模型。现有方案要么只做简单负载均衡，要么只做意图分类——无法表达复杂的组合路由策略。</p>
+
+<h3 id="q2-方法">Q2 方法</h3>
+
+<p><strong>Signal-Driven Decision Routing</strong>: 核心架构是一个 DecisionEngine，将路由决策建模为 20+ 种异构信号类型上的布尔表达式树（AND/OR/NOT）递归求值。</p>
+
+<p>信号类型覆盖：keyword、embedding、domain、fact_check、user_feedback、reask、preference、language、context、structure、complexity、modality、authz、jailbreak、PII、KB、conversation、session_metric、event_context、projection。每个信号携带 confidence 分数。</p>
+
+<p>决策选择支持三种策略：priority（按优先级）、confidence（按置信度）、tiered（分层后再按置信度排序）。</p>
+
+<p><strong>部署架构</strong>: 不是自建代理，而是作为 Envoy External Processing (ExtProc) gRPC filter 运行，可以无侵入地部署到任何 Envoy-based gateway（Istio、Gloo、standalone）。</p>
+
+<p><strong>ML 推理内嵌</strong>: 通过 candle-binding / ml-binding / nlp-binding 三层 Rust → Go FFI，将分类、嵌入等 ML 模型推理直接嵌入 Go 进程，避免外部模型服务的额外延迟。</p>
+
+<p><strong>核心技术壁垒</strong>: 20+ 异构信号类型 × 布尔表达式树组合决策。复制这一架构需要同时解决两个难题：(1) 每种信号类型都需要独立的 ML 模型或规则引擎进行提取（jailbreak detector、domain classifier、embedding model、PII filter 等），(2) 信号之间的组合逻辑需要可配置的表达式树求值器——而非硬编码 if-else。两者的耦合使得系统的 signal surface area 成为核心护城河。</p>
+
+<h3 id="q3-结果">Q3 结果</h3>
+
+<ul>
+<li>8 个月内 4.2k stars、682 forks、1,399 commits</li>
+<li>v0.1 Iris (2026-01) → v0.2 Athena (2026-03)，快速迭代</li>
+<li>两篇学术论文：<em>When to Reason</em> (2510.08731)、<em>Category-Aware Semantic Caching</em> (2510.26835)</li>
+<li>Vision paper: Workload-Router-Pool Architecture (2026-03-24)</li>
+<li>White paper: Signal Driven Decision Routing for Mixture-of-Modality Models (2026-02-27)</li>
+<li>AMD 赞助 GPU 资源和 ROCm 软件支持</li>
+<li>vLLM Production Stack 团队合作集成</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图</h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Envoy as Envoy Proxy
+    participant ExtProc as Semantic Router<br/>(ExtProc gRPC)
+    participant Signals as Signal Extractors<br/>(Candle/ONNX via FFI)
+    participant Engine as DecisionEngine<br/>(Bool Expr Tree)
+    participant Models as Model Fleet<br/>(Local/Private/Frontier)
+
+    Client->>Envoy: HTTP request (OpenAI-compat)
+    Envoy->>ExtProc: gRPC ext_proc request
+    ExtProc->>Signals: Extract 20+ signal types
+    Note over Signals: keyword, embedding, domain,<br/>jailbreak, PII, complexity,<br/>modality, authz, etc.
+    Signals-->>ExtProc: SignalMatches + confidences
+    ExtProc->>Engine: EvaluateDecisionsWithSignals()
+    Engine->>Engine: evalNode() recursive<br/>AND/OR/NOT tree walk
+    Engine-->>ExtProc: DecisionResult {model, confidence}
+    ExtProc-->>Envoy: Route to selected backend
+    Envoy->>Models: Forward to chosen model
+    Models-->>Envoy: Response
+    Envoy-->>Client: Response
+</div>
+
+<p><strong>Kubernetes 控制面</strong>: Router 通过 controller-runtime watch CRD（RouterConfig），支持 hot-reload 配置变更。CRD 定义路由规则、决策树、模型选择策略。</p>
+
+<p><strong>数据面关键路径</strong>:</p>
+
+<ol>
+<li>Envoy 收到请求 → 调用 ExtProc gRPC → Router 提取信号</li>
+<li>信号提取利用内嵌 ML 推理（Candle FFI / ONNX Runtime），避免网络往返</li>
+<li>DecisionEngine 对所有 configured decisions 执行布尔表达式树求值</li>
+<li><code>selectBestDecision</code> 根据策略（priority / confidence / tiered）选出最优</li>
+<li>返回路由指令给 Envoy，由 Envoy 完成实际转发</li>
+</ul>
+
+<p><strong>语言分工</strong>:</p>
+
+<ul>
+<li>Go (45.6%) — 核心路由运行时、Envoy ExtProc server、K8s controller、决策引擎</li>
+<li>Rust (11.2%) — Candle ML 推理引擎、tokenizer、embedding 计算（通过 FFI 暴露给 Go）</li>
+<li>Python (17.7%) — CLI (<code>vllm-sr</code>)、SDK、模型训练（LoRA fine-tuning）</li>
+<li>TypeScript (14.2%) — 监控 Dashboard (React)</li>
+</ul>
+
+<h2 id="§4-作者证明">§4 作者证明</h2>
+
+<p>无形式化作者证明 — 仅实证。</p>
+
+<p>本项目为工程系统（代码仓库），非学术论文，不包含显式的数学性能模型或定理证明。相关学术工作：</p>
+
+<table>
+<tr><th>文档</th><th>内容</th><th>状态</th></tr>
+<tr><td>Vision Paper (2026-03-24)</td><td>Workload-Router-Pool Architecture</td><td>已发布，未含于本 L1</td></tr>
+<tr><td>White Paper (2026-02-27)</td><td>Signal Driven Decision Routing for MoM</td><td>已发布，未含于本 L1</td></tr>
+<tr><td><em>When to Reason</em> (2510.08731)</td><td>语义路由决策时机</td><td>Accepted</td></tr>
+<tr><td><em>Category-Aware Semantic Caching</em> (2510.26835)</td><td>异构 workload 缓存策略</td><td>Published</td></tr>
+</table>
+
+<p>若需形式化模型，以下维度值得建模：</p>
+
+<ul>
+<li>信号提取延迟 vs. 决策准确度的 trade-off（更多信号 → 更准但更慢）</li>
+<li>表达式树深度与求值延迟的关系</li>
+<li>语义缓存命中率在不同 workload 分布下的期望值</li>
+<li>多模型 fleet 下 token cost 的优化目标函数</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据</h2>
+
+<p>本 L1 来源为代码仓库，不直接包含实验数据表格。可获取的实证信息如下。</p>
+
+<h3 id="5-1-项目增长指标">5.1 项目增长指标</h3>
+
+<table>
+<tr><th>指标</th><th>值</th><th>时间段</th></tr>
+<tr><td>Stars</td><td>4,200</td><td>~8 months (Sep 2025 – May 2026)</td></tr>
+<tr><td>Forks</td><td>682</td><td>同期</td></tr>
+<tr><td>Commits</td><td>1,399</td><td>同期</td></tr>
+<tr><td>Open PRs</td><td>75</td><td>截至 2026-05</td></tr>
+<tr><td>Open Issues</td><td>104</td><td>截至 2026-05</td></tr>
+<tr><td>发布版本</td><td>v0.1 Iris → v0.2 Athena</td><td>Jan 2026 → Mar 2026</td></tr>
+</table>
+
+<h3 id="5-2-工程验证基础设施">5.2 工程验证基础设施</h3>
+
+<p>仓库内含多层测试与验证工具：</p>
+
+<ul>
+<li><code>bench/</code> — 路由性能基准测试套件</li>
+<li><code>perf/</code> — 性能剖析工具</li>
+<li><code>e2e/</code> — 端到端集成测试</li>
+<li><code>src/fleet-sim/</code> — 异构模型 fleet 模拟器，用于在部署前测试路由策略</li>
+<li><code>src/training/</code> — LoRA fine-tuning pipeline，用于训练 domain classifier 和 jailbreak detector</li>
+</ul>
+
+<h3 id="5-3-支撑论文实验">5.3 支撑论文实验</h3>
+
+<p>相关论文中的实验结果（未含于本 L1，但由项目直接产出）：</p>
+
+<ul>
+<li><em>When to Reason</em> (2510.08731): 评估何时需要调用 reasoning model vs. 普通 model 的路由决策准确率</li>
+<li><em>Category-Aware Semantic Caching</em> (2510.26835): 评估分类感知的语义缓存在异构 workload 下的命中率和延迟改善</li>
+<li><em>HaluGate</em> (blog 2025-12-15): Token-level 实时幻觉检测在生产 LLM 上的效果</li>
+</ul>
+
+<h3 id="5-4-工作负载适用性分析">5.4 工作负载适用性分析</h3>
+
+<table>
+<tr><th>工作负载场景</th><th>适用程度</th><th>原因</th></tr>
+<tr><td>多模型异构 fleet，请求语义多样</td><td><strong>强</strong></td><td>20+ 信号类型 + 布尔表达式树可精细路由</td></tr>
+<tr><td>单模型部署，纯负载均衡</td><td>弱</td><td>信号提取开销无法被路由优化抵消</td></tr>
+<tr><td>安全合规场景（jailbreak/PII 过滤）</td><td><strong>强</strong></td><td>内置 jailbreak、PII、hallucination 信号</td></tr>
+<tr><td>低延迟在线服务（<10ms routing overhead）</td><td>中等</td><td>Candle FFI 内嵌推理降低延迟，但多信号提取仍有开销</td></tr>
+<tr><td>Edge 部署（资源受限）</td><td>中等</td><td>架构支持，但 Envoy + Router 两进程的 footprint 较大</td></tr>
+</table>
+
+<h2 id="§6-论证链">§6 论证链</h2>
+
+<table>
+<tr><th>#</th><th>论证步骤</th><th>证据 / 设计选择</th></tr>
+<tr><td>1</td><td>模型爆炸 → 需要系统级路由</td><td>README: "the number of models is exploding... choosing and connecting the right models is a system problem"</td></tr>
+<tr><td>2</td><td>路由需要多维信号，不只是 intent classification</td><td>SignalMatches 定义了 20+ 种信号类型，远超典型路由器的 keyword/embedding 两类</td></tr>
+<tr><td>3</td><td>复杂路由策略需要可组合的逻辑表达</td><td>DecisionEngine 用 AND/OR/NOT 布尔表达式树递归求值，而非硬编码规则</td></tr>
+<tr><td>4</td><td>信号提取需要 ML 推理 → 延迟敏感 → 需要内嵌推理</td><td>通过 Rust Candle FFI 将 ML 推理嵌入 Go 进程，避免网络往返</td></tr>
+<tr><td>5</td><td>部署不应侵入现有基础设施</td><td>选择 Envoy ExtProc 而非自建代理，可无缝接入 Istio/Gloo/standalone Envoy</td></tr>
+<tr><td>6</td><td>配置应是声明式、可热更新的</td><td>Kubernetes CRD + controller-runtime watch，支持 hot-reload</td></tr>
+<tr><td>7</td><td>安全是路由的一等公民，不是附加功能</td><td>jailbreak、PII、hallucination 检测作为内置信号类型，参与决策树求值</td></tr>
+<tr><td>8</td><td>路由策略需要在生产前可验证</td><td>fleet-sim 模拟器用于离线测试路由策略</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference</h2>
+
+<h3 id="7-1-核心决策引擎">7.1 核心决策引擎</h3>
+
+<p><code>pkg/decision/engine.go</code> — DecisionEngine 完整实现：</p>
+
+<ul>
+<li><code>EvaluateDecisionsWithSignals()</code> — 遍历所有 decisions，对每个执行布尔表达式树求值，收集匹配结果</li>
+<li><code>evalNode()</code> — 递归求值 RuleNode，支持 AND/OR/NOT 三种算子，叶节点调用 <code>evalLeaf()</code></li>
+<li><code>evalLeaf()</code> — 对单个信号条件求值，通过 <code>matchesSignalType()</code> 分发到具体信号类型的查找逻辑</li>
+<li><code>matchesSignalType()</code> — 将 19 种信号类型映射到 SignalMatches 结构体的对应字段，domain 类型有特殊匹配逻辑（<code>matchesDomainCondition</code>）</li>
+<li><code>selectBestDecision()</code> — 根据 strategy (priority / confidence / tiered) 排序选出最优决策</li>
+</ul>
+
+<h3 id="7-2-信号数据结构">7.2 信号数据结构</h3>
+
+<p><code>SignalMatches</code> 结构体（<code>pkg/decision/engine.go</code>）定义了完整的信号词汇表：</p>
+
+<pre><code>
+KeywordRules, EmbeddingRules, DomainRules, FactCheckRules,
+UserFeedbackRules, ReaskRules, PreferenceRules, LanguageRules,
+ContextRules, StructureRules, ComplexityRules, ModalityRules,
+AuthzRules, JailbreakRules, PIIRules, KBRules,
+ConversationRules, SessionMetricRules, EventContextRules,
+ProjectionRules + SignalConfidences map[string]float64
+</code></pre>
+
+<h3 id="7-3-系统入口">7.3 系统入口</h3>
+
+<p><code>cmd/main.go</code> — 启动序列：</p>
+
+<ol>
+<li><code>parseRuntimeOptions()</code> → 解析命令行参数</li>
+<li><code>loadRuntimeConfigOrFatal()</code> → 加载 YAML 配置</li>
+<li><code>routerruntime.NewRegistry()</code> → 初始化运行时组件注册表</li>
+<li><code>ensureModelsDownloadedOrFatal()</code> → 下载 HuggingFace 模型</li>
+<li><code>initializeRuntimeDependencies()</code> → 初始化 embedding runtime（Candle/ONNX FFI）</li>
+<li><code>newExtProcServerOrFatal()</code> → 创建 Envoy ExtProc gRPC server</li>
+<li><code>warmupRouterRuntime()</code> → 预热推理引擎</li>
+<li><code>startKubernetesControllerIfNeeded()</code> → 启动 K8s CRD controller</li>
+<li><code>startExtProcServerOrFatal()</code> → 监听 gRPC 请求</li>
+</ul>
+
+<h3 id="7-4-kubernetes-控制面">7.4 Kubernetes 控制面</h3>
+
+<p><code>pkg/k8s/</code> — CRD controller 实现：</p>
+
+<ul>
+<li><code>NewController(ControllerConfig{...})</code> — 创建 controller，接受 <code>OnConfigUpdate</code> 回调实现 hot-reload</li>
+<li><code>Start(ctx)</code> — 启动 watch & reconcile 循环</li>
+</ul>
+
+<h3 id="7-5-关键依赖版本">7.5 关键依赖版本</h3>
+
+<table>
+<tr><th>依赖</th><th>版本</th><th>用途</th></tr>
+<tr><td>envoyproxy/go-control-plane</td><td>v1.35.0</td><td>Envoy ExtProc gRPC API</td></tr>
+<tr><td>mark3labs/mcp-go</td><td>v0.42.0-beta.1</td><td>MCP server 实现</td></tr>
+<tr><td>openai/openai-go</td><td>v1.12.0</td><td>OpenAI API 集成</td></tr>
+<tr><td>anthropics/anthropic-sdk-go</td><td>v1.19.0</td><td>Anthropic API 集成</td></tr>
+<tr><td>qdrant/go-client</td><td>v1.17.1</td><td>Qdrant 向量存储</td></tr>
+<tr><td>milvus-io/milvus-sdk-go</td><td>v2.4.2</td><td>Milvus 向量存储</td></tr>
+<tr><td>controller-runtime</td><td>v0.22.4</td><td>K8s CRD reconciliation</td></tr>
+<tr><td>alecthomas/participle</td><td>v2.1.4</td><td>DSL 解析器</td></tr>
+</table>
+
+<h3 id="7-6-关键实现细节">7.6 关键实现细节</h3>
+
+<ol>
+<li><strong>空 AND = 兜底路由</strong>: DecisionEngine 将空 AND 节点（无子条件）视为匹配但 confidence 为 0，用作 default/fallback 路由。这确保了总有一个决策被选中，同时保证有信号支持的决策始终优先。</li>
+</ul>
+
+<ol>
+<li><strong>DSL 路由语言</strong>: 项目使用 participle 解析器实现了专用的路由 DSL（<code>pkg/dsl/</code>），允许运维人员用自定义语法编写路由规则，超越纯 YAML 配置的表达力。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

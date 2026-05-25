@@ -378,7 +378,61 @@ Gaudi 硬件:              TileRT 软件模拟:
 
 <p><strong>整体判断</strong>：静态编译路线在 LLM inference 的适用范围极窄（bs=1、模型固定、硬件固定），不会成为通用方案。其价值存在于"模型厂商极致优化自有模型"的场景——类似 Google 用 TPU 服务自家模型。通用 serving 市场将继续由动态 runtime (vLLM/SGLang) 主导。</p>
 
-<h2 id="9-邻接-topic">9. 邻接 topic</h2>
+<h2 id="9-模型厂商自建推理-infra-的战略分析">9. 模型厂商自建推理 Infra 的战略分析</h2>
+
+<h3 id="9-1-头部厂商已经在自建">9.1 头部厂商已经在自建</h3>
+
+<p>TileRT 不是孤例——头部模型厂商普遍在自建推理基础设施，去掉通用方案，只为自己的模型负责：</p>
+
+<table>
+<tr><th>厂商</th><th>自有推理栈</th><th>通用方案状态</th></tr>
+<tr><td>Google</td><td>TPU + XLA + Pathways (自有 serving)</td><td>完全不用 vLLM</td></tr>
+<tr><td>OpenAI</td><td>自研推理系统（未公开）</td><td>不用社区方案</td></tr>
+<tr><td>Anthropic</td><td>自研（据传基于 JAX + 自有调度）</td><td>不用社区方案</td></tr>
+<tr><td>DeepSeek</td><td>自研 serving + 自研通信库</td><td>不用 vLLM</td></tr>
+<tr><td>智谱 (GLM)</td><td>TileRT</td><td>对自有模型定制到极致</td></tr>
+<tr><td>Meta</td><td>自研 + 部分回馈开源 (FAIR infra)</td><td>贡献了 PyTorch 但内部跑自研</td></tr>
+<tr><td>Tesla FSD</td><td>完全定制芯片+编译器+推理栈</td><td>和任何通用方案无关</td></tr>
+</table>
+
+<h3 id="9-2-经济学逻辑：何时自建划算">9.2 经济学逻辑：何时自建划算</h3>
+
+<p>通用方案为支持所有模型必须保持灵活性，灵活性带来运行时决策开销（launch overhead + 无法极致融合），距离硬件极限有 30-70% 的性能 gap。自建推理栈通过限定单一模型（shape 固定、架构固定、硬件固定），可以把这 30-70% 的性能捡回来——在 token 经济下直接转化为利润。</p>
+
+<p>Break-even 计算：假设 8xH200 月租 $150K，通用方案 50 tok/s/卡，自研方案 150 tok/s/卡（3x speedup，TileRT 声称的量级）。同样的卡数，自研方案吞吐 3x，等效硬件成本降低 67%。一个 1000 卡集群月省 $100K+。自研团队 10 人 x $30K/月 = $30K/月。<strong>300 卡以上规模就 break even</strong>。</p>
+
+<h3 id="9-3-做得起的条件与做不起的玩家">9.3 做得起的条件与做不起的玩家</h3>
+
+<p><strong>做得起的条件</strong>：(1) 模型架构稳定——每月大改一次架构则 AOT + 手写 fusion 投入归零；(2) 部署规模足够大——几百卡以上才能 justify 团队成本；(3) 有顶尖 GPU 系统人才——能写 1095 行 fused kernel 的人全球可能不到 100 个；(4) 模型和 infra 协同设计——模型架构反过来适配推理效率。</p>
+
+<p><strong>做不起的玩家</strong>：中小模型公司（模型还在频繁迭代）、模型代理商（跑别人的模型无法定制）、多模型平台（必须通用）、开源/学术社区（模型多样性太高）。</p>
+
+<h3 id="9-4-未来三层格局">9.4 未来三层格局</h3>
+
+<ul>
+<li><strong>头部 3-5 家（完全自建）</strong>：Google, OpenAI, Anthropic, DeepSeek 等。自有模型 + 自有芯片/集群 + 自有推理栈。</li>
+<li><strong>次头部 10-20 家（半定制）</strong>：智谱, Mistral, Cohere 等。自有模型 + NVIDIA GPU + 定制推理引擎。TileRT 就在这一层。</li>
+<li><strong>长尾（通用方案）</strong>：所有其他人。各种模型 + NVIDIA GPU + vLLM/SGLang。够用，不追求极限。</li>
+</ul>
+
+<h3 id="9-5-历史类比">9.5 历史类比</h3>
+
+<p>这个格局和其他行业完全一致——当规模足够大且 workload 足够固定时，通用方案的灵活性溢价就变成了纯粹的性能浪费：</p>
+
+<table>
+<tr><th>行业</th><th>头部自建</th><th>通用方案</th></tr>
+<tr><td>搜索引擎</td><td>Google 自研 TPU + 全栈</td><td>其他人用 Elasticsearch</td></tr>
+<tr><td>自动驾驶</td><td>Tesla 自研 FSD 芯片+软件</td><td>其他人用 NVIDIA Drive</td></tr>
+<tr><td>云计算</td><td>AWS Graviton + Nitro</td><td>其他人用标准 x86</td></tr>
+<tr><td>数据库</td><td>Google Spanner, AWS Aurora</td><td>其他人用 MySQL/PG</td></tr>
+<tr><td>社交</td><td>Meta 自研 TAO + ZippyDB</td><td>其他人用 Redis + Cassandra</td></tr>
+</table>
+
+<h3 id="9-6-对通用方案-vllm-sglang-的影响">9.6 对通用方案 (vLLM/SGLang) 的影响</h3>
+
+<p>vLLM/SGLang 不会死——它们服务的是长尾市场：(1) 多模型平台（需要跑 100+ 不同模型）；(2) 研发阶段（模型还在迭代，不值得定制）；(3) 中小规模部署（< 100 卡，定制不划算）；(4) 开源/学术（需要灵活性）。但通用方案会越来越像"开发环境"而非"生产环境"——头部的生产流量跑在自研栈上，通用方案用于 prototyping 和小规模服务。</p>
+
+<h2 id="10-邻接-topic">10. 邻接 topic</h2>
 
 <p><strong>persistent-execution-paradigm</strong>：本 topic 的子集，专注于 persistent kernel vs megakernel 的横向对比。本 topic 增加了历史纵深（ASIC graph compile 的源流）和 XLA limitation 分析。</p>
 
@@ -386,7 +440,7 @@ Gaudi 硬件:              TileRT 软件模拟:
 
 <p><strong>潜在演化</strong>：如果 TileLang/TileScale 成熟（自动生成 TileRT 级 fused kernel），本 topic 可能拆分为"手动 fusion"（历史）和"自动 tile-level compiler"（新方向）两个 sub-topic。</p>
 
-<h2 id="10-参考">10. 参考</h2>
+<h2 id="11-参考">11. 参考</h2>
 
 <table>
 <tr><th>Entity</th><th>Categories</th><th>Role</th><th>Key contribution</th></tr>
