@@ -208,9 +208,21 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <p>2025–2026 年，LLM 的主流使用模式从单请求问答转向多轮自主工具调用（agentic workload）。这一转变使传统负载均衡算法系统性失效：agent 的长 session、持续增长的 KV Cache、bursty 的工具调用模式、以及不可迁移的 decode 状态，要求调度系统从"无状态请求分发"跃迁到"有状态工作流编排"。</p>
 
-<p>CPU 侧的瓶颈分析揭示工具执行（检索、代码执行、分子生成等）可占端到端延迟的 88%，且 CPU 并行化效率远低于 GPU 导致吞吐过早饱和 <a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a>。与此同时，PD（Prefill/Decode）分离架构成为大规模 LLM serving 的主流部署模式——Prefill 计算密集、Decode 内存带宽密集——需要各自独立的调度策略。Agent 工作负载在 PD 分离架构下引入了额外挑战：多轮对话中 Turn 2+ 的 Append-Prefill（AP）操作需要在 prefill 节点和 decode 节点之间做动态路由决策 <a href="/papers/2603.13358/detail.html#ppd-routing" class="ref-link" title="L2:2603.13358#ppd-routing">[L2:2603.13358]</a>。</p>
+<p>问题的规模首先在 CPU 侧被量化：工具执行（检索、代码执行、分子生成等）可占端到端延迟的 88%，且 CPU 并行化效率远低于 GPU，导致吞吐过早饱和 <a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a>。然而瓶颈并非单一维度——Continuum 的实测数据进一步揭示了一个此前被忽视的独立问题：即使 KV reload 近乎免费（CPU offloading），per-turn queueing delay 仍占总延迟的 58.2% <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a> <a href="/papers/2511.02230.html#per-turn-queueing" class="ref-link" title="L3:2511.02230#per-turn-queueing">[L3:2511.02230]</a>。这意味着 agent serving 的优化目标从单一的"避免 KV reload cost"变为更复杂的"reload cost + queueing delay + memory blocking"三维权衡。</p>
 
-<p>2026 年上半年，业界在四个层面同时发力：(1) 工作流级调度系统（SAGA、HexAGenT、Helium、Halo）把整个 agent workflow 作为一等调度单元 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a> <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>；(2) 预测性 KV Cache 管理（PBKV、Continuum、SideQuest）将 cache 生命周期从被动 LRU 升级为主动的前瞻式决策 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a> <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a>；(3) 投机性执行（PASTE）利用控制流模式预测在 LLM 生成期间提前执行下一个工具调用，将 tool stall 隐藏在思考时间内 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>；(4) 客户端 context 管理（Claude Code 五层 compaction、Cursor 动态上下文发现）在客户端侧配合基础设施层做联合优化 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a> <a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a>。</p>
+<p>与此同时，PD（Prefill/Decode）分离架构成为大规模 LLM serving 的主流部署模式——Prefill 计算密集、Decode 内存带宽密集——需要各自独立的调度策略。Agent 工作负载在 PD 分离架构下引入了额外结构冲突：多轮对话中 Turn 2+ 的 Append-Prefill（AP）操作需要在 prefill 节点和 decode 节点之间做动态路由决策，而 PPD 的实测表明 append-prefill 对 decode 的干扰仅 2%（vs full prefill 的 48%），但无单一静态策略在所有场景占优 <a href="/papers/2603.13358/detail.html#ppd-routing" class="ref-link" title="L2:2603.13358#ppd-routing">[L2:2603.13358]</a>。</p>
+
+<p>2026 年上半年，业界在五个层面同时发力：</p>
+
+<p><strong>(1) 工作流级调度系统</strong>（SAGA、HexAGenT、Helium、Halo）把整个 agent workflow 作为一等调度单元 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a> <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>。这条路线内部又分化为两个子范式：程序/图感知路径（SAGA、ThunderAgent）从 agent 执行结构出发，DB 查询优化路径（Helium、Halo）从数据系统 batch 优化思路出发 <a href="/papers/2603.16104.html#db-paradigm" class="ref-link" title="L3:2603.16104#db-paradigm">[L3:2603.16104]</a> <a href="/papers/2509.02121.html#plan-layer" class="ref-link" title="L3:2509.02121#plan-layer">[L3:2509.02121]</a>。</p>
+
+<p><strong>(2) 预测性 KV Cache 管理</strong>（PBKV、Continuum、SideQuest、KVFlow）将 cache 生命周期从被动 LRU 升级为主动的前瞻式决策 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a> <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a> <a href="/papers/2507.07400/detail.html#kvflow-belady" class="ref-link" title="L2:2507.07400#kvflow-belady">[L2:2507.07400]</a>。PBKV 的 algorithms-with-predictions 框架首次为这一方向提供了形式化的退化保证 <a href="/papers/2605.06472.html#lipschitz-bound" class="ref-link" title="L3:2605.06472#lipschitz-bound">[L3:2605.06472]</a>。</p>
+
+<p><strong>(3) 投机性执行</strong>（PASTE）利用控制流模式预测在 LLM 生成期间提前执行下一个工具调用，将 tool stall 隐藏在思考时间内 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>。这代表了一个范式转变：从资源管理（cache/memory/scheduling）转向执行时间隐藏（speculative overlap），将 speculative decoding 的"投机+验证"范式从 token 生成层扩展到 tool 执行层 <a href="/papers/2603.18897.html#paradigm-shift" class="ref-link" title="L3:2603.18897#paradigm-shift">[L3:2603.18897]</a>。</p>
+
+<p><strong>(4) 客户端 context 管理</strong>（Claude Code 五层 compaction、Cursor 动态上下文发现）在客户端侧配合基础设施层做联合优化 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a> <a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a>。</p>
+
+<p><strong>(5) 运行时形式化</strong>（SGH）将 agent 执行建模为 scheduler 五元组 $(\mathcal{S}, \mathcal{U}, \mathcal{P}, \mathcal{O}, \Delta)$，揭示主流 agent 框架本质上是 $|\mathcal{U}|=1$ 的单就绪单元调度器 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a>。尽管该理论框架尚无实验验证，但它为理解各系统在调度连续谱上的定位提供了统一语言 <a href="/papers/2604.11378.html#scheduler-continuum" class="ref-link" title="L3:2604.11378#scheduler-continuum">[L3:2604.11378]</a>。</p>
 
 <p>本文系统梳理从经典无状态算法到前沿 agent 专用调度系统的演进脉络，覆盖 framework（serving 基础设施）、agent（context/cache 生命周期管理）、algorithm（路由和排序算法设计）三个 category。</p>
 
@@ -227,6 +239,8 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <p>跨越 framework（serving 基础设施层的调度实现）、agent（agent 系统的 context/cache 生命周期管理与执行优化）、algorithm（路由和排序算法设计）三个 category，共计 24 篇论文/系统/blog。</p>
 
+<p>三个 category 的关系并非简单并列：framework 提供调度的执行基座，algorithm 提供决策函数的数学形式，agent 提供调度所需的语义信号。SAGA 的架构集成了 framework 层的 session-affinity routing + agent 层的 AEG 预测 + algorithm 层的 WA-LRU 评分函数 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>，是三者融合的典型案例。</p>
+
 <hr>
 
 <h2 id="3-时间线">3. 时间线 <a class="heading-anchor" href="#3-时间线" aria-label="Link to 3-时间线">#</a></h2>
@@ -236,27 +250,27 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <tr><td>2024-12</td><td>SGLang v0.4 发布 cache-aware routing</td><td>RadixAttention 进入生产级 router <a href="/papers/2507.07400/detail.html#sglang-radix" class="ref-link" title="L2:2507.07400#sglang-radix">[L2:2507.07400]</a></td></tr>
 <tr><td>2025-05</td><td>HexGen-Flow</td><td>首个 agentic Text-to-SQL 两层调度器：全局异构 GPU 派发 + 局部 SLO 预算紧急度队列 <a href="/papers/2505.05286/detail.html#hexgen-flow-scheduler" class="ref-link" title="L2:2505.05286#hexgen-flow-scheduler">[L2:2505.05286]</a></td></tr>
 <tr><td>2025-07</td><td>KVFlow</td><td>首次将 Belady 算法适配到 Agent Step Graph 做 prefix caching <a href="/papers/2507.07400/detail.html#kvflow-belady" class="ref-link" title="L2:2507.07400#kvflow-belady">[L2:2507.07400]</a></td></tr>
-<tr><td>2025-09</td><td>Halo</td><td>数据库批查询优化思想引入 agentic workflow：epoch DP + request coalescing，超 vLLM 400× <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a></td></tr>
-<tr><td>2025-10</td><td>Justitia</td><td>KV token-time 公平性度量 + WFQ 调度 <a href="/papers/2510.17015/detail.html#justitia-fairness" class="ref-link" title="L2:2510.17015#justitia-fairness">[L2:2510.17015]</a></td></tr>
-<tr><td>2025-11</td><td>Continuum</td><td>KV Cache TTL 机制，消除 per-turn queueing delay <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a></td></tr>
-<tr><td>2025-11</td><td>CPU-Centric Analysis</td><td>首次揭示 agent 场景 CPU 侧瓶颈（工具执行占 88% 延迟） <a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a></td></tr>
+<tr><td>2025-09</td><td>Halo</td><td>数据库批查询优化思想引入 agentic workflow：epoch DP + request coalescing，超 vLLM 400×（但基线为串行执行，vs LangGraph 仅 1.03–3.6×）<a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a> <a href="/papers/2509.02121.html#baseline-fairness" class="ref-link" title="L3:2509.02121#baseline-fairness">[L3:2509.02121]</a></td></tr>
+<tr><td>2025-10</td><td>Justitia</td><td>KV token-time 公平性度量 + WFQ 调度，57.5% JCT reduction <a href="/papers/2510.17015/detail.html#justitia-fairness" class="ref-link" title="L2:2510.17015#justitia-fairness">[L2:2510.17015]</a></td></tr>
+<tr><td>2025-11</td><td>Continuum</td><td>KV Cache TTL 机制——首次将 per-turn queueing delay 从 reload cost 中独立出来，证明排队延迟是 agent serving 的独立主导瓶颈 <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a> <a href="/papers/2511.02230.html#queueing-independence" class="ref-link" title="L3:2511.02230#queueing-independence">[L3:2511.02230]</a></td></tr>
+<tr><td>2025-11</td><td>CPU-Centric Analysis</td><td>首次揭示 agent 场景 CPU 侧瓶颈（工具执行占 88% 延迟），GPU 越强瓶颈越突出 <a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a></td></tr>
 <tr><td>2026-01</td><td>Sutradhara</td><td>Orchestrator-Engine 协同设计，KV cache priority queue <a href="/papers/2601.12967/detail.html#sutradhara-codesign" class="ref-link" title="L2:2601.12967#sutradhara-codesign">[L2:2601.12967]</a></td></tr>
-<tr><td>2026-01</td><td>Concur</td><td>Agent 级 admission control（AIMD 拥塞控制类比） <a href="/papers/2601.22705/detail.html#concur-admission" class="ref-link" title="L2:2601.22705#concur-admission">[L2:2601.22705]</a></td></tr>
-<tr><td>2026-02</td><td>ThunderAgent</td><td>Program-aware 调度 + 零气泡 KV 管理 <a href="/papers/2602.13692/detail.html#thunderagent-program" class="ref-link" title="L2:2602.13692#thunderagent-program">[L2:2602.13692]</a></td></tr>
-<tr><td>2026-02</td><td>SideQuest</td><td>模型自驱动 KV Cache GC（并行辅助线程） <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a></td></tr>
-<tr><td>2026-02</td><td>CMV</td><td>DAG 状态管理 + 结构无损裁剪 <a href="/papers/2602.22402/detail.html#cmv-dag-state" class="ref-link" title="L2:2602.22402#cmv-dag-state">[L2:2602.22402]</a></td></tr>
+<tr><td>2026-01</td><td>Concur</td><td>Agent 级 admission control（AIMD 拥塞控制类比），4.09× 吞吐提升 <a href="/papers/2601.22705/detail.html#concur-admission" class="ref-link" title="L2:2601.22705#concur-admission">[L2:2601.22705]</a></td></tr>
+<tr><td>2026-02</td><td>ThunderAgent</td><td>Program-aware 调度 + 零气泡 KV 管理，1.48–3.58× serving throughput <a href="/papers/2602.13692/detail.html#thunderagent-program" class="ref-link" title="L2:2602.13692#thunderagent-program">[L2:2602.13692]</a></td></tr>
+<tr><td>2026-02</td><td>SideQuest</td><td>模型自驱动 KV Cache GC——让 LRM 自身判断哪些 tool response 已过期，215 样本训练即激活能力 <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a></td></tr>
+<tr><td>2026-02</td><td>CMV</td><td>DAG 状态管理 + 三遍结构无损裁剪，均值 20% token 缩减 <a href="/papers/2602.22402/detail.html#cmv-dag-state" class="ref-link" title="L2:2602.22402#cmv-dag-state">[L2:2602.22402]</a></td></tr>
 <tr><td>2026-03</td><td>PPD</td><td>Decode 节点本地 Append-Prefill，Turn 2+ TTFT 降低 48-73% <a href="/papers/2603.13358/detail.html#ppd-routing" class="ref-link" title="L2:2603.13358#ppd-routing">[L2:2603.13358]</a></td></tr>
-<tr><td>2026-03</td><td>MFS</td><td>PD 分离中多阶段 flow 的网络争用优化 <a href="/papers/2603.17456/detail.html#mfs-network" class="ref-link" title="L2:2603.17456#mfs-network">[L2:2603.17456]</a></td></tr>
-<tr><td>2026-03</td><td>PASTE</td><td>Pattern-aware 投机性工具执行，E2E 延迟降低 48.5% <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a></td></tr>
-<tr><td>2026-03</td><td>Helium</td><td>DB-style query optimizer + Templated Radix Tree，超 KVFlow 1.56× <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a></td></tr>
-<tr><td>2026-04</td><td>Claude Code 源码分析</td><td>五层渐进式 context compaction pipeline 逆向工程 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a></td></tr>
-<tr><td>2026-04</td><td>SGH</td><td>Agent Loop 形式化为 scheduler 五元组，提出 Structured Graph Harness <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a></td></tr>
-<tr><td>2026-04</td><td>TokenDance</td><td>Multi-agent 同步轮的 KV Cache collective reuse <a href="/papers/2604.03143/detail.html#tokendance-collective" class="ref-link" title="L2:2604.03143#tokendance-collective">[L2:2604.03143]</a></td></tr>
-<tr><td>2026-04</td><td>Scepsy</td><td>Aggregate LLM Pipeline 抽象 + 分数 GPU 分配 <a href="/papers/2604.15186/detail.html#scepsy-aggregate" class="ref-link" title="L2:2604.15186#scepsy-aggregate">[L2:2604.15186]</a></td></tr>
-<tr><td>2026-05</td><td>SAGA</td><td>Workflow 原子调度 + Agent Execution Graph + Agent Fair Share <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a></td></tr>
-<tr><td>2026-05</td><td>BalanceRoute BR-H</td><td>Horizon-discounted F-score 负载均衡 <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a></td></tr>
-<tr><td>2026-05</td><td>PBKV</td><td>GraphSAGE 预测 + 分层淘汰 + 保守预取 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a></td></tr>
-<tr><td>2026-05</td><td>HexAGenT</td><td>Workflow + 异构感知联合 PD placement <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a></td></tr>
+<tr><td>2026-03</td><td>MFS</td><td>PD 分离中多阶段 flow 的网络争用优化，RMLQ 近似 Least-Laxity-First <a href="/papers/2603.17456/detail.html#mfs-network" class="ref-link" title="L2:2603.17456#mfs-network">[L2:2603.17456]</a></td></tr>
+<tr><td>2026-03</td><td>PASTE</td><td>Pattern-aware 投机性工具执行——将 speculative decoding 范式扩展到 tool 执行层，E2E 延迟降低 48.5% <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a></td></tr>
+<tr><td>2026-03</td><td>Helium</td><td>DB-style query optimizer + Templated Radix Tree，552 KiB vs SGLang RadixCache 14.8 MiB（27× 缩减），超 KVFlow 1.56× <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2603.16104.html#trt-efficiency" class="ref-link" title="L3:2603.16104#trt-efficiency">[L3:2603.16104]</a></td></tr>
+<tr><td>2026-04</td><td>Claude Code 源码分析</td><td>五层渐进式 context compaction pipeline 逆向工程，揭示"1.6% 决策逻辑 + 98.4% 确定性基础设施"范式 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a></td></tr>
+<tr><td>2026-04</td><td>SGH</td><td>Agent Loop 形式化为 scheduler 五元组，提出 $</td><td>\mathcal{U}</td><td>$ 连续谱统一 70 个开源 agent 项目 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a></td></tr>
+<tr><td>2026-04</td><td>TokenDance</td><td>Multi-agent 同步轮的 KV Cache collective reuse，并发 2.7× <a href="/papers/2604.03143/detail.html#tokendance-collective" class="ref-link" title="L2:2604.03143#tokendance-collective">[L2:2604.03143]</a></td></tr>
+<tr><td>2026-04</td><td>Scepsy</td><td>Aggregate LLM Pipeline 抽象 + 分数 GPU 分配，最高 2.4× 吞吐 <a href="/papers/2604.15186/detail.html#scepsy-aggregate" class="ref-link" title="L2:2604.15186#scepsy-aggregate">[L2:2604.15186]</a></td></tr>
+<tr><td>2026-05</td><td>SAGA</td><td>Workflow 原子调度 + Agent Execution Graph + Agent Fair Share，集群 TCT 降低 1.64×，但付出 ~30% 吞吐代价 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.00528.html#throughput-tradeoff" class="ref-link" title="L3:2605.00528#throughput-tradeoff">[L3:2605.00528]</a></td></tr>
+<tr><td>2026-05</td><td>BalanceRoute BR-H</td><td>Horizon-discounted F-score 负载均衡，优势随 G 超线性增长（$\Delta \propto G^{0.69}$） <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a></td></tr>
+<tr><td>2026-05</td><td>PBKV</td><td>GraphSAGE 预测 + 分层淘汰 + 保守预取——首个将 algorithms-with-predictions 框架应用于 KV cache 管理的工作，提供 Lipschitz 退化保证 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2605.06472.html#first-alg-with-predictions" class="ref-link" title="L3:2605.06472#first-alg-with-predictions">[L3:2605.06472]</a></td></tr>
+<tr><td>2026-05</td><td>HexAGenT</td><td>Workflow + 异构感知联合 PD placement，Req99 最大降低 80.5% <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a></td></tr>
 </table>
 
 <hr>
@@ -273,33 +287,41 @@ P2C (1996) ──┼──→ Consistent Hash (1997) ──┬──→ Cache-Aw
 Least Loaded ┘                             │         │
                                            │         ├──→ PrefixHash (SGLang 2025)
                                            │         ├──→ DualMap (ICLR 2026)
-                                           │         └──→ llm-d precise-prefix-scorer
+                                           │         ├──→ llm-d precise-prefix-scorer
+                                           │         └──→ TRT (Helium, 模板化而非 per-token)
                                            │
                                            └──→ Sticky Routing ──→ Session-Affinity Batching
                                                                         │
                                                                         ▼
                                                         ┌──────────────────────────────┐
-                                                        │    Workflow-Level Systems      │
+                                                        │  Workflow-Level Systems        │
                                                         ├──────────────────────────────┤
-                                                        │  SAGA (Execution Graph)       │
-              KV Cache TTL                              │  HexAGenT (DAG + Hetero)      │
-              ┌─ Continuum (2025-11)                    │  Helium (DB-style TRT)         │
-              │                                         │  Halo (Batch DP + Coalescing)  │
-              ├─ SideQuest (2026-02, model-driven GC)   │  Scepsy (Aggregate Pipeline)   │
-              │                                         │  ThunderAgent (Program-aware)  │
-              ├─ PBKV (2026-05, GraphSAGE prediction)   │  HexGen-Flow (SLO-budget PQ)  │
-              │                                         └──────────────────────────────┘
-              └─ KVFlow (2025-07, Belady on Step Graph)
-                                                        ┌──────────────────────────────┐
-              BalanceRoute BR-H ──→ Decode 前瞻均衡      │    Fairness &amp; Admission       │
-                                                        ├──────────────────────────────┤
-              PPD ──→ Decode 本地 Append-Prefill         │  Justitia (WFQ token-time)    │
-                                                        │  Concur (AIMD admission)      │
-              MFS ──→ 网络 flow 多阶段调度               │  SAGA AFS (Lyapunov drift)    │
-                                                        └──────────────────────────────┘
+                                                        │ A) 程序/图感知路径            │
+                                                        │   SAGA (AEG + WA-LRU)        │
+                                                        │   ThunderAgent (program-aware) │
+                                                        │   SGH (静态 DAG, 理论)        │
+                                                        │                              │
+              KV Cache 管理演进                          │ B) DB 查询优化路径            │
+              ┌─ LRU (被动淘汰)                         │   Helium (TRT + nested-seq)   │
+              │                                         │   Halo (epoch DP + coalescing) │
+              ├─ Continuum (2025-11, TTL cost-benefit)   │   Scepsy (Aggregate Pipeline) │
+              │    ↑ per-turn 排队延迟独立化             │                              │
+              ├─ KVFlow (2025-07, Belady on Step Graph)  │ C) 异构感知路径              │
+              │    ↑ 静态距离淘汰                        │   HexAGenT (DAG + Hetero)     │
+              ├─ SAGA WA-LRU (2026-05, AEG 转移概率)    │   HexGen-Flow (SLO-budget)    │
+              │    ↑ workflow 结构化复用预测             └──────────────────────────────┘
+              ├─ PBKV (2026-05, GraphSAGE K-step)
+              │    ↑ 学习型多步预测 + Lipschitz 退化保证
+              └─ SideQuest (2026-02, model-driven GC)
+                   ↑ LRM 语义推理淘汰 (正交于上述链)
+
+              BalanceRoute BR-H ──→ Decode barrier 前瞻均衡 (F-score)
+              PPD ──→ Decode 本地 Append-Prefill (per-request 动态路由)
+              MFS ──→ 网络 flow 多阶段调度 (RMLQ ≈ LLF)
 
 执行层优化:
   PASTE (pattern-aware speculation) ──→ Tool stall 与 LLM generation 时间重叠
+    ↑ 与 KV cache 管理正交：PASTE 消除等待，TTL/SAGA/PBKV 管理等待期间的资源
   CPU-Centric (COMB/MAS) ──────────→ CPU 侧微批调度 + 异构队列
 
 客户端 Context 管理:
@@ -307,76 +329,111 @@ Least Loaded ┘                             │         │
   Cursor Dynamic Context Discovery ───────┼──→ 客户端 + 基础设施联合优化
   CMV DAG State Management ───────────────┘
 
+公平性与准入:
+  Justitia (WFQ token-time, 2025-10) ──┐
+  Concur (AIMD admission, 2026-01) ────┼──→ Agent 级资源公平分配
+  SAGA AFS (Lyapunov drift, 2026-05) ──┘
+
 运行时形式化:
-  SGH Scheduler 五元组 (2026-04) ──→ Agent Loop vs DAG 执行的统一理论坐标系
+  SGH Scheduler 五元组 (2026-04) ──→ |U| 连续谱统一 Agent Loop 和 DAG executor
 </code></pre>
 
 <p>关键分支点：</p>
 
 <ol>
-<li><strong>Cache-Aware Routing 分化</strong>：从 Consistent Hash 分出 Radix Tree（精确匹配）和 PrefixHash（轻量近似），前者适合结构化 workflow，后者适合大规模分布式。</li>
+<li><strong>Cache-Aware Routing 分化</strong>：从 Consistent Hash 分出 Radix Tree（精确匹配）和 PrefixHash（轻量近似），前者适合结构化 workflow，后者适合大规模分布式。Helium 的 TRT 走出第三条路——以模板粒度（workflow 结构）而非 token 粒度（request 内容）建索引，metadata 开销仅为 SGLang RadixCache 的 1/27 <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2603.16104.html#trt-vs-radixcache" class="ref-link" title="L3:2603.16104#trt-vs-radixcache">[L3:2603.16104]</a>。</li>
 </ul>
 
 <ol>
-<li><strong>KV Cache 管理逐步演化</strong>：被动 LRU → 固定 TTL（Continuum）→ 结构化距离淘汰（KVFlow Belady 适配）→ 预测性管理（PBKV GraphSAGE）→ 模型自驱动 GC（SideQuest）。每一代在精度和复杂度间做不同取舍。</li>
+<li><strong>KV Cache 管理的五代演化</strong>：被动 LRU → 固定 TTL（Continuum, per-tool 历史 CDF 估计保留时间）→ 结构化距离淘汰（KVFlow, Belady 适配 Agent Step Graph）→ 预测性管理（PBKV, GraphSAGE K-step 联合预测 + Lipschitz 退化保证）→ 模型自驱动 GC（SideQuest, LRM 辅助线程语义推理）。每一代在精度、鲁棒性和开销间做不同取舍。关键洞察：PBKV 的"确定性护栏 + 概率系统"分层设计确保在预测精度从 0.94 到随机的整个谱上都严格优于 LRU <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2605.06472.html#graceful-degradation" class="ref-link" title="L3:2605.06472#graceful-degradation">[L3:2605.06472]</a>，而 SAGA 去除 AEG 后 TCT 退化 54%，对预测质量依赖更强 <a href="/papers/2605.00528.html#aeg-dependency" class="ref-link" title="L3:2605.00528#aeg-dependency">[L3:2605.00528]</a>。</li>
 </ul>
 
 <ol>
-<li><strong>Workflow-level 系统两条路径分化</strong>：(a) 程序/图感知路径（SAGA AEG、ThunderAgent program-aware、SGH 静态 DAG）从 agent 执行结构出发；(b) DB 查询优化路径（Helium TRT、Halo epoch DP）从数据系统 batch 优化思路出发。两者在 2026-03 前后独立出现，尚未融合。</li>
+<li><strong>Workflow-level 系统三条路径分化</strong>：(a) 程序/图感知路径（SAGA AEG、ThunderAgent program-aware）从 agent 执行结构出发，DAG 是"描述性"的——观测 agent 行为并预测复用；(b) DB 查询优化路径（Helium TRT、Halo epoch DP）从数据系统 batch 优化思路出发，DAG 是"规定性"的——预定义执行路径并全局优化 <a href="/papers/2509.02121.html#plan-layer" class="ref-link" title="L3:2509.02121#plan-layer">[L3:2509.02121]</a>；(c) 异构感知路径（HexAGenT, HexGen-Flow）从集群拓扑出发。三者在 2026-03 前后独立出现，尚未融合——但 Helium 的方法论贡献（TRT、CSE、nested-sequence schedule）可能被上层框架吸收为 middleware 优化 pass <a href="/papers/2603.16104.html#adoption-path" class="ref-link" title="L3:2603.16104#adoption-path">[L3:2603.16104]</a>。</li>
 </ul>
 
 <ol>
-<li><strong>执行层优化独立成支</strong>：PASTE 的投机性工具执行和 CPU-Centric 的 COMB/MAS 不直接改变调度算法，但通过隐藏 tool stall 和重新平衡 CPU-GPU 利用率，改变了调度问题的约束结构。</li>
+<li><strong>执行层优化独立成支</strong>：PASTE 的投机性工具执行与 KV cache 管理是正交且可叠加的——PASTE 攻 tool 执行时间，Continuum/SAGA/PBKV 攻等待期间的资源管理 <a href="/papers/2603.18897.html#orthogonal-combination" class="ref-link" title="L3:2603.18897#orthogonal-combination">[L3:2603.18897]</a>。四者形成"agent tool-call gap optimization"的四面攻击：PASTE 消除等待，Continuum 消除排队，SAGA 消除 cache 重建，PBKV 优化淘汰决策。</li>
+</ul>
+
+<ol>
+<li><strong>SideQuest 作为正交的"第六代"</strong>：SideQuest 不在上述时间链条内演进，而是引入了完全正交的维度——让模型自身做 KV cache 管理决策。它工作在 token 粒度（intra-turn 内部清理已过期 tool response token），而其他系统工作在 session/request 粒度（inter-turn 保留或淘汰整个 KV block）<a href="/papers/2605.00528.html#sidequest-complementarity" class="ref-link" title="L3:2605.00528#sidequest-complementarity">[L3:2605.00528]</a>。两者可组合：SAGA 跨 turn 保留 KV block，SideQuest 在保留的 block 内部做语义压缩。</li>
 </ul>
 
 <hr>
 
 <h2 id="5-技术线交错">5. 技术线交错 <a class="heading-anchor" href="#5-技术线交错" aria-label="Link to 5-技术线交错">#</a></h2>
 
-<h3 id="算法设计-↔-系统实现的张力">算法设计 ↔ 系统实现的张力 <a class="heading-anchor" href="#算法设计-↔-系统实现的张力" aria-label="Link to 算法设计-↔-系统实现的张力">#</a></h3>
+<h3 id="5-1-预测层级谱：从统计-cdf-到学习型-gnn-到-lrm-语义推理">5.1 预测层级谱：从统计 CDF 到学习型 GNN 到 LRM 语义推理 <a class="heading-anchor" href="#5-1-预测层级谱：从统计-cdf-到学习型-gnn-到-lrm-语义推理" aria-label="Link to 5-1-预测层级谱：从统计-cdf-到学习型-gnn-到-lrm-语义推理">#</a></h3>
+
+<p>agent 行为预测的复杂度和精度形成了一条清晰的谱：</p>
+
+<table>
+<tr><th>系统</th><th>预测对象</th><th>预测方法</th><th>延迟/开销</th><th>预测精度</th><th>退化行为</th></tr>
+<tr><td>Continuum</td><td>工具返回时间</td><td>per-tool 历史 CDF $\mathcal{P}(\tau, f)$</td><td>~0 (在线统计)</td><td>隐式 (无显式准确率报告)</td><td>TTL 过期 → 直接驱逐，退化为 vLLM 默认 <a href="/papers/2511.02230.html#ttl-expiry-degradation" class="ref-link" title="L3:2511.02230#ttl-expiry-degradation">[L3:2511.02230]</a></td></tr>
+<tr><td>SAGA</td><td>KV 复用概率</td><td>AEG 转移概率 × overlap</td><td>EMA 更新</td><td>87% (无 framework hint)</td><td>WA-LRU 退化至 LRU, TCT +54% <a href="/papers/2605.00528.html#aeg-dependency" class="ref-link" title="L3:2605.00528#aeg-dependency">[L3:2605.00528]</a></td></tr>
+<tr><td>PBKV</td><td>K-step agent 分布</td><td>GraphSAGE ~350K params</td><td>1.18ms/请求</td><td>0.94 (1-step), 0.77 (3-step)</td><td>Lipschitz 界退化至 LAE (而非 LRU) <a href="/papers/2605.06472.html#graceful-degradation" class="ref-link" title="L3:2605.06472#graceful-degradation">[L3:2605.06472]</a></td></tr>
+<tr><td>PASTE</td><td>下一个 tool 类型+参数</td><td>PrefixSpan 频繁序列挖掘</td><td>0.02 core-sec/s</td><td>Top-1 27.8%, overall 93.8%</td><td>多候选投机用资源换覆盖率 <a href="/papers/2603.18897.html#multi-candidate" class="ref-link" title="L3:2603.18897#multi-candidate">[L3:2603.18897]</a></td></tr>
+<tr><td>SideQuest</td><td>哪些 token 已过期</td><td>LRM 辅助线程语义推理</td><td>~110-140 token/触发</td><td>精度损失仅 2-5%</td><td>辅助线程未完成则不执行（安全但放弃收益）<a href="/papers/2605.06472.html#sidequest-comparison" class="ref-link" title="L3:2605.06472#sidequest-comparison">[L3:2605.06472]</a></td></tr>
+</table>
+
+<p>关键张力：<strong>预测精度与鲁棒性的权衡在 PBKV 处被首次形式化</strong>。PBKV 的退役缓存淘汰（LAE）提供不依赖预测的确定性基线（单独贡献命中率从 27% 到 44.91%），评分驱动淘汰在此基础上叠加概率收益，保守预取仅用空闲资源——三层架构确保任何预测精度下都不退化至 LRU <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2605.06472.html#layered-robustness" class="ref-link" title="L3:2605.06472#layered-robustness">[L3:2605.06472]</a>。相比之下，Continuum 的 TTL 过期时直接驱逐（无中间态），SAGA 的 WA-LRU 在 AEG 失败时退化至标准 LRU（无分层保护）<a href="/papers/2605.06472.html#degradation-comparison" class="ref-link" title="L3:2605.06472#degradation-comparison">[L3:2605.06472]</a>。</p>
+
+<p>另一张力：<strong>预测目标的本质差异</strong>。Continuum 预测"什么时候回来"（时间维度），PBKV 预测"谁会被调用"（结构维度），SAGA 预测"已有 KV 有多少比例会被复用"（更深但更难验证正确性的维度）<a href="/papers/2511.02230.html#prediction-target-distinction" class="ref-link" title="L3:2511.02230#prediction-target-distinction">[L3:2511.02230]</a>。三者在各自维度上的信息都是有价值的——理想系统应融合时间预测（TTL 快速决策）、结构预测（PBKV 全局优化）和语义判断（SideQuest 精确淘汰）。</p>
+
+<h3 id="5-2-算法设计-↔-系统实现的张力">5.2 算法设计 ↔ 系统实现的张力 <a class="heading-anchor" href="#5-2-算法设计-↔-系统实现的张力" aria-label="Link to 5-2-算法设计-↔-系统实现的张力">#</a></h3>
 
 <ul>
-<li><strong>精确 cache-aware routing 需要 O(prefix_len) 查找</strong>，大规模部署中延迟不可接受。PrefixHash 以 O(log n) 的 xxhash 近似替代，但牺牲了细粒度匹配。llm-d 通过 ZMQ 订阅 KV block events 在精度和延迟之间找到中间地带 <a href="/papers/2507.07400/detail.html#sglang-radix" class="ref-link" title="L2:2507.07400#sglang-radix">[L2:2507.07400]</a>。Helium 的 Templated Radix Tree 以 552 KiB 代替 SGLang RadixCache 的 14.8 MiB（27× 缩减），因为 TRT 按模板静态结构而非 per-token 索引 <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a>。</li>
+<li><strong>精确 cache-aware routing 需要 O(prefix_len) 查找</strong>，大规模部署中延迟不可接受。PrefixHash 以 O(log n) 的 xxhash 近似替代，但牺牲了细粒度匹配。llm-d 通过 ZMQ 订阅 KV block events 在精度和延迟之间找到中间地带 <a href="/papers/2507.07400/detail.html#sglang-radix" class="ref-link" title="L2:2507.07400#sglang-radix">[L2:2507.07400]</a>。Helium 的 TRT 通过改变索引粒度（模板而非 token）在不牺牲精度的前提下将 metadata 从 14.8 MiB 压缩至 552 KiB <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2603.16104.html#trt-efficiency" class="ref-link" title="L3:2603.16104#trt-efficiency">[L3:2603.16104]</a>。</li>
 </ul>
 
 <ul>
-<li><strong>Workflow 预测精度 vs 退化保证</strong>：PBKV 的 GraphSAGE 预测器达到 1-step 0.94 精度，但关键贡献是 Lipschitz 退化保证——预测失败时退化至生命周期感知策略而非 LRU <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。SAGA 的 AEG 模式推断在无框架提示时仍有 87% 准确率，但退化 15.6% TCT <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。PASTE 的 Top-1 准确率仅 27.8%，但通过多候选投机策略达到 93.8% overall hit rate——用资源换覆盖率 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>。</li>
+<li><strong>Workflow 预测精度 vs 退化保证形成三层竞争</strong>：</li>
+<li>PBKV 的 Lipschitz 遗憾界 $\mathcal{R}(B) \leq \frac{1}{2(1-\gamma)} \sum \epsilon_c^\gamma$ 是唯一提供预测误差与性能退化之间定量关系的工作 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2605.06472.html#lipschitz-bound" class="ref-link" title="L3:2605.06472#lipschitz-bound">[L3:2605.06472]</a>。但理论界可能松弛——SAGA 的 formal bound 20.5× 比经验值 1.31× 松弛 15 倍 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.00528.html#competitive-ratio-looseness" class="ref-link" title="L3:2605.00528#competitive-ratio-looseness">[L3:2605.00528]</a>。</li>
+<li>SAGA 的 AEG 模式推断在无框架提示时仍有 87% 准确率，但"预测 KV overlap"比"预测下一个 agent"更难验证正确性——后者有 ground truth（实际调用了谁），前者需要 counterfactual 分析 <a href="/papers/2605.00528.html#overlap-verification" class="ref-link" title="L3:2605.00528#overlap-verification">[L3:2605.00528]</a>。</li>
+<li>PASTE 的 Top-1 准确率仅 27.8%，但通过多候选投机策略达到 93.8% overall hit rate——用资源换覆盖率 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>。这与 PBKV/SAGA 追求精确预测的哲学形成对比：精度不够时可用覆盖率补偿。</li>
 </ul>
 
-<h3 id="模型架构-↔-基础设施调度的跨界">模型架构 ↔ 基础设施调度的跨界 <a class="heading-anchor" href="#模型架构-↔-基础设施调度的跨界" aria-label="Link to 模型架构-↔-基础设施调度的跨界">#</a></h3>
+<h3 id="5-3-模型架构-↔-基础设施调度的跨界">5.3 模型架构 ↔ 基础设施调度的跨界 <a class="heading-anchor" href="#5-3-模型架构-↔-基础设施调度的跨界" aria-label="Link to 5-3-模型架构-↔-基础设施调度的跨界">#</a></h3>
 
 <ul>
-<li><strong>SideQuest 让模型自身管理 KV Cache</strong>：并行辅助线程 fork 主线程的 KV cache，语义推理哪些 tool response 已过期，输出结构化删除命令。仅需 215 个训练样本即可激活此能力。峰值 token 使用量降低 56-65%，SGLang 吞吐提升 83.9% <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a>。</li>
+<li><strong>SideQuest 让模型自身管理 KV Cache</strong>：并行辅助线程 fork 主线程的 KV cache，语义推理哪些 tool response 已过期，输出结构化删除命令。仅需 215 个训练样本即可激活此能力 <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a>。SideQuest 表明启发式 KV 压缩（H₂O、SnapKV）在 agentic 场景导致模型崩溃（non-completion rate 60%+），因为 token 重要性是非单调的——某些 tool response 在第 $t$ 轮看似无用但到第 $t+n$ 轮可能重新变关键 <a href="/papers/2605.06472.html#sidequest-vs-heuristic" class="ref-link" title="L3:2605.06472#sidequest-vs-heuristic">[L3:2605.06472]</a>。这一观察直接挑战了所有基于"recency = importance"假设的启发式淘汰方法。</li>
 </ul>
 
 <ul>
-<li><strong>Claude Code 的 microcompact 策略感知基础设施层 cache 状态</strong>：boundary messages 必须 defer 到 API 响应后获得实际 <code>cache_deleted_input_tokens</code>，形成客户端→基础设施的调度 hint 传递 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a>。</li>
+<li><strong>Claude Code 的 microcompact 策略感知基础设施层 cache 状态</strong>：boundary messages 必须 defer 到 API 响应后获得实际 <code>cache_deleted_input_tokens</code>，形成客户端→基础设施的调度 hint 传递 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a>。Claude Code 的 5 层 compaction 暗示：在应用层，context window 管理远比 serving 层想象的复杂。Continuum 假设"KV cache = 完整 context history"，但实际上 Claude Code 在 serving 请求到达之前已经做了大量裁剪——Continuum 保留的 KV cache 可能对应的是已经被 compact 过的 context <a href="/papers/2511.02230.html#compaction-interaction" class="ref-link" title="L3:2511.02230#compaction-interaction">[L3:2511.02230]</a>。</li>
 </ul>
 
 <ul>
-<li><strong>SGH 将 Agent Loop 形式化为 |U|=1 的 scheduler</strong>：揭示主流 agent 框架本质上是单就绪单元调度器，结构化并行需要显式 DAG。但 Claude Code 的生产成功证明加上足够强的确定性 harness，Agent Loop 范式仍然可行 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a> <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a>。</li>
+<li><strong>SGH 的 scheduler 连续谱提供理论坐标</strong>：$|\mathcal{U}|=1$ 是 Agent Loop（ReAct），$|\mathcal{U}|\geq 1$ 需要显式 DAG。Claude Code 的生产成功（"1.6% 决策 + 98.4% 确定性基础设施"）证明 $|\mathcal{U}|=1$ + maximal harness 仍然可行 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a> <a href="/papers/2604.11378.html#loop-vs-dag-tension" class="ref-link" title="L3:2604.11378#loop-vs-dag-tension">[L3:2604.11378]</a>。但 PASTE 通过投机执行证伪了"只有显式 DAG 才能突破 $|\mathcal{U}|=1$"的论点——在不引入任何 DAG 的情况下，通过旁路 pattern-based speculation 在 serving 层实现了事实上的并行 <a href="/papers/2604.11378.html#paste-falsifies-dag-necessity" class="ref-link" title="L3:2604.11378#paste-falsifies-dag-necessity">[L3:2604.11378]</a>。</li>
 </ul>
 
-<h3 id="pd-分离-↔-多轮-agent-的结构冲突">PD 分离 ↔ 多轮 Agent 的结构冲突 <a class="heading-anchor" href="#pd-分离-↔-多轮-agent-的结构冲突" aria-label="Link to pd-分离-↔-多轮-agent-的结构冲突">#</a></h3>
+<h3 id="5-4-pd-分离-↔-多轮-agent-的结构冲突">5.4 PD 分离 ↔ 多轮 Agent 的结构冲突 <a class="heading-anchor" href="#5-4-pd-分离-↔-多轮-agent-的结构冲突" aria-label="Link to 5-4-pd-分离-↔-多轮-agent-的结构冲突">#</a></h3>
 
 <ul>
-<li>PPD 揭示了核心洞察：append-prefill 对 decode 的干扰仅 2%（vs full prefill 的 48%），但无单一静态策略在所有场景占优——需要 per-request 动态路由 <a href="/papers/2603.13358/detail.html#ppd-routing" class="ref-link" title="L2:2603.13358#ppd-routing">[L2:2603.13358]</a>。</li>
-<li>MFS 发现 disaggregated MoE serving 中三阶段通信（KV-cache 复用 + collective comm + P2D 传输）的网络争用使 TTFT 膨胀约 50%，提出 Reverse Multi-Level Queue 近似 Least-Laxity-First <a href="/papers/2603.17456/detail.html#mfs-network" class="ref-link" title="L2:2603.17456#mfs-network">[L2:2603.17456]</a>。</li>
-<li>HexAGenT 将此冲突推向极致：在异构 A100/H100/H200 集群上联合优化 prefill 和 decode 的 placement，用 projected scaled-SLO risk 排序使 Req99 最大降低 80.5% <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a>。</li>
+<li>PPD 揭示了核心洞察：append-prefill 对 decode 的干扰仅 2%（vs full prefill 的 48%），但无单一静态策略在所有场景占优——需要 per-request 动态路由 <a href="/papers/2603.13358/detail.html#ppd-routing" class="ref-link" title="L2:2603.13358#ppd-routing">[L2:2603.13358]</a>。PPD 的 scoring function 是 per-request 粒度的路由决策，天然适应动态 turn 数（每轮独立决策）<a href="/papers/2603.16104.html#ppd-vs-helium-granularity" class="ref-link" title="L3:2603.16104#ppd-vs-helium-granularity">[L3:2603.16104]</a>。</li>
+<li>MFS 发现 disaggregated MoE serving 中三阶段通信（KV-cache 复用 + collective comm + P2D 传输）的网络争用使 TTFT 膨胀约 50%，提出 Reverse Multi-Level Queue 近似 Least-Laxity-First <a href="/papers/2603.17456/detail.html#mfs-network" class="ref-link" title="L2:2603.17456#mfs-network">[L2:2603.17456]</a>。MFS 在网络层面做 flow 调度（管网络优先级），与 Halo 在计算层面做任务调度（管 compute placement）完全不重叠，但都作用于 TTFT 优化 <a href="/papers/2509.02121.html#mfs-halo-orthogonal" class="ref-link" title="L3:2509.02121#mfs-halo-orthogonal">[L3:2509.02121]</a>。</li>
+<li>HexAGenT 将此冲突推向极致：在异构 A100/H100/H200 集群上联合优化 prefill 和 decode 的 placement，用 projected scaled-SLO risk 排序使 Req99 最大降低 80.5%。Workflow-aware 排序本身是主收益来源——即使在同构集群上仍降 24.0%/35.4% <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a>。</li>
 </ul>
 
-<h3 id="公平性-↔-效率的权衡">公平性 ↔ 效率的权衡 <a class="heading-anchor" href="#公平性-↔-效率的权衡" aria-label="Link to 公平性-↔-效率的权衡">#</a></h3>
+<h3 id="5-5-公平性-↔-效率的权衡">5.5 公平性 ↔ 效率的权衡 <a class="heading-anchor" href="#5-5-公平性-↔-效率的权衡" aria-label="Link to 5-5-公平性-↔-效率的权衡">#</a></h3>
 
 <ul>
 <li>Justitia 用 KV token-time（显存占用 × 持续时间）度量成本，以 WFQ virtual finish time 排序，保证最坏延迟 ≤ 2c_max + C_max/M <a href="/papers/2510.17015/detail.html#justitia-fairness" class="ref-link" title="L2:2510.17015#justitia-fairness">[L2:2510.17015]</a>。</li>
-<li>SAGA 的 Agent Fair Share 通过 Lyapunov drift 分析证明 bounded-deviation 保证——轻租户 SLO 达成率从 43.2% 跃升至 98.7% <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。</li>
+<li>SAGA 的 Agent Fair Share 通过 Lyapunov drift 分析证明 bounded-deviation 保证——轻租户 SLO 达成率从 43.2% 跃升至 98.7% <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。但 SAGA 明确承认 ~30% throughput reduction vs BFS——这是 session-affinity 的直接代价，请求被路由到"正确的" worker 而非"空闲的" worker <a href="/papers/2605.00528.html#throughput-tradeoff" class="ref-link" title="L3:2605.00528#throughput-tradeoff">[L3:2605.00528]</a>。对比 SideQuest 反而提升吞吐 +83.9%（通过释放 batch capacity）<a href="/papers/2605.00528.html#sidequest-throughput-contrast" class="ref-link" title="L3:2605.00528#sidequest-throughput-contrast">[L3:2605.00528]</a>。</li>
 </ul>
 
-<h3 id="工具执行-↔-gpu-利用率的瓶颈转移">工具执行 ↔ GPU 利用率的瓶颈转移 <a class="heading-anchor" href="#工具执行-↔-gpu-利用率的瓶颈转移" aria-label="Link to 工具执行-↔-gpu-利用率的瓶颈转移">#</a></h3>
+<h3 id="5-6-工具执行-↔-gpu-利用率的瓶颈转移">5.6 工具执行 ↔ GPU 利用率的瓶颈转移 <a class="heading-anchor" href="#5-6-工具执行-↔-gpu-利用率的瓶颈转移" aria-label="Link to 5-6-工具执行-↔-gpu-利用率的瓶颈转移">#</a></h3>
 
 <ul>
-<li>当 CPU 工具执行占 E2E 延迟 88% 时，GPU kernel 优化上限仅 12% <a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a>。PASTE 通过模式感知投机执行将 tool 等待时间减少 67%、实现 GPU-tool 10× overlap 提升 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>。Halo 的 CPU-GPU pipelining 和 request coalescing（最大贡献：去掉后慢 2.54×）从 batch 层面解决了相同问题 <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>。三者在不同粒度（per-call / per-session / per-batch）攻击同一瓶颈。</li>
+<li>当 CPU 工具执行占 E2E 延迟 88% 时，GPU kernel 优化上限仅 12% <a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a>。且 GPU 越强瓶颈越突出——Toolformer 推理占比从 Sys1 88% 降至 Sys2 77% <a href="/papers/2511.02230.html#gpu-strength-shift" class="ref-link" title="L3:2511.02230#gpu-strength-shift">[L3:2511.02230]</a>。</li>
+<li>PASTE 通过模式感知投机执行将 tool 等待时间减少 67%、实现 GPU-tool 10× overlap 提升 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>。Halo 的 CPU-GPU pipelining 和 request coalescing（最大贡献：去掉后慢 2.54×）从 batch 层面解决了相同问题 <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>。三者在不同粒度（per-call / per-session / per-batch）攻击同一瓶颈。</li>
+<li>关键矛盾：PBKV 消除了 GPU 侧的 cache miss re-prefill 后，瓶颈将进一步转向 CPU 工具执行 <a href="/papers/2605.06472.html#bottleneck-shift" class="ref-link" title="L3:2605.06472#bottleneck-shift">[L3:2605.06472]</a>。这意味着 GPU 侧 KV cache 管理的边际收益递减——PBKV 的价值窗口集中在"GPU 显存是瓶颈"的场景（高并发、大模型、长上下文），当 GPU 显存充裕时其收益空间会被压缩。</li>
 </ul>
+
+<h3 id="5-7-halo-占据的独特-中间层">5.7 Halo 占据的独特"中间层" <a class="heading-anchor" href="#5-7-halo-占据的独特-中间层" aria-label="Link to 5-7-halo-占据的独特-中间层">#</a></h3>
+
+<p>Halo 是唯一一个在 <strong>workflow-plan 层</strong> 做全局优化的系统，位于 agent orchestration（LangGraph/AutoGen）和 serving engine（vLLM/SGLang）之间。其三项独有增量：(1) Request Coalescing 通过归一化 operator signature 发现语义等价的 SQL/API 调用并合并为单次物理执行；(2) Epoch-based DP 从 MILP NP-complete 到 2s 求解且质量=oracle；(3) 三项 cost model $(T_{\text{prep}}, T_{\text{model}}, T_{\text{infer}})$ 是当前 agentic serving 中最全面的 <a href="/papers/2509.02121.html#halo-unique-contributions" class="ref-link" title="L3:2509.02121#halo-unique-contributions">[L3:2509.02121]</a>。但 Halo 的 400× vs vLLM 对比本质上是"workflow-aware batch system vs request-level serial system"——任何 agent framework 都不会用 serial vLLM 调用来处理 1024 个 workflow，vs LangGraph 的真实优势仅 1.03–3.6× <a href="/papers/2509.02121.html#baseline-fairness" class="ref-link" title="L3:2509.02121#baseline-fairness">[L3:2509.02121]</a>。</p>
 
 <hr>
 
@@ -385,41 +442,49 @@ Least Loaded ┘                             │         │
 <h3 id="共识">共识 <a class="heading-anchor" href="#共识" aria-label="Link to 共识">#</a></h3>
 
 <ol>
-<li><strong>Request-level 调度对 agent 工作负载不够</strong>：所有 2026 年论文一致认为需要 workflow/program-level 调度。SAGA 量化了 request-level 调度的代价——38% 执行时间浪费在 KV cache 再生、6.0× 端到端延迟膨胀 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。HexAGenT 证明仅从 per-call 切换到 workflow-FCFS 就能降低 31.4% Req95 <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a>。Halo 对比显示 workflow-level 优化后比 vLLM 快 400× <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>。</li>
+<li><strong>Request-level 调度对 agent 工作负载不够</strong>：所有 2026 年论文一致认为需要 workflow/program-level 调度。SAGA 量化了 request-level 调度的代价——38% 执行时间浪费在 KV cache 再生、6.0× 端到端延迟膨胀 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。HexAGenT 证明仅从 per-call 切换到 workflow-FCFS 就能降低 31.4% Req95——且需要 $\alpha = 5.85$–26.89 的过度配置才能用 per-call FCFS 达到 95% SLO <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a>。Halo 对比显示 workflow-level 优化后比 vLLM 快 400×（但此数字的参照基线有争议）<a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a> <a href="/papers/2509.02121.html#baseline-fairness" class="ref-link" title="L3:2509.02121#baseline-fairness">[L3:2509.02121]</a>。</li>
 </ul>
 
 <ol>
-<li><strong>KV Cache 是一等调度信号</strong>：Continuum（TTL 模型）、SAGA（Execution Graph 复用预测）、PBKV（GraphSAGE 评分）、BalanceRoute（KV 单调增长感知 F-score）、SideQuest（语义 GC）、KVFlow（Belady 适配）全部将 KV 状态作为核心调度输入 <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a> <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a> <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a> <a href="/papers/2507.07400/detail.html#kvflow-belady" class="ref-link" title="L2:2507.07400#kvflow-belady">[L2:2507.07400]</a>。</li>
+<li><strong>KV Cache 是一等调度信号</strong>：Continuum（TTL 模型）、SAGA（Execution Graph 复用预测）、PBKV（GraphSAGE 评分）、BalanceRoute（KV 单调增长感知 F-score）、SideQuest（语义 GC）、KVFlow（Belady 适配）全部将 KV 状态作为核心调度输入 <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a> <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a> <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a> <a href="/papers/2507.07400/detail.html#kvflow-belady" class="ref-link" title="L2:2507.07400#kvflow-belady">[L2:2507.07400]</a>。PBKV 的退役缓存淘汰（LAE）是一个极其简单但此前无人实现的机制——监听工作流终止事件标记私有缓存为退役并优先淘汰——单独贡献命中率从 27% 到 44.91% 的跃升，性价比极高 <a href="/papers/2605.06472.html#lae-contribution" class="ref-link" title="L3:2605.06472#lae-contribution">[L3:2605.06472]</a>。</li>
 </ul>
 
 <ol>
-<li><strong>分层 Fallback 是标准范式</strong>：SGLang（sticky → cache_aware → P2C）、vLLM Router（consistent_hash → round_robin）、PBKV（退役缓存淘汰 → 评分淘汰 → LRU 兜底）均采用多级降级策略 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。</li>
+<li><strong>分层 Fallback 是标准范式</strong>：SGLang（sticky → cache_aware → P2C）、vLLM Router（consistent_hash → round_robin）、PBKV（退役缓存淘汰 → 评分淘汰 → LRU 兜底）均采用多级降级策略 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。这不是巧合——agent 工作负载的不确定性使任何单一策略在所有场景下都无法最优，分层降级是应对预测不可靠性的工程最佳实践。</li>
 </ul>
 
 <ol>
-<li><strong>工具执行是不可忽视的系统瓶颈</strong>：CPU-Centric 论文首次系统刻画（35%-88% E2E 延迟）<a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a>，PASTE 通过投机执行将 tool stall 减少 67% <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>，Halo 的 request coalescing 在 batch 分析场景消除了重复工具调用 <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>。三篇独立确认了同一结论。</li>
+<li><strong>工具执行是不可忽视的系统瓶颈</strong>：CPU-Centric 论文首次系统刻画（35%-88% E2E 延迟）<a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a>，PASTE 通过投机执行将 tool stall 减少 67% <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>，Halo 的 request coalescing 在 batch 分析场景消除了重复工具调用 <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>。三篇独立确认了同一结论。PASTE 的 profiling 数据（35-61%）与 CPU-Centric（35-88%）范围交叠但不完全一致——差异源于 PASTE 只计 tool execution time（不含调度开销），CPU-Centric 包含全部 CPU 时间；且 CPU-Centric 使用 ≤32B SLM，LLM 推理时间更短使 tool 占比自然更高 <a href="/papers/2603.18897.html#profiling-reconciliation" class="ref-link" title="L3:2603.18897#profiling-reconciliation">[L3:2603.18897]</a>。</li>
+</ul>
+
+<ol>
+<li><strong>生产 agent 系统的工程复杂度远超调度算法本身</strong>：Claude Code 揭示"1.6% 决策逻辑 + 98.4% 确定性基础设施"<a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a>，暗示 agent 系统的实际瓶颈往往不在 scheduling 结构，而在围绕 loop 的基础设施质量——context management、KV cache、permission system、tool execution 效率。SGH 的理论分析是正确的（$|\mathcal{U}|=1$ 确实不能表达结构性并行），但其实际重要性在 Claude Code 的生产验证面前需要重新评估 <a href="/papers/2604.11378.html#importance-reassessment" class="ref-link" title="L3:2604.11378#importance-reassessment">[L3:2604.11378]</a>。</li>
 </ul>
 
 <h3 id="分歧">分歧 <a class="heading-anchor" href="#分歧" aria-label="Link to 分歧">#</a></h3>
 
 <ol>
-<li><strong>预测 vs 无预测路由</strong>：BalanceRoute 明确论证"二元终止分类器比完整长度回归更可靠，因为噪声增长快于信号"，BR-0（无预测）已能将不均衡降低 4.1× <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。而 SAGA 和 PBKV 投入大量工程在预测精度上（AEG 模式推断、GraphSAGE 多步预测）。两者在不同规模下各有优势：BR-0 在 G=4 时已足够好，但 BR-H 在 G=16 时额外带来 +12% <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。</li>
+<li><strong>预测 vs 无预测路由——规模敏感的权衡</strong>：BalanceRoute 明确论证"二元终止分类器比完整长度回归更可靠，因为噪声增长快于信号"，BR-0（无预测）已能将不均衡降低 4.1× <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。而 SAGA 和 PBKV 投入大量工程在预测精度上。规模决定哪方占优：BR-0 在 G=4 时已足够好，BR-H 在 G=16 时额外带来 +12%——优势随 $G$ 超线性增长（$\Delta \propto G^{0.69}$） <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。BalanceRoute 优化的是 decode tier 内部 worker 间均衡（intra-stage），HexAGenT 优化的是跨 prefill-decode-workflow 的全局排序（inter-stage）——两者互补而非替代 <a href="/papers/algorithm.html#intra-vs-inter-stage" class="ref-link" title="L3:algorithm#intra-vs-inter-stage">[L3:algorithm]</a>。</li>
 </ul>
 
 <ol>
-<li><strong>TTL 策略 vs 预测性淘汰</strong>：Continuum 用 cost-benefit 模型设定有界 TTL <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a>，PBKV 用多步预测驱动淘汰评分 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。Continuum 认为"per-turn queueing delay 是独立于数据传输的调度问题"（InferCept 的 preserve 策略对此无效）；PBKV 认为"LRU 的时间局部性假设与工作流级缓存复用的结构性不匹配"。两者解决的是同一问题的不同维度——TTL 解决"保留多久"，预测解决"保留哪些"。</li>
+<li><strong>TTL 策略 vs 预测性淘汰——攻击同一问题的不同维度</strong>：Continuum 用 cost-benefit 模型设定有界 TTL <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a>，PBKV 用多步预测驱动淘汰评分 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。核心区分：Continuum 解决"保留多久"（时间维度），PBKV 解决"保留哪些"（结构维度）。Continuum 认为"per-turn queueing delay 是独立于数据传输的调度问题"；PBKV 认为"LRU 的时间局部性假设与工作流级缓存复用的结构性不匹配"。两者的攻击面也不同：Continuum 的 TTL 基于 per-tool CDF，在高方差场景下（tool 延迟取决于上下文而非 tool 类型）可能严重失准——PBKV 的 GraphSAGE 预测器至少融合了工作流前缀来区分上下文 <a href="/papers/2511.02230.html#ttl-stationarity-attack" class="ref-link" title="L3:2511.02230#ttl-stationarity-attack">[L3:2511.02230]</a> <a href="/papers/2605.06472.html#context-awareness" class="ref-link" title="L3:2605.06472#context-awareness">[L3:2605.06472]</a>。但 Continuum 的工程优势不容忽视：零训练成本、vLLM 模块化插件、已开源 <a href="/papers/2511.02230.html#deployment-advantage" class="ref-link" title="L3:2511.02230#deployment-advantage">[L3:2511.02230]</a>。</li>
 </ul>
 
 <ol>
-<li><strong>静态 DAG vs 动态工作流</strong>：SAGA 用 Agent Execution Graph（DAG + 转移概率）预测 KV 复用 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。PBKV 批评"静态 DAG 假设无法处理运行时条件分支和重试循环"，其 GNN 在动态工作流上命中率 69% vs KVFlow（静态距离）的 39.87% <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。SGH 从理论层面支持静态 DAG 以获得有界终止和可审计性 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a>，而 Claude Code 的生产成功证明 Agent Loop + 强 harness 仍然可行 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a>。本质分歧在于对 LLM 决策可靠性的信任程度。</li>
+<li><strong>静态 DAG vs 动态工作流——信任程度的分水岭</strong>：SAGA 用 Agent Execution Graph（DAG + 转移概率）预测 KV 复用 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。PBKV 明确批评"静态 DAG 假设无法处理运行时条件分支和重试循环"，其 GNN 在动态工作流上命中率 69% vs KVFlow（静态距离）的 39.87% <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。但 SAGA 的 AEG 实际支持 backward retry edges 和 transition probabilities（不是纯静态 DAG），PBKV 的批评更准确地针对 KVFlow 而非 SAGA <a href="/papers/2605.06472.html#saga-not-purely-static" class="ref-link" title="L3:2605.06472#saga-not-purely-static">[L3:2605.06472]</a>。SGH 从理论层面支持静态 DAG 以获得有界终止和可审计性，但 SGH 恰好排除了最有价值的场景——PBKV 实测证明动态工作流是 KV cache 管理收益最大的场景 <a href="/papers/2604.11378.html#static-dag-exclusion" class="ref-link" title="L3:2604.11378#static-dag-exclusion">[L3:2604.11378]</a>。本质分歧在于对 LLM 决策可靠性的信任程度和对可审计性的需求强度。</li>
 </ul>
 
 <ol>
-<li><strong>中心式 vs 分布式调度决策</strong>：BalanceRoute 采用集中式 stateful proxy（需毫秒级全局状态维护）<a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。HexAGenT 同样依赖 global scheduler <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a>。而 SGLang 的 router 和 vLLM Router 偏向去中心化的 per-request 决策。Helium 的 cost-based scheduler 在 batch offline 场景可以全局优化（达 MILP oracle 0.9% 内）<a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a>，但 online 场景中集中式协调器可能成为瓶颈。</li>
+<li><strong>中心式 vs 分布式调度决策</strong>：BalanceRoute 采用集中式 stateful proxy（需毫秒级全局状态维护）<a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。HexAGenT 同样依赖 global scheduler（per-invocation 10–15 ms）<a href="/papers/algorithm.html#hexagent-overhead" class="ref-link" title="L3:algorithm#hexagent-overhead">[L3:algorithm]</a>。而 SGLang 的 router 和 vLLM Router 偏向去中心化的 per-request 决策。Helium 的 cost-based scheduler 在 batch offline 场景可以全局优化（达 MILP oracle 0.9% 内），但此 MILP 验证仅在 toy-scale（2–4 agents × 2–4 queries）上完成 <a href="/papers/2603.16104.html#milp-scale-limitation" class="ref-link" title="L3:2603.16104#milp-scale-limitation">[L3:2603.16104]</a>——真实规模下 optimality gap 未知。</li>
 </ul>
 
 <ol>
-<li><strong>DB-style 查询优化 vs 程序感知调度</strong>：Helium 和 Halo 从数据系统视角将 workflow 视为可优化的 query plan <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>；ThunderAgent 和 SAGA 从程序分析视角将 workflow 视为需要理解控制流的 program <a href="/papers/2602.13692/detail.html#thunderagent-program" class="ref-link" title="L2:2602.13692#thunderagent-program">[L2:2602.13692]</a> <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。DB 路径擅长结构化重复 batch（Halo request coalescing 2.54× 贡献），program 路径擅长动态非确定性 workflow。</li>
+<li><strong>DB-style 查询优化 vs 程序感知调度——适用场景的对立</strong>：Helium 和 Halo 从数据系统视角将 workflow 视为可优化的 query plan <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a>；ThunderAgent 和 SAGA 从程序分析视角将 workflow 视为需要理解控制流的 program <a href="/papers/2602.13692/detail.html#thunderagent-program" class="ref-link" title="L2:2602.13692#thunderagent-program">[L2:2602.13692]</a> <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。DB 路径要求 batch + deterministic + static DAG（Helium 的 prompt cache 需要 temperature=0，sampling 场景下贡献的 13.56% 直接失效 <a href="/papers/2603.16104.html#determinism-attack" class="ref-link" title="L3:2603.16104#determinism-attack">[L3:2603.16104]</a>），program 路径适合动态非确定性 workflow 但工程复杂度更高。Halo 的 request coalescing（2.54× 贡献）只在 enterprise SOP 场景（模板化 SQL/API）下有效，不是 agent 的 general case <a href="/papers/2509.02121.html#niche-market" class="ref-link" title="L3:2509.02121#niche-market">[L3:2509.02121]</a>。</li>
+</ul>
+
+<ol>
+<li><strong>Agent Loop "不够用" vs "已经很好用"——理论批判 vs 生产验证的核心张力</strong>：SGH 声称 Agent Loop 有三个结构性缺陷（隐式依赖、无界 recovery、不可审计）<a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a>。但 Claude Code 的生产成功恰恰建立在 Agent Loop 之上，27% 用户在没有此工具时不会尝试这些任务——说明 ReAct loop + 好基础设施已经足够有价值 <a href="/papers/2604.11378.html#claude-code-path-lock-in" class="ref-link" title="L3:2604.11378#claude-code-path-lock-in">[L3:2604.11378]</a>。SGH 从 scheduler 理论出发认为 $|\mathcal{U}|$ 是最重要的设计轴，但 Claude Code 和 Continuum 的实践表明 agent 系统的实际瓶颈往往不在 scheduling 结构，而在围绕 loop 的基础设施质量 <a href="/papers/2604.11378.html#infrastructure-over-structure" class="ref-link" title="L3:2604.11378#infrastructure-over-structure">[L3:2604.11378]</a>。SGH 的规定性 DAG 路径目前没有追随者——最接近的实际系统是 Airflow/Prefect，但它们缺乏 LLM-aware 能力 <a href="/papers/2604.11378.html#no-followers" class="ref-link" title="L3:2604.11378#no-followers">[L3:2604.11378]</a>。</li>
 </ul>
 
 <hr>
@@ -428,39 +493,68 @@ Least Loaded ┘                             │         │
 
 <h3 id="7-1-预测不可靠性的理论边界">7.1 预测不可靠性的理论边界 <a class="heading-anchor" href="#7-1-预测不可靠性的理论边界" aria-label="Link to 7-1-预测不可靠性的理论边界">#</a></h3>
 
-<p>Agent 工作流天然难预测——随机解码沿路径传播不确定性 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。PBKV 的 Lipschitz 退化保证是第一步，但 competitive ratio 分析仍然缺失。SAGA 的理论 competitive ratio bound（20.5×）比经验值（1.31×）松弛 15 倍 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a>。BalanceRoute 也未给出 F-score 贪心策略的近似比证明 <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。需要信息论层面的下界来理解"agent 调度能被优化到什么程度"。</p>
+<p>Agent 工作流天然难预测——随机解码沿路径传播不确定性 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a>。当前所有 competitive ratio 分析要么缺失要么松散：</p>
+<ul>
+<li>SAGA 的 formal bound 20.5× 比经验值 1.31× 松弛 15 倍 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.00528.html#competitive-ratio-looseness" class="ref-link" title="L3:2605.00528#competitive-ratio-looseness">[L3:2605.00528]</a>。</li>
+<li>PBKV 的 Lipschitz 界 $\leq \frac{1}{2(1-\gamma)} \sum \epsilon_c^\gamma$ 是存在性保证，但论文未报告实际遗憾值与界的比率——此类 algorithms-with-predictions 的上界通常非常松 <a href="/papers/2605.06472.html#bound-tightness-unknown" class="ref-link" title="L3:2605.06472#bound-tightness-unknown">[L3:2605.06472]</a>。</li>
+<li>BalanceRoute 未给出 F-score 贪心策略的近似比证明 <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a>。</li>
+</ul>
+
+<p>需要信息论层面的下界来理解"agent 调度能被优化到什么程度"。一个有价值的理论方向：将工作流生命周期建模为连续时间马尔可夫链，在 SAGA AFS 和 SGH bounded termination 的框架下推导 competitive ratio 的 tighter bounds <a href="/papers/2605.06472.html#formal-direction" class="ref-link" title="L3:2605.06472#formal-direction">[L3:2605.06472]</a>。</p>
 
 <p><strong>涉及 category</strong>：algorithm（形式化保证）+ framework（实现可行性）。<strong>难度</strong>：3-5 年。</p>
 
 <h3 id="7-2-kv-cache-压缩-vs-注意力表达力的信息瓶颈">7.2 KV Cache 压缩 vs 注意力表达力的信息瓶颈 <a class="heading-anchor" href="#7-2-kv-cache-压缩-vs-注意力表达力的信息瓶颈" aria-label="Link to 7-2-kv-cache-压缩-vs-注意力表达力的信息瓶颈">#</a></h3>
 
-<p>SideQuest 表明启发式 KV 压缩（H₂O、SnapKV）在 agentic 场景导致模型崩溃（non-completion rate 60%+），因为 token 重要性是非单调的 <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a>。但模型自驱动 GC 依赖 frontier-class 模型的"元认知"能力，不确定是否可扩展到更小模型。KV cache 压缩与注意力表达力之间存在理论层面的 information-bottleneck tradeoff，目前无 single-category 方案能完全解决。</p>
+<p>SideQuest 表明启发式 KV 压缩（H₂O、SnapKV）在 agentic 场景导致模型崩溃（non-completion rate 60%+），因为 token 重要性是非单调的——某些 tool response 在第 $t$ 轮无用但到第 $t+n$ 轮重新变关键 <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a> <a href="/papers/2605.06472.html#sidequest-vs-heuristic" class="ref-link" title="L3:2605.06472#sidequest-vs-heuristic">[L3:2605.06472]</a>。但模型自驱动 GC 依赖 frontier-class 模型的"元认知"能力（仅在 gpt-oss-20b 上验证），不确定是否可扩展到更小模型 <a href="/papers/2605.00528.html#sidequest-scalability" class="ref-link" title="L3:2605.00528#sidequest-scalability">[L3:2605.00528]</a>。</p>
+
+<p>更深层矛盾：SideQuest 的语义淘汰在单请求内部操作（intra-request），PBKV 在 serving 引擎层跨多工作流操作（inter-workflow）——两层淘汰目前互相不可见。SideQuest 缩小了单请求的 KV cache 占用使引擎层有更多空间，但 PBKV 的全局评分不知道 SideQuest 已经在请求内部做了清理 <a href="/papers/2605.06472.html#cross-layer-invisible" class="ref-link" title="L3:2605.06472#cross-layer-invisible">[L3:2605.06472]</a>。一个跨层协同框架可以将 SideQuest 的语义 staleness 信号作为 PBKV 评分函数的额外输入——但这需要打破当前 serving 系统的层次隔离。</p>
 
 <p><strong>涉及 category</strong>：agent（模型能力）+ algorithm（压缩理论）+ framework（serving 实现）。<strong>难度</strong>：未知。</p>
 
 <h3 id="7-3-客户端-context-管理与基础设施调度的联合优化">7.3 客户端 Context 管理与基础设施调度的联合优化 <a class="heading-anchor" href="#7-3-客户端-context-管理与基础设施调度的联合优化" aria-label="Link to 7-3-客户端-context-管理与基础设施调度的联合优化">#</a></h3>
 
-<p>Claude Code 的五层 compaction 和 Cursor 的 Dynamic Context Discovery 在客户端侧做优化 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a> <a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a>，SAGA/HexAGenT 在基础设施侧做 workflow-aware 调度。两者目前独立运作——理想的 agent serving 应同时优化两个层面，但缺少跨层信息传递的标准协议。Anthropic 的 <code>cache_control</code> breakpoint 是初步尝试，但远未形成生态标准。</p>
+<p>Claude Code 的五层 compaction 和 Cursor 的 Dynamic Context Discovery 在客户端侧做优化 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a> <a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a>，SAGA/HexAGenT 在基础设施侧做 workflow-aware 调度。两者目前独立运作——理想的 agent serving 应同时优化两个层面，但缺少跨层信息传递的标准协议。</p>
+
+<p>具体矛盾：Claude Code 的 compaction 在 serving 请求到达前已经裁剪了 context，Continuum 的 TTL 保留的 KV cache 可能对应的是已被 compact 过的 context——保留价值需要重新评估 <a href="/papers/2511.02230.html#compaction-interaction" class="ref-link" title="L3:2511.02230#compaction-interaction">[L3:2511.02230]</a>。Anthropic 的 <code>cache_control</code> breakpoint 是初步尝试（Claude Code 的 boundary messages 必须 defer 到 API 响应后才能获得 <code>cache_deleted_input_tokens</code>），但远未形成生态标准。</p>
 
 <p><strong>涉及 category</strong>：agent（客户端架构）+ framework（serving 协议）。<strong>难度</strong>：1-2 年（工程问题）。</p>
 
 <h3 id="7-4-异构集群的-workflow-aware-placement">7.4 异构集群的 Workflow-Aware Placement <a class="heading-anchor" href="#7-4-异构集群的-workflow-aware-placement" aria-label="Link to 7-4-异构集群的-workflow-aware-placement">#</a></h3>
 
-<p>HexAGenT 首次处理异构 GPU（A100/H100/H200）下的 workflow 调度，但 greedy joint planner 无近似比保证——问题本质是 online unrelated machines scheduling <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a>。HexGen-Flow 在较小规模验证了异构 GPU 派发的有效性（A100/A6000/L40 混用）<a href="/papers/2505.05286/detail.html#hexgen-flow-scheduler" class="ref-link" title="L2:2505.05286#hexgen-flow-scheduler">[L2:2505.05286]</a>。随着部署规模增长（100+ 节点、多代 GPU 混部），联合 placement 问题的搜索空间爆炸。Scepsy 的 aggregate pipeline 抽象能否推广到动态 DAG 仍未验证 <a href="/papers/2604.15186/detail.html#scepsy-aggregate" class="ref-link" title="L2:2604.15186#scepsy-aggregate">[L2:2604.15186]</a>。</p>
+<p>HexAGenT 首次处理异构 GPU（A100/H100/H200）下的 workflow 调度，但 greedy joint planner 无近似比保证——问题本质是 online unrelated machines scheduling <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a>。HexGen-Flow 在较小规模验证了异构 GPU 派发的有效性（A100/A6000/L40 混用）<a href="/papers/2505.05286/detail.html#hexgen-flow-scheduler" class="ref-link" title="L2:2505.05286#hexgen-flow-scheduler">[L2:2505.05286]</a>。</p>
+
+<p>更深层挑战来自规模：Halo 的所有实验在单机 3×H200 上完成，多节点部署会引入网络延迟到 cost model 中，且 KV migration 跨节点的代价远大于 intra-node <a href="/papers/2509.02121.html#single-machine-limitation" class="ref-link" title="L3:2509.02121#single-machine-limitation">[L3:2509.02121]</a>。Helium 同样受限于单机 2×H100 <a href="/papers/2603.16104.html#single-node-limit" class="ref-link" title="L3:2603.16104#single-node-limit">[L3:2603.16104]</a>。将 workflow-level scheduling 叠加到跨节点 PD 分离架构上是未被验证的高价值组合——需要同时解决 compute affinity 和 storage I/O path 选择。Scepsy 的 aggregate pipeline 抽象能否推广到动态 DAG 仍未验证 <a href="/papers/2604.15186/detail.html#scepsy-aggregate" class="ref-link" title="L2:2604.15186#scepsy-aggregate">[L2:2604.15186]</a>。</p>
 
 <p><strong>涉及 category</strong>：algorithm（组合优化）+ framework（集群调度）。<strong>难度</strong>：2-3 年。</p>
 
 <h3 id="7-5-投机执行在高动态场景的可行边界">7.5 投机执行在高动态场景的可行边界 <a class="heading-anchor" href="#7-5-投机执行在高动态场景的可行边界" aria-label="Link to 7-5-投机执行在高动态场景的可行边界">#</a></h3>
 
-<p>PASTE 在控制流模式稳定的 agent（coding: 55% edit→test，research: 51% search→fetch）上表现优异，但 Top-1 准确率仅 27.8%——模式不稳定的探索性任务中，投机执行的收益与资源浪费之间的平衡点尚不清晰 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>。将投机执行与工作流预测（PBKV GraphSAGE）结合——pattern 预测同时指导投机执行和缓存预取——是自然方向但尚无实现 <a href="/papers/agent.html#gap-3" class="ref-link" title="L3:agent#gap-3">[L3:agent]</a>。</p>
+<p>PASTE 在控制流模式稳定的 agent（coding: 55% edit→test，research: 51% search→fetch）上表现优异 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a>。但存在两个结构性威胁：</p>
+
+<p><strong>(a) Pattern 稳定性假设的生态脆弱性</strong>：PASTE 的统计来自 SWE-bench 和 MetaGPT 等结构化 benchmark。生产环境中 tool 集合从 5-10 扩展到 50+（Claude Code 有 54 个 built-in tools + 动态 MCP tools <a href="/papers/2603.18897.html#tool-set-explosion" class="ref-link" title="L3:2603.18897#tool-set-explosion">[L3:2603.18897]</a>），PrefixSpan 挖掘的频繁序列数量可能爆炸而每个 pattern 的 confidence 稀释。</p>
+
+<p><strong>(b) 与 parallel tool use 的竞争</strong>：2026 年 parallel tool use 正在成为标准（Anthropic, OpenAI, Google 均支持）。如果 agent 在一轮推理中同时发出 3 个 tool calls，PASTE 的投机窗口（LLM 思考时间）不再存在——tool 已经被 LLM 自己并行化了 <a href="/papers/2603.18897.html#parallel-tool-threat" class="ref-link" title="L3:2603.18897#parallel-tool-threat">[L3:2603.18897]</a>。PASTE 的价值窗口可能随 parallel tool use 普及而收窄。</p>
+
+<p>将投机执行与工作流预测结合（PASTE pattern + PBKV GraphSAGE 共享预测基础设施）是自然方向——pattern 预测同时指导投机执行和缓存预取——但尚无实现 <a href="/papers/agent.html#gap-3" class="ref-link" title="L3:agent#gap-3">[L3:agent]</a>。</p>
 
 <p><strong>涉及 category</strong>：agent（执行策略）+ algorithm（预测模型）。<strong>难度</strong>：1-2 年。</p>
 
 <h3 id="7-6-agent-loop-vs-结构化-dag-的统一理论">7.6 Agent Loop vs 结构化 DAG 的统一理论 <a class="heading-anchor" href="#7-6-agent-loop-vs-结构化-dag-的统一理论" aria-label="Link to 7-6-agent-loop-vs-结构化-dag-的统一理论">#</a></h3>
 
-<p>SGH 论证 Agent Loop 有三个结构性缺陷（隐式依赖、无界 recovery、不可审计），但估计 60-70% 的任务实际是线性链——此时 DAG 只比 loop 多出 bounded recovery 和审计价值 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a>。需要一个理论框架来刻画"何时 DAG 结构的调度收益超过其实现复杂度（3300-6500 行 vs Agent Loop 数百行）"。</p>
+<p>SGH 论证 Agent Loop 有三个结构性缺陷，但估计 60-70% 的任务实际是线性链——此时 DAG 只比 loop 多出 bounded recovery 和审计价值 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a>。SGH 的规定性 DAG 路径目前没有追随者，生态正在走三条替代路线：基础设施路径（Claude Code、Continuum 保持 loop 不变投资 serving）、Speculation 路径（PASTE 在 loop 外部注入投机执行）、预测驱动缓存路径（SAGA、PBKV 用描述性 DAG/GNN 预测优化 KV cache 而不规定执行结构）<a href="/papers/2604.11378.html#three-alternative-paths" class="ref-link" title="L3:2604.11378#three-alternative-paths">[L3:2604.11378]</a>。</p>
+
+<p>一个更有弹性的理论方向：<strong>动态切换 Loop/Graph</strong>——exploratory 阶段用 $|\mathcal{U}|=1$（ReAct loop 灵活应对未知），exploit 阶段切换到 $|\mathcal{U}|\geq 1$（DAG 并行高效执行已知步骤）。切换信号可来自 PBKV 的预测器——当预测精度 > 阈值时启用 graph mode，否则回退到 loop <a href="/papers/2604.11378.html#hybrid-adaptive-u" class="ref-link" title="L3:2604.11378#hybrid-adaptive-u">[L3:2604.11378]</a>。</p>
 
 <p><strong>涉及 category</strong>：agent（运行时架构）+ framework（调度实现）。<strong>难度</strong>：2-3 年（需大规模实证）。</p>
+
+<h3 id="7-7-预测驱动淘汰-ttl-排队优化的融合">7.7 预测驱动淘汰 + TTL 排队优化的融合 <a class="heading-anchor" href="#7-7-预测驱动淘汰-ttl-排队优化的融合" aria-label="Link to 7-7-预测驱动淘汰-ttl-排队优化的融合">#</a></h3>
+
+<p>PBKV 的分层淘汰解决"淘汰哪个缓存"，Continuum 的 TTL 解决"保留多久再进队列"——两个决策目前完全独立运行 <a href="/papers/2605.06472.html#ttl-prediction-fusion" class="ref-link" title="L3:2605.06472#ttl-prediction-fusion">[L3:2605.06472]</a>。一个统一框架可以用 PBKV 的 K-step 预测产出 agent 分布，同时驱动 (a) 淘汰优先级 (b) TTL 计算 (c) 排队调度优先级。Continuum 的 memoryfulness factor $\eta$ 可以被集成到 PBKV 的评分函数中，使评分同时反映缓存复用价值和排队延迟代价。</p>
+
+<p>更进一步：PBKV 的预测器可以成为一个共享的"agent 行为预测基础设施"，同时服务 (a) KV cache 淘汰（现有功能），(b) PASTE 式的投机工具执行（如果预测到下一个 agent 会调用某 tool，提前启动 warm-up），(c) COMB 式的 CPU-GPU 微批调度（根据预测的 tool 类型调整 $B_{cap}$）<a href="/papers/2605.06472.html#shared-prediction-infra" class="ref-link" title="L3:2605.06472#shared-prediction-infra">[L3:2605.06472]</a>。</p>
+
+<p><strong>涉及 category</strong>：agent（预测融合）+ framework（统一调度）。<strong>难度</strong>：1-2 年。</p>
 
 <hr>
 
@@ -470,19 +564,25 @@ Least Loaded ┘                             │         │
 <tr><th>子领域</th><th>成熟度</th><th>证据</th></tr>
 <tr><td>Cache-aware request routing（Radix Tree、Consistent Hash）</td><td><strong>Production-ready</strong></td><td>SGLang/vLLM Router/Ray Serve/llm-d 均已部署</td></tr>
 <tr><td>PD 分离下的 load balancing（P2C + 内存压力）</td><td><strong>Production-ready</strong></td><td>SGLang、vLLM production-stack 线上使用</td></tr>
-<tr><td>客户端 context 管理</td><td><strong>Production-ready</strong></td><td>Claude Code、Cursor 数百万用户日常使用 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a> <a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a></td></tr>
-<tr><td>Decode 前瞻性均衡（BR-H）</td><td><strong>Early production</strong></td><td>144-NPU Ascend 集群部署验证 <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a></td></tr>
-<tr><td>KV Cache TTL（Continuum）</td><td><strong>Late research</strong></td><td>真实 SWE-agent 验证 8.18× 加速，已开源 <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a></td></tr>
-<tr><td>Batch agentic query optimization（Helium、Halo）</td><td><strong>Late research</strong></td><td>Helium 开源，达 MILP 0.9% 内最优；Halo 6 workload 验证 <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a></td></tr>
-<tr><td>投机性工具执行（PASTE）</td><td><strong>Late research</strong></td><td>3 种 agent×3 benchmark 验证 48.5% E2E 降低 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a></td></tr>
-<tr><td>Workflow-atomic 调度（SAGA、HexAGenT）</td><td><strong>Research frontier</strong></td><td>64-GPU 集群验证，代码未开源 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a></td></tr>
-<tr><td>预测性 KV 管理（PBKV）</td><td><strong>Research frontier</strong></td><td>Lipschitz 保证 + 1.85× 加速，代码未开源 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a></td></tr>
-<tr><td>模型自驱动 GC（SideQuest）</td><td><strong>Research frontier</strong></td><td>SGLang 单卡验证，未在分布式场景评估 <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a></td></tr>
-<tr><td>Agent 运行时形式化（SGH）</td><td><strong>Research frontier</strong></td><td>纯 position paper，无实验验证 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a></td></tr>
-<tr><td>Agent 公平性调度</td><td><strong>Late research</strong></td><td>Justitia、SAGA AFS 有形式化保证 <a href="/papers/2510.17015/detail.html#justitia-fairness" class="ref-link" title="L2:2510.17015#justitia-fairness">[L2:2510.17015]</a> <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a></td></tr>
+<tr><td>客户端 context 管理</td><td><strong>Production-ready</strong></td><td>Claude Code（5 层 compaction）、Cursor（Dynamic Context Discovery）数百万用户日常使用 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a> <a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a></td></tr>
+<tr><td>Decode 前瞻性均衡（BR-H）</td><td><strong>Early production</strong></td><td>144-NPU Ascend 集群部署验证，优势随 G 超线性增长 <a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a></td></tr>
+<tr><td>KV Cache TTL（Continuum）</td><td><strong>Late research → early production</strong></td><td>真实 SWE-agent 验证 8.18× 加速，已开源（vllm-continuum），被 SAGA 等后续工作作为 baseline <a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a> <a href="/papers/2511.02230.html#adoption-evidence" class="ref-link" title="L3:2511.02230#adoption-evidence">[L3:2511.02230]</a></td></tr>
+<tr><td>Batch agentic query optimization（Helium、Halo）</td><td><strong>Late research</strong></td><td>Helium 开源（demo），达 toy-scale MILP 0.9% 内；Halo 6 workload 验证但单机限制 <a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a> <a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a> <a href="/papers/2603.16104.html#milp-scale-limitation" class="ref-link" title="L3:2603.16104#milp-scale-limitation">[L3:2603.16104]</a></td></tr>
+<tr><td>投机性工具执行（PASTE）</td><td><strong>Late research</strong></td><td>3 种 agent×3 benchmark 验证 48.5% E2E 降低；实现为 ~12K LOC middleware sidecar 部署 <a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a> <a href="/papers/2603.18897.html#implementation-maturity" class="ref-link" title="L3:2603.18897#implementation-maturity">[L3:2603.18897]</a></td></tr>
+<tr><td>Workflow-atomic 调度（SAGA、HexAGenT）</td><td><strong>Research frontier</strong></td><td>64-GPU 集群验证但代码未开源；SAGA 付出 ~30% 吞吐代价，单模型（Llama-3-70B）评估 <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a> <a href="/papers/2605.00528.html#evaluation-limitation" class="ref-link" title="L3:2605.00528#evaluation-limitation">[L3:2605.00528]</a></td></tr>
+<tr><td>预测性 KV 管理（PBKV）</td><td><strong>Research frontier</strong></td><td>Lipschitz 保证 + 1.85× 加速（但 vs LRU 基线），仅 A6000 单引擎验证；未与 Continuum/SAGA 直接受控对比 <a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a> <a href="/papers/2605.06472.html#baseline-limitation" class="ref-link" title="L3:2605.06472#baseline-limitation">[L3:2605.06472]</a></td></tr>
+<tr><td>模型自驱动 GC（SideQuest）</td><td><strong>Research frontier</strong></td><td>SGLang 单卡验证，仅 gpt-oss-20b 单模型；未在分布式场景和更小模型上评估 <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a> <a href="/papers/2605.00528.html#sidequest-scalability" class="ref-link" title="L3:2605.00528#sidequest-scalability">[L3:2605.00528]</a></td></tr>
+<tr><td>Agent 运行时形式化（SGH）</td><td><strong>Concept stage</strong></td><td>纯 position paper，无实验验证；规定性 DAG 路径无追随者，Companion paper 未出现 <a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a> <a href="/papers/2604.11378.html#no-followers" class="ref-link" title="L3:2604.11378#no-followers">[L3:2604.11378]</a></td></tr>
+<tr><td>Agent 公平性调度</td><td><strong>Late research</strong></td><td>Justitia、SAGA AFS 有形式化保证 + 实验验证 <a href="/papers/2510.17015/detail.html#justitia-fairness" class="ref-link" title="L2:2510.17015#justitia-fairness">[L2:2510.17015]</a> <a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a></td></tr>
 </table>
 
-<p><strong>整体趋势</strong>：加速中。2026 上半年出现了密集的 workflow-level 系统论文（SAGA、HexAGenT、PBKV、Helium 均在 2026 年 3-5 月），表明该方向正从学术探索快速向工程落地转移。Cache-aware routing 已成为工业标配（accelerating → plateau），投机性工具执行和 batch 查询优化作为新兴子领域正在快速成熟。</p>
+<p><strong>整体趋势</strong>：加速中。2026 上半年出现了密集的 workflow-level 系统论文（SAGA、HexAGenT、PBKV、Helium 均在 2026 年 3-5 月），表明该方向正从学术探索快速向工程落地转移。但一个重要的趋势分化正在发生：</p>
+
+<ul>
+<li><strong>收敛方向</strong>：Cache-aware routing 已成为工业标配（plateau），KV Cache TTL 正从 research 向 production 过渡（Continuum 开源 + 被引用）。</li>
+<li><strong>发散方向</strong>：Workflow-level scheduling 内部的三条路径（程序感知 / DB 查询优化 / 异构感知）尚未收敛，且各自有严格的适用性限制（静态 DAG / deterministic sampling / 特定硬件）。</li>
+<li><strong>可能被绕过的方向</strong>：SGH 的规定性 DAG 路径——生态正在用更轻量的方式（speculation、描述性 DAG、强 harness）获得类似收益。</li>
+</ul>
 
 <hr>
 
@@ -490,16 +590,17 @@ Least Loaded ┘                             │         │
 
 <table>
 <tr><th>Topic</th><th>关系</th></tr>
-<tr><td>agent-system</td><td>强关联——agent-system 覆盖从模型到框架的全栈 agent 架构，本 topic 聚焦调度算法层。ThunderAgent、Sutradhara、SGH 等同时出现在两个 topic 中</td></tr>
-<tr><td>agent-context-lifecycle</td><td>强关联——CMV 的 DAG 状态管理、Claude Code 的 5 层 compaction、SideQuest 的模型驱动 GC 是 context lifecycle 的核心技术，其策略选择直接影响基础设施层需要处理的 KV Cache 大小和模式</td></tr>
-<tr><td>cluster-llm-deployment</td><td>中关联——集群部署拓扑（xPyD、TP/EP/PP 选择）约束了调度算法的 worker 池结构；HexAGenT 和 Scepsy 的异构 placement 跨越了调度和部署</td></tr>
-<tr><td>attention-optimization</td><td>弱关联——SideQuest 论文明确将 KV cache eviction 与 attention score heuristic（H₂O、SnapKV）做对比，两者共享"token 重要性估计"这一技术基础</td></tr>
+<tr><td>agent-system</td><td>强关联——agent-system 覆盖从模型到框架的全栈 agent 架构，本 topic 聚焦调度算法层。ThunderAgent、Sutradhara、SGH 等同时出现在两个 topic 中。SGH 的 scheduler 连续谱为两个 topic 提供了统一理论坐标</td></tr>
+<tr><td>agent-context-lifecycle</td><td>强关联——CMV 的 DAG 状态管理、Claude Code 的 5 层 compaction、SideQuest 的模型驱动 GC 是 context lifecycle 的核心技术，其策略选择直接影响基础设施层需要处理的 KV Cache 大小和模式。关键交互：SideQuest 的 intra-request 清理与 PBKV 的 inter-workflow 淘汰互相不可见，形成跨 topic 的优化盲区</td></tr>
+<tr><td>cluster-llm-deployment</td><td>中关联——集群部署拓扑（xPyD、TP/EP/PP 选择）约束了调度算法的 worker 池结构；HexAGenT 和 Scepsy 的异构 placement 跨越了调度和部署。DualPath 的跨 DC PD 分离与 Helium 的 TRT 调度在不同层级互补</td></tr>
+<tr><td>attention-optimization</td><td>弱关联——SideQuest 论文明确将 KV cache eviction 与 attention score heuristic（H₂O、SnapKV）做对比并证明后者在 agentic 场景崩溃，两者共享"token 重要性估计"这一技术基础但得出相反结论</td></tr>
 </table>
 
 <p>潜在 topic 合并方向：</p>
 <ul>
 <li>如果 agent-context-lifecycle 积累足够多的 client-side 管理论文，可能与本 topic 的"客户端 context 管理"部分合并为"端到端 agent context 管理"。</li>
-<li>DB-style 查询优化路径（Helium、Halo）若进一步发展，可能分化为独立 topic "agentic query optimization"。</li>
+<li>DB-style 查询优化路径（Helium、Halo）若进一步发展且突破 static DAG 限制，可能分化为独立 topic "agentic query optimization"。</li>
+<li>如果"预测驱动"成为统一范式（PBKV 预测器同时服务缓存淘汰、投机执行、CPU 调度），可能催生"agent behavior prediction infrastructure"独立 topic。</li>
 </ul>
 
 <hr>
@@ -508,30 +609,30 @@ Least Loaded ┘                             │         │
 
 <table>
 <tr><th>Entity</th><th>Categories</th><th>Role in topic</th><th>Key contribution</th></tr>
-<tr><td><a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a></td><td>agent</td><td>KV Cache TTL 调度</td><td>Cost-benefit TTL + program-level FCFS，真实 SWE-agent 8.18× 加速</td></tr>
-<tr><td><a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a></td><td>agent</td><td>模型自驱动 GC</td><td>并行辅助线程语义推理 eviction，215 样本训练，峰值 token -65%</td></tr>
-<tr><td><a href="/papers/2602.22402/detail.html#cmv-dag-state" class="ref-link" title="L2:2602.22402#cmv-dag-state">[L2:2602.22402]</a></td><td>agent</td><td>客户端 context 管理</td><td>DAG 状态模型 + 三遍裁剪，均值 20% token 缩减</td></tr>
-<tr><td><a href="/papers/2603.13358/detail.html#ppd-routing" class="ref-link" title="L2:2603.13358#ppd-routing">[L2:2603.13358]</a></td><td>framework</td><td>Decode 本地 AP</td><td>Append-prefill 干扰仅 2%，Turn 2+ TTFT -48~73%</td></tr>
-<tr><td><a href="/papers/2603.17456/detail.html#mfs-network" class="ref-link" title="L2:2603.17456#mfs-network">[L2:2603.17456]</a></td><td>framework</td><td>网络 flow 调度</td><td>RMLQ 近似 LLF，TTFT SLO 达标率 1.2×-2.4×</td></tr>
-<tr><td><a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a></td><td>agent</td><td>客户端 compaction</td><td>5 层渐进压缩 + prompt caching 经济学</td></tr>
-<tr><td><a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a></td><td>agent</td><td>Workflow 原子调度</td><td>Execution Graph + session-affinity + AFS，TCT -1.64×</td></tr>
-<tr><td><a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a></td><td>algorithm</td><td>Decode 前瞻均衡</td><td>分段线性 F-score + horizon discount，吞吐 +15.4%</td></tr>
-<tr><td><a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a></td><td>agent</td><td>预测性 KV 管理</td><td>GraphSAGE 多步预测 + Lipschitz 退化保证，1.85× 加速</td></tr>
-<tr><td><a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a></td><td>algorithm</td><td>异构 workflow 调度</td><td>Projected scaled-SLO risk + joint P-D placement</td></tr>
-<tr><td><a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a></td><td>algorithm</td><td>上下文虚拟化</td><td>文件系统作为 lazy-loading 接口，MCP 场景 -46.9% token</td></tr>
-<tr><td><a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a></td><td>agent</td><td>瓶颈刻画</td><td>CPU 侧工具执行占 88% 延迟，COMB/MAS 调度优化</td></tr>
+<tr><td><a href="/papers/2511.02230/detail.html#continuum-ttl" class="ref-link" title="L2:2511.02230#continuum-ttl">[L2:2511.02230]</a></td><td>agent</td><td>KV Cache TTL 调度</td><td>首次独立化 per-turn queueing delay；cost-benefit TTL + program-level FCFS；真实 SWE-agent 8.18× 加速</td></tr>
+<tr><td><a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a></td><td>agent</td><td>模型自驱动 GC</td><td>并行辅助线程语义推理 eviction；215 样本训练；峰值 token -65%；证明 heuristic 在 agentic 场景崩溃</td></tr>
+<tr><td><a href="/papers/2602.22402/detail.html#cmv-dag-state" class="ref-link" title="L2:2602.22402#cmv-dag-state">[L2:2602.22402]</a></td><td>agent</td><td>客户端 context 管理</td><td>DAG 版本控制 + 三遍裁剪；均值 20% token 缩减；跨会话 context 复用</td></tr>
+<tr><td><a href="/papers/2603.13358/detail.html#ppd-routing" class="ref-link" title="L2:2603.13358#ppd-routing">[L2:2603.13358]</a></td><td>framework</td><td>Decode 本地 AP</td><td>Append-prefill 干扰仅 2% vs full prefill 48%；Turn 2+ TTFT -48~73%；per-request 动态路由</td></tr>
+<tr><td><a href="/papers/2603.17456/detail.html#mfs-network" class="ref-link" title="L2:2603.17456#mfs-network">[L2:2603.17456]</a></td><td>framework</td><td>网络 flow 调度</td><td>RMLQ 近似 LLF；TTFT SLO 达标率 1.2×-2.4×；disaggregated MoE 三阶段通信争用</td></tr>
+<tr><td><a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a></td><td>agent</td><td>客户端 compaction</td><td>5 层渐进压缩 + prompt caching 经济学；"1.6% 决策 + 98.4% 确定性基础设施"范式</td></tr>
+<tr><td><a href="/papers/2605.00528/detail.html#workflow-atomic" class="ref-link" title="L2:2605.00528#workflow-atomic">[L2:2605.00528]</a></td><td>agent</td><td>Workflow 原子调度</td><td>AEG + WA-LRU + session-affinity + AFS；集群 TCT -1.64×；~30% 吞吐代价；competitive ratio 1.31×</td></tr>
+<tr><td><a href="/papers/2605.06113/detail.html#balanceroute-fscore" class="ref-link" title="L2:2605.06113#balanceroute-fscore">[L2:2605.06113]</a></td><td>algorithm</td><td>Decode 前瞻均衡</td><td>分段线性 F-score + horizon discount；吞吐 +15.4%；优势 $\propto G^{0.69}$</td></tr>
+<tr><td><a href="/papers/2605.06472/detail.html#pbkv-prediction" class="ref-link" title="L2:2605.06472#pbkv-prediction">[L2:2605.06472]</a></td><td>agent</td><td>预测性 KV 管理</td><td>GraphSAGE K-step 预测 + 确定性护栏 + 概率系统分层设计；Lipschitz 退化保证；首个 algorithms-with-predictions 在 KV cache</td></tr>
+<tr><td><a href="/papers/2605.16637/detail.html#hexagent-workflow" class="ref-link" title="L2:2605.16637#hexagent-workflow">[L2:2605.16637]</a></td><td>algorithm</td><td>异构 workflow 调度</td><td>Projected scaled-SLO risk + joint P-D placement；Req99 -80.5%；对估计误差 robust</td></tr>
+<tr><td><a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a></td><td>algorithm</td><td>上下文虚拟化</td><td>文件系统作为 lazy-loading 接口；MCP 场景 -46.9% token</td></tr>
+<tr><td><a href="/papers/2511.00739/detail.html#cpu-overhead" class="ref-link" title="L2:2511.00739#cpu-overhead">[L2:2511.00739]</a></td><td>agent</td><td>瓶颈刻画</td><td>CPU 侧工具执行占 88% 延迟；GPU 越强瓶颈越突出；COMB/MAS 调度优化</td></tr>
 <tr><td><a href="/papers/2601.12967/detail.html#sutradhara-codesign" class="ref-link" title="L2:2601.12967#sutradhara-codesign">[L2:2601.12967]</a></td><td>framework</td><td>Orchestrator-Engine 协同</td><td>KV cache priority queue + 并行 tool 执行</td></tr>
-<tr><td><a href="/papers/2601.22705/detail.html#concur-admission" class="ref-link" title="L2:2601.22705#concur-admission">[L2:2601.22705]</a></td><td>framework</td><td>Admission control</td><td>AIMD 拥塞控制类比的 agent 级准入</td></tr>
-<tr><td><a href="/papers/2602.13692/detail.html#thunderagent-program" class="ref-link" title="L2:2602.13692#thunderagent-program">[L2:2602.13692]</a></td><td>framework</td><td>Program-aware 调度</td><td>零气泡 KV 管理 + RL rollout 优化</td></tr>
-<tr><td><a href="/papers/2604.03143/detail.html#tokendance-collective" class="ref-link" title="L2:2604.03143#tokendance-collective">[L2:2604.03143]</a></td><td>framework</td><td>Multi-agent KV 共享</td><td>All-Gather 轮级 collective reuse，并发 2.7×</td></tr>
-<tr><td><a href="/papers/2604.15186/detail.html#scepsy-aggregate" class="ref-link" title="L2:2604.15186#scepsy-aggregate">[L2:2604.15186]</a></td><td>framework</td><td>Aggregate pipeline</td><td>分数 GPU + TP 联合搜索，最高 2.4× 吞吐</td></tr>
-<tr><td><a href="/papers/2507.07400/detail.html#kvflow-belady" class="ref-link" title="L2:2507.07400#kvflow-belady">[L2:2507.07400]</a></td><td>framework</td><td>Workflow cache eviction</td><td>Belady 适配 Agent Step Graph</td></tr>
-<tr><td><a href="/papers/2510.17015/detail.html#justitia-fairness" class="ref-link" title="L2:2510.17015#justitia-fairness">[L2:2510.17015]</a></td><td>framework</td><td>公平性调度</td><td>KV token-time WFQ + bounded worst-case delay</td></tr>
-<tr><td><a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a></td><td>agent</td><td>投机性工具执行</td><td>Pattern-aware speculation，E2E -48.5%，tool stall -67%</td></tr>
-<tr><td><a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a></td><td>agent</td><td>Agent 运行时形式化</td><td>Scheduler 五元组统一 Agent Loop 和 DAG executor</td></tr>
-<tr><td><a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a></td><td>framework</td><td>DB-style workflow 优化</td><td>Templated Radix Tree + cost-based scheduling，超 KVFlow 1.56×</td></tr>
-<tr><td><a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a></td><td>framework</td><td>Batch query processing</td><td>Epoch DP + request coalescing，超 vLLM 400×</td></tr>
-<tr><td><a href="/papers/2505.05286/detail.html#hexgen-flow-scheduler" class="ref-link" title="L2:2505.05286#hexgen-flow-scheduler">[L2:2505.05286]</a></td><td>algorithm</td><td>SLO-budget 两层调度</td><td>异构 GPU 派发 + 紧急度队列，P95 -1.42~1.56×</td></tr>
+<tr><td><a href="/papers/2601.22705/detail.html#concur-admission" class="ref-link" title="L2:2601.22705#concur-admission">[L2:2601.22705]</a></td><td>framework</td><td>Admission control</td><td>AIMD 拥塞控制类比的 agent 级准入；4.09× 吞吐</td></tr>
+<tr><td><a href="/papers/2602.13692/detail.html#thunderagent-program" class="ref-link" title="L2:2602.13692#thunderagent-program">[L2:2602.13692]</a></td><td>framework</td><td>Program-aware 调度</td><td>零气泡 KV 管理 + RL rollout 优化；1.48–3.58× serving throughput</td></tr>
+<tr><td><a href="/papers/2604.03143/detail.html#tokendance-collective" class="ref-link" title="L2:2604.03143#tokendance-collective">[L2:2604.03143]</a></td><td>framework</td><td>Multi-agent KV 共享</td><td>All-Gather 轮级 collective reuse；并发 2.7×</td></tr>
+<tr><td><a href="/papers/2604.15186/detail.html#scepsy-aggregate" class="ref-link" title="L2:2604.15186#scepsy-aggregate">[L2:2604.15186]</a></td><td>framework</td><td>Aggregate pipeline</td><td>分数 GPU + TP 联合搜索；最高 2.4× 吞吐</td></tr>
+<tr><td><a href="/papers/2507.07400/detail.html#kvflow-belady" class="ref-link" title="L2:2507.07400#kvflow-belady">[L2:2507.07400]</a></td><td>framework</td><td>Workflow cache eviction</td><td>Belady 适配 Agent Step Graph；1.83–2.19× speedup</td></tr>
+<tr><td><a href="/papers/2510.17015/detail.html#justitia-fairness" class="ref-link" title="L2:2510.17015#justitia-fairness">[L2:2510.17015]</a></td><td>framework</td><td>公平性调度</td><td>KV token-time WFQ + bounded worst-case delay；57.5% JCT reduction</td></tr>
+<tr><td><a href="/papers/2603.18897/detail.html#paste-speculation" class="ref-link" title="L2:2603.18897#paste-speculation">[L2:2603.18897]</a></td><td>agent</td><td>投机性工具执行</td><td>Pattern-aware speculation；E2E -48.5%；tool stall -67%；speculative decoding 范式扩展到 tool 层</td></tr>
+<tr><td><a href="/papers/2604.11378/detail.html#sgh-formalization" class="ref-link" title="L2:2604.11378#sgh-formalization">[L2:2604.11378]</a></td><td>agent</td><td>Agent 运行时形式化</td><td>Scheduler 五元组 + $</td><td>\mathcal{U}</td><td>$ 连续谱；统一 70 个开源 agent 项目；有界终止证明（理论）</td></tr>
+<tr><td><a href="/papers/2603.16104/detail.html#helium-trt" class="ref-link" title="L2:2603.16104#helium-trt">[L2:2603.16104]</a></td><td>framework</td><td>DB-style workflow 优化</td><td>Templated Radix Tree (27× metadata 缩减) + cost-based scheduling；超 KVFlow 1.56×；MILP 0.9%</td></tr>
+<tr><td><a href="/papers/2509.02121/detail.html#halo-batch" class="ref-link" title="L2:2509.02121#halo-batch">[L2:2509.02121]</a></td><td>framework</td><td>Batch query processing</td><td>Epoch DP + request coalescing (2.54× 贡献)；workflow-plan 层全局优化；vs LangGraph 1.03–3.6×</td></tr>
+<tr><td><a href="/papers/2505.05286/detail.html#hexgen-flow-scheduler" class="ref-link" title="L2:2505.05286#hexgen-flow-scheduler">[L2:2505.05286]</a></td><td>algorithm</td><td>SLO-budget 两层调度</td><td>异构 GPU 派发 + 紧急度队列；P95 -1.42~1.56×</td></tr>
 </table>
 
 </div>
