@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>mori-scheduler — prefix-cache-aware scheduler/router for LLM inference engines — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">mori-scheduler — prefix-cache-aware scheduler/router for LLM inference engines</h1>
+<div class="card-meta"><span class="badge badge-code">code</span> ZhaiFeiyue-mori-scheduler</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">llm-serving</span><span class="tag">scheduler</span><span class="tag">prefix-cache</span><span class="tag">kv-cache</span><span class="tag">pd-disaggregation</span><span class="tag">sglang</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/code.html">← code Survey</a>
+<a href="https://arxiv.org/abs/ZhaiFeiyue-mori-scheduler" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="mori-scheduler-—-l2-distillation">mori-scheduler — L2 Distillation <a class="heading-anchor" href="#mori-scheduler-—-l2-distillation" aria-label="Link to mori-scheduler-—-l2-distillation">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Rust-based prefix-cache-aware scheduler/router for LLM inference engines (SGLang, vLLM, ATOM). Routes requests via radix-tree or UMBP block-hash matching to maximize KV cache reuse. Supports PD disaggregation with coordinated prefill/decode dual-dispatch over RDMA. Achieves 91.6 req/s vs 23.7 for round-robin (+286%) on 2P+2D MI355X.</p>
+
+<h2 id="§2-project-identity">§2 Project Identity <a class="heading-anchor" href="#§2-project-identity" aria-label="Link to §2-project-identity">#</a></h2>
+
+<table>
+<tr><th>Field</th><th>Value</th></tr>
+<tr><td>Repo URL</td><td>https://github.com/ZhaiFeiyue/mori-scheduler (private)</td></tr>
+<tr><td>Primary language</td><td>Rust (19,635 LOC)</td></tr>
+<tr><td>Secondary</td><td>Python (5,062 LOC), Shell (~4,000 LOC), Protobuf (~250 LOC)</td></tr>
+<tr><td>License</td><td>Apache-2.0</td></tr>
+<tr><td>Version analyzed</td><td>0.1.5-refactor</td></tr>
+<tr><td>Commits</td><td>260 in 35 days (2026-04-21 → 2026-05-26)</td></tr>
+<tr><td>Authors</td><td>Zhai Feiyue, AMD-yanfeiwang, Theresa Shan, wufann</td></tr>
+</table>
+
+<h2 id="§3-what-why-—-motivation">§3 What & Why — Motivation <a class="heading-anchor" href="#§3-what-why-—-motivation" aria-label="Link to §3-what-why-—-motivation">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>LLM inference routers treat requests as stateless: round-robin or random dispatch ignores the fact that inference engines maintain per-GPU KV caches. When repeated or prefix-sharing prompts (system prompts, multi-turn agents, RAG) scatter across workers, each worker recomputes the same prefill from scratch — wasting GPU compute and HBM bandwidth. Existing routers (sgl-router, vllm-router) lack cross-engine prefix-cache-aware routing, PD disaggregation support, and integration with distributed KV cache indices like UMBP.</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p>A centralized Rust scheduler that sits between clients and inference workers with four layered capabilities:</p>
+
+<ol>
+<li><strong>Prefix-cache-aware routing</strong> — a compressed ByteRadixTree tracks which byte prefixes live on which worker; requests are routed to the worker with the longest matching prefix, falling back to shortest-queue on cache miss or load imbalance.</li>
+<li><strong>LinearCost scoring</strong> — a 7-weight cost function over live <code>/v1/loads</code> telemetry ($\text{score}(w) = w_r \cdot R + w_w \cdot W + w_t \cdot T - b_c \cdot C - b_p \cdot P$) that blends load balancing with cache affinity.</li>
+<li><strong>UMBP block-hash matching</strong> — queries an external distributed KV cache index (UMBP master via gRPC) for exact block-hash matches, routing to the node with the most cached blocks.</li>
+<li><strong>PD disaggregation</strong> — dual-dispatch to separate prefill and decode worker pools with coordinated cancellation (<code>PdSession</code>), bootstrap room negotiation for RDMA KV transfer, and independent policy chains per role.</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>: The per-message segment tokenize cache (moka W-TinyLFU) that operates at chat message granularity rather than full-prompt level. For multi-turn agent workloads, only new/changed messages need BPE tokenization; combined with the chained block-hash computation matching each engine's exact algorithm (5 hash schemes across 4 engine kinds), this enables sub-millisecond prompt-to-routing-decision latency even for long conversations. No competing router replicates engine-specific hash chains at the routing layer.</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li><strong>2P+2D MI355X</strong> (Qwen2.5-7B-FP8): <code>linear_cost</code> achieves 91.6 req/s vs 23.7 for <code>round_robin</code> (+286%)</li>
+<li>Verified on AMD MI355X + Pensando ionic 100GbE RoCE with RDMA KV transfer via <code>ROCm/mori</code></li>
+<li>GSM8K accuracy parity between baseline and 2P+2D router (no accuracy regression from disaggregation)</li>
+<li>260 commits → production-verified 4P+4D disaggregated serving in 35 days</li>
+</ul>
+
+<h2 id="§4-architecture-module-map">§4 Architecture & Module Map <a class="heading-anchor" href="#§4-architecture-module-map" aria-label="Link to §4-architecture-module-map">#</a></h2>
+
+<div class="mermaid">
+graph TB
+    subgraph "Clients"
+        OAI["OpenAI-compat<br/>(HTTP/gRPC)"]
+    end
+
+    subgraph "mori-sched (Rust)"
+        API["api/mod.rs<br/>axum HTTP router<br/>+ tonic gRPC server"]
+        PIPE["pipeline/<br/>Ingress → Hash → Ready"]
+        SCHED["scheduler/mod.rs<br/>Global BatchScheduler<br/>(single dispatch brain)"]
+        POLICY["policy/mod.rs<br/>RoundRobin | CacheAware<br/>| LinearCost"]
+        SPOL["scheduler/sched_policy.rs<br/>PrefillPolicy chain<br/>+ DecodePolicy chain"]
+        RADIX["policy/radix.rs<br/>ByteRadixTree<br/>(compressed, LRU)"]
+        ENGINE["engine/mod.rs<br/>EngineAdapter trait<br/>(SGLang|vLLM|ATOM)"]
+        REG["registry/<br/>WorkerRegistry<br/>+ auto-discovery"]
+        HEALTH["health/<br/>2-fail-down/3-pass-up<br/>+ adaptive poll"]
+        CACHE["cache/<br/>TokenizeCache (moka)<br/>+ DetokenizeCache"]
+        UMBP_C["umbp/<br/>UmbpClient gRPC<br/>+ NodeIdResolver"]
+        TRANS["transport/<br/>HTTP proxy + gRPC<br/>dispatch + client"]
+        PD["scheduler/pd_session.rs<br/>PdSession + PdRegistry<br/>(coordinated cancel)"]
+    end
+
+    subgraph "Inference Workers"
+        SGL["SGLang<br/>(GPU)"]
+        VLLM["vLLM<br/>(GPU)"]
+        ATOM["ATOM<br/>(GPU)"]
+        FAKE["FakeEngine<br/>(Python sim)"]
+    end
+
+    subgraph "External"
+        UMBP_M["UMBP Master<br/>(KV cache index)"]
+        SQLITE["SQLite<br/>(load history)"]
+    end
+
+    OAI --> API
+    API --> PIPE
+    PIPE --> SCHED
+    SCHED --> SPOL
+    SPOL --> POLICY
+    POLICY --> RADIX
+    SCHED --> UMBP_C
+    SCHED --> PD
+    SCHED --> TRANS
+    TRANS --> SGL & VLLM & ATOM & FAKE
+    HEALTH --> SGL & VLLM & ATOM
+    UMBP_C --> UMBP_M
+    HEALTH --> SQLITE
+    PIPE --> ENGINE
+    ENGINE --> CACHE
+    REG --> ENGINE
+</div>
+
+<p>Top-level module responsibilities:</p>
+
+<ul>
+<li><strong>api/</strong> — axum HTTP router exposing OpenAI-compatible inference endpoints, cluster management, cache flush, profiling, and workers REST API. Also serves Prometheus <code>/metrics</code>.</li>
+<li><strong>pipeline/</strong> — staged request processing: <code>IngressQueue → HashPipeline → ReadyQueue</code>. Async tokenization and block-hash computation run on dedicated blocking threads. Error handler with retry + dead-letter queue + circuit breaker.</li>
+<li><strong>scheduler/</strong> — the single global <code>BatchScheduler</code> loop: pops from ReadyQueue, consults policy chains, batches by dp_size, dispatches via HTTP or gRPC. Handles both single-worker and PD disaggregated modes.</li>
+<li><strong>policy/</strong> — <code>LoadBalancingPolicy</code> trait with three implementations (RoundRobin, CacheAware, LinearCost) plus the ByteRadixTree data structure.</li>
+<li><strong>scheduler/sched_policy.rs</strong> — separate <code>PrefillPolicy</code> / <code>DecodePolicy</code> trait hierarchies with chain-of-responsibility pattern. Pin → UMBP → CacheAware → ShortestQueue fallback.</li>
+<li><strong>engine/</strong> — <code>EngineAdapter</code> trait abstracting hash algorithms, tokenization, and block sizes per engine kind. Four concrete adapters: SGLang (Sha256FullChain), FakeSGLang (Sha256Chain), vLLM (Sha256Cbor/XxhashCbor), ATOM (Xxhash64Chain).</li>
+<li><strong>registry/</strong> — <code>WorkerRegistry</code> with auto-discovery (probes <code>/server_info</code>), connection pooling, and capability detection.</li>
+<li><strong>health/</strong> — per-worker health polling (2-fail-down/3-pass-up state machine) with adaptive intervals, load anomaly detection (stuck/KV-full/overloaded), latency EMA, dispatch-failure degradation, activity-based health inference, and SQLite-backed load history.</li>
+<li><strong>cache/</strong> — segment-level tokenize cache (moka W-TinyLFU) for per-message dedup in multi-turn conversations; detokenize cache for gRPC workers.</li>
+<li><strong>umbp/</strong> — gRPC client to UMBP master for cross-node KV cache block matching; <code>NodeIdResolver</code> maps UMBP node IDs to worker indices.</li>
+<li><strong>transport/</strong> — HTTP reverse proxy (reqwest streaming, h2c), gRPC dispatch (tonic), and gRPC server (SGLang wire format).</li>
+</ul>
+
+<h2 id="§5-entry-points-api-surface">§5 Entry Points & API Surface <a class="heading-anchor" href="#§5-entry-points-api-surface" aria-label="Link to §5-entry-points-api-surface">#</a></h2>
+
+<h3 id="public-api-openai-compatible">Public API (OpenAI-compatible) <a class="heading-anchor" href="#public-api-openai-compatible" aria-label="Link to public-api-openai-compatible">#</a></h3>
+
+<table>
+<tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr>
+<tr><td><code>/v1/completions</code></td><td>POST</td><td>Text completion (passthrough)</td></tr>
+<tr><td><code>/v1/chat/completions</code></td><td>POST</td><td>Chat completion (passthrough)</td></tr>
+<tr><td><code>/v1/models</code></td><td>GET</td><td>List available models</td></tr>
+</table>
+
+<h3 id="router-management">Router management <a class="heading-anchor" href="#router-management" aria-label="Link to router-management">#</a></h3>
+
+<table>
+<tr><th>Endpoint</th><th>Purpose</th></tr>
+<tr><td><code>GET /router/health</code></td><td>Liveness probe</td></tr>
+<tr><td><code>GET /router/status</code></td><td>Policy config, queue depth, pipeline state, PD sessions</td></tr>
+<tr><td><code>GET /cluster/metrics</code></td><td>Prometheus exposition format</td></tr>
+<tr><td><code>POST /router/config/reload</code></td><td>Hot-reload YAML config</td></tr>
+<tr><td>`GET\</td><td>PUT /router/config/log-level`</td><td>Dynamic log level</td></tr>
+</table>
+
+<h3 id="workers-rest">Workers REST <a class="heading-anchor" href="#workers-rest" aria-label="Link to workers-rest">#</a></h3>
+
+<table>
+<tr><th>Endpoint</th><th>Purpose</th></tr>
+<tr><td><code>GET /workers</code></td><td>List all workers with health/load</td></tr>
+<tr><td><code>GET /workers/:id</code></td><td>Detailed worker info (capabilities, connection mode)</td></tr>
+<tr><td><code>POST /workers/:id/cache/L1/clear</code></td><td>Flush GPU HBM KV cache</td></tr>
+<tr><td><code>POST /workers/:id/cache/L2/clear</code></td><td>Clear Host DRAM (HiCache)</td></tr>
+<tr><td><code>POST /workers/:id/cache/L3/clear</code></td><td>Clear external storage (Mooncake/UMBP/SSD)</td></tr>
+<tr><td><code>POST /workers/:id/abort</code></td><td>Abort in-flight request on worker</td></tr>
+<tr><td>`POST /workers/:id/pause\</td><td>resume`</td><td>Pause/resume generation</td></tr>
+</table>
+
+<h3 id="cli">CLI <a class="heading-anchor" href="#cli" aria-label="Link to cli">#</a></h3>
+
+<pre><code>
+mori-sched --config config.yaml [--listen 0.0.0.0:8080]
+           [--server-mode http|grpc|both] [--grpc-listen 0.0.0.0:8090]
+           [--worker-threads N] [--tokenize-threads N]
+           [--log-level info] [--log-file /path] [--log-format json]
+</code></pre>
+
+<h3 id="configuration-top-10-most-important">Configuration (top 10 most important) <a class="heading-anchor" href="#configuration-top-10-most-important" aria-label="Link to configuration-top-10-most-important">#</a></h3>
+
+<table>
+<tr><th>Mechanism</th><th>Key</th><th>Purpose</th></tr>
+<tr><td>YAML</td><td><code>policy.kind</code></td><td>Scheduling policy: <code>round_robin</code> / <code>cache_aware</code> / <code>linear_cost</code></td></tr>
+<tr><td>YAML</td><td><code>policy.prefill_policy</code> / <code>decode_policy</code></td><td>Independent policies for PD mode</td></tr>
+<tr><td>YAML</td><td><code>policy.linear_cost.*</code></td><td>7 tunable weights for LinearCost scoring</td></tr>
+<tr><td>YAML</td><td><code>workers[].engine_kind</code></td><td>Engine type: <code>sglang</code> / <code>vllm</code> / <code>atom</code> / <code>fake-sglang</code></td></tr>
+<tr><td>YAML</td><td><code>workers[].role</code></td><td>Worker role: <code>regular</code> / <code>prefill</code> / <code>decode</code></td></tr>
+<tr><td>YAML</td><td><code>pipeline.hash_concurrency</code></td><td>Parallel hash workers in pipeline</td></tr>
+<tr><td>YAML</td><td><code>umbp.master_addr</code></td><td>UMBP master gRPC address</td></tr>
+<tr><td>YAML</td><td><code>health.fail_threshold</code> / <code>pass_threshold</code></td><td>Health state machine thresholds</td></tr>
+<tr><td>Env</td><td><code>MORI_LOADS_DB</code></td><td>SQLite path for load history persistence</td></tr>
+<tr><td>CLI</td><td><code>--server-mode both</code></td><td>Enable HTTP + gRPC dual-mode</td></tr>
+</table>
+
+<h2 id="§6-core-data-structures">§6 Core Data Structures <a class="heading-anchor" href="#§6-core-data-structures" aria-label="Link to §6-core-data-structures">#</a></h2>
+
+<h3 id="schedulerctx-scheduler-dispatch-brain"><code>SchedulerCtx</code> (scheduler dispatch brain) <a class="heading-anchor" href="#schedulerctx-scheduler-dispatch-brain" aria-label="Link to schedulerctx-scheduler-dispatch-brain">#</a></h3>
+
+<ul>
+<li><strong>Definition</strong>: <code>scheduler/mod.rs</code></li>
+<li><strong>Layout</strong>: aggregates 13 <code>Arc</code>-wrapped subsystem handles (inner, queue, selector, policies, caches, adapter, umbp, health, profiler, pipeline, inflight)</li>
+<li><strong>Lifecycle</strong>: created once at startup, moved into the single scheduler tokio task, lives for the process lifetime</li>
+<li><strong>Thread safety</strong>: all fields are <code>Arc<T></code> where T is <code>Send + Sync</code>; the scheduler loop is single-threaded but spawns concurrent dispatch tasks</li>
+</ul>
+
+<h3 id="inner-hot-swappable-routing-state"><code>Inner</code> (hot-swappable routing state) <a class="heading-anchor" href="#inner-hot-swappable-routing-state" aria-label="Link to inner-hot-swappable-routing-state">#</a></h3>
+
+<ul>
+<li><strong>Definition</strong>: <code>api/mod.rs</code></li>
+<li><strong>Layout</strong>: <code>registry: Arc<WorkerRegistry></code>, <code>policy: Arc<dyn LoadBalancingPolicy></code>, <code>resolver: NodeIdResolver</code></li>
+<li><strong>Lifecycle</strong>: created at startup, atomically swapped on SIGHUP or POST <code>/admin/reload</code> via <code>ArcSwap</code></li>
+<li><strong>Mutation</strong>: replaced atomically; never mutated in place. In-flight requests see a consistent snapshot via <code>arc_swap::Guard</code></li>
+</ul>
+
+<h3 id="byteradixtree-prefix-cache-index"><code>ByteRadixTree</code> (prefix cache index) <a class="heading-anchor" href="#byteradixtree-prefix-cache-index" aria-label="Link to byteradixtree-prefix-cache-index">#</a></h3>
+
+<ul>
+<li><strong>Definition</strong>: <code>policy/radix.rs</code></li>
+<li><strong>Layout</strong>: compressed Patricia trie where each node stores edge bytes, children HashMap<u8, Node>, and tenants HashMap<String, u64> (worker→last_use tick)</li>
+<li><strong>Lifecycle</strong>: created when CacheAware policy is built, lives for process lifetime, grows on every dispatched request</li>
+<li><strong>Thread safety</strong>: single <code>RwLock<Tree></code> — reads on policy hot path, writes after dispatch. Background LRU eviction runs periodically.</li>
+</ul>
+
+<h3 id="workerload-lock-free-health-snapshot"><code>WorkerLoad</code> (lock-free health snapshot) <a class="heading-anchor" href="#workerload-lock-free-health-snapshot" aria-label="Link to workerload-lock-free-health-snapshot">#</a></h3>
+
+<ul>
+<li><strong>Definition</strong>: <code>health/mod.rs</code></li>
+<li><strong>Layout</strong>: ~30 <code>AtomicU64</code>/<code>AtomicU8</code> fields covering running/waiting reqs, token usage, cache hit rate, health state machine, degradation flags, latency EMA, dispatch accounting</li>
+<li><strong>Lifecycle</strong>: created per worker via <code>WorkerHealthRegistry::get_or_init</code>, lives for process lifetime</li>
+<li><strong>Thread safety</strong>: fully lock-free — health poller writes atomics, policy hot path reads atomics. Floats encoded as basis points (×10000) to avoid mutex.</li>
+</ul>
+
+<h3 id="queueentry-per-request-state"><code>QueueEntry</code> (per-request state) <a class="heading-anchor" href="#queueentry-per-request-state" aria-label="Link to queueentry-per-request-state">#</a></h3>
+
+<ul>
+<li><strong>Definition</strong>: <code>scheduler/queue.rs</code></li>
+<li><strong>Layout</strong>: req_id, path, body (JSON), prompt_bytes, precomputed block hashes, session/user/pin headers, retry count, oneshot response channel</li>
+<li><strong>Lifecycle</strong>: created from <code>PipelineEntry</code> after hash computation, consumed by dispatch, dropped after response sent</li>
+<li><strong>Ownership</strong>: owned by the scheduler task; <code>response_tx</code> is a oneshot channel back to the HTTP handler</li>
+</ul>
+
+<h2 id="§7-critical-path-analysis">§7 Critical Path Analysis <a class="heading-anchor" href="#§7-critical-path-analysis" aria-label="Link to §7-critical-path-analysis">#</a></h2>
+
+<h3 id="request-flow-client-→-response">Request flow: client → response <a class="heading-anchor" href="#request-flow-client-→-response" aria-label="Link to request-flow-client-→-response">#</a></h3>
+
+<pre><code>
+HTTP POST /v1/chat/completions
+  │
+  ├─ [1] passthrough() in api/mod.rs
+  │   ├─ extract_prompt_bytes() — Jinja2 render or ChatML fallback
+  │   ├─ extract_session_id() from x-mori-session-id header
+  │   └─ push PipelineEntry to IngressQueue, await oneshot rx
+  │
+  ├─ [2] HashPipeline (async, blocking thread pool)
+  │   ├─ tokenize via EngineAdapter (HF tokenizer or byte-level)
+  │   ├─ segment cache lookup (moka W-TinyLFU, per-message dedup)
+  │   ├─ block_hashes = adapter.hash_prompt(tokens)
+  │   └─ push HashedEntry to ReadyQueue
+  │
+  ├─ [3] spawn_global_scheduler loop (THE single dispatch brain)
+  │   ├─ pop_one() from ReadyQueue
+  │   ├─ load Inner snapshot (arc_swap)
+  │   ├─ if has_pd_workers → dispatch_pd()
+  │   │   ├─ PrefillPolicy chain: Pin → UMBP/CacheAware → SQ
+  │   │   ├─ DecodePolicy chain: Pin → SQ/RR
+  │   │   ├─ batch up to dp_size requests
+  │   │   ├─ generate_bootstrap_room() (xorshift PRNG)
+  │   │   ├─ mutate prefill/decode bodies with PdMeta
+  │   │   └─ spawn concurrent prefill + decode dispatch tasks
+  │   └─ else → dispatch_single()
+  │       ├─ PrefillPolicy chain selects worker
+  │       ├─ batch up to dp_size
+  │       └─ forward via HTTP proxy or gRPC
+  │
+  ├─ [4] proxy_post() or grpc_dispatch()
+  │   └─ stream response body back through oneshot channel
+  │
+  └─ [5] passthrough() receives response, streams to client
+      └─ attach x-mori-* headers (worker, policy, block hashes, UMBP matches)
+</code></pre>
+
+<p><strong>Latency budget</strong> (measured at 2P+2D MI355X):</p>
+<ul>
+<li>Steps 1-2 (ingress + hash): typically <1ms for cached prompts (segment cache hit)</li>
+<li>Step 3 (policy selection): <10μs (sync trait, no async)</li>
+<li>Step 4 (upstream dispatch): dominated by inference engine latency</li>
+<li>Total routing overhead: <2ms end-to-end</li>
+</ul>
+
+<p><strong>The README claims</strong> the hot path is O(L) in prompt length for the radix tree lookup + O(N) in block count for hash computation. Code confirms: <code>longest_match</code> walks the tree once, <code>hash_prompt</code> iterates token chunks. No hidden quadratic behavior.</p>
+
+<h2 id="§8-api-design-decisions">§8 API Design Decisions <a class="heading-anchor" href="#§8-api-design-decisions" aria-label="Link to §8-api-design-decisions">#</a></h2>
+
+<p><strong>Why a single global scheduler task instead of per-worker queues?</strong></p>
+<p>Centralization enables global batch formation (dp_size batching across requests), UMBP-aware routing that considers all workers simultaneously, and consistent load-balancing decisions. The single-task design eliminates coordination overhead between per-worker schedulers. The trade-off is a potential bottleneck at extreme QPS — but since <code>select()</code> is sync and <10μs, the scheduler can dispatch >100K decisions/sec, far beyond current inference engine throughput.</p>
+
+<p><strong>Why separate PrefillPolicy / DecodePolicy trait hierarchies?</strong></p>
+<p>Prefill benefits from prefix-cache affinity (TTFT optimization), while decode benefits from load balancing (ITL optimization). Tying them to the same policy would force a compromise. The chain-of-responsibility pattern (<code>Pin → UMBP → CacheAware → SQ</code>) allows operators to mix concerns: pin headers override everything, UMBP provides cross-node cache awareness, and shortest-queue is the ultimate fallback.</p>
+
+<p><strong>Why 5 hash algorithms for 4 engine kinds?</strong></p>
+<p>Each engine computes KV block hashes differently (SHA-256 with truncated vs full-digest chaining, CBOR vs raw byte encoding, xxhash64 vs SHA-256). The router must replicate each engine's exact hash scheme to compare locally-computed hashes against engine-reported ones. Cross-engine hash namespace separation prevents silent incorrect cache hits.</p>
+
+<p><strong>Why <code>ArcSwap</code> for hot reload instead of mutex?</strong></p>
+<p>The routing state (registry + policy) is read on every request but written only on config reload (rare). <code>ArcSwap</code> provides lock-free reads with atomic pointer swap on writes — the optimal pattern for read-heavy / write-rare access. In-flight requests see a consistent snapshot via the <code>Guard</code> returned by <code>load()</code>.</p>
+
+<p><strong>Why segment-level tokenize cache instead of full-prompt cache?</strong></p>
+<p>Agent multi-turn workloads share system prompts and earlier conversation turns. A full-prompt cache misses on every new user message. Segment-level caching (per chat message) deduplicates the shared prefix and only tokenizes the new message, reducing BPE tokenization from O(total_tokens) to O(new_tokens) per request.</p>
+
+<h2 id="§9-implementation-highlights">§9 Implementation Highlights <a class="heading-anchor" href="#§9-implementation-highlights" aria-label="Link to §9-implementation-highlights">#</a></h2>
+
+<h3 id="1-engine-specific-hash-chain-replication">1. Engine-specific hash chain replication <a class="heading-anchor" href="#1-engine-specific-hash-chain-replication" aria-label="Link to 1-engine-specific-hash-chain-replication">#</a></h3>
+
+<p>The <code>EngineAdapter</code> trait carries the full hash-chaining state across blocks. For SGLang's <code>Sha256FullChain</code>, the 32-byte digest chains into the next block (not the truncated i64). For vLLM's <code>Sha256Cbor</code>, CBOR-encoded tuples are hashed. For ATOM, <code>xxhash64</code> with <code>int64</code> token encoding. Each adapter's <code>hash_prompt_with_parent()</code> maintains an internal <code>parent_buf: Option<Vec<u8>></code> accumulator sized to the full digest width — this is why per-block hashing cannot be parallelized.</p>
+
+<h3 id="2-pdsession-coordinated-cancellation">2. PdSession coordinated cancellation <a class="heading-anchor" href="#2-pdsession-coordinated-cancellation" aria-label="Link to 2-pdsession-coordinated-cancellation">#</a></h3>
+
+<p>When PD disaggregation is active, prefill and decode tasks run concurrently. If decode fails, the prefill must be cancelled (it's wasting GPU compute). <code>PdSession</code> wraps a <code>tokio_util::sync::CancellationToken</code> shared between both tasks. On decode failure, <code>mark_decode_failed()</code> triggers the token, and the prefill task's <code>tokio::select!</code> arm fires immediately.</p>
+
+<h3 id="3-thread-local-xorshift-for-bootstrap-room-generation">3. Thread-local xorshift for bootstrap room generation <a class="heading-anchor" href="#3-thread-local-xorshift-for-bootstrap-room-generation" aria-label="Link to 3-thread-local-xorshift-for-bootstrap-room-generation">#</a></h3>
+
+<p><code>generate_bootstrap_room()</code> uses a thread-local xorshift64 PRNG seeded from nanosecond clock XOR'd with process ID. This avoids atomic contention on the global request counter and produces uniform room IDs for RDMA KV transfer coordination — each room is a unique rendezvous point between one prefill and one decode worker.</p>
+
+<h3 id="4-adaptive-health-poll-intervals">4. Adaptive health poll intervals <a class="heading-anchor" href="#4-adaptive-health-poll-intervals" aria-label="Link to 4-adaptive-health-poll-intervals">#</a></h3>
+
+<p>The load poller adjusts its interval based on load delta: large changes (>20% relative) halve the interval (down to 100ms), stable readings slowly double it (up to 5s), and idle workers (0 running, 0 waiting) jump to max interval. This reduces unnecessary polling of quiet workers while catching load spikes quickly.</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>RoundRobin PD aliasing fix</strong>: Using a single atomic counter for both prefill and decode selection in PD mode causes every request to pin to the same worker pair (counter ticks twice per request, <code>idx % 2</code> stays in lockstep). The fix: dedicated <code>prefill_cursor</code> and <code>decode_cursor</code> atomics so each pool rotates independently.</li>
+</ul>
+
+<ol>
+<li><strong>Radix tree tenant inheritance on split</strong>: When an edge split creates an intermediate node, the new intermediate must inherit all tenants from the deeper node — otherwise <code>longest_match</code> loses presence at the shallower depth. This is a subtle invariant that, if violated, causes cache-aware routing to silently degrade to shortest-queue for shared prefixes.</li>
+</ul>
+
+<h2 id="§10-concurrency-memory">§10 Concurrency & Memory <a class="heading-anchor" href="#§10-concurrency-memory" aria-label="Link to §10-concurrency-memory">#</a></h2>
+
+<ul>
+<li><strong>Concurrency model</strong>: tokio multi-threaded runtime (<code>worker_threads</code> = available parallelism). One global scheduler task, multiple concurrent dispatch tasks (one per in-flight request). Hash pipeline uses <code>spawn_blocking</code> on a dedicated thread pool (<code>tokenize_threads</code> = 2× parallelism).</li>
+<li><strong>Lock hierarchy</strong>: nearly lock-free on the hot path. The only lock is <code>RwLock<Tree></code> on the radix tree (read-heavy: policy reads; write-rare: after dispatch). All health state is atomic. <code>ArcSwap</code> for config reload. <code>DashMap</code> (sharded concurrent map) for health registry.</li>
+<li><strong>Memory management</strong>: all major structures are <code>Arc</code>-wrapped with no manual memory management. <code>moka</code> cache handles eviction (W-TinyLFU). Radix tree has a soft node cap (<code>max_tree_nodes</code>, default 10K) enforced by periodic LRU eviction (20% of leaves dropped when threshold exceeded).</li>
+<li><strong>Known concurrency considerations</strong>: the single scheduler task is intentionally serialized — no concurrent <code>pop_one()</code> — to ensure consistent batch formation. Dispatch tasks spawned by the scheduler run concurrently and are fire-and-forget.</li>
+</ul>
+
+<h2 id="§11-performance-characteristics">§11 Performance Characteristics <a class="heading-anchor" href="#§11-performance-characteristics" aria-label="Link to §11-performance-characteristics">#</a></h2>
+
+<h3 id="headline-benchmarks-from-readme">Headline benchmarks (from README) <a class="heading-anchor" href="#headline-benchmarks-from-readme" aria-label="Link to headline-benchmarks-from-readme">#</a></h3>
+
+<table>
+<tr><th>Configuration</th><th>Policy</th><th>Throughput</th></tr>
+<tr><td>2P+2D MI355X, Qwen2.5-7B-FP8</td><td><code>linear_cost</code></td><td><strong>91.6 req/s</strong></td></tr>
+<tr><td>2P+2D MI355X, Qwen2.5-7B-FP8</td><td><code>round_robin</code></td><td>23.7 req/s</td></tr>
+<tr><td>2P+2D MI355X, Qwen2.5-7B-FP8</td><td><code>cache_aware</code></td><td>85.2 req/s</td></tr>
+</table>
+
+<h3 id="scaling-characteristics">Scaling characteristics <a class="heading-anchor" href="#scaling-characteristics" aria-label="Link to scaling-characteristics">#</a></h3>
+
+<ul>
+<li><strong>Workers</strong>: linear throughput scaling with worker count (single scheduler is not the bottleneck at current QPS ranges)</li>
+<li><strong>Prompt length</strong>: hash computation is O(tokens/block_size) — longer prompts produce more blocks but segment cache amortizes repeated prefixes</li>
+<li><strong>dp_size</strong>: batch scheduling groups up to <code>dp_size</code> requests per dispatch, improving GPU utilization on DP-attention workers</li>
+</ul>
+
+<h3 id="routing-overhead">Routing overhead <a class="heading-anchor" href="#routing-overhead" aria-label="Link to routing-overhead">#</a></h3>
+
+<ul>
+<li>Policy <code>select()</code>: <10μs (sync, no allocation on hot path)</li>
+<li>Radix tree <code>longest_match</code>: O(L) where L = prompt bytes, single RwLock read</li>
+<li>LinearCost <code>score()</code>: O(N) where N = worker count, lock-free atomic reads</li>
+<li>Hash computation: dominated by SHA-256/xxhash over token chunks — segment cache makes this effectively O(1) for repeated prefixes</li>
+</ul>
+
+<h2 id="§12-tech-debt-code-quality">§12 Tech Debt & Code Quality <a class="heading-anchor" href="#§12-tech-debt-code-quality" aria-label="Link to §12-tech-debt-code-quality">#</a></h2>
+
+<ul>
+<li><strong>Testing</strong>: 25+ unit tests across <code>policy/mod.rs</code>, <code>scheduler/sched_policy.rs</code>, <code>engine/mod.rs</code>, <code>health/mod.rs</code>. Tests cover policy rotation, PD aliasing, UMBP routing, hash reference vectors. No integration test harness beyond shell scripts.</li>
+<li><strong>Linting</strong>: <code>.github/workflows/pylint.yml</code> for Python sources. No <code>clippy</code> CI visible (Rust <code>#![allow(dead_code)]</code> used liberally for future APIs).</li>
+<li><strong>CI matrix</strong>: Only pylint. No Rust CI (build, test, clippy) in GitHub Actions.</li>
+<li><strong>Known warts</strong>: Single-crate monolith at 19.6K LOC — <code>mori-sched/src/</code> has 25 source files across 9 modules. Ripe for workspace partitioning into <code>mori-policy</code>, <code>mori-engine</code>, <code>mori-health</code>, etc.</li>
+<li><strong><code>#![allow(dead_code)]</code></strong>: Present in <code>policy/mod.rs</code>, <code>policy/radix.rs</code>, <code>engine/mod.rs</code>, <code>health/mod.rs</code> — many APIs are defined ahead of use. Indicates rapid forward development.</li>
+<li><strong>Dependency health</strong>: all major deps (tokio, axum, tonic, moka, serde, sha2) are actively maintained and on recent versions. <code>rusqlite</code> bundled (statically linked SQLite).</li>
+</ul>
+
+<h2 id="§13-comparison-with-alternatives">§13 Comparison with Alternatives <a class="heading-anchor" href="#§13-comparison-with-alternatives" aria-label="Link to §13-comparison-with-alternatives">#</a></h2>
+
+<table>
+<tr><th>Dimension</th><th><strong>mori-scheduler</strong></th><th><strong>sgl-router</strong></th><th><strong>vllm-router</strong></th></tr>
+<tr><td><strong>Language</strong></td><td><strong>Rust</strong></td><td>Rust</td><td>Python</td></tr>
+<tr><td><strong>Prefix-cache routing</strong></td><td><strong>ByteRadixTree + UMBP block-hash</strong></td><td>Session-based only</td><td>Hash-ring (semantic)</td></tr>
+<tr><td><strong>Engine support</strong></td><td><strong>SGLang + vLLM + ATOM</strong></td><td>SGLang only</td><td>vLLM only</td></tr>
+<tr><td><strong>PD disaggregation</strong></td><td><strong>Full (dual-dispatch, coordinated cancel)</strong></td><td>No</td><td>No</td></tr>
+<tr><td><strong>Hash schemes</strong></td><td><strong>5 (per-engine exact match)</strong></td><td>1 (SGLang only)</td><td>0 (no hash routing)</td></tr>
+<tr><td><strong>Cross-node KV index</strong></td><td><strong>UMBP gRPC integration</strong></td><td>No</td><td>No</td></tr>
+<tr><td><strong>Hot reload</strong></td><td><strong>ArcSwap + SIGHUP</strong></td><td>Restart required</td><td>Config file</td></tr>
+<tr><td><strong>Health detection</strong></td><td><strong>6 degradation modes + adaptive poll</strong></td><td>2-fail-down only</td><td>Basic health check</td></tr>
+<tr><td><strong>Three-tier cache API</strong></td><td><strong>L1/L2/L3 per worker</strong></td><td>Flush only</td><td>No</td></tr>
+<tr><td><strong>gRPC serving</strong></td><td><strong>Dual HTTP+gRPC</strong></td><td>HTTP only</td><td>HTTP only</td></tr>
+<tr><td><strong>Maturity</strong></td><td>35 days, 260 commits</td><td>~1 year</td><td>~6 months</td></tr>
+<tr><td><strong>License</strong></td><td>Apache-2.0</td><td>Apache-2.0</td><td>Apache-2.0</td></tr>
+</table>
+
+<p><strong>Bold</strong> = winner per row.</p>
+
+<p>mori-scheduler wins on multi-engine support, PD disaggregation, and prefix-cache routing depth. sgl-router wins on maturity and production battle-testing. vllm-router is the simplest option for vLLM-only deployments.</p>
+
+<h2 id="§14-verdict-recommendations">§14 Verdict & Recommendations <a class="heading-anchor" href="#§14-verdict-recommendations" aria-label="Link to §14-verdict-recommendations">#</a></h2>
+
+<h3 id="when-to-adopt">When to adopt <a class="heading-anchor" href="#when-to-adopt" aria-label="Link to when-to-adopt">#</a></h3>
+
+<ul>
+<li>Running PD disaggregated serving on AMD MI355X with RDMA KV transfer</li>
+<li>Need prefix-cache-aware routing across SGLang + vLLM + ATOM engines in a mixed fleet</li>
+<li>Multi-turn agent workloads where segment-level tokenize caching provides significant dedup benefit</li>
+<li>Deployments requiring cross-node KV cache coordination via UMBP</li>
+</ul>
+
+<h3 id="when-not-to-adopt">When NOT to adopt <a class="heading-anchor" href="#when-not-to-adopt" aria-label="Link to when-not-to-adopt">#</a></h3>
+
+<ul>
+<li>Single-engine SGLang deployments — sgl-router is simpler and more mature</li>
+<li>NVIDIA-only clusters without AMD-specific UMBP/mori RDMA stack</li>
+<li>Need a battle-tested production router — 35 days old with no public CI beyond pylint</li>
+<li>Prefer Python ecosystem for router extensibility — mori-scheduler is pure Rust</li>
+</ul>
+
+<h3 id="suggested-contributions">Suggested contributions <a class="heading-anchor" href="#suggested-contributions" aria-label="Link to suggested-contributions">#</a></h3>
+
+<ol>
+<li><strong>Workspace partitioning</strong>: split the 19.6K LOC single crate into 5-6 crates (<code>mori-policy</code>, <code>mori-engine</code>, <code>mori-health</code>, <code>mori-transport</code>, <code>mori-pipeline</code>) for faster incremental builds and clearer API boundaries</li>
+<li><strong>Rust CI</strong>: add <code>cargo test</code>, <code>cargo clippy</code>, and <code>cargo fmt --check</code> to GitHub Actions</li>
+<li><strong>Benchmark CI</strong>: automated A/B benchmarks on every PR to catch throughput regressions</li>
+</ul>
+
+<h2 id="§15-论证链">§15 论证链 <a class="heading-anchor" href="#§15-论证链" aria-label="Link to §15-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Validity</th></tr>
+<tr><td>1</td><td>Stateless routing (RR) wastes KV cache across workers</td><td>Same prefix dispatched to different workers forces re-prefill; measured 23.7 vs 91.6 req/s on 2P+2D MI355X</td><td>Valid — 3.9× throughput difference on identical hardware, same model</td></tr>
+<tr><td>2</td><td>Byte-level radix tree approximates prefix-cache state without engine instrumentation</td><td><code>CacheAware::select()</code> matches prompt bytes against tree, routes to longest-match worker; falls back to SQ on miss</td><td>Valid — O(L) lookup; <code>on_dispatched</code> keeps tree in sync; imbalance fallback prevents stampede</td></tr>
+<tr><td>3</td><td>LinearCost scoring integrates live load signals with cache affinity</td><td>7-weight cost function with stale-fallback to local inflight count; <code>num_waiting_reqs</code> weighted 2× vs <code>num_running_reqs</code></td><td>Valid — waiting is a stronger saturation signal; stale fallback ensures routability during startup</td></tr>
+<tr><td>4</td><td>Engine-specific hash replication enables exact KV block matching</td><td>5 <code>HashAlgorithm</code> variants with reference-vector tests against Python implementations; ATOM xxhash64 matches Python to the bit</td><td>Valid — test <code>atom_hash_matches_python_reference</code> proves byte-exact match for ATOM; <code>sglang_full_chain_matches_reference</code> for SGLang</td></tr>
+<tr><td>5</td><td>PD disaggregation with coordinated cancellation avoids wasted GPU work</td><td><code>PdSession</code> wraps <code>CancellationToken</code>; decode failure cancels prefill via <code>tokio::select!</code></td><td>Valid — without cancellation, a failed decode leaves the prefill running to completion for nothing</td></tr>
+<tr><td>6</td><td>Segment-level tokenize cache reduces BPE cost for multi-turn</td><td>moka W-TinyLFU at chat message granularity; only new messages tokenized; cross-request prefix scan</td><td>Valid for agent workloads — system prompt + earlier turns are cached; cold start amortized over conversation</td></tr>
+</table>
+
+<h2 id="§16-实现-cross-reference">§16 实现 Cross-Reference <a class="heading-anchor" href="#§16-实现-cross-reference" aria-label="Link to §16-实现-cross-reference">#</a></h2>
+
+<table>
+<tr><th>Component</th><th>Key file</th><th>Purpose</th></tr>
+<tr><td>CLI entrypoint</td><td><code>mori-sched/src/main.rs</code></td><td>clap CLI, tokio runtime, startup orchestration</td></tr>
+<tr><td>Config parsing</td><td><code>mori-sched/src/config.rs</code></td><td>YAML config: workers, policy, cache, logging, UMBP, pipeline, health</td></tr>
+<tr><td>HTTP router</td><td><code>mori-sched/src/api/mod.rs</code></td><td>axum routes: OpenAI-compat + cluster + admin + workers REST</td></tr>
+<tr><td>Global scheduler</td><td><code>mori-sched/src/scheduler/mod.rs</code></td><td><code>spawn_global_scheduler</code>: single dispatch loop</td></tr>
+<tr><td>Prefill/Decode policies</td><td><code>mori-sched/src/scheduler/sched_policy.rs</code></td><td>Chain-of-responsibility: Pin → UMBP → CacheAware → SQ</td></tr>
+<tr><td>PD session</td><td><code>mori-sched/src/scheduler/pd_session.rs</code></td><td>Coordinated prefill/decode cancellation</td></tr>
+<tr><td>Routing policies</td><td><code>mori-sched/src/policy/mod.rs</code></td><td><code>LoadBalancingPolicy</code> trait: RoundRobin, CacheAware, LinearCost</td></tr>
+<tr><td>Radix tree</td><td><code>mori-sched/src/policy/radix.rs</code></td><td><code>ByteRadixTree</code>: compressed Patricia trie with LRU eviction</td></tr>
+<tr><td>Engine adapters</td><td><code>mori-sched/src/engine/mod.rs</code></td><td><code>EngineAdapter</code> trait: hash algorithms, tokenization per engine</td></tr>
+<tr><td>Health polling</td><td><code>mori-sched/src/health/mod.rs</code></td><td>2-fail-down/3-pass-up + adaptive poll + anomaly detection</td></tr>
+<tr><td>Load history</td><td><code>mori-sched/src/health/load_history.rs</code></td><td>SQLite-backed 7-day load history</td></tr>
+<tr><td>Tokenize cache</td><td><code>mori-sched/src/cache/tokenize_cache.rs</code></td><td>moka W-TinyLFU per-message segment cache</td></tr>
+<tr><td>Pipeline stages</td><td><code>mori-sched/src/pipeline/hash_pipeline.rs</code></td><td>Async tokenize + hash workers</td></tr>
+<tr><td>Error handler</td><td><code>mori-sched/src/pipeline/error_handler.rs</code></td><td>Retry + dead-letter queue + circuit breaker</td></tr>
+<tr><td>HTTP proxy</td><td><code>mori-sched/src/transport/http_proxy.rs</code></td><td>reqwest streaming reverse proxy (HTTP/1.1 + h2c)</td></tr>
+<tr><td>gRPC dispatch</td><td><code>mori-sched/src/transport/grpc_dispatch.rs</code></td><td>JSON→GenerateRequest + streaming bridge</td></tr>
+<tr><td>UMBP client</td><td><code>mori-sched/src/umbp/client.rs</code></td><td>tonic gRPC client to UMBP master</td></tr>
+<tr><td>Fake engine</td><td><code>fake-engine/sglang_fake_engine.py</code></td><td>FastAPI SSE + ZMQ PUB simulation (no GPU)</td></tr>
+<tr><td>Benchmark client</td><td><code>fake-engine/bench_client.py</code></td><td>Zero-dep concurrent benchmark client</td></tr>
+<tr><td>Protobuf schemas</td><td><code>mori-sched/proto/sglang_scheduler.proto</code>, <code>umbp.proto</code></td><td>gRPC wire formats</td></tr>
+</table>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

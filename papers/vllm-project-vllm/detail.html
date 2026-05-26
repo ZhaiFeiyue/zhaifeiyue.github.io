@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">vLLM — A high-throughput and memory-efficient inference and serving engine for LLMs</h1>
 <div class="card-meta"><span class="badge badge-code">code</span> vllm-project-vllm</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">serving</span><span class="tag">inference</span><span class="tag">paged-attention</span><span class="tag">continuous-batching</span><span class="tag">gpu-inference</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">serving</span><span class="tag">inference</span><span class="tag">paged-attention</span><span class="tag">continuous-batching</span><span class="tag">kv-cache</span><span class="tag">gpu-inference</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/overview/code.html">← code Survey</a>
 <a href="https://arxiv.org/abs/vllm-project-vllm" target="_blank">Source ↗</a>
@@ -208,7 +208,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<p>Dominant open-source LLM serving engine (81K stars). PagedAttention + continuous batching + CUDA graphs deliver SOTA throughput. V1 engine runs scheduler out-of-process via ZMQ; supports 200+ model architectures, disaggregated prefill/decode, 10+ quantization formats, multi-vendor GPU.</p>
+<p>Dominant open-source LLM serving engine (81K stars). PagedAttention + continuous batching + CUDA graphs deliver SOTA throughput. V1 engine runs scheduler out-of-process via ZMQ; supports 200+ model architectures, disaggregated P/D, 10+ quantization formats, multi-vendor GPU.</p>
 
 <h2 id="§2-project-identity">§2 Project Identity <a class="heading-anchor" href="#§2-project-identity" aria-label="Link to §2-project-identity">#</a></h2>
 
@@ -223,54 +223,73 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <tr><td>Governance</td><td>Community-driven, multi-corporate backing</td></tr>
 </table>
 
-<h2 id="§3-motivation">§3 Motivation <a class="heading-anchor" href="#§3-motivation" aria-label="Link to §3-motivation">#</a></h2>
+<h2 id="§3-motivation-core-questions">§3 Motivation & Core Questions <a class="heading-anchor" href="#§3-motivation-core-questions" aria-label="Link to §3-motivation-core-questions">#</a></h2>
 
 <p><strong>One-line pitch</strong>: Easy, fast, and cheap LLM serving for everyone.</p>
 
-<p><strong>痛点 (Q1)</strong>: LLM inference wastes GPU memory and throughput due to fragmented KV cache management and inefficient request batching. Static KV cache allocation wastes 60-80% of memory to internal fragmentation. Without continuous batching, the system blocks on the longest-running request, leaving GPU cycles idle.</p>
+<h3 id="q1-痛点：kv-cache-fragmentation-and-batching-inefficiency">Q1 痛点：KV cache fragmentation and batching inefficiency <a class="heading-anchor" href="#q1-痛点：kv-cache-fragmentation-and-batching-inefficiency" aria-label="Link to q1-痛点：kv-cache-fragmentation-and-batching-inefficiency">#</a></h3>
 
-<p><strong>方法 (Q2)</strong>: PagedAttention manages KV cache as fixed-size blocks (like OS virtual memory pages), enabling dynamic allocation, deallocation, and copy-on-write sharing. Continuous batching allows new requests to enter and completed requests to leave mid-batch. The V1 engine runs the scheduler in a dedicated process to avoid GIL contention with GPU execution.</p>
+<p>LLM inference wastes GPU memory and throughput due to two fundamental problems. First, static KV cache allocation wastes 60-80% of memory to internal fragmentation — each request pre-allocates the maximum possible KV cache regardless of actual usage, and freed memory cannot be reclaimed until the entire allocation is released. Second, without continuous batching, the system blocks on the longest-running request in a batch, leaving GPU cycles idle while shorter requests have already completed. These two problems compound: fragmented memory means fewer concurrent requests, and static batching means lower GPU utilization per request.</p>
 
-<p><strong>核心技术壁垒</strong>: PagedAttention's block-table indirection. The virtual→physical KV cache mapping enables COW prefix sharing, dynamic memory allocation, and preemptive scheduling — all impossible with contiguous KV cache layouts. This single abstraction is what made continuous batching without memory waste practical, and every subsequent LLM serving system has adopted or reimplemented the idea.</p>
+<h3 id="q2-方法：pagedattention-continuous-batching-out-of-process-scheduler">Q2 方法：PagedAttention + continuous batching + out-of-process scheduler <a class="heading-anchor" href="#q2-方法：pagedattention-continuous-batching-out-of-process-scheduler" aria-label="Link to q2-方法：pagedattention-continuous-batching-out-of-process-scheduler">#</a></h3>
 
-<p><strong>结果 (Q3)</strong>: vLLM achieves near-zero KV cache memory waste (<4% fragmentation vs 60%+ with static allocation), 2-4x throughput improvement over static-batch baselines, and has become the de facto standard for open-source LLM serving with 81K GitHub stars and 200+ supported model architectures.</p>
+<p><strong>PagedAttention</strong> manages KV cache as fixed-size blocks (like OS virtual memory pages), enabling dynamic allocation, deallocation, and copy-on-write sharing. A block table provides virtual→physical indirection, allowing blocks to be non-contiguous in GPU memory. <strong>Continuous batching</strong> allows new requests to enter and completed requests to leave mid-batch — the scheduler re-evaluates the request pool at every decode step. The <strong>V1 engine</strong> runs the scheduler in a dedicated process (connected via ZMQ IPC with msgspec serialization) to avoid GIL contention between the CPU-bound scheduler and GPU-bound model execution.</p>
+
+<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
+
+<p>PagedAttention's block-table indirection. The virtual→physical KV cache mapping enables COW prefix sharing, dynamic memory allocation, preemptive scheduling, and disaggregated serving (KV block transfer across nodes via NIXL). This single abstraction is what made continuous batching without memory waste practical. Every subsequent LLM serving system has adopted or reimplemented the idea — it is to LLM serving what virtual memory is to operating systems.</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<p>Near-zero KV cache memory waste (<4% fragmentation vs 60%+ with static allocation), 2-4× throughput improvement over static-batch baselines, and de facto standard status for open-source LLM serving (81K GitHub stars, 200+ supported architectures, 2000+ contributors).</p>
 
 <h2 id="§4-architecture-module-map">§4 Architecture & Module Map <a class="heading-anchor" href="#§4-architecture-module-map" aria-label="Link to §4-architecture-module-map">#</a></h2>
 
 <div class="mermaid">
 flowchart TB
-    subgraph EP["Entrypoints"]
+    subgraph EP["Entrypoints (user-facing)"]
         LLM["LLM.generate()<br/>Offline batch"]
-        OAI["OpenAI API Server<br/>Online serving"]
+        OAI["OpenAI API Server<br/>FastAPI, SSE"]
+        CLI["vllm serve / chat / bench<br/>CLI"]
+        GRPC["gRPC Server"]
     end
 
-    subgraph V1["V1 Engine (separate process)"]
-        EC["EngineCore<br/>(core.py — 89KB)"]
-        SCHED["Scheduler"]
-        BM["Block Manager<br/>(PagedAttention)"]
+    subgraph V1["V1 Engine (dedicated process)"]
+        EC["EngineCore"]
+        SCHED["Scheduler<br/>(priority queue + budget)"]
+        BM["KV Cache Manager<br/>(block pool, prefix cache)"]
     end
 
     subgraph EXEC["Execution Layer"]
-        EX["Executor<br/>(GPU / Ray / MP)"]
+        EX["Executor<br/>(GPU / Ray / MultiProc)"]
         W["GPUWorker"]
-        MR["GPUModelRunner<br/>+ CUDA Graphs"]
+        MR["GPUModelRunner<br/>+ CUDA Graph Dispatcher"]
     end
 
     subgraph MODEL["Model Stack"]
         REG["ModelRegistry<br/>(200+ architectures)"]
-        ATT["Attention Backends<br/>FlashAttn · FlashInfer · TRTLLM"]
-        LIN["Linear / MoE<br/>CUTLASS · CuTeDSL"]
-        QNT["Quantization<br/>FP8 · NVFP4 · GPTQ · AWQ"]
+        ATT["Attention Backends<br/>FlashAttn / FlashInfer / TRTLLM-GEN<br/>FlashMLA / TOKENSPEED_MLA"]
+        LIN["Linear / MoE Kernels<br/>CUTLASS / CuTeDSL / Triton"]
+        QNT["Quantization<br/>FP8 / NVFP4 / MXFP4 / GPTQ / AWQ"]
     end
 
     subgraph MEM["Memory Subsystem"]
         KVC["KV Cache Pool<br/>(GPU page blocks)"]
-        PC["Prefix Cache<br/>(APC)"]
-        OFF["KV Offload<br/>(CPU / NIXL disagg)"]
+        PC["Prefix Cache (APC)"]
+        OFF["KV Offload<br/>(CPU / disagg via NIXL)"]
     end
 
-    LLM -->|"ZMQ IPC<br/>(msgspec)"| EC
-    OAI -->|"ZMQ IPC<br/>(msgspec)"| EC
+    subgraph DIST["Distributed"]
+        TP["Tensor Parallel<br/>(NCCL allreduce)"]
+        PP["Pipeline Parallel"]
+        EP2["Expert Parallel<br/>(elastic EP, EPLB)"]
+        KVT["KV Transfer<br/>(disagg P/D)"]
+    end
+
+    LLM -->|"ZMQ IPC (msgspec)"| EC
+    OAI -->|"ZMQ IPC (msgspec)"| EC
+    CLI --> OAI
+    GRPC -->|"ZMQ IPC"| EC
     EC --> SCHED
     SCHED --> BM
     BM --> KVC
@@ -284,30 +303,34 @@ flowchart TB
     REG --> LIN
     ATT --> QNT
     LIN --> QNT
-    MR -->|"tokens +<br/>logprobs"| EC
+    MR -->|"tokens + logprobs"| EC
     EC -->|"ZMQ IPC"| LLM
     EC -->|"SSE stream"| OAI
+    W --> TP
+    W --> PP
+    W --> EP2
+    OFF --> KVT
 </div>
 
 <p><strong>Top modules by centrality</strong>:</p>
 
 <table>
 <tr><th>Module</th><th>Purpose</th></tr>
-<tr><td><code>vllm/entrypoints/</code></td><td>User-facing: <code>LLM</code> (offline), OpenAI API server (online), chat</td></tr>
-<tr><td><code>vllm/v1/engine/</code></td><td>EngineCore (scheduler + IPC), AsyncLLM, detokenizer, coordinator</td></tr>
-<tr><td><code>vllm/v1/core/</code></td><td>Scheduler logic, KV block manager, prefix caching</td></tr>
-<tr><td><code>vllm/v1/worker/</code></td><td>GPUWorker, GPUModelRunner, KV cache operations</td></tr>
-<tr><td><code>vllm/v1/attention/</code></td><td>Attention backend abstraction (FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA)</td></tr>
+<tr><td><code>vllm/entrypoints/</code></td><td>User-facing: <code>LLM</code> (offline), OpenAI API server (online), gRPC, Anthropic API, MCP</td></tr>
+<tr><td><code>vllm/v1/engine/</code></td><td>EngineCore (scheduler + IPC), AsyncLLM, input/output processors</td></tr>
+<tr><td><code>vllm/v1/core/</code></td><td>Scheduler, KV cache manager, block pool, prefix caching</td></tr>
+<tr><td><code>vllm/v1/worker/</code></td><td>GPUWorker, GPUModelRunner, CUDA graph capture</td></tr>
+<tr><td><code>vllm/v1/attention/</code></td><td>Attention backend registry (FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA, TOKENSPEED_MLA)</td></tr>
 <tr><td><code>vllm/model_executor/</code></td><td>Model loading, weight management, 200+ architecture implementations</td></tr>
 <tr><td><code>vllm/model_executor/layers/</code></td><td>NN building blocks: attention, linear, MoE, quantization wrappers</td></tr>
-<tr><td><code>vllm/distributed/</code></td><td>TP / PP / EP / DP, allreduce, NCCL, weight transfer</td></tr>
-<tr><td><code>csrc/</code></td><td>C++/CUDA/HIP kernels (attention, quantization, sampling, memory ops)</td></tr>
+<tr><td><code>vllm/distributed/</code></td><td>TP / PP / EP / DP, allreduce, NCCL, KV transfer, EPLB</td></tr>
+<tr><td><code>csrc/</code></td><td>C++/CUDA/HIP kernels: paged attention, quantization, sampling, MoE, allreduce</td></tr>
 <tr><td><code>vllm/platforms/</code></td><td>Hardware abstraction: CUDA, ROCm, CPU, TPU, XPU, plugin system</td></tr>
 <tr><td><code>vllm/v1/spec_decode/</code></td><td>Speculative decoding: EAGLE, n-gram, MTP, DFlash</td></tr>
 <tr><td><code>vllm/v1/structured_output/</code></td><td>Constrained decoding: xgrammar, guidance, outlines, lm-format-enforcer</td></tr>
 <tr><td><code>vllm/multimodal/</code></td><td>Multi-modal input processing (images, video, audio)</td></tr>
-<tr><td><code>vllm/config/</code></td><td>VllmConfig dataclass hierarchy</td></tr>
-<tr><td><code>rust/</code></td><td>Rust-based tokenizer (fastokens) for high-perf text processing</td></tr>
+<tr><td><code>vllm/config/</code></td><td>VllmConfig dataclass hierarchy (100+ fields)</td></tr>
+<tr><td><code>rust/</code></td><td>Rust-based tokenizer for high-perf text processing</td></tr>
 </table>
 
 <h2 id="§5-entry-points-api-surface">§5 Entry Points & API Surface <a class="heading-anchor" href="#§5-entry-points-api-surface" aria-label="Link to §5-entry-points-api-surface">#</a></h2>
@@ -328,7 +351,7 @@ flowchart TB
 <h3 id="cli-entry-points">CLI Entry Points <a class="heading-anchor" href="#cli-entry-points" aria-label="Link to cli-entry-points">#</a></h3>
 
 <ul>
-<li><code>vllm serve <model></code> — launch OpenAI-compatible server</li>
+<li><code>vllm serve <model></code> — launch OpenAI-compatible API server</li>
 <li><code>vllm bench</code> — benchmarking</li>
 <li><code>vllm complete</code> / <code>vllm chat</code> — interactive usage</li>
 </ul>
@@ -357,6 +380,7 @@ flowchart TB
 <li><strong>Model registry</strong>: register custom model architectures without forking</li>
 <li><strong>Attention backends</strong>: pluggable kernel implementations via <code>AttentionBackend</code> interface</li>
 <li><strong>Structured output backends</strong>: pluggable constrained decoding engines (xgrammar, guidance, outlines, lm-format-enforcer)</li>
+<li><strong>KV connectors</strong> (<code>distributed/kv_transfer/</code>): pluggable KV cache transport for disaggregated serving</li>
 </ul>
 
 <h2 id="§6-core-data-structures">§6 Core Data Structures <a class="heading-anchor" href="#§6-core-data-structures" aria-label="Link to §6-core-data-structures">#</a></h2>
@@ -367,15 +391,17 @@ flowchart TB
 <li><strong>Layout</strong>: <code>msgspec.Struct</code> (not <code>dataclass</code>) with <code>omit_defaults=True</code> for compact wire format</li>
 <li><strong>Lifecycle</strong>: created by user or API handler, serialized over ZMQ IPC to EngineCore, lives for request duration</li>
 <li><strong>Mutation</strong>: immutable after validation pass in constructor</li>
-<li><strong>Design choice</strong>: msgspec chosen for the IPC boundary — zero-copy serialization avoids 10-100x overhead of pickle. The <code>dict=True</code> mixin enables dict-like access while retaining struct performance.</li>
+<li><strong>Thread safety</strong>: N/A (owned by one process at a time)</li>
+<li><strong>Design choice</strong>: msgspec chosen for the IPC boundary — zero-copy serialization avoids 10-100× overhead of pickle. The <code>dict=True</code> mixin enables dict-like access while retaining struct performance.</li>
 </ul>
 
 <h3 id="vllmconfig-—-vllm-config"><code>VllmConfig</code> — <code>vllm/config/</code> <a class="heading-anchor" href="#vllmconfig-—-vllm-config" aria-label="Link to vllmconfig-—-vllm-config">#</a></h3>
 
 <ul>
 <li><strong>Layout</strong>: hierarchy of dataclass-like config objects — <code>ModelConfig</code>, <code>CacheConfig</code>, <code>ParallelConfig</code>, <code>SchedulerConfig</code>, <code>LoRAConfig</code>, <code>QuantizationConfigArgs</code>, etc.</li>
-<li><strong>Lifecycle</strong>: constructed once at engine startup from CLI args or <code>LLM</code> constructor kwargs</li>
-<li><strong>Mutation</strong>: effectively immutable after construction; passed by reference to all engine components</li>
+<li><strong>Lifecycle</strong>: constructed once at engine startup from CLI args or <code>LLM</code> constructor kwargs. Passed by reference to all engine components.</li>
+<li><strong>Mutation</strong>: effectively immutable after construction</li>
+<li><strong>Thread safety</strong>: read-only sharing across processes is safe</li>
 </ul>
 
 <h3 id="enginecorerequest-enginecoreoutput-—-vllm-v1-engine-init-py"><code>EngineCoreRequest</code> / <code>EngineCoreOutput</code> — <code>vllm/v1/engine/__init__.py</code> <a class="heading-anchor" href="#enginecorerequest-enginecoreoutput-—-vllm-v1-engine-init-py" aria-label="Link to enginecorerequest-enginecoreoutput-—-vllm-v1-engine-init-py">#</a></h3>
@@ -383,7 +409,8 @@ flowchart TB
 <ul>
 <li><strong>Layout</strong>: msgspec Structs for IPC serialization</li>
 <li><strong>Lifecycle</strong>: request created in API layer → serialized over ZMQ → consumed by EngineCore; output flows back the same path</li>
-<li><strong>Design choice</strong>: the IPC boundary between entrypoints and EngineCore is the V1 engine's defining architectural decision — scheduler runs in a dedicated process without GIL contention from model execution</li>
+<li><strong>Mutation</strong>: created once, serialized, then consumed — never modified in-flight</li>
+<li><strong>Design choice</strong>: the IPC boundary between entrypoints and EngineCore is the V1 engine's defining architectural decision — scheduler runs in a dedicated process without GIL contention</li>
 </ul>
 
 <h3 id="kv-cache-block-tables">KV Cache Block Tables <a class="heading-anchor" href="#kv-cache-block-tables" aria-label="Link to kv-cache-block-tables">#</a></h3>
@@ -392,6 +419,15 @@ flowchart TB
 <li><strong>Layout</strong>: 2D integer tensor mapping <code>(sequence_idx, position) → physical_block_id</code>, managed by PagedAttention block manager</li>
 <li><strong>Lifecycle</strong>: blocks allocated at prefill start, extended each decode step, freed on request completion, shared via COW for prefix caching</li>
 <li><strong>Mutation</strong>: append-only per request; COW semantics on fork (parallel sampling, prefix sharing)</li>
+<li><strong>Thread safety</strong>: owned exclusively by the scheduler process; GPU-side access is read-only via kernel arguments</li>
+</ul>
+
+<h3 id="request-—-vllm-v1-request-py"><code>Request</code> — <code>vllm/v1/request.py</code> <a class="heading-anchor" href="#request-—-vllm-v1-request-py" aria-label="Link to request-—-vllm-v1-request-py">#</a></h3>
+
+<ul>
+<li><strong>Layout</strong>: tracks per-request state: prompt tokens, generated tokens, sampling params, block allocation, stop criteria, logprobs</li>
+<li><strong>Lifecycle</strong>: created when EngineCore receives <code>EngineCoreRequest</code>, lives in scheduler's <code>requests</code> dict and <code>waiting</code>/<code>running</code> queues, destroyed on completion/abort</li>
+<li><strong>Mutation</strong>: scheduler modifies state each step (append token, update block allocation); single-writer (scheduler process)</li>
 </ul>
 
 <h2 id="§7-critical-path-analysis">§7 Critical Path Analysis <a class="heading-anchor" href="#§7-critical-path-analysis" aria-label="Link to §7-critical-path-analysis">#</a></h2>
@@ -438,21 +474,27 @@ sequenceDiagram
 <table>
 <tr><th>Hop</th><th>Bottleneck</th><th>Dominant cost</th></tr>
 <tr><td>IPC serialize/deserialize</td><td>CPU, msgspec</td><td>~0.1 ms (zero-copy)</td></tr>
-<tr><td>Scheduler</td><td>CPU, single-thread Python</td><td>~0.01–0.1 ms (but 89KB monolith)</td></tr>
+<tr><td>Scheduler (<code>schedule()</code>)</td><td>CPU, single-thread Python</td><td>~0.01–0.1 ms</td></tr>
 <tr><td>Block manager</td><td>CPU</td><td>~0.01 ms</td></tr>
-<tr><td>Model forward (decode)</td><td>GPU, memory-bound</td><td>~5–50 ms (model-size dependent)</td></tr>
+<tr><td>Model forward (decode)</td><td>GPU, memory-bandwidth-bound</td><td>~5–50 ms (model-size dependent)</td></tr>
 <tr><td>Attention kernel</td><td>GPU VRAM bandwidth</td><td>major fraction of forward</td></tr>
-<tr><td>Sampling</td><td>GPU or CPU</td><td>~0.1 ms</td></tr>
+<tr><td>Sampling</td><td>GPU (FlashInfer sampler)</td><td>~0.1 ms</td></tr>
 <tr><td>Detokenization</td><td>CPU</td><td>~0.01 ms</td></tr>
 </table>
 
-<p>Prefill is compute-bound ($O(n^2)$ in sequence length for attention, $O(n)$ for FFN); decode is memory-bandwidth-bound (one token at a time reads full KV cache).</p>
+<p>Prefill is compute-bound ($O(n^2)$ in sequence length for attention, $O(n)$ for FFN); decode is memory-bandwidth-bound (one token at a time reads full KV cache per layer).</p>
 
 <h3 id="readme-vs-reality">README vs. reality <a class="heading-anchor" href="#readme-vs-reality" aria-label="Link to readme-vs-reality">#</a></h3>
 
-<p>README claims "state-of-the-art serving throughput." The architecture supports this via continuous batching + PagedAttention + CUDA graphs. The main tension point: <code>core.py</code> is 89KB in a single file. The V1 engine mitigates this by running it in a dedicated process (eliminating GIL contention), but the monolith remains a maintainability concern and a potential CPU bottleneck at extreme QPS.</p>
+<p>README claims "state-of-the-art serving throughput." The architecture supports this via continuous batching + PagedAttention + CUDA graphs. The main tension point: the EngineCore monolith (<code>core.py</code>, ~89KB) is single-threaded Python — at extreme QPS (thousands of concurrent requests), scheduler CPU time could bottleneck before GPU saturates. The V1 engine mitigates this by running the scheduler in a dedicated process (eliminating GIL contention with model execution), but the single-threaded scheduler remains the theoretical ceiling.</p>
 
-<h2 id="§8-concurrency-memory">§8 Concurrency & Memory <a class="heading-anchor" href="#§8-concurrency-memory" aria-label="Link to §8-concurrency-memory">#</a></h2>
+<h2 id="§8-作者证明">§8 作者证明 <a class="heading-anchor" href="#§8-作者证明" aria-label="Link to §8-作者证明">#</a></h2>
+
+<p>无形式化作者证明 — 仅实证。</p>
+
+<p>vLLM's claims are validated empirically through published benchmarks (the original SOSP'23 paper shows 2-4× throughput gains over baselines) and sustained community adoption (81K stars, adoption by major cloud providers). No formal correctness proofs exist for the scheduler, block manager, or attention kernel implementations. Memory safety relies on the block table invariant: every physical block is either free, uniquely assigned to one virtual block, or COW-shared with a positive reference count — but this invariant is enforced by runtime logic, not proven.</p>
+
+<h2 id="§9-concurrency-memory">§9 Concurrency & Memory <a class="heading-anchor" href="#§9-concurrency-memory" aria-label="Link to §9-concurrency-memory">#</a></h2>
 
 <h3 id="concurrency-model">Concurrency Model <a class="heading-anchor" href="#concurrency-model" aria-label="Link to concurrency-model">#</a></h3>
 
@@ -461,47 +503,49 @@ sequenceDiagram
 <tr><td><strong>Multi-process</strong></td><td>EngineCore vs. workers</td><td>GIL avoidance: scheduler (CPU-bound Python) and model execution (GPU-bound C++ extensions) run in separate processes</td></tr>
 <tr><td><strong>ZMQ IPC</strong></td><td>Engine ↔ worker boundary</td><td>Low-latency message passing with msgspec zero-copy serialization</td></tr>
 <tr><td><strong>CUDA streams</strong></td><td>Model execution</td><td>Async GPU execution, overlap compute with memory transfers</td></tr>
-<tr><td><strong>CUDA/HIP graphs</strong></td><td>Decode phase</td><td>Captured execution graphs eliminate kernel launch overhead (15-30% speedup)</td></tr>
+<tr><td><strong>CUDA/HIP graphs</strong></td><td>Decode phase</td><td>Captured execution graphs eliminate kernel launch overhead</td></tr>
 <tr><td><strong>torch.compile</strong></td><td>Model forward</td><td>Piecewise compilation for kernel fusion and graph-level optimization</td></tr>
 <tr><td><strong>Ray</strong></td><td>Multi-node</td><td>Optional distributed executor for cross-node TP/PP</td></tr>
+<tr><td><strong>asyncio</strong></td><td>API server</td><td>Async HTTP/SSE handling in FastAPI server process</td></tr>
 </table>
 
 <h3 id="gil-avoidance-strategy">GIL Avoidance Strategy <a class="heading-anchor" href="#gil-avoidance-strategy" aria-label="Link to gil-avoidance-strategy">#</a></h3>
 
-<p>The V1 engine's key architectural insight: the EngineCore process runs the scheduler (pure Python, CPU-bound) while GPUWorker processes run model execution (mostly C++/CUDA extensions that release the GIL). The ZMQ IPC boundary is the price paid for process isolation — ~0.1ms per step via msgspec, much cheaper than GIL contention would be.</p>
+<p>The V1 engine's key architectural insight: the EngineCore process runs the scheduler (pure Python, CPU-bound) while GPUWorker processes run model execution (mostly C++/CUDA extensions that release the GIL). The ZMQ IPC boundary is the price paid for process isolation — ~0.1ms per step via msgspec, much cheaper than GIL contention would be. The IPC uses msgspec <code>Struct</code> serialization rather than pickle, reducing overhead by 10-100×.</p>
 
 <h3 id="memory-management">Memory Management <a class="heading-anchor" href="#memory-management" aria-label="Link to memory-management">#</a></h3>
 
 <ul>
-<li><strong>PagedAttention</strong>: KV cache as fixed-size blocks (like OS pages), dynamically allocated/freed per token. Near-zero fragmentation (<4%) vs. 60%+ with static allocation.</li>
-<li><strong>Block table indirection</strong>: virtual→physical mapping enables: (1) COW sharing for prefix caching, (2) COW fork for parallel sampling ($n>1$), (3) preemptive scheduling (swap blocks to CPU), (4) disaggregated serving (transfer blocks across nodes via NIXL/Mooncake).</li>
+<li><strong>PagedAttention</strong>: KV cache as fixed-size blocks (like OS pages), dynamically allocated/freed per token. Near-zero fragmentation (<4%) vs 60%+ with static allocation.</li>
+<li><strong>Block table indirection</strong>: virtual→physical mapping enables: (1) COW sharing for prefix caching, (2) COW fork for parallel sampling ($n>1$), (3) preemptive scheduling (swap blocks to CPU), (4) disaggregated serving (transfer blocks across nodes via NIXL).</li>
 <li><strong>GPU memory pool</strong>: pre-allocated at startup; <code>gpu_memory_utilization</code> (default 0.92) controls the fraction reserved for KV cache after model weights and activations.</li>
-<li><strong>KV offload</strong>: CPU offload for memory overflow; disaggregated prefill/decode for production-scale deployments.</li>
+<li><strong>KV offload</strong>: CPU offload for memory overflow with Hybrid Memory Allocator (HMA) integration (v0.21.0); disaggregated prefill/decode for production-scale deployments.</li>
 <li><strong>Weight offload</strong>: <code>cpu_offload_gb</code> parameter for partial weight offloading to host memory.</li>
 </ul>
 
 <h3 id="concurrency-concerns">Concurrency Concerns <a class="heading-anchor" href="#concurrency-concerns" aria-label="Link to concurrency-concerns">#</a></h3>
 
 <ol>
-<li>The 89KB <code>core.py</code> scheduler is single-threaded — at very high QPS (thousands of concurrent requests), scheduler CPU time could become the bottleneck before GPU saturates.</li>
-<li>CUDA graph capture requires fixed tensor shapes. Dynamic batch sizes fall back to eager mode, which is slower. The solution: capture graphs for multiple batch sizes and select at runtime.</li>
-<li>Multi-node TP requires NCCL allreduce on every transformer layer — network bandwidth becomes the scaling limit.</li>
+<li>The scheduler is single-threaded — at very high QPS (thousands of concurrent requests), scheduler CPU time could bottleneck before GPU saturates.</li>
+<li>CUDA graph capture requires fixed tensor shapes. Dynamic batch sizes fall back to eager mode. The solution: capture graphs for multiple batch sizes and select at runtime via <code>CUDAGraphDispatcher</code>.</li>
+<li>Multi-node TP requires NCCL allreduce on every transformer layer — network bandwidth becomes the scaling limit at >8 GPUs.</li>
 </ul>
 
-<h2 id="§9-performance-characteristics">§9 Performance Characteristics <a class="heading-anchor" href="#§9-performance-characteristics" aria-label="Link to §9-performance-characteristics">#</a></h2>
+<h2 id="§10-performance-characteristics">§10 Performance Characteristics <a class="heading-anchor" href="#§10-performance-characteristics" aria-label="Link to §10-performance-characteristics">#</a></h2>
 
 <h3 id="key-performance-mechanisms">Key Performance Mechanisms <a class="heading-anchor" href="#key-performance-mechanisms" aria-label="Link to key-performance-mechanisms">#</a></h3>
 
 <table>
 <tr><th>Mechanism</th><th>Benefit</th><th>Magnitude</th></tr>
-<tr><td>PagedAttention</td><td>Near-zero KV cache fragmentation</td><td><4% waste vs 60%+</td></tr>
-<tr><td>Continuous batching</td><td>GPU never idles waiting for longest request</td><td>2-4x throughput over static</td></tr>
+<tr><td>PagedAttention</td><td>Near-zero KV cache fragmentation</td><td><4% waste vs 60%+ static</td></tr>
+<tr><td>Continuous batching</td><td>GPU never idles waiting for longest request</td><td>2-4× throughput over static</td></tr>
 <tr><td>Chunked prefill</td><td>Long prompts interleaved with decode</td><td>Reduces TTFT variance</td></tr>
-<tr><td>Prefix caching (APC)</td><td>Shared KV blocks for common prefixes</td><td>Up to 2x throughput for shared-prefix workloads</td></tr>
+<tr><td>Prefix caching (APC)</td><td>Shared KV blocks for common prefixes</td><td>Up to 2× throughput for shared-prefix workloads</td></tr>
 <tr><td>CUDA/HIP graphs</td><td>Eliminate kernel launch overhead</td><td>15-30% decode speedup</td></tr>
 <tr><td>torch.compile</td><td>Automatic kernel fusion</td><td>Variable, model-dependent</td></tr>
-<tr><td>Speculative decoding</td><td>Multiple tokens per step</td><td>2-3x decode speedup (EAGLE/MTP)</td></tr>
-<tr><td>Quantization (FP8/NVFP4/INT4)</td><td>Reduced memory + faster GEMM</td><td>2-4x memory, 1.5-2x throughput</td></tr>
+<tr><td>Speculative decoding</td><td>Multiple tokens per step</td><td>2-3× decode speedup (EAGLE/MTP)</td></tr>
+<tr><td>Quantization (FP8/NVFP4/INT4)</td><td>Reduced memory + faster GEMM</td><td>2-4× memory, 1.5-2× throughput</td></tr>
+<tr><td>Disaggregated P/D</td><td>Separate prefill and decode pools</td><td>Optimizes for different compute profiles</td></tr>
 </table>
 
 <h3 id="scaling-behavior">Scaling Behavior <a class="heading-anchor" href="#scaling-behavior" aria-label="Link to scaling-behavior">#</a></h3>
@@ -509,9 +553,9 @@ sequenceDiagram
 <ul>
 <li><strong>TP (tensor parallelism)</strong>: near-linear throughput scaling up to 8 GPUs within a node; limited by allreduce overhead at higher degrees</li>
 <li><strong>PP (pipeline parallelism)</strong>: enables models exceeding single-node memory; bubble overhead ~$\frac{p-1}{m+p-1}$ for $p$ stages, $m$ microbatches</li>
-<li><strong>EP (expert parallelism)</strong>: for MoE models (DeepSeek-V3, Mixtral); experts distributed across GPUs</li>
+<li><strong>EP (expert parallelism)</strong>: for MoE models (DeepSeek-V3/V4, Mixtral); elastic EP with EPLB for dynamic expert load balancing</li>
 <li><strong>DP (data parallelism)</strong>: via coordinator process; near-linear throughput scaling</li>
-<li><strong>Disaggregated P/D</strong>: separate prefill and decode GPU pools; connected via NIXL for KV cache transfer; optimizes for different compute profiles (prefill = compute-bound, decode = memory-bound)</li>
+<li><strong>Disaggregated P/D</strong>: separate prefill and decode GPU pools connected via NIXL for KV cache transfer</li>
 </ul>
 
 <h3 id="v0-21-0-performance-highlights">v0.21.0 Performance Highlights <a class="heading-anchor" href="#v0-21-0-performance-highlights" aria-label="Link to v0-21-0-performance-highlights">#</a></h3>
@@ -520,23 +564,37 @@ sequenceDiagram
 <li>FlashInfer top-k/top-p sampler as default</li>
 <li>AllPool 51% faster</li>
 <li>GPU-CPU sync elimination in hot path</li>
-<li>numpy zero-copy for embeddings</li>
 <li>NVFP4 all-gather GEMM fusion</li>
 <li>Persistent MLA for DeepSeek models</li>
 <li>TOKENSPEED_MLA on Blackwell GPUs for DeepSeek-R1/Kimi-K25</li>
+<li>KV Offload + Hybrid Memory Allocator integration</li>
 </ul>
 
-<h2 id="§10-tech-debt-code-quality">§10 Tech Debt & Code Quality <a class="heading-anchor" href="#§10-tech-debt-code-quality" aria-label="Link to §10-tech-debt-code-quality">#</a></h2>
+<h2 id="§11-论证链">§11 论证链 <a class="heading-anchor" href="#§11-论证链" aria-label="Link to §11-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
+<tr><td>1</td><td>Static KV cache allocation wastes 60-80% of GPU memory to internal fragmentation</td><td>SOSP'23 paper §2: measured fragmentation on Llama-13B/OPT-30B workloads</td><td>—</td></tr>
+<tr><td>2</td><td>Virtual memory–style paging (PagedAttention) reduces fragmentation to <4%</td><td>Block table indirection allows non-contiguous allocation; waste is at most block_size−1 tokens per sequence</td><td>Step 1</td></tr>
+<tr><td>3</td><td>Near-zero fragmentation → more concurrent requests → higher GPU utilization</td><td>More KV cache capacity means more sequences fit in memory simultaneously</td><td>Step 2</td></tr>
+<tr><td>4</td><td>Continuous batching exploits the freed capacity — new requests enter mid-batch as others complete</td><td>Scheduler re-evaluates every decode step; no idle GPU cycles waiting for batch stragglers</td><td>Steps 2, 3</td></tr>
+<tr><td>5</td><td>COW block sharing enables prefix caching and parallel sampling without memory duplication</td><td>Block table indirection makes COW a pointer update, not a data copy; APC shares common system prompts</td><td>Step 2</td></tr>
+<tr><td>6</td><td>Out-of-process scheduler eliminates GIL contention between CPU scheduling and GPU execution</td><td>V1 engine: EngineCore in separate process via ZMQ IPC; msgspec serialization costs ~0.1ms vs GIL contention measured at ms-scale</td><td>Steps 3, 4</td></tr>
+<tr><td>7</td><td>Combined system achieves 2-4× throughput over static-batch baselines and becomes the de facto open-source serving standard</td><td>81K GitHub stars, 200+ models, 2000+ contributors; adopted by major cloud providers; biweekly releases with 200+ contributors per release</td><td>Steps 1-6</td></tr>
+</table>
+
+<h2 id="§12-tech-debt-code-quality">§12 Tech Debt & Code Quality <a class="heading-anchor" href="#§12-tech-debt-code-quality" aria-label="Link to §12-tech-debt-code-quality">#</a></h2>
 
 <h3 id="known-debts">Known Debts <a class="heading-anchor" href="#known-debts" aria-label="Link to known-debts">#</a></h3>
 
 <table>
 <tr><th>Issue</th><th>Severity</th><th>Status</th></tr>
-<tr><td><code>core.py</code> at 89KB</td><td>High (maintainability)</td><td>Architectural — deliberate perf-over-readability trade-off</td></tr>
-<tr><td>Dual engine (V0 <code>engine/</code> + V1 <code>v1/engine/</code>)</td><td>Medium</td><td>V0 maintained for compat, V1 is default</td></tr>
-<tr><td>200+ individual model files</td><td>Medium (maintenance)</td><td>Each arch has its own impl for per-model optimization</td></tr>
-<tr><td>C++20 build requirement (v0.21.0)</td><td>Low</td><td>Driven by PyTorch upstream; may break older environments</td></tr>
+<tr><td><code>core.py</code> at ~89KB</td><td>High (maintainability)</td><td>Architectural — deliberate perf-over-readability trade-off</td></tr>
+<tr><td>Dual engine (V0 <code>engine/</code> + V1 <code>v1/engine/</code>)</td><td>Medium</td><td>V0 maintained for compat only, V1 is default</td></tr>
+<tr><td>200+ individual model files</td><td>Medium (maintenance)</td><td>Each arch has its own impl; boilerplate accumulates</td></tr>
+<tr><td>C++20 build requirement (v0.21.0)</td><td>Low</td><td>Driven by PyTorch upstream; breaks older GCC <10</td></tr>
 <tr><td>Transformers v4 deprecation</td><td>Low</td><td>Migration to v5 in progress</td></tr>
+<tr><td>DeepSeek V4 separate sub-package</td><td>Low</td><td><code>vllm/models/deepseek_v4/</code> lives outside normal model registry</td></tr>
 </table>
 
 <h3 id="build-system">Build System <a class="heading-anchor" href="#build-system" aria-label="Link to build-system">#</a></h3>
@@ -545,13 +603,14 @@ sequenceDiagram
 <li>scikit-build + CMake for native extensions (CUDA/HIP/CPU)</li>
 <li>Per-platform requirements files in <code>requirements/</code></li>
 <li>Docker builds for CUDA, ROCm, CPU variants</li>
+<li>Rust build via <code>build_rust.sh</code> for tokenizer</li>
 </ul>
 
 <h3 id="ci-testing">CI & Testing <a class="heading-anchor" href="#ci-testing" aria-label="Link to ci-testing">#</a></h3>
 
 <ul>
-<li><strong>Buildkite</strong>: primary CI pipeline</li>
-<li><strong>GitHub Actions</strong>: auxiliary checks</li>
+<li><strong>Buildkite</strong>: primary CI pipeline (<code>.buildkite/</code>)</li>
+<li><strong>GitHub Actions</strong>: auxiliary checks (<code>.github/</code>)</li>
 <li><strong>Test suite</strong>: comprehensive — unit, integration, distributed tests in <code>tests/</code></li>
 <li><strong>Benchmarks</strong>: dedicated scripts in <code>benchmarks/</code> for offline and online throughput/latency</li>
 </ul>
@@ -560,7 +619,7 @@ sequenceDiagram
 
 <ul>
 <li>ruff for Python linting and formatting</li>
-<li>Type checking infrastructure in place</li>
+<li>Type checking infrastructure present</li>
 <li>clang-format for C++/CUDA code</li>
 </ul>
 
@@ -569,35 +628,30 @@ sequenceDiagram
 <table>
 <tr><th>Dependency</th><th>Health</th><th>Risk</th></tr>
 <tr><td>PyTorch</td><td>Actively maintained, tracked closely</td><td>C++20 requirement cascade</td></tr>
-<tr><td>HuggingFace Transformers</td><td>v5 migration</td><td>Breaking API changes</td></tr>
-<tr><td>FlashAttention / FlashInfer</td><td>Actively maintained</td><td>NVIDIA-only (FlashAttention)</td></tr>
-<tr><td>msgspec</td><td>Small but maintained</td><td>Low bus factor</td></tr>
-<tr><td>xgrammar / guidance / outlines</td><td>Varying maturity</td><td>Fragmented ecosystem</td></tr>
+<tr><td>HuggingFace Transformers</td><td>v5 migration underway</td><td>Breaking API changes</td></tr>
+<tr><td>FlashAttention / FlashInfer</td><td>Actively maintained</td><td>FlashAttention: NVIDIA-only</td></tr>
+<tr><td>msgspec</td><td>Small but maintained</td><td>Low bus factor, critical on IPC path</td></tr>
+<tr><td>xgrammar / guidance / outlines</td><td>Varying maturity</td><td>Fragmented structured output ecosystem</td></tr>
+<tr><td>NCCL</td><td>NVIDIA-maintained</td><td>AMD equivalent (RCCL) tracked separately</td></tr>
 </table>
 
-<h2 id="§11-community-health">§11 Community Health <a class="heading-anchor" href="#§11-community-health" aria-label="Link to §11-community-health">#</a></h2>
-
-<h3 id="velocity-metrics">Velocity Metrics <a class="heading-anchor" href="#velocity-metrics" aria-label="Link to velocity-metrics">#</a></h3>
+<h2 id="§13-community-health">§13 Community Health <a class="heading-anchor" href="#§13-community-health" aria-label="Link to §13-community-health">#</a></h2>
 
 <table>
 <tr><th>Metric</th><th>Value</th></tr>
 <tr><td>Commits per minor release</td><td>367 (v0.21.0)</td></tr>
-<tr><td>New contributors per release</td><td>49</td></tr>
+<tr><td>New contributors per release</td><td>49 (v0.21.0)</td></tr>
 <tr><td>Total contributors</td><td>2,000+</td></tr>
 <tr><td>GitHub stars</td><td>81,023</td></tr>
 <tr><td>Release cadence</td><td>~biweekly minor releases with patch releases between</td></tr>
+<tr><td>Origin</td><td>UC Berkeley Sky Computing Lab (Kwon, Stoica, Zhang)</td></tr>
+<tr><td>Governance</td><td>Community-driven, multi-corporate participation</td></tr>
+<tr><td>Communication</td><td>GitHub Issues, vLLM Forum (discuss.vllm.ai), Developer Slack (slack.vllm.ai)</td></tr>
+<tr><td>Bus factor</td><td>High — 202 contributors in a single release, core team spans multiple organizations</td></tr>
+<tr><td>AI agent integration</td><td><code>AGENTS.md</code> and <code>CLAUDE.md</code> at repo root for AI-assisted development</td></tr>
 </table>
 
-<h3 id="governance-communication">Governance & Communication <a class="heading-anchor" href="#governance-communication" aria-label="Link to governance-communication">#</a></h3>
-
-<ul>
-<li><strong>Origin</strong>: UC Berkeley Sky Computing Lab (Kwon, Stoica, Zhang)</li>
-<li><strong>Current</strong>: community-driven with multi-corporate participation</li>
-<li><strong>Channels</strong>: GitHub Issues (bugs/features), vLLM Forum (discuss.vllm.ai), Developer Slack (slack.vllm.ai), regular community events</li>
-<li><strong>Bus factor</strong>: high — 202 contributors in a single release, core team spans multiple organizations</li>
-</ul>
-
-<h2 id="§12-comparison-with-alternatives">§12 Comparison with Alternatives <a class="heading-anchor" href="#§12-comparison-with-alternatives" aria-label="Link to §12-comparison-with-alternatives">#</a></h2>
+<h2 id="§14-comparison-with-alternatives">§14 Comparison with Alternatives <a class="heading-anchor" href="#§14-comparison-with-alternatives" aria-label="Link to §14-comparison-with-alternatives">#</a></h2>
 
 <table>
 <tr><th>Dimension</th><th><strong>vLLM</strong></th><th>TensorRT-LLM</th><th>SGLang</th><th>TGI (HuggingFace)</th></tr>
@@ -609,11 +663,11 @@ sequenceDiagram
 <tr><td>Quantization</td><td><strong>FP8/NVFP4/MXFP4/INT8/INT4/GPTQ/AWQ/GGUF</strong></td><td>FP8/INT8/INT4</td><td>FP8/INT8/AWQ</td><td>GPTQ/AWQ/BNB</td></tr>
 <tr><td>Structured output</td><td><strong>4 backends</strong></td><td>Limited</td><td>1 backend</td><td>1 backend</td></tr>
 <tr><td>Disaggregated P/D</td><td>Yes (NIXL)</td><td>Yes</td><td>Yes</td><td>No</td></tr>
-<tr><td>Speculative decode</td><td><strong>EAGLE/n-gram/MTP/DFlash</strong></td><td>Draft model</td><td>EAGLE</td><td>No</td></tr>
+<tr><td>Spec decode</td><td><strong>EAGLE/n-gram/MTP/DFlash</strong></td><td>Draft model</td><td>EAGLE</td><td>No</td></tr>
+<tr><td>API compat</td><td><strong>OpenAI + Anthropic + gRPC + MCP</strong></td><td>Triton Inference Server</td><td>OpenAI</td><td>OpenAI</td></tr>
 <tr><td>Ease of install</td><td><strong><code>pip install vllm</code></strong></td><td>Docker + TensorRT</td><td>pip install</td><td>Docker</td></tr>
 <tr><td>License</td><td>Apache-2.0</td><td>Apache-2.0</td><td>Apache-2.0</td><td>Apache-2.0</td></tr>
 <tr><td>Community</td><td><strong>81K stars, 2K+ contrib</strong></td><td>~16K stars</td><td>~25K stars</td><td>~10K stars</td></tr>
-<tr><td>API compat</td><td><strong>OpenAI + Anthropic + gRPC</strong></td><td>Triton Inference Server</td><td>OpenAI</td><td>OpenAI</td></tr>
 </table>
 
 <p><strong>Winner by scenario</strong>:</p>
@@ -624,62 +678,84 @@ sequenceDiagram
 <li>HuggingFace ecosystem, minimal config → <strong>TGI</strong></li>
 </ul>
 
-<h2 id="§13-usage-patterns-gotchas">§13 Usage Patterns & Gotchas <a class="heading-anchor" href="#§13-usage-patterns-gotchas" aria-label="Link to §13-usage-patterns-gotchas">#</a></h2>
+<h2 id="§15-实现-cross-reference">§15 实现 Cross-Reference <a class="heading-anchor" href="#§15-实现-cross-reference" aria-label="Link to §15-实现-cross-reference">#</a></h2>
+
+<h3 id="key-file-line-citations">Key file:line citations <a class="heading-anchor" href="#key-file-line-citations" aria-label="Link to key-file-line-citations">#</a></h3>
+
+<table>
+<tr><th>Component</th><th>File</th><th>Role</th></tr>
+<tr><td>Offline entrypoint</td><td><code>vllm/entrypoints/llm.py</code></td><td><code>LLM.__init__</code> — builds EngineArgs → VllmConfig → LLMEngine</td></tr>
+<tr><td>V1 LLMEngine</td><td><code>vllm/v1/engine/llm_engine.py</code></td><td><code>LLMEngine.__init__</code> — creates InputProcessor, OutputProcessor, EngineCore client</td></tr>
+<tr><td>EngineCore</td><td><code>vllm/v1/engine/core.py</code></td><td>Monolithic scheduler loop — schedule, dispatch, collect outputs (~89KB)</td></tr>
+<tr><td>V1 Scheduler</td><td><code>vllm/v1/core/sched/scheduler.py</code></td><td><code>Scheduler.schedule()</code> — request admission, token budget, block allocation</td></tr>
+<tr><td>KV Cache Manager</td><td><code>vllm/v1/core/</code></td><td>Block pool management, prefix caching, COW logic</td></tr>
+<tr><td>GPU Model Runner</td><td><code>vllm/v1/worker/gpu_model_runner.py</code></td><td><code>execute_model()</code> — builds inputs, runs forward, samples, returns tokens</td></tr>
+<tr><td>CUDA Graph Dispatcher</td><td><code>vllm/v1/cudagraph_dispatcher.py</code></td><td>Selects pre-captured graph by batch size</td></tr>
+<tr><td>OpenAI API Server</td><td><code>vllm/entrypoints/openai/api_server.py</code></td><td>FastAPI app, <code>build_async_engine_client()</code>, routes for <code>/v1/completions</code>, <code>/v1/chat/completions</code></td></tr>
+<tr><td>Paged Attention Kernels</td><td><code>csrc/attention/</code></td><td>C++/CUDA paged attention v1/v2/MLA kernels</td></tr>
+<tr><td>Quantization Kernels</td><td><code>csrc/quantization/</code></td><td>FP8, INT8, INT4, GPTQ, AWQ CUDA kernels</td></tr>
+<tr><td>MoE Kernels</td><td><code>csrc/moe/</code></td><td>Fused MoE, topk selection</td></tr>
+<tr><td>Sampling Kernel</td><td><code>csrc/sampler.cu</code></td><td>GPU-side sampling</td></tr>
+<tr><td>KV Transfer</td><td><code>vllm/distributed/kv_transfer/</code></td><td>Disaggregated P/D connectors (NIXL, etc.)</td></tr>
+<tr><td>Platform Abstraction</td><td><code>vllm/platforms/</code></td><td>CUDA, ROCm, CPU, TPU, XPU dispatch</td></tr>
+<tr><td>Model Registry</td><td><code>vllm/model_executor/models/</code></td><td>200+ model architecture implementations</td></tr>
+<tr><td>Config Hierarchy</td><td><code>vllm/config/</code></td><td>VllmConfig and all sub-configs</td></tr>
+</table>
+
+<h3 id="関鍵実装細節">関鍵実装細節 <a class="heading-anchor" href="#関鍵実装細節" aria-label="Link to 関鍵実装細節">#</a></h3>
+
+<ol>
+<li><strong>msgspec for IPC serialization</strong>: <code>SamplingParams</code> and <code>EngineCoreRequest/Output</code> use <code>msgspec.Struct</code> instead of dataclasses. This enables zero-copy serialization across the ZMQ IPC boundary, avoiding the 10-100× overhead of <code>pickle</code>. The choice of <code>omit_defaults=True</code> further reduces wire size for the common case where most sampling parameters are left at defaults. This design decision is load-bearing — switching to pickle would measurably increase per-step latency and could make the IPC boundary the bottleneck at high QPS.</li>
+</ul>
+
+<ol>
+<li><strong>Monolithic scheduler for hot-path locality</strong>: <code>vllm/v1/engine/core.py</code> packs the entire scheduling loop into one ~89KB file to minimize cross-module function call overhead on the hot path. Python function calls across modules involve dict lookups and frame creation that are measurable at thousands of scheduling decisions per second. This is a deliberate performance-over-readability trade-off that trades maintainability for ~microseconds per step.</li>
+</ul>
+
+<ol>
+<li><strong>Multi-size CUDA graph capture</strong>: the <code>CUDAGraphDispatcher</code> pre-captures CUDA execution graphs for multiple batch sizes at startup (during <code>capture_model()</code>). At runtime it selects the smallest graph that fits the current batch, avoiding the 15-30% decode overhead of eager execution. The batch-size set is determined by profiling during <code>profile_run()</code>, which measures maximum KV cache capacity.</li>
+</ul>
+
+<h2 id="§16-verdict-recommendations">§16 Verdict & Recommendations <a class="heading-anchor" href="#§16-verdict-recommendations" aria-label="Link to §16-verdict-recommendations">#</a></h2>
 
 <h3 id="when-to-adopt-yes-regime">When to adopt ("yes" regime) <a class="heading-anchor" href="#when-to-adopt-yes-regime" aria-label="Link to when-to-adopt-yes-regime">#</a></h3>
 
 <ul>
 <li>You need to serve any HuggingFace model with an OpenAI-compatible API in production</li>
-<li>You need multi-hardware support (NVIDIA + AMD + CPU + custom accelerators)</li>
-<li>You want the largest community, fastest bug fixes, and broadest model support</li>
-<li>You need advanced features: LoRA serving, structured output, multimodal, speculative decoding, disaggregated serving</li>
-<li>You need a single serving stack across 200+ model architectures</li>
+<li>You need multi-hardware support (NVIDIA + AMD + CPU + custom accelerators via plugins)</li>
+<li>You want the largest community, fastest bug fixes, and broadest model support (200+)</li>
+<li>You need advanced features: LoRA serving, structured output (4 backends), multimodal, speculative decoding, disaggregated P/D</li>
+<li>You need a single serving stack across diverse model architectures</li>
 </ul>
 
 <h3 id="when-not-to-adopt-no-regime">When NOT to adopt ("no" regime) <a class="heading-anchor" href="#when-not-to-adopt-no-regime" aria-label="Link to when-not-to-adopt-no-regime">#</a></h3>
 
 <ul>
 <li>You need absolute peak NVIDIA performance and can tolerate complex deployment → TensorRT-LLM</li>
-<li>Your workload is LLM programming with multi-call chains and prefix-heavy patterns → SGLang's RadixAttention may be more natural</li>
-<li>You need a minimal, embedded serving library → vLLM's dependency footprint is substantial</li>
+<li>Your workload is multi-step LLM programming with prefix-heavy patterns → SGLang's RadixAttention and frontend DSL provide structural advantages</li>
+<li>You need a minimal, embedded serving library → vLLM's dependency footprint is substantial (PyTorch + CUDA + numerous Python deps)</li>
 <li>You're running models <1B parameters where batching overhead exceeds compute benefit</li>
 <li>You cannot build C++20 extensions in your environment (v0.21.0+)</li>
+</ul>
+
+<h3 id="suggested-contributions-if-contributing">Suggested contributions if contributing <a class="heading-anchor" href="#suggested-contributions-if-contributing" aria-label="Link to suggested-contributions-if-contributing">#</a></h3>
+
+<ol>
+<li><strong>Split <code>core.py</code></strong>: the ~89KB monolith is the project's biggest maintainability risk. Extracting the scheduler, request state machine, and IPC handling into separate modules would improve testability without meaningful perf regression (the IPC boundary already forces serialization).</li>
+<li><strong>Unify attention backend selection</strong>: the 6+ attention backends have ad-hoc selection logic. A benchmark-driven auto-selector (profile each backend during startup, cache results) would reduce user confusion and ensure optimal kernel choice per model architecture.</li>
+<li><strong>Standardize model implementations</strong>: the 200+ model files share substantial boilerplate. A generic adapter layer (even if opt-in) for common patterns (standard transformer, standard MoE) would reduce the maintenance burden for long-tail models while preserving per-model optimization for critical architectures.</li>
 </ul>
 
 <h3 id="common-gotchas">Common Gotchas <a class="heading-anchor" href="#common-gotchas" aria-label="Link to common-gotchas">#</a></h3>
 
 <ol>
 <li><strong><code>gpu_memory_utilization=0.92</code> is aggressive</strong> — will OOM on GPUs shared with other processes. Lower to 0.80–0.85 in shared environments.</li>
-<li><strong><code>enforce_eager=True</code> kills performance</strong> — disables CUDA graphs and torch.compile. Only use for debugging. The 15-30% decode speedup from graphs is real.</li>
+<li><strong><code>enforce_eager=True</code> kills performance</strong> — disables CUDA graphs and torch.compile. Only use for debugging.</li>
 <li><strong><code>max_model_len</code> auto-detection</strong> — reads from model config, which can be 128K+ for long-context models. Will OOM on memory-constrained GPUs. Set explicitly.</li>
 <li><strong>Prefix caching is not default</strong> — <code>--enable-prefix-caching</code> must be set explicitly. For workloads with shared system prompts this can double throughput.</li>
 <li><strong>V1 engine IPC overhead</strong> — the out-of-process EngineCore adds ~1ms latency per step via ZMQ, but eliminates GIL contention. Net positive for online serving, slight overhead for single-batch offline.</li>
-<li><strong>Not all models support all features</strong> — TP/PP support, quantization compatibility, and multi-modal support vary per architecture. Check docs before assuming.</li>
+<li><strong>Not all models support all features</strong> — TP/PP, quantization compatibility, and multi-modal support vary per architecture. Check docs before assuming.</li>
 <li><strong>C++20 build requirement</strong> (v0.21.0+) — needs GCC ≥10 or Clang ≥10. Will break older build environments silently.</li>
-</ul>
-
-<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
-
-<ol>
-<li><strong>msgspec for IPC serialization</strong>: <code>SamplingParams</code> and <code>EngineCoreRequest/Output</code> use <code>msgspec.Struct</code> instead of dataclasses. This enables zero-copy serialization across the ZMQ IPC boundary, avoiding the 10-100x overhead of <code>pickle</code>. The choice of <code>omit_defaults=True</code> further reduces wire size for the common case where most sampling parameters are left at defaults.</li>
-</ul>
-
-<ol>
-<li><strong>89KB monolithic scheduler</strong>: <code>vllm/v1/engine/core.py</code> packs the entire scheduling loop into one file to minimize cross-module call overhead on the hot path. This is a deliberate performance-over-readability trade-off — every scheduler step touches this file, and Python function call overhead across modules is measurable at high QPS.</li>
-</ul>
-
-<h2 id="§14-verdict-recommendations">§14 Verdict & Recommendations <a class="heading-anchor" href="#§14-verdict-recommendations" aria-label="Link to §14-verdict-recommendations">#</a></h2>
-
-<p><strong>Adopt when</strong>: you need a production-grade, broadly compatible LLM serving engine. vLLM is the safest default choice for most teams — widest model support, largest community, continuous improvement velocity, and reasonable performance across all hardware. The OpenAI-compatible API makes it a drop-in replacement for API-based serving.</p>
-
-<p><strong>Avoid when</strong>: you are on a single NVIDIA cluster with a fixed model set and need the absolute last 10-20% of throughput — TensorRT-LLM's hand-tuned C++ kernels can outperform vLLM in that regime. Also avoid if your workload is inherently multi-step LLM programming (prompt chaining, tree search) where SGLang's RadixAttention and frontend DSL provide structural advantages.</p>
-
-<p><strong>Suggested contributions if contributing</strong>:</p>
-
-<ol>
-<li><strong>Split <code>core.py</code></strong> — the 89KB monolith is the project's biggest maintainability risk. Extracting the scheduler, request state machine, and IPC handling into separate modules would improve testability without meaningful perf regression (the IPC boundary already forces serialization).</li>
-<li><strong>Unify attention backend selection</strong> — the current 6+ attention backends (FlashAttention, FlashInfer, TRTLLM-GEN, FlashMLA, Triton, xFormers) have ad-hoc selection logic. A benchmark-driven auto-selector would reduce user confusion.</li>
-<li><strong>Standardize model implementations</strong> — the 200+ model files share substantial boilerplate. A generic adapter layer (even if opt-in) would reduce the maintenance burden for long-tail models.</li>
 </ul>
 
 </div>

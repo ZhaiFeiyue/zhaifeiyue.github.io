@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Agent Memory Below the Prompt: Persistent Q4 KV Cache for Multi-Agent LLM Inference on Edge Devices — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Agent Memory Below the Prompt: Persistent Q4 KV Cache for Multi-Agent LLM Inference on Edge Devices</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2603.04428</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">quantization</span><span class="tag">edge-inference</span><span class="tag">multi-agent</span><span class="tag">memory-management</span><span class="tag">apple-silicon</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2603.04428.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2603.04428" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>面向边缘设备（Apple M4 Pro, 24 GB）的多智能体 KV cache 持久化系统。通过将每个 agent 的 KV cache 以 Q4 格式持久化到磁盘并直接在量化张量上做注意力计算，将上下文恢复从 $O(n)$ prefill 降为 I/O-bound 加载。三个架构不同的模型上实现 11–136× TTFT 加速、4× agent 容量、PPL 影响 −0.7% 至 +3.0%。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>边缘设备（24 GB 统一内存）上的多智能体 LLM 推理面临内存生命周期问题。FP16 KV cache 在 8K 上下文长度下仅能容纳 3 个 agent（Gemma 3 12B, M4 Pro, 10.2 GB cache 预算）。每次 agent 切换必须全量 re-prefill——Gemma 3 12B 在 4K context 下需 15.7 秒。边缘设备的 token 处理速度约 260 tok/s（M4 Pro），比数据中心 GPU（10,000+ tok/s）慢 40×。</p>
+
+<p>将多 agent 的对话历史拼接到一个长 prompt 引入二次注意力开销（$(20K/4K)^2 = 25\times$）和位置偏差。分离 KV cache 避免此问题，但在固定 RAM 设备上 $N$ 个 agent × $C$ tokens 需要缓存生命周期管理。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p>三组件系统：</p>
+
+<ol>
+<li><strong>Block Pool + Per-Agent Isolation</strong>: KV cache 按 256 token 块分区，按 agent ID 组织。每个 agent 独立寻址，服务重启或并发推理不会混淆缓存状态。持久化格式为 safetensors（uint32 packed 数据 + bfloat16 scales/biases）。</li>
+</ul>
+
+<ol>
+<li><strong>Q4 Quantization Pipeline</strong>: KV cache 全流程以 4-bit 格式存在——磁盘、内存、注意力计算均为 Q4。内存占用比 FP16 降低 72%（$Q4/FP16 = (1+8/g)/4 = 0.281$，$g=64$）。直接在 Q4 张量上调用 fused quantized attention，无需反量化回 FP16。</li>
+</ul>
+
+<ol>
+<li><strong>Cross-Phase Context Injection</strong>: 多阶段 agent 工作流（审讯→辩论→裁决）的 working memory。每个阶段在前一阶段的缓存上追加新上下文，通过字符级 EXTEND prefix 匹配实现 cache 累积，无需重新计算。</li>
+</ul>
+
+<p><strong>ModelCacheSpec</strong> 抽象层覆盖 GQA（Gemma 3 / Llama 3.1，对称 K=V）和 MLA（DeepSeek，非对称 K=192, V=128），所有上层组件对模型架构无感。</p>
+
+<p><strong>核心技术壁垒</strong>: 多智能体交替执行（一个 agent 生成时另一个加载 cache）提供时间间隙隐藏磁盘 I/O 延迟。这使 KV cache 持久化仅在 UMA 设备上具备架构可行性——SSD→内存带宽约 7 GB/s，占统一内存带宽的 ~2.6%，加载后以全带宽访问。在离散 GPU 上，PCIe 5.0 瓶颈使 VRAM→host 带宽从 1,792 GB/s 骤降至 ~64 GB/s（28× 悬崖），此方案不具吸引力。block pool 作为 page table、SSD 作为 swap，系统实现了对注意力状态的虚拟内存语义。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li><strong>TTFT 加速</strong>: Gemma 3 12B 在 32K 下 hot cache 136×（172s → 1.3s），warm 95×；DeepSeek 32K 下 76×；Llama 3.1 8B 在 16K 下 111×。Warm 磁盘重载至 16K 均保持亚秒级。</li>
+<li><strong>Agent 容量</strong>: Q4 在 8K 下容纳 12 agents vs FP16 的 3 agents（4×）。32K 下 FP16 已无法放入单个 agent（12 GB > 10.2 GB 预算），Q4 仍可放 3 个。</li>
+<li><strong>质量</strong>: PPL 影响 −0.7%（Gemma，测量噪声内）、+2.8%（Llama）、+3.0%（DeepSeek），与 KIVI / KVQuant 文献一致。</li>
+<li><strong>vs vllm-mlx</strong>: 4K 下 Q4 warm TTFT（290 ms）与 FP16 prefix cache（290 ms）完全持平，但 Q4 支持服务重启后持久化。FP16 prefix 在 8K 时已需独立测试，16K 时即使单 context 也失败。</li>
+<li><strong>多阶段</strong>: 5 阶段囚徒困境场景中 persistent 模式 Phase 5 TTFT 降低 1.9×（Gemma），总耗时降低 23%。10 expert 路由场景 warm cache 实现 24× TTFT 降低。</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2603.04428/fig1.png" alt="Figure 1: 系统架构——agents 经 block pool 和 Q4 pipeline 持久化到磁盘"></p>
+
+<p><em>Paper Figure 1: System architecture. Multiple agents maintain isolated KV caches in a persistent block pool. The Q4 pipeline quantizes cache data on save and operates directly on quantized tensors during attention.</em></p>
+
+<p>系统自上而下三层：Agent 层（Code Assistant、Reviewer、Planner 等各持 2K–4K context）→ Block Pool 层（per-agent namespace 隔离，256-token 固定块大小）→ Q4 Pipeline 层（量化 + fused attention + safetensors 持久化）。数据流双向：Save 路径将 FP16 KV 量化为 Q4 写入磁盘，Load/Reload 路径从 safetensors 直接加载 Q4 张量进入注意力层。关键性能标注：30–130× TTFT 降低、72% 内存节省、亚秒级重载。</p>
+
+<p><img src="/assets/2603.04428/fig4.png" alt="Figure 4: GQA vs MLA 架构对比——ModelCacheSpec 屏蔽模型差异"></p>
+
+<p><em>Paper Figure 4: Architecture comparison. Gemma 3 uses GQA with hybrid sliding-window layers (8 global + 40 sliding, K=V=256). DeepSeek uses MLA with asymmetric K/V dimensions (K=192, V=128) and MoE routing. Both connect to the model-agnostic block pool through ModelCacheSpec.</em></p>
+
+<p>ModelCacheSpec 定义层数、KV head 数、head 维度和量化参数，是模型无关性的抽象边界。GQA 模型需要 5D query reshape（$(B, n_{kv}, n_{rep}, L, D)$）实现 broadcast 兼容，以及 window-aware chunked prefill mask；MLA 模型需要额外的 <code>v_head_dim</code> 字段处理非对称维度，MoE routing 产生更大中间张量预算（4096 MB vs Gemma 的 2048 MB）。两类架构的差异被 ModelCacheSpec 封装，上层 block pool 和 Q4 pipeline 完全共用。</p>
+
+<p><strong>Batched Quantized Inference</strong>: <code>BatchQuantizedKVCache</code> 实现 merge（左填充 + 按 batch 维堆叠）→ update_and_fetch（统一 batch 注意力 + KV 更新）→ extract（拆回 per-agent cache），将两个 agent 的 decode 合并为单次 Metal kernel dispatch。<code>ConcurrentScheduler</code> 在 prefill 阶段按 512 token 块交替处理多 agent，在 decode 阶段交替生成，适配 Orca 的 iteration-level 调度到量化 cache + 边缘设备场景。MLX 非线程安全，所有推理经单线程调度器串行执行（RLock 保护跨线程 I/O）。</p>
+
+<p><strong>Prefix Matching</strong>: 采用字符级文本比较而非 token ID 比较，避免 BPE 分词的上下文依赖性（相同文本在不同上下文可产生不同 token 序列）。返回 EXACT / EXTEND / DIVERGE 三种匹配状态，50% 公共前缀阈值决定复用资格。多阶段工作流中 prompt 单调增长，实际总是 EXTEND 匹配。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证。</strong> 系统包含解析性内存模型（Q4/FP16 比率推导），但无形式化性能/收敛保证。可形式化但未形式化的量：给定内存预算 $M$、agent 数 $N$、SSD 带宽 $B_{ssd}$，warm cache TTFT 的上界。</p>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th><th>取值范围</th></tr>
+<tr><td>$h$</td><td>KV head 数</td><td>8（Gemma/Llama）, 16（DeepSeek）</td></tr>
+<tr><td>$d$</td><td>head dimension</td><td>128–256</td></tr>
+<tr><td>$n$</td><td>序列长度（tokens）</td><td>1K–32K</td></tr>
+<tr><td>$g$</td><td>量化 group size</td><td>64</td></tr>
+<tr><td>$B$</td><td>batch size</td><td>1–2</td></tr>
+<tr><td>$L$</td><td>层数</td><td>27–48</td></tr>
+<tr><td>$D_K$, $D_V$</td><td>K/V head 维度</td><td>对称 128–256 或非对称 192/128</td></tr>
+</table>
+
+<h3 id="核心方程">核心方程 <a class="heading-anchor" href="#核心方程" aria-label="Link to 核心方程">#</a></h3>
+
+<p>FP16 每层 KV 存储：$4hdn$ bytes（K + V 各 $2hdn$）。Q4 每层存储：$hdn(1 + 8/g)$ bytes（4-bit packed 数据 + bfloat16 scale 和 bias per group）。</p>
+
+<p>$$Q4/FP16 = (1 + 8/g) / 4 = 0.281 \quad (g = 64)$$</p>
+
+<p>物理意义：无论模型维度如何，Q4 一律节省 72% 内存。Gemma 3 12B 在 4K context 时每 agent FP16 需 1,536 MB（$2 \times 8 \times 256 \times 4096 \times 2 \times 48$ bytes），Q4 仅需 432 MB。</p>
+
+<p>GQA 的 batched attention 需要将 query reshape 为 5D 张量 $(B, n_{kv}, n_{rep}, L, D)$，其中 $n_{rep} = n_q / n_{kv}$（Gemma: 16/8 = 2），实现 broadcast 兼容。</p>
+
+<h3 id="6-项验证">6 项验证 <a class="heading-anchor" href="#6-项验证" aria-label="Link to 6-项验证">#</a></h3>
+
+<table>
+<tr><th>#</th><th>检验项</th><th>预期</th><th>实际</th><th>判定</th></tr>
+<tr><td>1</td><td>内存比率 0.281 在三模型一致</td><td>Q4/FP16 ≈ 0.281</td><td>Table 2 + Appendix D 均验证</td><td>✓</td></tr>
+<tr><td>2</td><td>4× agent 容量提升</td><td>Q4 fits ≈ 4× FP16</td><td>24 vs 6 (4K), 12 vs 3 (8K), 6 vs 1 (16K)</td><td>✓</td></tr>
+<tr><td>3</td><td>Cold TTFT 线性缩放 $O(n)$</td><td>线性关系</td><td>Fig 2: 三模型 cold 均线性（双对数直线）</td><td>✓</td></tr>
+<tr><td>4</td><td>Warm/Hot TTFT 近平坦</td><td>弱依赖 $n$</td><td>Gemma warm 475–1819 ms (1K–32K)，32K 处上翘因 cache > 3 GB</td><td>✓</td></tr>
+<tr><td>5</td><td>PPL 影响 < 5%</td><td>可容忍降级</td><td>−0.7% / +2.8% / +3.0%，与 KIVI 4-bit 文献一致</td><td>✓</td></tr>
+<tr><td>6</td><td>Cross-phase 加速随阶段累积</td><td>Phase $N$ > Phase 1</td><td>Table 7: 1.0× → 1.9× (Phases 1–5, Gemma)</td><td>✓</td></tr>
+</table>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<p><strong>实验规模</strong>: 1,132 次独立测量 + 36 次交错到达测试。3 个模型 × 6 上下文长度 × 3 cache 状态 × 2 batch 大小。每配置 6 次取中位数，11–240 秒自适应冷却（thermal-aware）。硬件：Apple MacBook Pro M4 Pro, 24 GB LPDDR5X, 273 GB/s。</p>
+
+<h3 id="ttft-缩放">TTFT 缩放 <a class="heading-anchor" href="#ttft-缩放" aria-label="Link to ttft-缩放">#</a></h3>
+
+<p><img src="/assets/2603.04428/fig2.png" alt="Figure 2: 三模型 TTFT 随上下文长度和 cache 状态的缩放（双对数坐标）"></p>
+
+<p><em>Paper Figure 2: TTFT scaling across cache states (Gemma solid, DeepSeek dashed, Llama dotted). Cold prefill scales linearly; warm and hot caches reduce TTFT by up to 136× at 32K (Gemma) and 111× at 16K (Llama).</em></p>
+
+<p>Cold TTFT 随 context 线性增长（Gemma 32K 达 172 秒），Warm/Hot 近乎平坦（Gemma 32K warm 仅 1.8 s / hot 1.3 s）。16K 下加速倍数：Gemma 93×, DeepSeek 45×, Llama 111×。Llama 获得最高 warm 加速比因其 8B 参数量使 warm reload 相对其 cold prefill 更快。DeepSeek cold 最快（27 层 vs Gemma 48 层）但 warm 加速比相应较低。</p>
+
+<p>意外发现：短 context（1K–8K）下 Gemma/Llama 的 warm（磁盘加载）比 hot（内存驻留）更快 40–55%，在 6 次测量中全部重现无交叉。原因：<code>mx.load()</code> 的优化顺序 I/O 路径 vs hot 路径的 per-layer hash 查找和散列内存访问。32K 时反转（disk I/O 占主导，cache > 3 GB）。</p>
+
+<h3 id="vs-vllm-mlx-对比">vs vllm-mlx 对比 <a class="heading-anchor" href="#vs-vllm-mlx-对比" aria-label="Link to vs-vllm-mlx-对比">#</a></h3>
+
+<p><img src="/assets/2603.04428/tab5.png" alt="Table 5: agent-memory (Q4 warm) vs vllm-mlx (FP16 prefix) TTFT 对比，Llama 3.1 8B"></p>
+
+<p><em>Paper Table 5: Head-to-head TTFT comparison. Agent-memory uses Q4 KV with disk persistence; vllm-mlx uses FP16 KV with volatile prefix cache. Both share the same mlx-lm inference engine, isolating cache strategy differences.</em></p>
+
+<p>4K 下 Q4 warm（290 ms）与 FP16 prefix（290 ms）完全持平——读取 4× 小文件的 SSD 时间抵消反量化开销。vllm-mlx 在 8K 时需独立测试（多 context 配置下 FP16 被驱逐），16K 时即使单 context 独立运行也在第 3 次测量失败。Cold prefill vllm-mlx 快 2.3×（4K: 4,394 ms vs 10,235 ms），差距源于 agent-memory 的编排层开销而非 Q4 量化本身（用 FP16 KV 的 agent-memory 仅快 259 ms）。Restart 后 agent-memory 保持 warm 状态，vllm-mlx 全部丢失。</p>
+
+<h3 id="多阶段持久化">多阶段持久化 <a class="heading-anchor" href="#多阶段持久化" aria-label="Link to 多阶段持久化">#</a></h3>
+
+<p><img src="/assets/2603.04428/fig5.png" alt="Figure 5: 囚徒困境场景中 4 个 agent 的 cache 状态随 5 阶段演进"></p>
+
+<p><em>Paper Figure 5: Agent cache state across prisoner's dilemma phases. Permanent agents (Warden, Marco, Danny) start cold and transition to warm/hot via cross-phase injection. The Analyst appears only in Phase 5 (cold start).</em></p>
+
+<p>5 阶段（审讯 A → 审讯 B → 庭院 → 最终对峙 → 裁决）、4 agent（3 永久 + 1 临时）、25 轮对话。Persistent 模式在 Phase 1 无优势（均冷启动），Phase 5 TTFT 降低 1.9×（Gemma: 3,292 ms → 1,705 ms），总耗时降低 23%（72.9 s → 56.1 s）。DeepSeek 改善较小（1.3×）因其 27 层冷启动本身已快。10-expert Wikipedia 路由场景中 warm cache 实现 24.2× TTFT 降低（Gemma: 20.5 s cold → 847 ms warm）。</p>
+
+<h3 id="系统定位">系统定位 <a class="heading-anchor" href="#系统定位" aria-label="Link to 系统定位">#</a></h3>
+
+<p><img src="/assets/2603.04428/tab11.png" alt="Table 11: 与 12 个相关系统的特性对比"></p>
+
+<p><em>Paper Table 11: Feature comparison. Pool = per-agent cache isolation, BQ4 = batched Q4 inference, WM = cross-phase KV persistence, Edge = UMA device support, Disk = persistent cache survives restart.</em></p>
+
+<p>本系统是唯一同时具备 per-agent isolation、batched Q4 inference、working memory、edge device 支持和 disk persistence 的方案。最接近的是 llama.cpp（Q4 KV + per-slot save/restore），但使用 GGML 后端、需手动 API 调用、无自动多 agent 管理。MemArt 有 KV reuse blocks + working memory 但面向数据中心。vllm-mlx 有 prefix caching 但无量化 KV、无持久化。</p>
+
+<h3 id="质量影响">质量影响 <a class="heading-anchor" href="#质量影响" aria-label="Link to 质量影响">#</a></h3>
+
+<p>Q4 KV cache PPL 影响（WikiText-2, 512-token 滑动窗口，256-token 步幅）：Gemma −0.10 PPL（−0.7%），Llama +0.12（+2.8%），DeepSeek +0.19（+3.0%）。Gemma 对称 KV 维度（K=V=256）提供冗余吸收量化噪声；DeepSeek MLA 将 K/V 压缩为低秩潜在表示（非对称 K=192, V=128），冗余更少，量化误差影响更大。局限：512 token 窗口短于 Gemma 的 sliding-window attention（window=1024），未报告置信区间。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>论点</th><th>依据</th><th>隐含假设</th></tr>
+<tr><td>1</td><td>边缘设备固定 RAM 下，$N$ 个 agent 各持 $C$ tokens 需缓存生命周期管理；拼接有 $O(n^2)$ 注意力开销</td><td>§2.1-2.2, Table 1：M4 Pro 仅 10.2 GB cache 预算；FP16 at 8K 仅放 3 agents</td><td>agents 需独立 KV cache（位置偏差使拼接方案不可接受）</td></tr>
+<tr><td>2</td><td>Q4 量化使 KV cache 内存降低 72%（比率 0.281），4× agent 容量提升</td><td>§3.2, Table 2：解析推导 $(1+8/g)/4$，三模型实测验证</td><td>group quantization ($g=64$) 的量化误差可容忍——PPL 影响 < +3%</td></tr>
+<tr><td>3</td><td>磁盘持久化将 $O(n)$ compute-bound prefill 替换为 $O(n)$ I/O-bound reload</td><td>§3.1, Table 3：Gemma 4K cold 15,736 ms → warm 577 ms（27×）</td><td>UMA SSD 带宽（~7 GB/s）足够亚秒级重载；safetensors 零反序列化开销</td></tr>
+<tr><td>4</td><td>多 agent 交替执行为 cache 重载提供时间间隙——Agent A 生成时 Agent B 加载</td><td>§5.1：block pool = page table, SSD = swap 的虚拟内存类比</td><td>agents 确实交替而非并行；$1/N$ 重载延迟落入临界路径（未端到端测量）</td></tr>
+<tr><td>5</td><td>Head-to-head vs vllm-mlx：Q4 warm 与 FP16 prefix 速度相当，但 Q4 在高内存压力和 restart 后仍可用</td><td>§4.4, Table 5：4K 下 290 ms vs 290 ms；FP16 在 16K 失败</td><td>两系统共享同一推理引擎（mlx-lm），对比仅隔离 cache 策略</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>开源仓库</strong>: <a href="https://github.com/yshk-mxim/agent-memory">agent-memory</a> — 19 天 44 sessions 开发，301 commits，17.8K 行源码 + 31K 行测试 + 12.7K 行 benchmark 基础设施。</p>
+
+<table>
+<tr><th>组件</th><th>实现位置</th><th>说明</th></tr>
+<tr><td>Block Pool / AgentBlocks / KVBlock</td><td>仓库核心模块</td><td>per-agent namespace 隔离，256-token 块，safetensors 持久化</td></tr>
+<tr><td>BatchQuantizedKVCache</td><td>仓库核心模块</td><td>merge / update_and_fetch / extract，左填充 + batch 堆叠</td></tr>
+<tr><td>ConcurrentScheduler</td><td>仓库核心模块</td><td>单线程调度器 + RLock，512 token chunk prefill</td></tr>
+<tr><td>ModelCacheSpec</td><td>仓库核心模块</td><td>模型无关抽象，含 v_head_dim 支持 MLA 非对称维度</td></tr>
+<tr><td>quantized attention patch</td><td>mlx-lm monkey-patch</td><td>fused Q4 scaled dot-product attention, mx.compile(shapeless=True)</td></tr>
+<tr><td>prefix matching</td><td>仓库核心模块</td><td>字符级文本比较，EXACT / EXTEND / DIVERGE</td></tr>
+<tr><td>OpenAI-compatible API</td><td>仓库服务层</td><td>drop-in 兼容，支持 SSE streaming</td></tr>
+</table>
+
+<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
+
+<p>KV cache 磁盘持久化的架构可行性取决于 SSD→内存带宽比率和多 agent 交替提供的 I/O 隐藏窗口。UMA（Apple Silicon）SSD 以 ~7 GB/s 读入 273 GB/s 统一内存，一次加载后全带宽访问。离散 GPU（RTX 5090）VRAM 1,792 GB/s 内部带宽，但 PCIe 5.0 host↔device 仅 ~64 GB/s，28× 悬崖使每次 cache miss 代价高昂。此外系统依赖 MLX 的 <code>quantized_scaled_dot_product_attention</code> 在 Q4 张量上直接做注意力——若无 fused Q4 attention kernel，需反量化回 FP16 再计算，消除延迟优势。</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>字符级 prefix matching</strong>: BPE 分词具有上下文依赖性——相同文本在不同上下文中可产生不同 token 序列。标准 prefix-caching 系统（vLLM, SGLang）按 token ID 匹配，在此场景下会 miss 本可复用的 cache。系统在原始文本层面比较，从根本上避免此问题。</li>
+</ul>
+
+<ol>
+<li><strong>MLX lazy evaluation 与线程安全</strong>: MLX 惰性求值要求在 prefill 后、磁盘加载后、量化输出后各关键点显式 <code>mx.eval()</code>，遗漏任一点导致空 cache、OOM 或 attention NaN（paper 记录 6 种故障模式）。MLX 非线程安全（并发 <code>mx.eval()</code> 触发 Metal assertion failures），系统被迫采用单线程调度器 + RLock 的协作式并发模型——batch=2 的两个 agent decode 合并为单次 Metal kernel dispatch 而非真并行。开发中最隐蔽的 bug（batch=2 cache corruption）的初始假设（lazy tensor chain）被验证脚本自身的串行时序掩盖，最终定位为 scheduler 线程和 event loop 间的竞态条件。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

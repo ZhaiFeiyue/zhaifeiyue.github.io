@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>KVDrive: A Holistic Multi-Tier KV Cache Management System for Long-Context LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">KVDrive: A Holistic Multi-Tier KV Cache Management System for Long-Context LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2605.18071</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">offloading</span><span class="tag">multi-tier-storage</span><span class="tag">sparse-attention</span><span class="tag">pipeline-scheduling</span><span class="tag">long-context</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2605.18071.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2605.18071" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="kvdrive-a-holistic-multi-tier-kv-cache-management-system-for-long-context-llm-inference">KVDrive: A Holistic Multi-Tier KV Cache Management System for Long-Context LLM Inference <a class="heading-anchor" href="#kvdrive-a-holistic-multi-tier-kv-cache-management-system-for-long-context-llm-inference" aria-label="Link to kvdrive-a-holistic-multi-tier-kv-cache-management-system-for-long-context-llm-inference">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>KVDrive 是跨 HBM/DRAM/SSD 三层的 KV cache 管理系统：注意力感知滑动窗口缓存（2D MCKP 优化 per-layer-per-head 窗口）+ 弹性 SFC 流水线（选择/传输/计算解耦微批并行）+ 协调式多层存储（重要性预热 + SSD 顺序布局 + 稀疏同步），在 GPU 显存受限下长上下文推理吞吐量最高提升 $1.74\times$。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>长上下文 LLM 推理中 KV cache 随序列长度和 batch size 线性增长，轻松超出 GPU 显存容量（Llama-3.1-8B-Instruct 128K context 的 KV cache 即超 16 GB）。现有 offloading 系统将 KV cache 卸载至 host memory，但存在三个系统级缺陷：</p>
+
+<ol>
+<li><strong>缓存策略盲目</strong>：使用通用 LRU/LFU，不感知 attention 语义，导致冗余传输。实测显示 critical KV entries 具备 temporal locality，窗口 ×3 可将 host→GPU 传输从 >500 MB 降至 <12.5 MB/step（$40\times$），但现有系统未利用此特性。</li>
+<li><strong>流水线串行阻塞</strong>：select→fetch→compute 三阶段顺序执行，selection 和 fetching 合占近 50% 运行时间，GPU 大量空闲。InfiniGen 的 speculative prefetch 部分解决 fetching stall，但牺牲精度且无法消除 selection stall。</li>
+<li><strong>存储扩展受限</strong>：仅使用 DRAM offloading，当 context length × batch size 超出 host memory 容量时 OOM。直接用 SSD 作为 DRAM 扩展（FlexGen 式 memmap）因 GPU–SSD 带宽瓶颈导致吞吐量骤降至 <1 tok/s。</li>
+</ul>
+
+<p><strong>系统覆盖范围</strong>：prefill + decode 两阶段均覆盖；serving 场景，支持 continuous batching；单节点部署（非分布式）；不涉及 TP/PP/EP/DP 并行轴。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p>KVDrive 从系统层面联合优化缓存管理、流水线调度和存储分层，提出三个协同机制：</p>
+
+<p><strong>(1) Attention-Based Cache Management（§5）</strong>：在 GPU 内维护 critical KV entries 的滑动窗口。窗口内容按 attention score 做 lookahead eviction（低分 entries 最先淘汰），替代传统 LRU。窗口大小按 layer × head 二维异构分配：通过离线 profiling 获取每个 $(l,h)$ 对的 benefit-cost 曲线，建模为 Multiple-Choice Knapsack Problem (MCKP) 并求解最优分配，使总 I/O 减少量在给定 GPU cache budget 下最大化。</p>
+
+<p><strong>(2) Elastic Pipeline Scheduling（§6）</strong>：将 decoding 的 Selection / Fetching / Computation 三阶段解耦为独立调度单元（SFC Disaggregation）。每个 batch 切分为多个 micro-batch，GPU 做当前 micro-batch 的 selection 时，CPU 并行评估上一 micro-batch 的 cache hit/miss，同时异步传输更早 micro-batch 的 KV entries。三个阶段分别 I/O-bound / transfer-bound / compute-bound，天然适合重叠。Index size、cache size、micro-batch size 三参数联合调优。</p>
+
+<p><strong>(3) Coordinated Multi-Tier KV Storage（§7）</strong>：将 SSD 作为第三层存储引入，三层协调：</p>
+<ul>
+<li><strong>Importance-Guided Warm-Up</strong>：prefill 结束时利用最后 observation window 的 attention 分布估计 KV entry 长期重要性，高分 → HBM，次高分 → DRAM，全量 → SSD 做底层备份。</li>
+<li><strong>SSD-Aware Layout</strong>：semantic-contiguity packing（共同被注意的 entries 放同一 extent）+ layer-head partitioning（每个 {layer,head} 占独立连续 SSD segment），将随机 I/O 转为顺序 I/O。</li>
+<li><strong>Parallel Sparse Synchronization</strong>：逐步演进的四种策略（naive layer-wise → block-level sparse → hierarchical → balanced coordination），最终方案平衡 pinned buffer 和 memmap cache，通过 offline profiling 为频繁 stall 的 layer-head 优先分配 pinned memory。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：2D MCKP 窗口分配与 SFC 流水线的耦合——cache hit rate 决定 operational intensity 是否超过 roofline threshold $P$，从而决定 GPU 侧 attention 是否优于 CPU 侧。单独实现任何一个组件都无法复现 KVDrive 的性能收益：cache 策略的好坏决定了流水线中 fetching 阶段的负载，而流水线的效率又决定了 cache 策略能容忍的 miss rate 上限。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li>吞吐量：在 L20/H20/RTX 4090 三种硬件上，KVDrive 在所有配置下均超过所有 baseline，最高达 $1.74\times$（对比 SOTA）。对比最强 baseline ShadowKV，最大提升约 70%。</li>
+<li>精度：在 RULER 和 LongBench 上与全 KV cache baseline（Full）接近，优于或持平大多数 offloading 系统。</li>
+<li>成本效率：RTX 4090（24 GB）+ KVDrive 在长上下文场景下吞吐量可达 H20（96 GB）标准内存 serving 的 $3\times$，显存需求降低约 $4\times$。</li>
+<li>SSD 扩展：DRAM+SSD 模式下吞吐量仅比 DRAM-only 降低约 40%，远优于 FlexGen 式 strawman。</li>
+<li>Cache hit rate：在严格 budget 下仍达 ~80%，验证 attention-based eviction 的有效性。</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+graph TB
+  subgraph Prefill["Prefill Phase"]
+    P1["Prompt tokens → Full Attention"]
+    P2["KV cache 生成"]
+    P3["Importance scoring<br/>（observation window attention）"]
+    P4["Tiered offload:<br/>高分→HBM, 次高→DRAM, 全量→SSD"]
+    P5["Hierarchical index 构建<br/>chunk mean keys → centroids"]
+    P1 --> P2 --> P3 --> P4
+    P2 --> P5
+  end
+
+  subgraph Decode["Decode Phase（per token, per layer）"]
+    direction TB
+    S["❶ Selection<br/>I/O-bound: query × index → Top-K chunks"]
+    F["❷ Fetching<br/>Transfer-bound: miss entries HBM ← DRAM ← SSD"]
+    C["❸ Computation<br/>Compute-bound: sparse attention + FFN"]
+    S --> F --> C
+  end
+
+  subgraph SFC["SFC Disaggregation"]
+    direction LR
+    MB1["μ-batch i: Compute ⟨GPU⟩"]
+    MB2["μ-batch i+1: Fetch ⟨DMA⟩"]
+    MB3["μ-batch i+2: Select ⟨GPU+CPU⟩"]
+  end
+
+  subgraph Cache["Attention-Based Cache Manager"]
+    W["Sliding window per（layer, head）<br/>2D MCKP-optimized sizes"]
+    E["Lookahead eviction:<br/>lowest attention score → evict"]
+    W --> E
+  end
+
+  subgraph Storage["Coordinated Multi-Tier Storage"]
+    HBM["HBM<br/>hot cache + index"]
+    DRAM["DRAM<br/>warm KV entries<br/>pinned buffer pool"]
+    SSD_node["SSD<br/>cold full backup<br/>extent-packed layout"]
+    HBM <-->|"async DMA"| DRAM
+    DRAM <-->|"block-sparse<br/>sequential I/O"| SSD_node
+  end
+
+  Prefill --> Decode
+  Cache -.->|"eviction / admit"| Decode
+  Storage -.->|"fetch on miss"| Decode
+  Decode -.->|"micro-batch overlap"| SFC
+</div>
+
+<p><strong>请求生命周期</strong>：prompt 到达 → prefill（全量 attention 计算 + 重要性评分 + 分层 offload + hierarchical index 构建）→ decoding loop（每 token 每层经 Selection → Fetching → Computation 三阶段，micro-batch 粒度重叠执行）→ output tokens 流式输出。Scheduler 以 micro-batch 为调度单元，通过 lightweight queue 协调 CPU（hit/miss 评估 + metadata 更新）与 GPU（selection + attention + FFN）。KV/memory manager 作为独立组件管理三层存储的分配、淘汰和跨层同步。</p>
+
+<p><strong>索引设计</strong>：两级层次结构——底层 spatial chunking（相邻 tokens 分 chunk，chunk 内 mean key 作代表），上层 similarity grouping（mean keys 聚类生成 centroids）。相比纯 K-means ANNS（如 RetrievalAttention），保留了 token 局部语义连续性；相比纯 spatial chunking（如 Quest），index 体积缩小 50%、查找速度提升 $2\times$。</p>
+
+<p><strong>调度粒度</strong>：request → micro-batch → layer → operator。无显式 preemption policy（micro-batch 内不可中断）。Admission control 依赖 continuous batching 机制，论文未详述过载降级策略。无 per-tenant/per-priority 公平性保证。</p>
+
+<p><strong>KV cache 管理</strong>：分配单位为 chunk（默认 chunk size 4）；碎片化行为通过 extent-level packing 减轻（SSD 层）和 sliding window 固定大小（HBM 层）；eviction 策略为 lookahead（attention score lowest-first）；reuse 通过 temporal locality 窗口实现（非 radix tree / prefix cache）；swap to SSD 在 prefill 结束时一次性完成，decode 期间 SSD→DRAM→HBM 按需同步。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="形式化模型">形式化模型 <a class="heading-anchor" href="#形式化模型" aria-label="Link to 形式化模型">#</a></h3>
+
+<p>本文的形式化建模集中在两处：(1) 2D window scaling 的 MCKP 优化（§5.2）；(2) GPU-CPU roofline 分析（§6.3）。整体论证以实证为主，形式化部分为轻量级。</p>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th><th>量纲</th></tr>
+<tr><td>$w_{l,h}$</td><td>layer $l$, head $h$ 的滑动窗口大小</td><td>entries</td></tr>
+<tr><td>$\text{Benefit}_{l,h}(w)$</td><td>窗口为 $w$ 时该 layer-head 的传输减少量</td><td>bytes</td></tr>
+<tr><td>$\text{Cost}_{l,h}(w)$</td><td>窗口为 $w$ 时额外占用的 GPU 显存</td><td>bytes</td></tr>
+<tr><td>$M$</td><td>总 GPU cache budget</td><td>bytes</td></tr>
+<tr><td>$K$</td><td>每步 sparsity budget（Top-K 数量）</td><td>entries</td></tr>
+<tr><td>$N$</td><td>窗口倍数（$\times N$ 表示窗口为 $N \times K$）</td><td>无量纲</td></tr>
+<tr><td>$P$</td><td>roofline 阈值（operational intensity 临界点）</td><td>FLOP/byte</td></tr>
+</table>
+
+<h3 id="核心方程">核心方程 <a class="heading-anchor" href="#核心方程" aria-label="Link to 核心方程">#</a></h3>
+
+<p>$$\max_{\{w_{l,h}\}}\sum_{l,h}\text{Benefit}_{l,h}(w_{l,h})\quad\text{s.t.}\quad\sum_{l,h}\text{Cost}_{l,h}(w_{l,h})\leq M$$</p>
+
+<p><strong>物理意义</strong>：在有限 GPU 显存预算 $M$ 下，为每个 layer-head 对选择最优窗口大小，使所有 layer-head 的 host→GPU 传输总减少量最大化。这是 Multiple-Choice Knapsack Problem (MCKP)，NP-hard，但问题规模适中（数百个 layer-head 对 × 少量候选窗口大小），可用贪心法（迭代选择 benefit-to-cost ratio 最高的扩展）在分钟级内求解近优解。</p>
+
+<h3 id="六项检查">六项检查 <a class="heading-anchor" href="#六项检查" aria-label="Link to 六项检查">#</a></h3>
+
+<table>
+<tr><th>#</th><th>检查项</th><th>结果</th></tr>
+<tr><td>1</td><td>变量完备性</td><td>✓ 所有变量已定义；$\text{Benefit}$ 和 $\text{Cost}$ 通过离线 profiling 实测获得</td></tr>
+<tr><td>2</td><td>方程物理意义</td><td>✓ 资源分配问题：在显存约束下最大化 I/O 节省量</td></tr>
+<tr><td>3</td><td>单调性/凸性</td><td>✓ $\text{Benefit}_{l,h}(w)$ 单调不减且边际递减（Figure 3 和 Figure 8 验证），$\text{Cost}_{l,h}(w)$ 线性递增；最优解为内点解</td></tr>
+<tr><td>4</td><td>量纲一致性</td><td>✓ 目标函数和约束均为 bytes 量级，可相加比较</td></tr>
+<tr><td>5</td><td>边界条件</td><td>✓ $w_{l,h}=0$ → 无 cache，全量传输（Figure 3 ×0 基线）；$w_{l,h}=\text{max}$ → 超出 budget $M$（约束排除）</td></tr>
+<tr><td>6</td><td>数值验证</td><td>△ 未提供显式 plug-in 验证（未将具体工作负载参数代入 MCKP 解并对照实测）；实验通过 ablation（Figure 15: 2D scaling vs uniform）间接验证分配效果</td></tr>
+</table>
+
+<h3 id="roofline-分析">Roofline 分析 <a class="heading-anchor" href="#roofline-分析" aria-label="Link to roofline-分析">#</a></h3>
+
+<p>论文使用 GPU-CPU roofline model 论证 GPU-based attention 的合理性：当 operational intensity 低于阈值 $P$ 时，将数据传至 GPU 做 attention 无收益（受 CPU→GPU 带宽 roof 限制）；当高于 $P$ 时 GPU 计算优势显现。KVDrive 的 attention-based cache 使 ~80% critical entries 已驻 GPU（Table 3），operational intensity 远高于 $P$，因此 GPU-based attention 优于 CPU-based attention（如 MoE-Lightning、MagicPIG 采用的方案）。分析为定性的，$P$ 的数值未显式推导。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="5-1-整体吞吐量">5.1 整体吞吐量 <a class="heading-anchor" href="#5-1-整体吞吐量" aria-label="Link to 5-1-整体吞吐量">#</a></h3>
+
+<p>在 L20 server（48 GB）上，KVDrive 在 60K–360K context × batch 1–8 全部配置下均领先所有 baseline，对比最强 baseline ShadowKV 最大吞吐量提升约 70%。FlexGen 因每步全量加载 KV cache，吞吐 <1 tok/s；MagicPIG 在大规模场景因 LSH table 超出 host memory 而 OOM。在 H20（96 GB）和 RTX 4090（24 GB）上保持 $1.23\times$–$1.53\times$ 优势，验证跨硬件通用性。</p>
+
+<h3 id="5-2-精度">5.2 精度 <a class="heading-anchor" href="#5-2-精度" aria-label="Link to 5-2-精度">#</a></h3>
+
+<p>在 RULER（13 sub-task）和 LongBench（9 sub-task）上，KVDrive 在 Llama-3-8B-1048K 上 RULER 平均 76.15（Full: 77.74, 差 1.59），LongBench 平均 39.00（Full: 39.85, 差 0.85）。Qwen3-8B 和 Phi-4-Mini 上同样与 Full 差距在 2–5 分以内。值得注意的弱点：Phi-4-Mini 上 RULER 平均 59.91 vs Full 64.69（差 4.78），主要丢分在 MK3（1.04 vs 4.16）和 MV（60.67 vs 76.04）等依赖密集 long-range attention 的 sub-task。</p>
+
+<h3 id="5-3-lookahead-eviction-通用性">5.3 Lookahead Eviction 通用性 <a class="heading-anchor" href="#5-3-lookahead-eviction-通用性" aria-label="Link to 5-3-lookahead-eviction-通用性">#</a></h3>
+
+<p>Lookahead (LA) 对比 LRU 在 Llama3 和 Qwen3 上一致提升 cache hit rate（+0.9% 至 +3.9%）。但在 Phi-4-Mini 上，Quest 和 ShadowKV 的 LA 变体反而劣于 LRU（-1.8% 和 -1.5%），表明 attention-score-based eviction 效果依赖模型的 attention 分布模式——Phi-4-Mini 的 attention head 可能存在更剧烈的 step-to-step 变化，使得当前步高分 entry 下一步不一定仍然 critical。</p>
+
+<h3 id="5-4-关键-ablation">5.4 关键 ablation <a class="heading-anchor" href="#5-4-关键-ablation" aria-label="Link to 5-4-关键-ablation">#</a></h3>
+
+<ul>
+<li><strong>2D Window Scaling</strong>：异构 layer-head 窗口分配相比均匀分配，在相同 GPU budget 下减少 10–30% 传输量。差异源于各 layer-head 对的 benefit-cost 曲线异质性——某些 head（如 Layer 31 Head 8）建模长程依赖需要大窗口，而另一些（Layer 31 Head 1/2）捕获局部模式用小窗口即可。</li>
+<li><strong>Window Size</strong>：batch=1 时小窗口（×2）延迟最低（lookup surge 超过 I/O 节省）；batch=4 时大窗口（×4）更优（I/O 带宽成瓶颈，更大窗口摊平传输）。</li>
+<li><strong>Chunk Size</strong>：U 形延迟曲线，chunk=4 为最优平衡点。Chunk=1 碎片化 I/O，chunk=8 传输冗余信息。</li>
+<li><strong>Centroid Count</strong>：精度不随 centroid 数量变化（2048 到 8192）。8192→2048 实现 $4\times$ index 缩减无精度损失。最优 context-length/centroid ratio 为常数，提供简洁的 index sizing 启发式。</li>
+<li><strong>Memory Layout</strong>：batch=8, 120K context 下，KVDrive GPU 内存占用显著低于 Quest 和 ShadowKV（ShadowKV 因全量 compressed key 驻留 GPU 内存开销最大）。</li>
+</ul>
+
+<h3 id="5-5-ssd-扩展">5.5 SSD 扩展 <a class="heading-anchor" href="#5-5-ssd-扩展" aria-label="Link to 5-5-ssd-扩展">#</a></h3>
+
+<p>DRAM+SSD 模式下，block-level sparse fetching 大幅优于 FlexGen（layer-wise transfer）；hierarchical transfer + prefill warmup 进一步降低延迟。最终吞吐量仅比 DRAM-only 降低约 40%，但支持更大 batch size。考虑到 GPU–SSD 带宽比 GPU–DRAM 低约一个数量级，40% 的降幅体现了 sparse synchronization 和 SSD-aware layout 的有效性。</p>
+
+<h3 id="5-6-成本效率">5.6 成本效率 <a class="heading-anchor" href="#5-6-成本效率" aria-label="Link to 5-6-成本效率">#</a></h3>
+
+<p>RTX 4090（24 GB, consumer GPU）+ KVDrive 在 120K context 下吞吐量达 H20（96 GB, enterprise GPU）标准 serving 的 $3\times$。通过稀疏 offloading 将显存需求压缩约 $4\times$，消费级硬件可胜任原本只有企业级 GPU 才能处理的长上下文负载。这一结果逆转了通常的 GPU 档次性能等级——系统层面的优化可以弥补 $4\times$ 的硬件显存差距。</p>
+
+<h3 id="5-7-workload-胜负谱">5.7 Workload 胜负谱 <a class="heading-anchor" href="#5-7-workload-胜负谱" aria-label="Link to 5-7-workload-胜负谱">#</a></h3>
+
+<table>
+<tr><th>工作负载</th><th>KVDrive 表现</th><th>最强 baseline</th><th>原因</th></tr>
+<tr><td>长 context + 大 batch（120K, bs=8）</td><td>显著领先（~70% over ShadowKV）</td><td>ShadowKV</td><td>SFC pipeline + 2D cache 充分摊平 I/O</td></tr>
+<tr><td>短 context + 小 batch（60K, bs=1）</td><td>小幅领先</td><td>RetroInfer</td><td>micro-batch overhead 收益递减</td></tr>
+<tr><td>SSD-backed 超长 context</td><td>唯一可用方案</td><td>FlexGen（<1 tok/s）</td><td>多层存储协调消除带宽瓶颈</td></tr>
+<tr><td>Phi-4-Mini RULER 精度</td><td>略逊于 Full（差 4.78 分）</td><td>Full attention</td><td>小模型稀疏 attention 在困难 task 精度损失更明显</td></tr>
+</table>
+
+<h3 id="5-8-基线公平性">5.8 基线公平性 <a class="heading-anchor" href="#5-8-基线公平性" aria-label="Link to 5-8-基线公平性">#</a></h3>
+
+<p>所有 baseline 在统一评估框架中重新实现。Quest 使用 min/max keys per chunk，ShadowKV 使用 chunk size 8 + 48 outliers。所有 sparse baseline 保留 sink tokens（前 4 个）+ 64 local tokens 在 GPU。未提供 baseline 的具体 commit hash 或版本号。Throughput 定义为 output tokens/s。基线系统的辅助优化被禁用以确保公平比较。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
+<tr><td>1</td><td>Critical KV entries 在相邻 decode step 间存在 temporal locality</td><td>Figure 3：窗口 ×3 将传输从 >500 MB 降至 <12.5 MB/step（$6.25\%$ budget）</td><td>Empirical</td></tr>
+<tr><td>2</td><td>Selection + Fetching 合占 decode 延迟的 ~50%，串行执行造成 GPU stall</td><td>Figure 4：三个 baseline 的时间分解</td><td>Empirical</td></tr>
+<tr><td>3</td><td>GPU–SSD 带宽远低于 GPU–DRAM，直接 SSD offloading 导致吞吐骤降</td><td>Figure 5b：FlexGen 式 strawman <1 tok/s</td><td>Empirical</td></tr>
+<tr><td>4</td><td>Lookahead eviction（按当前 attention score 淘汰）比 LRU 更好利用 temporal locality</td><td>Figure 7：高 attention entry 下一步仍 critical 的概率高；Table 3：hit rate 提升 +0.9% 至 +3.9%</td><td>Step 1</td></tr>
+<tr><td>5</td><td>2D MCKP 窗口分配在固定 GPU budget 下最大化 I/O 节省</td><td>MCKP 公式化 + Figure 15：异构分配优于均匀分配</td><td>Step 4</td></tr>
+<tr><td>6</td><td>SFC 解耦 + micro-batching 实现三阶段并行执行，消除 pipeline stall</td><td>Figure 10 + SFC 设计：S(I/O-bound) / F(transfer-bound) / C(compute-bound) 重叠</td><td>Step 2</td></tr>
+<tr><td>7</td><td>~80% cache hit rate 使 operational intensity 超过 roofline threshold $P$，GPU attention 优于 CPU attention</td><td>Table 3 hit rate + roofline 分析</td><td>Steps 5 + 6</td></tr>
+<tr><td>8</td><td>三层存储协调（importance warm-up + SSD layout + sparse sync）扩展至 SSD 仅降 40% 吞吐</td><td>Figure 21：逐步演进的四种同步策略</td><td>Step 3</td></tr>
+<tr><td>9</td><td>三组件联合在三种硬件上实现全场景吞吐提升最高 $1.74\times$</td><td>Figure 13–14：L20/H20/RTX 4090 全面领先</td><td>Steps 5 + 6 + 8</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>[实现未公开] — 论文未提供公开代码仓库链接。</p>
+
+<h3 id="prototype-概况">Prototype 概况 <a class="heading-anchor" href="#prototype-概况" aria-label="Link to prototype-概况">#</a></h3>
+
+<ul>
+<li>~9,000 行 Python + ~1,000 行 C++ + ~3,000 行 CUDA</li>
+<li>PyTorch 2.3.0 / Python 3.12 / CUDA 12.1 / Ubuntu 22.04</li>
+<li><code>numpy.memmap</code> 做 SSD-backed page-level KV 持久访问</li>
+<li><code>torch.Tensor.index_copy_()</code> 做 sparse cache update</li>
+<li>Triton kernel（来自 RetroInfer）做 K-means clustering</li>
+<li>数据搬运原语（gather/copy）来自 ShadowKV</li>
+<li>FlashInfer 做 GPU-side attention + normalization kernel</li>
+<li>支持 continuous batching（Orca/vLLM 范式）</li>
+<li>RoPE 实现使用 HuggingFace transformers 官方版（YaRN for Qwen, LongRoPE for Phi）</li>
+</ul>
+
+<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
+
+<p>2D MCKP 窗口分配与 SFC 流水线的耦合构成复刻的主要障碍。实现上需要：(1) 离线 profiling 采集所有 layer-head 对的 benefit-cost 曲线——profiling 工具和所需样本量未描述；(2) runtime 维护 per-layer-per-head 异构窗口和独立 eviction 队列——数据结构选择影响 metadata overhead；(3) micro-batch 粒度的三阶段调度器需 lightweight queue 协调 GPU/CPU 异构资源并发——queue 满/空时的 back-pressure 策略未描述。缺少任何一环，性能增益显著退化。</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Pipeline equilibrium calibration</strong>：SFC 流水线效率依赖 CPU 端 hit/miss 评估时间与 GPU 端 fetching 时间的平衡。KVDrive 通过 warm-up phase 逐步增大 cache size 直到两端延迟均衡。这一校准是 pipeline 性能的关键——stage duration 不匹配会产生 bubble，而均衡点随 model、context length、batch size 变化。</li>
+<li><strong>SSD semantic-contiguity packing</strong>：将在 attention 中共同被选中的 KV entries 放入同一 SSD extent（连续块），使 selection 结果直接映射为顺序 I/O。此存储层面优化贡献了 SSD 方案的主要有效性——没有它，block-level sparse fetching 退化为随机 I/O，吞吐骤降。</li>
+</ul>
+
+<h3 id="api-与迁移">API 与迁移 <a class="heading-anchor" href="#api-与迁移" aria-label="Link to api-与迁移">#</a></h3>
+
+<p>论文未描述用户侧 API 形式（OpenAI-compat / gRPC 等）。配置涉及 sparsity budget、window size multiplier、chunk size、centroid count 等参数，论文通过离线 profiling 和短时 pre-run calibration 自动确定多数参数，但参数搜索空间和敏感度分析仅在 ablation 中部分覆盖。从现有 vLLM 部署迁移需替换整个 decode 路径的 KV cache 管理和调度逻辑，非 drop-in 替换。</p>
+
+<h3 id="生态与采纳">生态与采纳 <a class="heading-anchor" href="#生态与采纳" aria-label="Link to 生态与采纳">#</a></h3>
+
+<p>论文未提及上游合并（vLLM/SGLang/TRT-LLM）或生产部署案例。Prototype 依赖 RetroInfer 的 Triton clustering kernel 和 ShadowKV 的数据搬运原语，形成对这两个项目的隐式依赖。</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

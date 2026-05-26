@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>vllm-project/router — High-performance Rust+PyO3 request router for vLLM deployments — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">vllm-project/router — High-performance Rust+PyO3 request router for vLLM deployments</h1>
+<div class="card-meta"><span class="badge badge-code">code</span> vllm-project-router</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">load-balancing</span><span class="tag">rust</span><span class="tag">pyo3</span><span class="tag">vllm</span><span class="tag">axum</span><span class="tag">radix-tree</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/code.html">← code Survey</a>
+<a href="https://arxiv.org/abs/vllm-project-router" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="vllm-project-router-—-l2-distillation">vllm-project/router — L2 Distillation <a class="heading-anchor" href="#vllm-project-router-—-l2-distillation" aria-label="Link to vllm-project-router-—-l2-distillation">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Rust-core (axum+tokio) request router for vLLM with 6 LB policies — headlined by a concurrent radix-tree cache-affinity algorithm — plus prefill-decode disaggregation over three KV connectors (NIXL/Mooncake/MoRI-IO), circuit breakers, K8s service discovery, and Python CLI via PyO3. Forked from SGLang Model Gateway.</p>
+
+<hr>
+
+<h2 id="§2-project-identity-motivation">§2 Project Identity & Motivation <a class="heading-anchor" href="#§2-project-identity-motivation" aria-label="Link to §2-project-identity-motivation">#</a></h2>
+
+<table>
+<tr><th>Field</th><th>Value</th></tr>
+<tr><td>Repo</td><td><a href="https://github.com/vllm-project/router">vllm-project/router</a></td></tr>
+<tr><td>Version</td><td>v0.1.14</td></tr>
+<tr><td>Primary language</td><td>Rust (1.64M LOC) + Python (307K LOC)</td></tr>
+<tr><td>License</td><td>Apache-2.0</td></tr>
+<tr><td>Stars</td><td>233</td></tr>
+<tr><td>Maintainer</td><td>Byron Hsu / vllm-project org</td></tr>
+<tr><td>Fork origin</td><td><a href="https://github.com/sgl-project/sglang/tree/main/sgl-model-gateway">SGLang Model Gateway</a></td></tr>
+</table>
+
+<p><strong>Motivation.</strong> Large-scale vLLM deployments need a router between clients and a pool of inference workers that is: (a) aware of KV cache locality to avoid redundant prefill, (b) able to route prefill and decode phases to separate worker pools (PD disaggregation), and (c) production-grade with circuit breakers, retries, observability. Generic HTTP load balancers (Nginx, HAProxy) satisfy none of these. A Python-only router would bottleneck under high QPS. The project solves this with a Rust data plane exposed to the vLLM Python ecosystem via PyO3.</p>
+
+<hr>
+
+<h2 id="§3-architecture-module-map">§3 Architecture & Module Map <a class="heading-anchor" href="#§3-architecture-module-map" aria-label="Link to §3-architecture-module-map">#</a></h2>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Entry["Entry Points"]
+        CLI["main.rs<br/>clap CLI"]
+        Py["py_src/ vllm_router<br/>PyO3 wrapper"]
+    end
+
+    subgraph Server["HTTP Server (axum + tokio)"]
+        SRV["server.rs<br/>bootstrap, lifecycle"]
+        MW["middleware.rs<br/>auth · rate-limit · request-id"]
+        RT["routes/<br/>routing_tree_builder"]
+    end
+
+    subgraph Routers["Router Implementations"]
+        RF["RouterFactory"]
+        R1["http/router.rs<br/>Regular DP"]
+        R2["http/pd_router.rs<br/>Generic PD"]
+        R3["http/vllm_pd_router.rs<br/>vLLM PD (NIXL/Mooncake/MoRI)"]
+        R4["http/openai_router.rs<br/>OpenAI passthrough"]
+    end
+
+    subgraph Policies["Load Balancing Policies"]
+        PF["PolicyFactory"]
+        CA["CacheAwarePolicy<br/>radix-tree affinity"]
+        P2["PowerOfTwo<br/>P2C least-loaded"]
+        CH["ConsistentHash<br/>virtual nodes"]
+        RH["RendezvousHash<br/>HRW"]
+        RR["RoundRobin"]
+        RD["Random"]
+    end
+
+    subgraph Core["Core Primitives"]
+        W["Worker trait<br/>BasicWorker · DPAwareWorker"]
+        WR["WorkerRegistry<br/>DashMap-backed"]
+        CB["CircuitBreaker<br/>Closed→Open→HalfOpen"]
+        RY["Retry<br/>exp-backoff + jitter"]
+        TB["TokenBucket<br/>rate limiter"]
+        TR["Tree<br/>concurrent radix tree"]
+    end
+
+    subgraph Infra["Infrastructure"]
+        SD["service_discovery.rs<br/>K8s pod watcher"]
+        ZMQ["vllm_service_discovery.rs<br/>ZMQ worker registry"]
+        TOK["tokenizer/<br/>HF + tiktoken"]
+        MET["metrics.rs<br/>Prometheus"]
+        OT["otel_trace.rs<br/>OpenTelemetry"]
+    end
+
+    CLI --> SRV
+    Py --> SRV
+    SRV --> MW --> RT
+    RT --> RF
+    RF --> R1 & R2 & R3 & R4
+    R1 & R2 & R3 --> PF
+    PF --> CA & P2 & CH & RH & RR & RD
+    CA --> TR
+    R1 & R2 & R3 --> W
+    W --> WR
+    W --> CB
+    R1 & R2 & R3 --> RY
+    SRV --> SD & ZMQ
+    SRV --> MET & OT
+    CA -.-> TOK
+</div>
+
+<p><strong>Module responsibilities:</strong></p>
+
+<ul>
+<li><strong>Entry layer</strong>: <code>main.rs</code> uses clap to parse ~50 CLI flags into <code>ServerConfig</code>; the Python path (<code>launch_router.py</code>) parses the same flags via argparse and calls the PyO3-bound <code>Router.start()</code>.</li>
+<li><strong>Server layer</strong>: <code>server.rs</code> wires up an Axum router tree with middleware (API key validation against external URLs, token-bucket rate limiting, request-ID propagation from 4 default headers).</li>
+<li><strong>Router layer</strong>: Four router implementations behind <code>RouterTrait</code>. The split is by deployment topology: Regular (homogeneous DP workers), PD (generic prefill/decode split), vLLM PD (vLLM-specific KV connectors), and OpenAI (backend passthrough).</li>
+<li><strong>Policy layer</strong>: Six policies behind <code>LoadBalancingPolicy</code>. Stateless (Random, RoundRobin) vs. load-aware (PowerOfTwo) vs. affinity (ConsistentHash, RendezvousHash, CacheAware). Policies are per-model via <code>PolicyRegistry</code>.</li>
+<li><strong>Core layer</strong>: <code>Worker</code> trait abstracts health, load tracking, circuit breaker, and DP-rank metadata. <code>Tree</code> provides the concurrent radix tree for cache-aware routing.</li>
+<li><strong>Infrastructure</strong>: K8s service discovery via kube-rs pod watcher, ZMQ-based discovery for NCCL connectors, tokenizer support (HuggingFace + tiktoken) for policies that need request text, Prometheus + OpenTelemetry for observability.</li>
+</ul>
+
+<hr>
+
+<h2 id="§4-entry-points-api-surface">§4 Entry Points & API Surface <a class="heading-anchor" href="#§4-entry-points-api-surface" aria-label="Link to §4-entry-points-api-surface">#</a></h2>
+
+<h3 id="public-api-python">Public API (Python) <a class="heading-anchor" href="#public-api-python" aria-label="Link to public-api-python">#</a></h3>
+
+<pre><code class="language-python">
+from vllm_router import Router, PolicyType
+
+router = Router(
+    worker_urls=[&quot;http://w1:8000&quot;, &quot;http://w2:8000&quot;],
+    policy=PolicyType.CacheAware,
+    # ... ~50 config fields
+)
+router.start()
+</code></pre>
+
+<p>The Python package (<code>vllm-router</code> on PyPI) is a thin wrapper. <code>PolicyType</code> enum and <code>Router</code> class are the only public surface — everything else is internal Rust.</p>
+
+<h3 id="cli-entry-points">CLI entry points <a class="heading-anchor" href="#cli-entry-points" aria-label="Link to cli-entry-points">#</a></h3>
+
+<table>
+<tr><th>Entry</th><th>Source</th><th>Description</th></tr>
+<tr><td><code>vllm-router</code> (Python)</td><td><code>py_src/vllm_router/launch_router.py:main()</code></td><td>Parses args → <code>Router.start()</code></td></tr>
+<tr><td><code>vllm-router</code> (Rust)</td><td><code>src/main.rs</code></td><td>clap → <code>ServerConfig</code> → <code>server::startup()</code></td></tr>
+<tr><td><code>cargo bench</code></td><td><code>benches/</code></td><td>Request routing, tokenizer, OTel benchmarks</td></tr>
+</table>
+
+<h3 id="top-10-configuration-flags">Top 10 configuration flags <a class="heading-anchor" href="#top-10-configuration-flags" aria-label="Link to top-10-configuration-flags">#</a></h3>
+
+<table>
+<tr><th>Flag</th><th>Type</th><th>Default</th><th>Purpose</th></tr>
+<tr><td><code>--worker-urls</code></td><td><code>Vec<String></code></td><td>required</td><td>Backend worker addresses</td></tr>
+<tr><td><code>--policy</code></td><td>enum</td><td><code>round_robin</code></td><td>Load balancing algorithm</td></tr>
+<tr><td><code>--vllm-pd-disaggregation</code></td><td>bool</td><td>false</td><td>Enable prefill-decode split</td></tr>
+<tr><td><code>--prefill</code> / <code>--decode</code></td><td><code>Vec<String></code></td><td>—</td><td>PD worker pools</td></tr>
+<tr><td><code>--kv-connector</code></td><td>enum</td><td><code>nixl</code></td><td>KV transfer mechanism for PD</td></tr>
+<tr><td><code>--intra-node-data-parallel-size</code></td><td>usize</td><td>1</td><td>DP replicas per physical node</td></tr>
+<tr><td><code>--service-discovery</code></td><td>bool</td><td>false</td><td>Enable K8s pod watcher</td></tr>
+<tr><td><code>--api-key-validation-urls</code></td><td><code>Vec<String></code></td><td>—</td><td>External auth endpoints</td></tr>
+<tr><td><code>--retry-max-retries</code></td><td>u32</td><td>3</td><td>Max retry attempts</td></tr>
+<tr><td><code>--cache-threshold</code></td><td>f32</td><td>—</td><td>Min prefix match ratio for cache hit</td></tr>
+</table>
+
+<h3 id="extension-points">Extension points <a class="heading-anchor" href="#extension-points" aria-label="Link to extension-points">#</a></h3>
+
+<ul>
+<li><strong>Custom policies</strong>: implement <code>LoadBalancingPolicy</code> trait, register in <code>PolicyFactory</code></li>
+<li><strong>Custom routers</strong>: implement <code>RouterTrait</code> + <code>WorkerManagement</code>, register in <code>RouterFactory</code></li>
+<li><strong>Custom workers</strong>: implement <code>Worker</code> trait, use <code>WorkerFactory</code></li>
+<li><strong>Custom tokenizers</strong>: implement <code>Tokenizer</code> trait in <code>tokenizer/traits.rs</code></li>
+</ul>
+
+<hr>
+
+<h2 id="§5-core-data-structures">§5 Core Data Structures <a class="heading-anchor" href="#§5-core-data-structures" aria-label="Link to §5-core-data-structures">#</a></h2>
+
+<h3 id="tree-—-concurrent-multi-tenant-radix-tree-src-tree-rs"><code>Tree</code> — concurrent multi-tenant radix tree (<code>src/tree.rs</code>) <a class="heading-anchor" href="#tree-—-concurrent-multi-tenant-radix-tree-src-tree-rs" aria-label="Link to tree-—-concurrent-multi-tenant-radix-tree-src-tree-rs">#</a></h3>
+
+<pre><code class="language-rust">
+pub struct Tree {
+    root: NodeRef,                              // Arc&lt;Node&gt;
+    pub tenant_char_count: DashMap&lt;TenantId, usize&gt;,  // per-worker prefix volume
+}
+</code></pre>
+
+<ul>
+<li><strong>Lifecycle</strong>: Created once per model by <code>CacheAwarePolicy::init_workers</code>. Lives for the router lifetime. Evicted periodically via <code>evict_tenant_by_size(max_tree_size)</code>.</li>
+<li><strong>Thread safety</strong>: Fully concurrent. Nodes use <code>DashMap<char, NodeRef></code> for children (32 shards at root, 8 for inner nodes) and <code>RwLock<CompactString></code> for text. Tenant IDs are interned <code>Arc<str></code>.</li>
+<li><strong>Mutation</strong>: Insert is lock-free on the happy path (DashMap entry); splits require write-locking the parent node's text. Epoch-based LRU with <strong>probabilistic timestamp updates (1-in-8)</strong> to reduce contention on hot nodes.</li>
+<li><strong>Memory</strong>: <code>CompactString</code> for node text avoids heap allocation for short strings. Custom <code>CharHasher</code> for DashMap optimizes single-character key lookups at tree children.</li>
+</ul>
+
+<h3 id="worker-implementations-src-core-worker-rs"><code>Worker</code> implementations (<code>src/core/worker.rs</code>) <a class="heading-anchor" href="#worker-implementations-src-core-worker-rs" aria-label="Link to worker-implementations-src-core-worker-rs">#</a></h3>
+
+<table>
+<tr><th>Variant</th><th>Key fields</th><th>When used</th></tr>
+<tr><td><code>BasicWorker</code></td><td><code>url</code>, <code>healthy: AtomicBool</code>, <code>load: AtomicUsize</code>, <code>circuit_breaker</code></td><td>Standard routing</td></tr>
+<tr><td><code>DPAwareWorker</code></td><td>wraps BasicWorker + <code>base_url</code>, <code>dp_rank</code>, <code>dp_size</code></td><td><code>intra_node_data_parallel_size > 1</code></td></tr>
+</table>
+
+<ul>
+<li><strong>Lifecycle</strong>: Created by <code>WorkerFactory</code> during router init or service-discovery update. Stored in <code>WorkerRegistry</code> (a <code>DashMap<String, Arc<dyn Worker>></code>). Removed on health-check failure or K8s pod deletion.</li>
+<li><strong>Thread safety</strong>: All mutable fields are atomic. <code>CircuitBreaker</code> uses internal <code>RwLock</code> for state transitions.</li>
+<li><strong>DP addressing</strong>: <code>DPAwareWorker</code> uses <code>url@rank</code> composite keys. When forwarding, it injects <code>X-data-parallel-rank</code> header so the backend vLLM process selects the correct DP shard.</li>
+</ul>
+
+<h3 id="circuitbreaker-src-core-circuitbreaker-rs"><code>CircuitBreaker</code> (<code>src/core/circuit_breaker.rs</code>) <a class="heading-anchor" href="#circuitbreaker-src-core-circuitbreaker-rs" aria-label="Link to circuitbreaker-src-core-circuitbreaker-rs">#</a></h3>
+
+<p>Three-state machine: <code>Closed → Open → HalfOpen → Closed</code>. Transitions gated by configurable <code>failure_threshold</code>, <code>success_threshold</code>, <code>timeout_duration_secs</code>, and <code>window_duration_secs</code>. State stored in <code>RwLock<CircuitState></code>.</p>
+
+<h3 id="routerconfig-src-config-types-rs"><code>RouterConfig</code> (<code>src/config/types.rs</code>) <a class="heading-anchor" href="#routerconfig-src-config-types-rs" aria-label="Link to routerconfig-src-config-types-rs">#</a></h3>
+
+<p>~30-field struct driving all runtime behavior. Three <code>RoutingMode</code> variants (<code>Regular</code>, <code>OpenAI</code>, <code>VllmPrefillDecode</code>) control which router implementation is instantiated. Six <code>PolicyConfig</code> variants parameterize the selected policy. <code>ConfigValidator</code> runs structural checks before server startup.</p>
+
+<hr>
+
+<h2 id="§6-critical-path-analysis-implementation-highlights">§6 Critical Path Analysis & Implementation Highlights <a class="heading-anchor" href="#§6-critical-path-analysis-implementation-highlights" aria-label="Link to §6-critical-path-analysis-implementation-highlights">#</a></h2>
+
+<h3 id="hot-path-http-request-→-routing-decision-→-proxy">Hot path: HTTP request → routing decision → proxy <a class="heading-anchor" href="#hot-path-http-request-→-routing-decision-→-proxy" aria-label="Link to hot-path-http-request-→-routing-decision-→-proxy">#</a></h3>
+
+<pre><code>
+Client HTTP request
+  → axum handler (routes/pool_route.rs or prefill_decode_route.rs)
+    → body parsing: serde_json::from_slice → ChatCompletionRequest
+    → policy dispatch: LoadBalancingPolicy::select_worker_with_headers()
+      → [CacheAware] Tree::prefix_match_with_counts() ← HOT INNER LOOP
+      → compare match_rate vs cache_threshold
+      → if hit: route to tenant worker; if miss: shortest-queue fallback
+    → proxy: hyper HTTP client → selected worker URL
+    → response streaming back to client (SSE for chat)
+</code></pre>
+
+<h3 id="the-cache-aware-decision-—-the-hardest-to-replicate-insight">The cache-aware decision — the hardest-to-replicate insight <a class="heading-anchor" href="#the-cache-aware-decision-—-the-hardest-to-replicate-insight" aria-label="Link to the-cache-aware-decision-—-the-hardest-to-replicate-insight">#</a></h3>
+
+<p><code>CacheAwarePolicy::select_worker_with_headers</code> (file: <code>src/policies/cache_aware.rs</code>) implements a two-regime algorithm:</p>
+
+<ol>
+<li><strong>Load-balanced regime</strong> (triggered when $\text{max\_load} - \text{min\_load} > \text{abs\_threshold}$ AND $\text{max\_load} > \text{min\_load} \times \text{rel\_threshold}$): Falls back to shortest-queue routing, sacrificing cache affinity to prevent worker starvation.</li>
+</ul>
+
+<ol>
+<li><strong>Cache-affinity regime</strong> (otherwise): Performs a character-level prefix match on the request text against a per-model radix tree. If $\text{match\_rate} = \frac{\text{matched\_chars}}{\text{input\_chars}} > \text{cache\_threshold}$, routes to the owning worker. Otherwise routes to the least-loaded worker and inserts the new prefix into the tree for future matches.</li>
+</ul>
+
+<p>This is novel because:</p>
+<ul>
+<li>It operates on <strong>raw text characters, not token IDs</strong>, deliberately avoiding tokenization latency in the routing hot path. The approximation is acceptable because prefix sharing is character-aligned in practice (system prompts, few-shot examples).</li>
+<li>The radix tree is <strong>multi-tenant</strong> (keyed by worker URL), allowing a single tree per model to track which worker "owns" which prefix region.</li>
+<li>The <strong>two-regime fallback</strong> prevents the classic stickiness problem where cache-affinity routing creates load hotspots.</li>
+</ul>
+
+<h3 id="prefix-match-inner-loop-src-tree-rs">Prefix match inner loop (<code>src/tree.rs</code>) <a class="heading-anchor" href="#prefix-match-inner-loop-src-tree-rs" aria-label="Link to prefix-match-inner-loop-src-tree-rs">#</a></h3>
+
+<p><code>Tree::prefix_match_with_counts</code> walks the trie character-by-character:</p>
+
+<ol>
+<li>Look up <code>first_char</code> in current node's <code>DashMap<char, NodeRef></code> children — O(1) via <code>CharHasher</code></li>
+<li>Compare shared prefix via <code>shared_prefix_count(remaining, node_text)</code> — character scan</li>
+<li>If full match: advance <code>remaining</code> pointer, descend; if partial: stop</li>
+<li>Return <code>PrefixMatchResult { tenant, matched_char_count, input_char_count }</code></li>
+</ul>
+
+<p>The fast-path tenant lookup uses a cached <code>last_tenant</code> field (avoiding DashMap iteration) that is correct when the tree is read-heavy (which it is in production — inserts are infrequent relative to lookups).</p>
+
+<h3 id="prefill-decode-disaggregation">Prefill-decode disaggregation <a class="heading-anchor" href="#prefill-decode-disaggregation" aria-label="Link to prefill-decode-disaggregation">#</a></h3>
+
+<p>Three KV connector modes affect routing semantics:</p>
+
+<table>
+<tr><th>Connector</th><th>Mode</th><th>Routing behavior</th></tr>
+<tr><td>NIXL</td><td>Pull-based (default)</td><td>Router selects prefill worker, prefill returns result; decode worker pulls KV</td></tr>
+<tr><td>Mooncake</td><td>Push-based</td><td>Router injects <code>transfer_id</code> + <code>remote_engine_id</code> into request body; prefill pushes KV to decode</td></tr>
+<tr><td>MoRI-IO</td><td>—</td><td>Separate I/O path for KV transfer</td></tr>
+</table>
+
+<p>The <code>VllmPrefillDecodeRouter</code> (<code>src/routers/http/vllm_pd_router.rs</code>) coordinates this by: (a) selecting a prefill-decode worker pair via <code>select_worker_pair</code>, (b) modifying the request body with connector-specific metadata, (c) forwarding to prefill, then (d) for streaming, merging decode responses via <code>logprobs_merge.rs</code>.</p>
+
+<h3 id="key-implementation-details">Key implementation details <a class="heading-anchor" href="#key-implementation-details" aria-label="Link to key-implementation-details">#</a></h3>
+
+<ol>
+<li><strong>Probabilistic LRU (1-in-8)</strong>: The radix tree's epoch-based eviction only updates a node's last-access timestamp with probability 1/8 on reads. This dramatically reduces write contention on <code>AtomicU64</code> timestamps under high-concurrency reads, at the cost of slightly stale eviction ordering — an acceptable trade-off for a routing cache.</li>
+</ul>
+
+<ol>
+<li><strong>DP rank injection</strong>: When <code>intra_node_data_parallel_size > 1</code>, <code>DPAwareWorker</code> transparently expands each physical worker URL into N virtual workers (<code>url@0</code>, <code>url@1</code>, ...). The router treats them as independent targets for load balancing, but <code>dp_utils.rs</code> injects <code>X-data-parallel-rank</code> into the forwarded request so the backend vLLM selects the right NCCL rank.</li>
+</ul>
+
+<hr>
+
+<h2 id="§7-concurrency-memory">§7 Concurrency & Memory <a class="heading-anchor" href="#§7-concurrency-memory" aria-label="Link to §7-concurrency-memory">#</a></h2>
+
+<h3 id="concurrency-model">Concurrency model <a class="heading-anchor" href="#concurrency-model" aria-label="Link to concurrency-model">#</a></h3>
+
+<p>Fully async via <strong>tokio</strong> (multi-threaded runtime). The axum server handles requests concurrently on the tokio thread pool. No blocking I/O on the hot path — all worker health checks and HTTP proxying are async.</p>
+
+<h3 id="lock-hierarchy">Lock hierarchy <a class="heading-anchor" href="#lock-hierarchy" aria-label="Link to lock-hierarchy">#</a></h3>
+
+<table>
+<tr><th>Lock</th><th>Type</th><th>Scope</th><th>Contention</th></tr>
+<tr><td>Tree node children</td><td><code>DashMap</code> (sharded)</td><td>Per-node</td><td>Low (32 shards at root)</td></tr>
+<tr><td>Tree node text</td><td><code>RwLock<CompactString></code></td><td>Per-node</td><td>Low (writes only on split)</td></tr>
+<tr><td>Tree tenant_char_count</td><td><code>DashMap</code></td><td>Per-tree</td><td>Low</td></tr>
+<tr><td>CircuitBreaker state</td><td><code>RwLock<CircuitState></code></td><td>Per-worker</td><td>Very low</td></tr>
+<tr><td>Worker health/load</td><td><code>AtomicBool</code> / <code>AtomicUsize</code></td><td>Per-worker</td><td>Lock-free</td></tr>
+<tr><td>WorkerRegistry</td><td><code>DashMap</code></td><td>Global</td><td>Low (writes only on add/remove)</td></tr>
+</table>
+
+<p>No known ordering dependencies between locks — the design avoids nested locking by using atomics for high-frequency mutations (load counters, health flags) and DashMap sharding for concurrent reads.</p>
+
+<h3 id="memory-management">Memory management <a class="heading-anchor" href="#memory-management" aria-label="Link to memory-management">#</a></h3>
+
+<ul>
+<li><strong>Rust ownership model</strong>: no GC. <code>Arc</code> for shared ownership of workers, tree nodes, and policy instances. <code>DashMap</code> for concurrent hash maps.</li>
+<li><strong>Interned tenant IDs</strong>: <code>Arc<str></code> avoids per-lookup string allocation.</li>
+<li><strong>CompactString</strong>: inline storage for short node texts (≤24 bytes on stack).</li>
+<li><strong>Bounded radix tree</strong>: <code>evict_tenant_by_size(max_tree_size)</code> prevents unbounded memory growth; periodic eviction runs on a background tokio task with configurable <code>eviction_interval_secs</code>.</li>
+</ul>
+
+<hr>
+
+<h2 id="§8-performance-characteristics">§8 Performance Characteristics <a class="heading-anchor" href="#§8-performance-characteristics" aria-label="Link to §8-performance-characteristics">#</a></h2>
+
+<h3 id="benchmark-suite">Benchmark suite <a class="heading-anchor" href="#benchmark-suite" aria-label="Link to benchmark-suite">#</a></h3>
+
+<p>The repo includes three Criterion benchmarks in <code>benches/</code>:</p>
+
+<table>
+<tr><th>Benchmark</th><th>What it measures</th></tr>
+<tr><td><code>request_processing.rs</code></td><td>End-to-end request routing throughput (policy selection, no network)</td></tr>
+<tr><td><code>tokenizer_benchmark.rs</code></td><td>Tokenizer encode/decode speed (HF vs tiktoken)</td></tr>
+<tr><td><code>otel_disabled_path.rs</code></td><td>Overhead of OTel instrumentation when tracing is disabled</td></tr>
+</table>
+
+<p>No published benchmark numbers in README or docs. The benchmarks measure router-internal latency, not end-to-end serving performance (which is dominated by GPU inference time).</p>
+
+<h3 id="scaling-properties">Scaling properties <a class="heading-anchor" href="#scaling-properties" aria-label="Link to scaling-properties">#</a></h3>
+
+<ul>
+<li><strong>Worker count</strong>: All policies are O(N) or better in worker count. CacheAware is O(L) in request text length for the radix tree walk, plus O(N) for the load comparison fallback.</li>
+<li><strong>Concurrent requests</strong>: Bounded by <code>max_concurrent_requests</code> config and tokio thread pool. Lock-free atomics for load tracking avoid serialization.</li>
+<li><strong>Multi-model</strong>: <code>PolicyRegistry</code> maintains independent policy instances per model, so cross-model interference is zero.</li>
+<li><strong>Radix tree size</strong>: Bounded by <code>max_tree_size</code> per model. Eviction is O(tenants) to find the largest tenant, then O(tree depth) to remove its entries.</li>
+</ul>
+
+<h3 id="expected-bottlenecks">Expected bottlenecks <a class="heading-anchor" href="#expected-bottlenecks" aria-label="Link to expected-bottlenecks">#</a></h3>
+
+<ol>
+<li><strong>Tokenization</strong> (if enabled): HuggingFace tokenizer initialization is slow (~100ms per model); runtime encode is ~1ms/request but adds to P99 latency.</li>
+<li><strong>HTTP proxying</strong>: The actual forwarding via hyper is the dominant latency component — routing decisions are sub-microsecond for stateless policies, low-microsecond for CacheAware.</li>
+<li><strong>Tree contention under write-heavy workloads</strong>: If many unique prompts arrive simultaneously (cold cache), the tree sees many inserts, each requiring DashMap write locks. The 32-shard root mitigates this.</li>
+</ul>
+
+<hr>
+
+<h2 id="§9-tech-debt-code-quality">§9 Tech Debt & Code Quality <a class="heading-anchor" href="#§9-tech-debt-code-quality" aria-label="Link to §9-tech-debt-code-quality">#</a></h2>
+
+<h3 id="test-coverage">Test coverage <a class="heading-anchor" href="#test-coverage" aria-label="Link to test-coverage">#</a></h3>
+
+<p>Three-tier test suite:</p>
+<ul>
+<li><strong>Unit tests</strong> (<code>py_test/unit/</code>): arg parsing, config validation</li>
+<li><strong>Integration tests</strong> (<code>py_test/integration/</code>): all 6 LB policies, circuit breaker state transitions, retry logic, PD routing</li>
+<li><strong>E2E tests</strong> (<code>py_test/e2e/</code>): full router with mock workers (regular, PD, embeddings)</li>
+</ul>
+
+<p>No <code>pytest --cov</code> badge or coverage numbers published. Rust-side unit tests likely exist in <code>#[cfg(test)]</code> modules but are not surfaced in the repo's CI config.</p>
+
+<h3 id="ci">CI <a class="heading-anchor" href="#ci" aria-label="Link to ci">#</a></h3>
+
+<p><code>.buildkite/</code> pipeline config present. No GitHub Actions visible. Buildkite likely runs <code>cargo test</code>, <code>cargo clippy</code>, Python tests, and Docker builds.</p>
+
+<h3 id="linter-discipline">Linter discipline <a class="heading-anchor" href="#linter-discipline" aria-label="Link to linter-discipline">#</a></h3>
+
+<ul>
+<li>Rust: <code>Cargo.toml</code> workspace with standard edition settings; <code>clippy</code> likely enforced in CI</li>
+<li>Python: <code>pyproject.toml</code> present; no visible <code>ruff</code> or <code>mypy</code> config</li>
+</ul>
+
+<h3 id="known-warts">Known warts <a class="heading-anchor" href="#known-warts" aria-label="Link to known-warts">#</a></h3>
+
+<ol>
+<li>No <code>CHANGELOG.md</code> — version history only from git tags</li>
+<li><code>handler.rs</code> and <code>server.rs</code> were inaccessible during L1 fetch (timeout), suggesting large files that may benefit from splitting</li>
+<li><code>mini_lb.py</code> is a "debug only" pure-Python mini load balancer — tech debt artifact</li>
+<li>Rendezvous hashing policy exists but is not documented in the README's policy table</li>
+</ul>
+
+<h3 id="dependency-health">Dependency health <a class="heading-anchor" href="#dependency-health" aria-label="Link to dependency-health">#</a></h3>
+
+<p>Key Rust dependencies: <code>axum</code> (web framework), <code>tokio</code> (async runtime), <code>hyper</code> (HTTP), <code>dashmap</code> (concurrent map), <code>pyo3</code> (Python bindings), <code>serde</code>/<code>serde_json</code>, <code>clap</code> (CLI), <code>kube</code> (K8s client), <code>zeromq</code> (ZMQ), <code>prometheus</code> (metrics). All are actively maintained, mainstream crates.</p>
+
+<p>Key Python dependencies: <code>maturin</code>/<code>setuptools-rust</code> for PyO3 build. The Python surface is thin enough to have minimal dependency risk.</p>
+
+<hr>
+
+<h2 id="§10-community-health">§10 Community Health <a class="heading-anchor" href="#§10-community-health" aria-label="Link to §10-community-health">#</a></h2>
+
+<table>
+<tr><th>Metric</th><th>Observation</th></tr>
+<tr><td>Stars</td><td>233 (growing — project is young, v0.1.x)</td></tr>
+<tr><td>License</td><td>Apache-2.0 (permissive)</td></tr>
+<tr><td>Primary author</td><td>Byron Hsu</td></tr>
+<tr><td>Org</td><td>vllm-project (corporate-backed by the vLLM team)</td></tr>
+<tr><td>Bus factor</td><td>Low — appears primarily single-maintainer with the vLLM org as backstop</td></tr>
+<tr><td>Governance</td><td>Part of the vllm-project GitHub org; effectively BDFL + org review</td></tr>
+<tr><td>Fork origin</td><td>SGLang Model Gateway; has diverged significantly</td></tr>
+</table>
+
+<p>The project is early-stage (v0.1.14) and tightly coupled to vLLM's PD disaggregation roadmap. Being under the <code>vllm-project</code> org provides credibility and long-term maintenance assurance, but the bus factor for the router-specific code is currently low.</p>
+
+<hr>
+
+<h2 id="§11-comparison-with-alternatives">§11 Comparison with Alternatives <a class="heading-anchor" href="#§11-comparison-with-alternatives" aria-label="Link to §11-comparison-with-alternatives">#</a></h2>
+
+<table>
+<tr><th>Dimension</th><th><strong>vllm-project/router</strong></th><th><strong>SGLang Model Gateway</strong></th><th><strong>Nginx/HAProxy</strong></th><th><strong>Custom Python router</strong></th></tr>
+<tr><td>Language</td><td>Rust + Python (PyO3)</td><td>Python</td><td>C</td><td>Python</td></tr>
+<tr><td>Cache-aware routing</td><td><strong>Yes</strong> (radix tree)</td><td>Yes (radix tree, original impl)</td><td>No</td><td>Possible but slow</td></tr>
+<tr><td>PD disaggregation</td><td><strong>Yes</strong> (NIXL/Mooncake/MoRI)</td><td>Partial</td><td>No</td><td>Manual</td></tr>
+<tr><td>LB policies</td><td>6 (including P2C, HRW)</td><td>Fewer</td><td>Many (generic)</td><td>Custom</td></tr>
+<tr><td>Circuit breaker</td><td><strong>Built-in</strong></td><td>No</td><td>External</td><td>Manual</td></tr>
+<tr><td>K8s service discovery</td><td><strong>Native</strong> (kube-rs)</td><td>No</td><td>Ingress controller</td><td>Manual</td></tr>
+<tr><td>Latency overhead</td><td><strong>Sub-µs</strong> (Rust hot path)</td><td>~ms (Python)</td><td>Sub-µs</td><td>~ms</td></tr>
+<tr><td>Observability</td><td>Prometheus + OTel</td><td>Basic</td><td>Extensive</td><td>Custom</td></tr>
+<tr><td>OpenAI API compat</td><td><strong>Full</strong> (chat, completion, embeddings, rerank, responses)</td><td>Partial</td><td>Passthrough</td><td>Custom</td></tr>
+<tr><td>Ecosystem fit</td><td>vLLM-native</td><td>SGLang-native</td><td>Generic</td><td>Any</td></tr>
+<tr><td>Maturity</td><td>v0.1.x (early)</td><td>Integrated in SGLang</td><td><strong>Battle-tested</strong></td><td>Varies</td></tr>
+</table>
+
+<p><strong>Key differentiator</strong>: The router is the only option that combines sub-microsecond Rust routing decisions with vLLM-native PD disaggregation support across three KV connector backends. The SGLang gateway has the cache-aware radix tree (it's the original source), but lacks the Rust performance and vLLM PD integration.</p>
+
+<hr>
+
+<h2 id="§12-verdict-recommendations">§12 Verdict & Recommendations <a class="heading-anchor" href="#§12-verdict-recommendations" aria-label="Link to §12-verdict-recommendations">#</a></h2>
+
+<h3 id="when-to-adopt-the-yes-regime">When to adopt (the "yes" regime) <a class="heading-anchor" href="#when-to-adopt-the-yes-regime" aria-label="Link to when-to-adopt-the-yes-regime">#</a></h3>
+
+<ul>
+<li>You run <strong>≥2 vLLM workers</strong> behind a single endpoint and need cache-aware or PD-disaggregated routing</li>
+<li>You need <strong>vLLM-specific PD disaggregation</strong> (NIXL/Mooncake/MoRI-IO connectors)</li>
+<li>You want <strong>Kubernetes-native</strong> service discovery for dynamically scaling vLLM pods</li>
+<li>You need production-grade resilience (circuit breakers, retries) with minimal latency overhead</li>
+<li>Your deployment uses <strong>data parallelism</strong> with <code>intra_node_data_parallel_size > 1</code> and needs transparent rank injection</li>
+</ul>
+
+<h3 id="when-not-to-adopt-the-no-regime">When NOT to adopt (the "no" regime) <a class="heading-anchor" href="#when-not-to-adopt-the-no-regime" aria-label="Link to when-not-to-adopt-the-no-regime">#</a></h3>
+
+<ul>
+<li>You use <strong>SGLang, TensorRT-LLM, or other non-vLLM</strong> backends — the PD disaggregation is vLLM-specific</li>
+<li>You only have a <strong>single worker</strong> — no routing needed</li>
+<li>You need a <strong>general-purpose API gateway</strong> with auth, rate-limiting, transformation — use a dedicated gateway (Kong, Envoy) with this router behind it</li>
+<li>You need <strong>stable, battle-tested</strong> production software — v0.1.x with low bus factor carries risk for mission-critical deployments</li>
+<li>You require <strong>custom routing logic</strong> beyond the 6 built-in policies and don't want to write Rust</li>
+</ul>
+
+<h3 id="usage-gotchas">Usage gotchas <a class="heading-anchor" href="#usage-gotchas" aria-label="Link to usage-gotchas">#</a></h3>
+
+<ol>
+<li><strong>Cache-aware threshold tuning</strong>: The <code>cache_threshold</code> parameter critically affects routing quality. Too low → false cache hits cause imbalanced load; too high → no affinity benefit. Start with 0.5 and tune based on your prompt distribution.</li>
+<li><strong>DP size must match backend</strong>: <code>intra_node_data_parallel_size</code> in the router MUST equal the DP size configured on the vLLM workers. Mismatch causes silent routing errors (requests to wrong ranks).</li>
+<li><strong>ZMQ discovery is NCCL-only</strong>: The <code>--vllm-discovery-address</code> flag only works with the NCCL connector, not NIXL or Mooncake.</li>
+<li><strong>No graceful worker drain</strong>: Removing a worker (via K8s scaling or health failure) drops in-flight requests to that worker. The retry mechanism catches some, but streaming responses are lost.</li>
+<li><strong>Token bucket is per-router, not per-user</strong>: The <code>rate_limit_tokens_per_second</code> applies globally, not per API key. Multi-tenant fairness requires an external gateway.</li>
+</ul>
+
+<h3 id="suggested-contributions">Suggested contributions <a class="heading-anchor" href="#suggested-contributions" aria-label="Link to suggested-contributions">#</a></h3>
+
+<ul>
+<li>Add integration benchmarks with published numbers (router overhead per policy under load)</li>
+<li>Document the Rendezvous hashing policy in the README</li>
+<li>Implement graceful worker drain (finish in-flight, stop new) before removal</li>
+<li>Add per-user rate limiting for multi-tenant deployments</li>
+</ul>
+
+<hr>
+
+<h2 id="§13-implementation-cross-reference">§13 Implementation Cross-Reference <a class="heading-anchor" href="#§13-implementation-cross-reference" aria-label="Link to §13-implementation-cross-reference">#</a></h2>
+
+<table>
+<tr><th>Concept</th><th>File</th><th>Key function/struct</th></tr>
+<tr><td>Cache-aware routing decision</td><td><code>src/policies/cache_aware.rs</code></td><td><code>CacheAwarePolicy::select_worker_with_headers</code></td></tr>
+<tr><td>Radix tree prefix match</td><td><code>src/tree.rs</code></td><td><code>Tree::prefix_match_with_counts</code></td></tr>
+<tr><td>Radix tree insert/eviction</td><td><code>src/tree.rs</code></td><td><code>Tree::insert</code>, <code>Tree::evict_tenant_by_size</code></td></tr>
+<tr><td>Worker abstraction</td><td><code>src/core/worker.rs</code></td><td><code>Worker</code> trait, <code>BasicWorker</code>, <code>DPAwareWorker</code></td></tr>
+<tr><td>Circuit breaker FSM</td><td><code>src/core/circuit_breaker.rs</code></td><td><code>CircuitBreaker</code></td></tr>
+<tr><td>Retry with backoff</td><td><code>src/core/retry.rs</code></td><td>exponential backoff + jitter</td></tr>
+<tr><td>PD routing (vLLM)</td><td><code>src/routers/http/vllm_pd_router.rs</code></td><td><code>VllmPrefillDecodeRouter</code></td></tr>
+<tr><td>PD routing (generic)</td><td><code>src/routers/http/pd_router.rs</code></td><td>generic PD router</td></tr>
+<tr><td>Policy factory</td><td><code>src/policies/factory.rs</code></td><td><code>PolicyFactory</code></td></tr>
+<tr><td>Router factory</td><td><code>src/routers/factory.rs</code></td><td><code>RouterFactory</code></td></tr>
+<tr><td>Config types</td><td><code>src/config/types.rs</code></td><td><code>RouterConfig</code>, <code>RoutingMode</code>, <code>PolicyConfig</code></td></tr>
+<tr><td>K8s service discovery</td><td><code>src/service_discovery.rs</code></td><td>K8s pod watcher</td></tr>
+<tr><td>ZMQ service discovery</td><td><code>src/routers/http/vllm_service_discovery.rs</code></td><td>ZMQ worker registration</td></tr>
+<tr><td>PyO3 binding</td><td><code>src/lib.rs</code></td><td><code>Router</code>, <code>PolicyType</code>, <code>vllm_router_rs</code> module</td></tr>
+<tr><td>Python CLI</td><td><code>py_src/vllm_router/launch_router.py</code></td><td><code>main()</code>, <code>launch_router()</code></td></tr>
+<tr><td>DP rank injection</td><td><code>src/routers/http/dp_utils.rs</code></td><td><code>X-data-parallel-rank</code> header</td></tr>
+<tr><td>Logprobs merging</td><td><code>src/routers/http/logprobs_merge.rs</code></td><td>streaming logprobs merge</td></tr>
+<tr><td>Prometheus metrics</td><td><code>src/metrics.rs</code></td><td><code>RouterMetrics</code></td></tr>
+<tr><td>OpenTelemetry</td><td><code>src/otel_trace.rs</code></td><td>tracing setup</td></tr>
+</table>
+
+<p><strong>核心技术壁垒</strong>: The concurrent multi-tenant radix tree (<code>src/tree.rs</code>) with character-level prefix matching, probabilistic LRU timestamps (1-in-8 update), custom <code>CharHasher</code>, interned tenant IDs, and the two-regime load-balance/cache-affinity switch in <code>CacheAwarePolicy</code>. Replicating this requires deep understanding of both concurrent data structure design and LLM serving cache dynamics.</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
