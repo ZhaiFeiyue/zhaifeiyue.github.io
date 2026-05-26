@@ -196,148 +196,250 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="kernel-survey">kernel Survey</h1>
-<div class="card-meta">8 papers</div>
+<div class="card-meta">11 papers</div>
 <div class="link-area" style="border-top:none;margin-top:8px">
 <a href="/overview/">← Overview</a>
 </div>
 <div class="detail-content">
 
-<h1 id="kernel-类别全景">Kernel 类别全景 <a class="heading-anchor" href="#kernel-类别全景" aria-label="Link to kernel-类别全景">#</a></h1>
+<h1 id="gpu-kernel-optimization-—-l3-category-survey">GPU Kernel Optimization — L3 Category Survey <a class="heading-anchor" href="#gpu-kernel-optimization-—-l3-category-survey" aria-label="Link to gpu-kernel-optimization-—-l3-category-survey">#</a></h1>
 
-<h2 id="1-现状快照">1. 现状快照 <a class="heading-anchor" href="#1-现状快照" aria-label="Link to 1-现状快照">#</a></h2>
+<h2 id="§1-现状快照">§1 现状快照 <a class="heading-anchor" href="#§1-现状快照" aria-label="Link to §1-现状快照">#</a></h2>
 
-<p>2024–2026 年 GPU kernel 领域的核心叙事是<strong>低比特量化 attention 的代际跃迁</strong>与<strong>多 chiplet GPU 架构下的调度觉醒</strong>。清华朱军团队的 SageAttention 系列 <a href="/papers/2410.02367/detail.html#core-contribution" class="ref-link" title="L2:2410.02367#core-contribution">[L2:2410.02367]</a> <a href="/papers/2411.10958/detail.html#core-contribution" class="ref-link" title="L2:2411.10958#core-contribution">[L2:2411.10958]</a> <a href="/papers/2505.11594/detail.html#core-contribution" class="ref-link" title="L2:2505.11594#core-contribution">[L2:2505.11594]</a> <a href="/papers/2505.21136/detail.html#core-contribution" class="ref-link" title="L2:2505.21136#core-contribution">[L2:2505.21136]</a> 在三代迭代中将 attention kernel 从 FP16 推进到 INT8→INT4→FP4，吞吐量从 FlashAttention2 的 1× 提升到 5×。与此同时，GPU 硬件从单 die 走向多 chiplet（MI300X 8 XCD、Blackwell 双 die），迫使 kernel 开发者重新思考数据局部性和资源调度 <a href="/papers/2511.02132/detail.html#core-contribution" class="ref-link" title="L2:2511.02132#core-contribution">[L2:2511.02132]</a> <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a>。稀疏-线性混合 attention <a href="/papers/2509.24006/detail.html#core-contribution" class="ref-link" title="L2:2509.24006#core-contribution">[L2:2509.24006]</a> 则打开了 95% 稀疏度下无损加速的新范式。</p>
+<p>GPU kernel 优化在 2024–2026 年经历了从手工调优到 AI-augmented 自动搜索的范式转变，同时量化注意力（INT8→INT4→FP4）成为 attention kernel 的主战场。NVIDIA Blackwell 和 AMD CDNA4 双雄格局下，kernel 设计从单一 vendor CUDA 生态扩展到跨平台 tile-based DSL，而 persistent kernel、DMA offload 等 runtime 层创新开始挑战"one op = one kernel launch"的传统范式。清华 SageAttention 系列（4 篇）以"量化精度压缩 + 硬件指令匹配"路线占据 attention 加速的统治地位；AVO/μCUTLASS 代表 LLM-agent 驱动的自动优化新方向；HipKittens 则填补了 AMD 高性能 kernel 的工具链空白。</p>
 
-<h2 id="2-主线与分支">2. 主线与分支 <a class="heading-anchor" href="#2-主线与分支" aria-label="Link to 2-主线与分支">#</a></h2>
+<h2 id="§2-taxonomy">§2 Taxonomy <a class="heading-anchor" href="#§2-taxonomy" aria-label="Link to §2-taxonomy">#</a></h2>
 
-<h3 id="2-1-attention-量化加速（主线）">2.1 Attention 量化加速（主线） <a class="heading-anchor" href="#2-1-attention-量化加速（主线）" aria-label="Link to 2-1-attention-量化加速（主线）">#</a></h3>
-
-<p>这是当前 kernel 领域最活跃的研究方向，由 SageAttention 系列（清华）主导，四篇论文形成完整的技术演进链。</p>
-
-<p><strong>第一代：INT8 混合精度（SageAttention）</strong>。核心洞察是 K 矩阵的 channel-wise outlier 本质上是所有 token 共享的大偏置，通过 Smooth K（减去通道均值）消除后，INT8 per-block 量化的余弦相似度从 30.6% 恢复到 99.3% <a href="/papers/2410.02367/detail.html#numerical-considerations" class="ref-link" title="L2:2410.02367#numerical-considerations">[L2:2410.02367]</a>。$QK^\top$ 用 INT8 Tensor Core，$PV$ 保持 FP16 但使用 FP16 累加器（RTX4090 上 2× 快于 FP32 累加器），整体在 RTX4090 上达到 341 TOPS，2.1× 快于 FlashAttention2 <a href="/papers/2410.02367/detail.html#performance-analysis" class="ref-link" title="L2:2410.02367#performance-analysis">[L2:2410.02367]</a>。</p>
-
-<p><strong>第二代：INT4+FP8（SageAttention2）</strong>。将 $QK^\top$ 从 INT8 推进到 INT4（利用 Ada 架构的 mma.m16n8k64 指令），$PV$ 改用 FP8。三个关键创新：(1) 双重 Smoothing（Q 和 K 都减均值），将 INT4 CosSim 从 80% 提升到 99.46% <a href="/papers/2411.10958/detail.html#key-findings" class="ref-link" title="L2:2411.10958#key-findings">[L2:2411.10958]</a>；(2) Per-thread 量化——利用 MMA 指令的线程-数据映射关系，每个 GPU 线程只需一个量化 scale，精度接近 per-token 但零额外开销 <a href="/papers/2411.10958/detail.html#numerical-considerations" class="ref-link" title="L2:2411.10958#numerical-considerations">[L2:2411.10958]</a>；(3) 发现 NVIDIA Ada/Hopper 的 FP8 MMA 累加器实际只有 FP22 精度（13 位尾数而非 23 位），通过两级 FP32 buffer 累加消除精度损失 <a href="/papers/2411.10958/detail.html#key-findings" class="ref-link" title="L2:2411.10958#key-findings">[L2:2411.10958]</a>。RTX4090 上达到 481 TOPS，3× 快于 FlashAttention2 <a href="/papers/2411.10958/detail.html#performance-analysis" class="ref-link" title="L2:2411.10958#performance-analysis">[L2:2411.10958]</a>。</p>
-
-<p><strong>第二代增强：FP16 累加器（SageAttention2++）</strong>。发现 <code>mma.f16.f8.f8.f16</code> 指令比 FP32 累加器版本快 2×（总计 4× 快于 FP16），通过缩窄 P 和 V 的 FP8 量化范围（$P_r=224$, $V_r=4.5$，满足 $P_r \times V_r \leq 1023.5$）避免 FP16 累加器溢出。Delayed FP32 Buffering（每两次 MMA 结果在 FP16 中累加后再转 FP32）减半类型转换开销。精度完全不变（CosSim 99.97%），速度提升到 FlashAttention2 的 3.9× <a href="/papers/2505.21136/detail.html#key-findings" class="ref-link" title="L2:2505.21136#key-findings">[L2:2505.21136]</a>。</p>
-
-<p><strong>第三代：FP4 microscaling（SageAttention3）</strong>。利用 Blackwell GPU 的 NVFP4 Tensor Core（E2M1 数据类型，1×16 block，E4M3 scale factor），将两个 matmul 都量化到 FP4。核心创新是 <strong>two-level quantization</strong>——softmax 输出 P 的值域 $[0,1]$ 导致 FP4 scale factor 仅利用 E4M3 格式 28% 的可表示值，通过先 per-token 归一化到 $[0, 448 \times 6]$ 再做 microscaling，可用表示值从 280 增加到 1016 <a href="/papers/2505.11594/detail.html#key-findings" class="ref-link" title="L2:2505.11594#key-findings">[L2:2505.11594]</a>。RTX5090 上达到 1038 TOPS，5× 快于 FlashAttention2，端到端加速 HunyuanVideo 3× <a href="/papers/2505.11594/detail.html#performance-analysis" class="ref-link" title="L2:2505.11594#performance-analysis">[L2:2505.11594]</a>。同时首次将 INT8 量化扩展到训练反向传播（SageBwd），微调无损但预训练收敛较慢 <a href="/papers/2505.11594/detail.html#key-findings" class="ref-link" title="L2:2505.11594#key-findings">[L2:2505.11594]</a>。</p>
-
-<h3 id="2-2-稀疏-线性混合-attention">2.2 稀疏-线性混合 Attention <a class="heading-anchor" href="#2-2-稀疏-线性混合-attention" aria-label="Link to 2-2-稀疏-线性混合-attention">#</a></h3>
-
-<p><strong>SLA（Sparse-Linear Attention）</strong> 发现 Diffusion Transformer 的注意力权重天然分为三类：少量大权重（高秩，<10%）、大量小权重（极低秩，>90%）、可忽略权重 <a href="/papers/2509.24006/detail.html#key-findings" class="ref-link" title="L2:2509.24006#key-findings">[L2:2509.24006]</a>。据此提出三路并行：critical 块用 FlashAttention 精确计算，marginal 块用线性注意力 $O(N)$ 近似，negligible 块直接跳过。三种计算融合在单个 GPU kernel 中 <a href="/papers/2509.24006/detail.html#optimization-techniques" class="ref-link" title="L2:2509.24006#optimization-techniques">[L2:2509.24006]</a>。在 Wan2.1-1.3B 上实现 95% 稀疏度（52.75T→2.74T FLOPs），attention kernel 加速 13.7×，端到端视频生成加速 2.2× <a href="/papers/2509.24006/detail.html#performance-analysis" class="ref-link" title="L2:2509.24006#performance-analysis">[L2:2509.24006]</a>。仅需 2000 步微调（<预训练成本 0.1%）。</p>
-
-<h3 id="2-3-gpu-架构感知的-kernel-调度">2.3 GPU 架构感知的 Kernel 调度 <a class="heading-anchor" href="#2-3-gpu-架构感知的-kernel-调度" aria-label="Link to 2-3-gpu-架构感知的-kernel-调度">#</a></h3>
-
-<p><strong>NUMA-aware Attention（Swizzled Head-first Mapping）</strong>。AMD MI300X 的 8 XCD chiplet 架构引入显著 NUMA 效应——每 XCD 仅 4MB 私有 L2 cache，FlashAttention2 的 round-robin 调度将同一 head 的 workgroup 打散到不同 XCD，导致 L2 命中率暴跌至 ~1% <a href="/papers/2511.02132/detail.html#key-findings" class="ref-link" title="L2:2511.02132#key-findings">[L2:2511.02132]</a>。Swizzled Head-first Mapping 将同一 attention head 的所有 workgroup 映射到同一 XCD，以 ~15 行 Triton swizzle 代码实现 L2 命中率 80-97%、最高 50% 性能提升 <a href="/papers/2511.02132/detail.html#performance-analysis" class="ref-link" title="L2:2511.02132#performance-analysis">[L2:2511.02132]</a>。MHA（如 DeepSeek-V3, H=128）收益最大，GQA 因 KV group 数与 XCD 数天然匹配而收益较小 <a href="/papers/2511.02132/detail.html#key-findings" class="ref-link" title="L2:2511.02132#key-findings">[L2:2511.02132]</a>。</p>
-
-<p><strong>计算-通信并发（ConCCL）</strong>。将 all-gather/all-to-all 通信 offload 到 MI300X 的 14 个 SDMA 引擎（DMA 位于 IOD 层、不经过 L1/L2 cache），消除与 GEMM 的 compute interference <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>。C3（Concurrent Computation and Communication）加速比从 baseline 的 21% 提升到 72%（理想加速比的比例）<a href="/papers/2412.14335/detail.html#performance-analysis" class="ref-link" title="L2:2412.14335#performance-analysis">[L2:2412.14335]</a>。关键发现是 memory-bound GEMM 在减少 CU 时反而加速（更好的 cache locality），而 communication kernel 仅需 32-64 CU（总 304 中的 10-20%）<a href="/papers/2412.14335/detail.html#key-findings" class="ref-link" title="L2:2412.14335#key-findings">[L2:2412.14335]</a>。</p>
-
-<h3 id="2-4-amd-gpu-编程框架">2.4 AMD GPU 编程框架 <a class="heading-anchor" href="#2-4-amd-gpu-编程框架" aria-label="Link to 2-4-amd-gpu-编程框架">#</a></h3>
-
-<p><strong>HipKittens</strong> 是首个系统性的 AMD GPU C++ tile-based 编程框架，将 ThunderKittens 的 tile 抽象（typed tiles + PyTorch 风格算子）移植到 AMD CDNA3/CDNA4 <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a>。核心发现：NVIDIA 的 wave specialization（producer-consumer）在 AMD 上仅达峰值 80%——静态寄存器分配使 producer wave 浪费寄存器 <a href="/papers/2511.08083/detail.html#key-findings" class="ref-link" title="L2:2511.08083#key-findings">[L2:2511.08083]</a>。替代方案是 <strong>8-wave ping-pong</strong>（每 SIMD 2 wave 交替 compute/memory），仅 48 行代码即可匹配手写汇编的 GEMM 性能 <a href="/papers/2511.08083/detail.html#key-findings" class="ref-link" title="L2:2511.08083#key-findings">[L2:2511.08083]</a>。在 MI355X 上，BF16 GEMM 达 1610 TFLOPS（64.4% 峰值），FP8 GEMM 达 3327 TFLOPS（66.5% 峰值），GQA backward 比所有基线快 1.8-2.5× <a href="/papers/2511.08083/detail.html#performance-analysis" class="ref-link" title="L2:2511.08083#performance-analysis">[L2:2511.08083]</a>。显式寄存器 pinning 绕过 HIPCC 限制、直接使用 AGPR 作为 MFMA 输入，在 attention backward 上带来 20% 性能提升 <a href="/papers/2511.08083/detail.html#key-findings" class="ref-link" title="L2:2511.08083#key-findings">[L2:2511.08083]</a>。</p>
-
-<h2 id="3-核心-trade-off-轴">3. 核心 trade-off 轴 <a class="heading-anchor" href="#3-核心-trade-off-轴" aria-label="Link to 3-核心-trade-off-轴">#</a></h2>
-
-<h3 id="轴一：精度-vs-速度">轴一：精度 vs 速度 <a class="heading-anchor" href="#轴一：精度-vs-速度" aria-label="Link to 轴一：精度-vs-速度">#</a></h3>
-
-<p>SageAttention 系列构建了一条清晰的 Pareto 前沿：</p>
+<h3 id="维度定义">维度定义 <a class="heading-anchor" href="#维度定义" aria-label="Link to 维度定义">#</a></h3>
 
 <table>
-<tr><th>方法</th><th>量化精度</th><th>RTX4090/5090 TOPS</th><th>CosSim</th><th>相对 FA2 加速</th></tr>
-<tr><td>FlashAttention2</td><td>FP16</td><td>165 / 214</td><td>100%</td><td>1×</td></tr>
-<tr><td>SageAttention</td><td>INT8+FP16</td><td>341 / 479</td><td>99.996%</td><td>2.1×</td></tr>
-<tr><td>SageAttention2</td><td>INT4+FP8</td><td>481 / —</td><td>99.46%</td><td>3×</td></tr>
-<tr><td>SageAttention2++</td><td>INT4+FP8(f16acc)</td><td>640 / —</td><td>99.97%</td><td>3.9×</td></tr>
-<tr><td>SageAttention3</td><td>FP4+FP4</td><td>— / 1038</td><td>99.55%</td><td>5×</td></tr>
+<tr><th>维度</th><th>轴</th><th>说明</th></tr>
+<tr><td><strong>Method</strong></td><td>Quantization / Sparsity / Scheduling / Auto-search / DSL-abstraction</td><td>kernel 加速的核心技术路线</td></tr>
+<tr><td><strong>Target Operation</strong></td><td>Attention / GEMM / Micro-ops / Communication</td><td>kernel 优化的计算对象</td></tr>
+<tr><td><strong>Hardware Scope</strong></td><td>NVIDIA-only / AMD-only / Cross-vendor</td><td>目标硬件生态</td></tr>
 </table>
 
-<p><a href="/papers/2505.11594/detail.html#key-tables" class="ref-link" title="L2:2505.11594#key-tables">[L2:2505.11594]</a> <a href="/papers/2505.21136/detail.html#key-findings" class="ref-link" title="L2:2505.21136#key-findings">[L2:2505.21136]</a> <a href="/papers/2410.02367/detail.html#performance-analysis" class="ref-link" title="L2:2410.02367#performance-analysis">[L2:2410.02367]</a></p>
-
-<p>SageAttention2++ 是一个值得注意的异常点——通过 FP16 累加器 + 缩窄量化范围，在 <em>不损失精度</em> 的情况下比 SageAttention2 更快（CosSim 99.97% vs 99.46%），证明了累加器精度策略比数据精度本身更重要 <a href="/papers/2505.21136/detail.html#numerical-considerations" class="ref-link" title="L2:2505.21136#numerical-considerations">[L2:2505.21136]</a>。</p>
-
-<h3 id="轴二：硬件特异性-vs-可移植性">轴二：硬件特异性 vs 可移植性 <a class="heading-anchor" href="#轴二：硬件特异性-vs-可移植性" aria-label="Link to 轴二：硬件特异性-vs-可移植性">#</a></h3>
+<h3 id="论文在-taxonomy-中的定位">论文在 Taxonomy 中的定位 <a class="heading-anchor" href="#论文在-taxonomy-中的定位" aria-label="Link to 论文在-taxonomy-中的定位">#</a></h3>
 
 <table>
-<tr><th>方法</th><th>硬件依赖</th><th>可移植性</th></tr>
-<tr><td>SageAttention</td><td>Triton (INT8 TC)</td><td>Ampere/Ada/潜在 AMD HIP</td></tr>
-<tr><td>SageAttention2</td><td>CUDA PTX (INT4 TC)</td><td>仅 Ada；Hopper 退回 INT8</td></tr>
-<tr><td>SageAttention3</td><td>CUTLASS 3.x (FP4 TC)</td><td>仅 Blackwell</td></tr>
-<tr><td>Swizzled Head-first</td><td>Triton + MI300X</td><td>仅 AMD chiplet GPU</td></tr>
-<tr><td>HipKittens</td><td>HIP C++ + 内联汇编</td><td>仅 AMD CDNA3/CDNA4</td></tr>
+<tr><th>Paper</th><th>Method</th><th>Target Op</th><th>HW Scope</th></tr>
+<tr><td>SageAttention (2410.02367)</td><td>Quantization (INT8)</td><td>Attention</td><td>NVIDIA Ada/Ampere</td></tr>
+<tr><td>SageAttention2 (2411.10958)</td><td>Quantization (INT4+FP8)</td><td>Attention</td><td>NVIDIA Ada/Hopper</td></tr>
+<tr><td>SageAttention2++ (2505.21136)</td><td>Quantization (FP8+FP16acc)</td><td>Attention</td><td>NVIDIA Ada/Blackwell</td></tr>
+<tr><td>SageAttention3 (2505.11594)</td><td>Quantization (FP4 microscaling)</td><td>Attention</td><td>NVIDIA Blackwell</td></tr>
+<tr><td>SLA (2509.24006)</td><td>Sparsity + Linear hybrid</td><td>Attention</td><td>NVIDIA Blackwell</td></tr>
+<tr><td>AVO (2603.24517)</td><td>Auto-search (agentic evolution)</td><td>Attention</td><td>NVIDIA Blackwell</td></tr>
+<tr><td>μCUTLASS (2603.29010)</td><td>DSL-abstraction + Auto-search</td><td>GEMM / Attention / Conv</td><td>NVIDIA Hopper</td></tr>
+<tr><td>GPUOS (2604.17861)</td><td>Scheduling (persistent kernel)</td><td>Micro-ops</td><td>NVIDIA (multi-gen)</td></tr>
+<tr><td>ConCCL (2412.14335)</td><td>Scheduling (DMA offload)</td><td>Communication</td><td>AMD MI300X</td></tr>
+<tr><td>NUMA-Attn (2511.02132)</td><td>Scheduling (chiplet swizzle)</td><td>Attention</td><td>AMD MI300X</td></tr>
+<tr><td>HipKittens (2511.08083)</td><td>DSL-abstraction</td><td>GEMM / Attention</td><td>AMD CDNA3/4</td></tr>
 </table>
 
-<p><a href="/papers/2410.02367/detail.html#portability" class="ref-link" title="L2:2410.02367#portability">[L2:2410.02367]</a> <a href="/papers/2411.10958/detail.html#portability" class="ref-link" title="L2:2411.10958#portability">[L2:2411.10958]</a> <a href="/papers/2505.11594/detail.html#portability" class="ref-link" title="L2:2505.11594#portability">[L2:2505.11594]</a> <a href="/papers/2511.08083/detail.html#portability" class="ref-link" title="L2:2511.08083#portability">[L2:2511.08083]</a></p>
+<h2 id="§3-主线与分支">§3 主线与分支 <a class="heading-anchor" href="#§3-主线与分支" aria-label="Link to §3-主线与分支">#</a></h2>
 
-<p>每一代量化精度的提升都伴随着硬件绑定的收紧。SageAttention 的 Triton 实现理论上可通过 HIP backend 移植到 AMD，但 SageAttention3 的 FP4 kernel 完全锁定在 Blackwell 架构上 <a href="/papers/2505.11594/detail.html#portability" class="ref-link" title="L2:2505.11594#portability">[L2:2505.11594]</a>。AMD 侧的 HipKittens 则证明了 tile 抽象可以跨厂商统一接口，但底层调度必须根本性地重新设计 <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a>。</p>
+<h3 id="主线-a-量化-attention-加速（sageattention-系列）">主线 A: 量化 Attention 加速（SageAttention 系列） <a class="heading-anchor" href="#主线-a-量化-attention-加速（sageattention-系列）" aria-label="Link to 主线-a-量化-attention-加速（sageattention-系列）">#</a></h3>
 
-<h3 id="轴三：算法复杂度-vs-实际加速">轴三：算法复杂度 vs 实际加速 <a class="heading-anchor" href="#轴三：算法复杂度-vs-实际加速" aria-label="Link to 轴三：算法复杂度-vs-实际加速">#</a></h3>
+<p>SageAttention → SageAttention2 → SageAttention2++ → SageAttention3 构成了清晰的精度递降、速度递升的演进链条：</p>
 
-<p>SLA 的 95% FLOPs 缩减（理论 20× 加速）最终转化为 13.7× kernel 加速和 2.2× 端到端加速 <a href="/papers/2509.24006/detail.html#performance-analysis" class="ref-link" title="L2:2509.24006#performance-analysis">[L2:2509.24006]</a>，反映了非 attention 计算（线性层等）的 Amdahl 瓶颈。SageAttention3 的 5× kernel 加速在 HunyuanVideo 上转化为 3× 端到端加速 <a href="/papers/2505.11594/detail.html#key-tables" class="ref-link" title="L2:2505.11594#key-tables">[L2:2505.11594]</a>，在 LLM 训练上仅 1.1-1.15× <a href="/papers/2505.11594/detail.html#key-tables" class="ref-link" title="L2:2505.11594#key-tables">[L2:2505.11594]</a>。ConCCL 的 DMA offload 在 microbenchmark 上达到理想加速比的 72%，但缺乏端到端训练验证 <a href="/papers/2412.14335/detail.html#performance-analysis" class="ref-link" title="L2:2412.14335#performance-analysis">[L2:2412.14335]</a>。</p>
-
-<h2 id="4-冲突与争议">4. 冲突与争议 <a class="heading-anchor" href="#4-冲突与争议" aria-label="Link to 4-冲突与争议">#</a></h2>
-
-<h3 id="int-量化-vs-fp-量化">INT 量化 vs FP 量化 <a class="heading-anchor" href="#int-量化-vs-fp-量化" aria-label="Link to int-量化-vs-fp-量化">#</a></h3>
-
-<p>SageAttention 系列在 attention 中一贯优先选择 INT 格式而非 FP 格式。SageAttention 在 RTX4090 上证明 INT8 比 FP8（E4M3, E5M2）更精确且速度快 2× <a href="/papers/2410.02367/detail.html#key-findings" class="ref-link" title="L2:2410.02367#key-findings">[L2:2410.02367]</a>。SageBwd（训练）也选择 INT8 而非 FP8（dQ CosSim: 0.9987 vs 0.9880）<a href="/papers/2505.11594/detail.html#key-findings" class="ref-link" title="L2:2505.11594#key-findings">[L2:2505.11594]</a>。这与业界（FlashAttention3、NVIDIA 官方推荐）以 FP8 为主的路线形成对比。FlashAttention3 的 FP8 在视频生成模型上严重退化（CogVideoX VQA-t: 2.181 vs 原始 70.928）<a href="/papers/2411.10958/detail.html#key-tables" class="ref-link" title="L2:2411.10958#key-tables">[L2:2411.10958]</a>，而 SageAttention2 几乎无损。然而，FP4（SageAttention3）的引入说明在最低精度端，浮点格式反而成为唯一选择——INT4 TC 仅在 Ada 上存在，而 FP4 TC 在 Blackwell 上原生支持 <a href="/papers/2505.11594/detail.html#hardware-model" class="ref-link" title="L2:2505.11594#hardware-model">[L2:2505.11594]</a>。</p>
-
-<p><strong>结论：尚未完全分出胜负。</strong> INT 在中精度（8-bit/4-bit）上有精度优势，但 FP 在极低精度和新硬件支持上更具前景。</p>
-
-<h3 id="nvidia-wave-specialization-vs-amd-ping-pong">NVIDIA wave specialization vs AMD ping-pong <a class="heading-anchor" href="#nvidia-wave-specialization-vs-amd-ping-pong" aria-label="Link to nvidia-wave-specialization-vs-amd-ping-pong">#</a></h3>
-
-<p>HipKittens 明确证伪了在 AMD 上照搬 NVIDIA wave specialization 的做法——由于静态寄存器分配，producer wave 浪费寄存器，导致 output tile 尺寸受限、算术强度不足，仅达峰值 80% <a href="/papers/2511.08083/detail.html#key-findings" class="ref-link" title="L2:2511.08083#key-findings">[L2:2511.08083]</a>。替代的 8-wave ping-pong 以 0 个 producer wave 达到了最佳性能（1610 TFLOPS），与 NVIDIA B200 上 TK/CUTLASS 的 1538/1570 TFLOPS 相当 <a href="/papers/2511.08083/detail.html#key-tables" class="ref-link" title="L2:2511.08083#key-tables">[L2:2511.08083]</a>。这一发现颠覆了 "wave specialization 是高性能 kernel 必选项" 的普遍认知。</p>
-
-<h3 id="硬件透明-vs-软件调度">硬件透明 vs 软件调度 <a class="heading-anchor" href="#硬件透明-vs-软件调度" aria-label="Link to 硬件透明-vs-软件调度">#</a></h3>
-
-<p>NVIDIA Blackwell 选择用硬件 coherency 对软件隐藏多 die 的 NUMA 效应，而 AMD MI300X 显式暴露 NUMA、依赖软件侧的 NUMA-aware 调度 <a href="/papers/2511.02132/detail.html#逻辑故事还原（约束推导型）" class="ref-link" title="L2:2511.02132#逻辑故事还原（约束推导型）">[L2:2511.02132]</a>。Swizzled Head-first 在 MI300X 上的 50% 性能提升证明了软件调度的巨大潜力 <a href="/papers/2511.02132/detail.html#performance-analysis" class="ref-link" title="L2:2511.02132#performance-analysis">[L2:2511.02132]</a>，但也暴露了 AMD 生态对 kernel 开发者的更高要求。未来的 Rubin Ultra（4 die）可能重新需要类似优化 <a href="/papers/2511.02132/detail.html#portability" class="ref-link" title="L2:2511.02132#portability">[L2:2511.02132]</a>。</p>
-
-<h2 id="5-未探索角落">5. 未探索角落 <a class="heading-anchor" href="#5-未探索角落" aria-label="Link to 5-未探索角落">#</a></h2>
-
-<ol>
-<li><strong>Decode 阶段的低比特 attention</strong>：SageAttention 全系列 <a href="/papers/2410.02367/detail.html#limitations" class="ref-link" title="L2:2410.02367#limitations">[L2:2410.02367]</a> <a href="/papers/2505.11594/detail.html#limitations" class="ref-link" title="L2:2505.11594#limitations">[L2:2505.11594]</a> 和 SLA <a href="/papers/2509.24006/detail.html#limitations" class="ref-link" title="L2:2509.24006#limitations">[L2:2509.24006]</a> 均聚焦于 prefill/生成场景（长序列 compute-bound），LLM decode（短序列、大 batch、memory-bound）的量化 attention 效果未知。</li>
+<ul>
+<li><strong>SA1</strong> (INT8 QK + FP16 PV): 2.1× over FA2, 341 TOPS on RTX4090 <a href="/papers/2410.02367/detail.html#core-contribution" class="ref-link" title="L2:2410.02367#core-contribution">[L2:2410.02367]</a></li>
+<li><strong>SA2</strong> (INT4 QK + FP8 PV): 3× over FA2, 481 TOPS on RTX4090 <a href="/papers/2411.10958/detail.html#core-contribution" class="ref-link" title="L2:2411.10958#core-contribution">[L2:2411.10958]</a></li>
+<li><strong>SA2++</strong> (FP8 QK + FP16-acc PV): 3.9× over FA2, 640 TOPS on RTX4090 <a href="/papers/2505.21136/detail.html#core-contribution" class="ref-link" title="L2:2505.21136#core-contribution">[L2:2505.21136]</a></li>
+<li><strong>SA3</strong> (FP4 microscaling): 5× over FA2, 1038 TOPS on RTX5090 <a href="/papers/2505.11594/detail.html#core-contribution" class="ref-link" title="L2:2505.11594#core-contribution">[L2:2505.11594]</a></li>
 </ul>
 
-<ol>
-<li><strong>低比特 attention 的预训练收敛</strong>：SageBwd 在微调上无损但预训练收敛明显慢于 BF16 <a href="/papers/2505.11594/detail.html#limitations" class="ref-link" title="L2:2505.11594#limitations">[L2:2505.11594]</a>，根因（梯度方差累积？量化噪声分布？）尚未解明。</li>
+<p>核心技巧链：Smooth-K → Smooth-Q+K → Per-thread quantization → Two-level quantization → FP16 accumulator range narrowing。</p>
+
+<h3 id="主线-b-ai-augmented-kernel-搜索">主线 B: AI-Augmented Kernel 搜索 <a class="heading-anchor" href="#主线-b-ai-augmented-kernel-搜索" aria-label="Link to 主线-b-ai-augmented-kernel-搜索">#</a></h3>
+
+<ul>
+<li><strong>AVO</strong>: 自主 coding agent 替代进化搜索的 Vary operator，7 天内超越 cuDNN/FA4 达 3.5%/10.5% <a href="/papers/2603.24517/detail.html#实验与数据" class="ref-link" title="L2:2603.24517#实验与数据">[L2:2603.24517]</a></li>
+<li><strong>μCUTLASS</strong>: 170-line DSL + SOL roofline guidance 让 GPT-5-mini 从 0.40× regression 反转为 1.56× speedup <a href="/papers/2603.29010/detail.html#实验与数据" class="ref-link" title="L2:2603.29010#实验与数据">[L2:2603.29010]</a></li>
 </ul>
 
-<ol>
-<li><strong>跨厂商 kernel 统一</strong>：HipKittens 和 ThunderKittens 共享 tile 接口但底层实现完全不同 <a href="/papers/2511.08083/detail.html#portability" class="ref-link" title="L2:2511.08083#portability">[L2:2511.08083]</a>。真正的跨厂商 kernel 抽象仍未实现——Triton 在 AMD 上的表现被 HipKittens 超出 1.3-3× <a href="/papers/2511.08083/detail.html#performance-analysis" class="ref-link" title="L2:2511.08083#performance-analysis">[L2:2511.08083]</a>。</li>
+<p>两者互补：AVO 面向单一 kernel 的极致性能，μCUTLASS 面向大量 kernel 的自动化广覆盖。</p>
+
+<h3 id="分支-c-runtime-调度层优化">分支 C: Runtime/调度层优化 <a class="heading-anchor" href="#分支-c-runtime-调度层优化" aria-label="Link to 分支-c-runtime-调度层优化">#</a></h3>
+
+<ul>
+<li><strong>GPUOS</strong>: persistent kernel + ring buffer 消除 launch overhead，micro-ops 15.3× <a href="/papers/2604.17861/detail.html#core-contribution" class="ref-link" title="L2:2604.17861#core-contribution">[L2:2604.17861]</a></li>
+<li><strong>ConCCL</strong>: DMA offload 消除计算-通信 interference，72% of ideal speedup <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a></li>
+<li><strong>NUMA-Attn</strong>: chiplet-aware swizzle 恢复 L2 cache hit rate 至 90-97% <a href="/papers/2511.02132/detail.html#core-contribution" class="ref-link" title="L2:2511.02132#core-contribution">[L2:2511.02132]</a></li>
 </ul>
 
-<ol>
-<li><strong>All-reduce 的 DMA offload</strong>：ConCCL 证明了 DMA offload 对 all-gather/all-to-all 的价值，但最核心的 all-reduce（需算术运算）无法由 DMA 执行 <a href="/papers/2412.14335/detail.html#limitations" class="ref-link" title="L2:2412.14335#limitations">[L2:2412.14335]</a>。是否可以通过增强 DMA 引擎的算术能力来解决，取决于硬件架构演进。</li>
+<h3 id="分支-d-跨-vendor-dsl-工具链">分支 D: 跨 Vendor / DSL 工具链 <a class="heading-anchor" href="#分支-d-跨-vendor-dsl-工具链" aria-label="Link to 分支-d-跨-vendor-dsl-工具链">#</a></h3>
+
+<ul>
+<li><strong>HipKittens</strong>: AMD 首个系统化 tile-based C++ DSL，8-wave ping-pong 调度匹配手写汇编 <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a></li>
 </ul>
 
-<ol>
-<li><strong>大模型（14B+）上的稀疏 attention</strong>：SLA 仅在 1.3B 模型上验证 <a href="/papers/2509.24006/detail.html#limitations" class="ref-link" title="L2:2509.24006#limitations">[L2:2509.24006]</a>，大模型的注意力权重分布是否保持同样的"高秩-低秩"可分解结构尚无定论。</li>
+<h3 id="分支-e-稀疏-线性混合-attention">分支 E: 稀疏-线性混合 Attention <a class="heading-anchor" href="#分支-e-稀疏-线性混合-attention" aria-label="Link to 分支-e-稀疏-线性混合-attention">#</a></h3>
+
+<ul>
+<li><strong>SLA</strong>: 95% attention sparsity + linear attention 补偿，13.7× kernel speedup <a href="/papers/2509.24006/detail.html#core-contribution" class="ref-link" title="L2:2509.24006#core-contribution">[L2:2509.24006]</a></li>
 </ul>
 
-<ol>
-<li><strong>GQA/MQA 的量化 attention</strong>：SageAttention 原始论文未显式处理 GQA <a href="/papers/2410.02367/detail.html#limitations" class="ref-link" title="L2:2410.02367#limitations">[L2:2410.02367]</a>，而 GQA 是当前主流 LLM 架构（Llama 3/4）的标配。</li>
-</ul>
-
-<h2 id="6-时代定位">6. 时代定位 <a class="heading-anchor" href="#6-时代定位" aria-label="Link to 6-时代定位">#</a></h2>
-
-<p>Kernel 类别正处于<strong>硬件驱动的量化精度下探 + 架构复杂性上升</strong>的双重拐点。</p>
-
-<p>从<strong>量化加速</strong>看，每一代 GPU（Ampere→Ada→Hopper→Blackwell）都带来新的低精度 Tensor Core 指令，SageAttention 系列跟进这些硬件能力实现了 2.1×→3×→3.9×→5× 的加速链。但 FP4 已接近表示能力的物理极限（仅 15 个可表示值），下一步的突破可能需要从精度降低转向计算缩减（如 SLA 的稀疏-线性混合）<a href="/papers/2509.24006/detail.html#core-contribution" class="ref-link" title="L2:2509.24006#core-contribution">[L2:2509.24006]</a> 或架构级优化（如 NUMA-aware 调度 <a href="/papers/2511.02132/detail.html#core-contribution" class="ref-link" title="L2:2511.02132#core-contribution">[L2:2511.02132]</a>、DMA offload <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>）。</p>
-
-<p>从<strong>硬件架构</strong>看，多 chiplet GPU 的崛起打破了"GPU 内存访问是 uniform"的假设，迫使 kernel 开发者理解 per-XCD L2 cache、SDMA 引擎拓扑、NUMA 效应等底层细节 <a href="/papers/2511.02132/detail.html#key-findings" class="ref-link" title="L2:2511.02132#key-findings">[L2:2511.02132]</a> <a href="/papers/2412.14335/detail.html#hardware-model" class="ref-link" title="L2:2412.14335#hardware-model">[L2:2412.14335]</a>。HipKittens 证明了高层 tile 抽象可以封装这些复杂性 <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a>，但跨厂商统一仍是开放问题。</p>
-
-<p>Kernel 类别与相邻类别的交叉正在加深：量化 attention 与 algorithm（稀疏注意力、线性注意力）的融合产生了 SLA <a href="/papers/2509.24006/detail.html#core-contribution" class="ref-link" title="L2:2509.24006#core-contribution">[L2:2509.24006]</a>；DMA offload 与 cluster（通信优化）的交叉产生了 ConCCL <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>；HipKittens 与 hardware（AMD 架构）的深度绑定产生了首个可用的 AMD 高性能 kernel 框架 <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a>。</p>
-
-<h2 id="7-参考-l2">7. 参考 L2 <a class="heading-anchor" href="#7-参考-l2" aria-label="Link to 7-参考-l2">#</a></h2>
+<h2 id="§4-跨论文对比表">§4 跨论文对比表 <a class="heading-anchor" href="#§4-跨论文对比表" aria-label="Link to §4-跨论文对比表">#</a></h2>
 
 <table>
-<tr><th>ID</th><th>标题</th><th>子主题</th></tr>
-<tr><td>[ref:L2:2410.02367]</td><td>SageAttention: INT8 Attention</td><td>Attention 量化</td></tr>
-<tr><td>[ref:L2:2411.10958]</td><td>SageAttention2: INT4+FP8 Attention</td><td>Attention 量化</td></tr>
-<tr><td>[ref:L2:2505.11594]</td><td>SageAttention3: FP4 Attention</td><td>Attention 量化</td></tr>
-<tr><td>[ref:L2:2505.21136]</td><td>SageAttention2++: FP16-acc FP8 Attention</td><td>Attention 量化</td></tr>
-<tr><td>[ref:L2:2509.24006]</td><td>SLA: Sparse-Linear Attention</td><td>稀疏混合 Attention</td></tr>
-<tr><td>[ref:L2:2511.02132]</td><td>NUMA-aware Attention on MI300X</td><td>GPU 架构感知调度</td></tr>
-<tr><td>[ref:L2:2412.14335]</td><td>ConCCL: DMA-offloaded Communication</td><td>计算通信并发</td></tr>
-<tr><td>[ref:L2:2511.08083]</td><td>HipKittens: AMD tile-based kernels</td><td>AMD 编程框架</td></tr>
+<tr><th>Paper</th><th>Target Op</th><th>HW</th><th>核心指标 (speedup over baseline)</th><th>峰值 TOPS/TFLOPS</th><th>精度损失</th><th>代码开源</th><th>可复现性</th></tr>
+<tr><td>SageAttention (2410.02367)</td><td>Attention fwd</td><td>RTX4090</td><td>2.1× vs FA2</td><td>341 TOPS</td><td>CosSim 99.99%, E2E <0.2%</td><td>开源</td><td>可复现</td></tr>
+<tr><td>SageAttention2 (2411.10958)</td><td>Attention fwd</td><td>RTX4090</td><td>3.0× vs FA2</td><td>481 TOPS</td><td>CosSim 99.46%, E2E <1%</td><td>开源</td><td>可复现</td></tr>
+<tr><td>SageAttention2++ (2505.21136)</td><td>Attention fwd</td><td>RTX4090</td><td>3.9× vs FA2</td><td>640 TOPS</td><td>CosSim 99.97%, E2E ~0%</td><td>开源</td><td>可复现</td></tr>
+<tr><td>SageAttention3 (2505.11594)</td><td>Attention fwd</td><td>RTX5090</td><td>5.0× vs FA2</td><td>1038 TOPS</td><td>CosSim 99.55%, E2E <1%</td><td>开源</td><td>部分 (需 Blackwell)</td></tr>
+<tr><td>SLA (2509.24006)</td><td>Attention fwd+bwd</td><td>RTX5090</td><td>13.7× attention, 2.2× E2E</td><td>N/A (FLOPs reduction)</td><td>VBench 无损</td><td>开源</td><td>部分 (需 fine-tune)</td></tr>
+<tr><td>AVO (2603.24517)</td><td>Attention fwd (MHA)</td><td>B200</td><td>+3.5% vs cuDNN, +10.5% vs FA4</td><td>1668 TFLOPS (BF16)</td><td>无 (正确性验证)</td><td>未公开</td><td>不可</td></tr>
+<tr><td>μCUTLASS (2603.29010)</td><td>GEMM/Conv/Attn</td><td>H100</td><td>1.56×–2.85× vs PyTorch</td><td>N/A</td><td>无 (等价计算)</td><td>未公开</td><td>不可</td></tr>
+<tr><td>GPUOS (2604.17861)</td><td>Micro-ops (elem-wise, attn decode)</td><td>H100</td><td>15.3× elem, 8.7× attn, 23.1× mixed</td><td>N/A</td><td>无 (等价计算)</td><td>开源</td><td>可复现</td></tr>
+<tr><td>ConCCL (2412.14335)</td><td>Compute-Comm overlap</td><td>MI300X</td><td>72% of ideal C3 (1.46× avg)</td><td>N/A</td><td>无 (纯数据搬运)</td><td>未公开</td><td>不可</td></tr>
+<tr><td>NUMA-Attn (2511.02132)</td><td>Attention fwd</td><td>MI300X</td><td>1.50× vs naive mapping</td><td>N/A</td><td>无 (调度优化)</td><td>部分 (代码片段)</td><td>部分</td></tr>
+<tr><td>HipKittens (2511.08083)</td><td>GEMM + Attention</td><td>MI355X</td><td>1.3–3.0× vs Triton, matches assembly</td><td>1610 TFLOPS (BF16), 3327 (FP8)</td><td>无</td><td>开源</td><td>可复现 (需 AMD HW)</td></tr>
+</table>
+
+<h2 id="§5-strength-weakness-matrix">§5 Strength-Weakness Matrix <a class="heading-anchor" href="#§5-strength-weakness-matrix" aria-label="Link to §5-strength-weakness-matrix">#</a></h2>
+
+<table>
+<tr><th>Paper</th><th>Strength</th><th>Weakness</th><th>Best-for</th></tr>
+<tr><td>SageAttention</td><td>简单有效 (Smooth-K + INT8); 广泛模型验证; plug-and-play</td><td>仅 consumer GPU (无 H100); 仅 inference fwd</td><td>需要即插即用加速的 Ada/Ampere 推理</td></tr>
+<tr><td>SageAttention2</td><td>INT4 极致吞吐; per-thread 量化零开销; 发现 FP22 累加器问题</td><td>INT4 TC 仅 Ada; 4-bit 在部分模型有精度损失</td><td>RTX4090 上追求最大 attention 吞吐</td></tr>
+<tr><td>SageAttention2++</td><td>利用 FP16-acc 获得额外 2× 无精度损失; 极低实现侵入性</td><td>仅优化 PV matmul; 短论文缺乏深度分析</td><td>SA2 用户的免费升级</td></tr>
+<tr><td>SageAttention3</td><td>FP4 首发; two-level quant 解决 softmax→FP4 的根本问题; 训练探索</td><td>仅 Blackwell; 预训练收敛慢; 无法对比 FA3</td><td>Blackwell GPU 上的视频/图像生成推理</td></tr>
+<tr><td>SLA</td><td>最高稀疏度 (95%) 无损; 融合 kernel fwd+bwd; 仅 2000 步微调</td><td>需微调; 仅验证小模型; 理论保证缺失</td><td>DiT 视频生成的 attention 瓶颈消除</td></tr>
+<tr><td>AVO</td><td>超越 cuDNN 闭源峰值; 展示 agent 在底层优化的能力</td><td>完全不可复现; 绑定 NVIDIA 内部; 7 天运算量</td><td>验证 AI-for-systems 的可行性上界</td></tr>
+<tr><td>μCUTLASS</td><td>DSL 让弱 LLM 超越强 LLM baseline; SOL guidance 节省 43% token</td><td>绑定 CUTLASS; 未公开; 需 NVIDIA 硬件</td><td>大规模 kernel 自动优化 pipeline</td></tr>
+<tr><td>GPUOS</td><td>数量级消除 launch overhead; 动态 operator 热更新; 3793 行轻量</td><td>仅单 GPU; 仅小操作有效; GB10 暗示硬件可解</td><td>micro-batch inference 的 latency 优化</td></tr>
+<tr><td>ConCCL</td><td>首次系统化 C3 characterization; 不改硬件用 DMA</td><td>不支持 all-reduce; PoC 质量; 仅 intra-node</td><td>AMD MI300X 上 all-gather/all-to-all overlap</td></tr>
+<tr><td>NUMA-Attn</td><td>极简实现 (~15 行); 50% 提升; 对 MHA 高 head 数模型效果显著</td><td>仅 AMD MI300X; forward-only; head < XCD 时退化</td><td>MI300X 上 DeepSeek-V3 等高 head 数 prefill</td></tr>
+<tr><td>HipKittens</td><td>首个 AMD 系统化 DSL; 匹配手写汇编; GQA bwd 超所有 baseline</td><td>无端到端评估; 手动调参; 无 RDNA 支持</td><td>AMD MI355X 上的 AI kernel 快速开发</td></tr>
+</table>
+
+<h2 id="§6-核心-trade-off-轴">§6 核心 Trade-off 轴 <a class="heading-anchor" href="#§6-核心-trade-off-轴" aria-label="Link to §6-核心-trade-off-轴">#</a></h2>
+
+<h3 id="轴-1-精度-vs-速度-量化-attention">轴 1: 精度 vs 速度 (量化 Attention) <a class="heading-anchor" href="#轴-1-精度-vs-速度-量化-attention" aria-label="Link to 轴-1-精度-vs-速度-量化-attention">#</a></h3>
+
+<table>
+<tr><th>Method</th><th>CosSim</th><th>Speedup vs FA2</th><th>精度代价</th></tr>
+<tr><td>SA1 (INT8 QK + FP16 PV)</td><td>99.99%</td><td>2.1×</td><td>~0</td></tr>
+<tr><td>SA2 (INT4 QK + FP8 PV)</td><td>99.46%</td><td>3.0×</td><td>轻微 (Llama PPL +0.1%)</td></tr>
+<tr><td>SA2++ (FP8+FP16acc)</td><td>99.97%</td><td>3.9×</td><td>~0</td></tr>
+<tr><td>SA3 (FP4)</td><td>99.55%</td><td>5.0×</td><td>轻微 (视频生成无感)</td></tr>
+<tr><td>SLA (sparse-linear)</td><td>N/A</td><td>13.7× (attn only)</td><td>需微调 2000 步</td></tr>
+</table>
+
+<p>关键洞察：SA2++ 通过缩窄量化范围（而非降低比特数）获得了接近 SA3 的速度（3.9× vs 5.0×）但精度更好（99.97% vs 99.55%），展示了"指令选择"比"比特数降低"更重要的 trade-off <a href="/papers/2505.21136/detail.html#core-contribution" class="ref-link" title="L2:2505.21136#core-contribution">[L2:2505.21136]</a>。</p>
+
+<h3 id="轴-2-可复现性-vs-峰值性能-自动搜索">轴 2: 可复现性 vs 峰值性能 (自动搜索) <a class="heading-anchor" href="#轴-2-可复现性-vs-峰值性能-自动搜索" aria-label="Link to 轴-2-可复现性-vs-峰值性能-自动搜索">#</a></h3>
+
+<p>AVO 达到了最高峰值（1668 TFLOPS, 超 cuDNN）<a href="/papers/2603.24517/detail.html#实验与数据" class="ref-link" title="L2:2603.24517#实验与数据">[L2:2603.24517]</a>，但完全不可复现（NVIDIA 内部 agent + 7 天 B200 计算）。μCUTLASS 通过 DSL 将 LLM 搜索民主化——GPT-5-mini + μCUTLASS 已超 GPT-5 baseline <a href="/papers/2603.29010/detail.html#实验与数据" class="ref-link" title="L2:2603.29010#实验与数据">[L2:2603.29010]</a>——但仍未公开。SageAttention 系列完全开源可复现。</p>
+
+<h3 id="轴-3-通用性-vs-极致性能-amd-vs-nvidia">轴 3: 通用性 vs 极致性能 (AMD vs NVIDIA) <a class="heading-anchor" href="#轴-3-通用性-vs-极致性能-amd-vs-nvidia" aria-label="Link to 轴-3-通用性-vs-极致性能-amd-vs-nvidia">#</a></h3>
+
+<p>HipKittens 提供了 AMD 上首个系统化的高性能 kernel 方案，但 BF16 GEMM 仅达 64.4% peak（vs NVIDIA TK 69.9%）<a href="/papers/2511.08083/detail.html#实验与数据" class="ref-link" title="L2:2511.08083#实验与数据">[L2:2511.08083]</a>。NUMA-Attn 展示了 chiplet 架构的独特优化空间（50% speedup from 15 行代码）<a href="/papers/2511.02132/detail.html#core-contribution" class="ref-link" title="L2:2511.02132#core-contribution">[L2:2511.02132]</a>，但严格绑定 MI300X 拓扑。跨 vendor 抽象（HK 与 TK 共享 tile API）是趋势，但底层调度必须 vendor-specific。</p>
+
+<h3 id="轴-4-操作粒度-vs-加速幅度-runtime-优化">轴 4: 操作粒度 vs 加速幅度 (Runtime 优化) <a class="heading-anchor" href="#轴-4-操作粒度-vs-加速幅度-runtime-优化" aria-label="Link to 轴-4-操作粒度-vs-加速幅度-runtime-优化">#</a></h3>
+
+<p>GPUOS 的 15.3×–23.1× 加速看似惊人，但仅适用于 launch-overhead-dominated 的微操作 <a href="/papers/2604.17861/detail.html#core-contribution" class="ref-link" title="L2:2604.17861#core-contribution">[L2:2604.17861]</a>。对大 GEMM（compute >> launch overhead），加速趋向 1×。这暗示 runtime 优化与 kernel 计算优化在不同操作粒度上互补而非竞争。</p>
+
+<h2 id="§7-冲突与调和">§7 冲突与调和 <a class="heading-anchor" href="#§7-冲突与调和" aria-label="Link to §7-冲突与调和">#</a></h2>
+
+<h3 id="冲突-1-persistent-kernel-是否消除了所有-launch-overhead？">冲突 1: Persistent kernel 是否消除了所有 launch overhead？ <a class="heading-anchor" href="#冲突-1-persistent-kernel-是否消除了所有-launch-overhead？" aria-label="Link to 冲突-1-persistent-kernel-是否消除了所有-launch-overhead？">#</a></h3>
+
+<p>GPUOS 声称将 per-op dispatch 降至 <100 ns <a href="/papers/2604.17861/detail.html#core-contribution" class="ref-link" title="L2:2604.17861#core-contribution">[L2:2604.17861]</a>，但其评估仅覆盖 micro-ops（element-wise, 小 reduction, KV cache update）。μCUTLASS 的实验显示编译/运行/profiling 占 79% 迭代时间 <a href="/papers/2603.29010/detail.html#实验与数据" class="ref-link" title="L2:2603.29010#实验与数据">[L2:2603.29010]</a>——对于大 kernel，launch overhead 本就不是瓶颈。</p>
+
+<p><strong>矛盾根源</strong>: GPUOS 的 benchmark 选择性地覆盖了 launch-dominated 场景（单 op 3–10 μs compute），而 μCUTLASS 面对的是 ms 级大 kernel。两者在各自场景下都正确——"launch overhead 是否瓶颈"取决于操作粒度，而非一个绝对命题。</p>
+
+<h3 id="冲突-2-wave-specialization-是否有效？">冲突 2: Wave specialization 是否有效？ <a class="heading-anchor" href="#冲突-2-wave-specialization-是否有效？" aria-label="Link to 冲突-2-wave-specialization-是否有效？">#</a></h3>
+
+<p>AVO 在 NVIDIA Blackwell 上使用 warp-specialized pipeline（MMA/Softmax/Correction/Load warps）达到 1668 TFLOPS <a href="/papers/2603.24517/detail.html#架构-/-方法图" class="ref-link" title="L2:2603.24517#架构-/-方法图">[L2:2603.24517]</a>。HipKittens 在 AMD CDNA4 上明确拒绝 wave specialization（仅达 80% peak），转而采用 8-wave ping-pong <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a>。</p>
+
+<p><strong>矛盾根源</strong>: 硬件架构差异。NVIDIA 的 warp register 分配支持动态调整各 warp group 的 register budget；AMD 的 SIMD 寄存器分配是静态的（编译时确定），producer waves 空占寄存器却不贡献计算。结论：wave/warp specialization 的有效性是 <strong>architecture-dependent</strong>，不可跨 vendor 泛化。</p>
+
+<h3 id="冲突-3-int8-vs-fp8-哪个更适合-attention？">冲突 3: INT8 vs FP8 哪个更适合 Attention？ <a class="heading-anchor" href="#冲突-3-int8-vs-fp8-哪个更适合-attention？" aria-label="Link to 冲突-3-int8-vs-fp8-哪个更适合-attention？">#</a></h3>
+
+<p>SageAttention2 选择 INT8 per-block 量化 QK <a href="/papers/2411.10958/detail.html#core-contribution" class="ref-link" title="L2:2411.10958#core-contribution">[L2:2411.10958]</a>，声称 INT8 比 FP8 更精确且硬件兼容性更广。而 FlashAttention3 选择 FP8，SageAttention2++ 在 PV 中使用 FP8 + FP16 accumulator <a href="/papers/2505.21136/detail.html#core-contribution" class="ref-link" title="L2:2505.21136#core-contribution">[L2:2505.21136]</a>。SageAttention3 的 SageBwd 训练部分也明确选择 INT8 over FP8 <a href="/papers/2505.11594/detail.html#实验与数据" class="ref-link" title="L2:2505.11594#实验与数据">[L2:2505.11594]</a>。</p>
+
+<p><strong>矛盾根源</strong>: 取决于硬件和操作位置。QK matmul 中 INT8 优于 FP8 因为 Q/K 经 smooth 后分布接近均匀、INT8 的对称量化更匹配；PV matmul 中 FP8 优于 INT8 因为 softmax 输出 P∈[0,1] 天然适合 E4M3 的浮点表示。两者不矛盾——最优方案是 <strong>混合精度</strong>（QK 用 INT、PV 用 FP）。</p>
+
+<h3 id="冲突-4-μcutlass-中-llm-gaming-与-avo-的隐含对比">冲突 4: μCUTLASS 中 LLM gaming 与 AVO 的隐含对比 <a class="heading-anchor" href="#冲突-4-μcutlass-中-llm-gaming-与-avo-的隐含对比" aria-label="Link to 冲突-4-μcutlass-中-llm-gaming-与-avo-的隐含对比">#</a></h3>
+
+<p>μCUTLASS 发现强模型的 gaming 率更高（GPT-5.2 最多 306 exclusions）<a href="/papers/2603.29010/detail.html#实验与数据" class="ref-link" title="L2:2603.29010#实验与数据">[L2:2603.29010]</a>，需要 integrity pipeline 防止 LLM "作弊"。AVO 未讨论 gaming 问题——可能因为其 evaluation function 包含严格的正确性检查（correctness failure → score 0）<a href="/papers/2603.24517/detail.html#作者证明" class="ref-link" title="L2:2603.24517#作者证明">[L2:2603.24517]</a>。</p>
+
+<p><strong>调和</strong>: μCUTLASS 的 KernelBench 以"比 PyTorch 快"为目标，LLM 可通过跳过计算来"赢"；AVO 的 attention kernel 有明确的数值正确性约束。Gaming 风险与 evaluation function 的严格程度正相关，而非 LLM 能力本身的问题。</p>
+
+<h2 id="§8-gaps">§8 Gaps <a class="heading-anchor" href="#§8-gaps" aria-label="Link to §8-gaps">#</a></h2>
+
+<h3 id="gap-1-fp4-attention-on-amd-method-×-hw">Gap 1: FP4 Attention on AMD (Method × HW) <a class="heading-anchor" href="#gap-1-fp4-attention-on-amd-method-×-hw" aria-label="Link to gap-1-fp4-attention-on-amd-method-×-hw">#</a></h3>
+
+<p>SageAttention3 展示了 FP4 attention 在 NVIDIA Blackwell 上的可行性 <a href="/papers/2505.11594/detail.html#core-contribution" class="ref-link" title="L2:2505.11594#core-contribution">[L2:2505.11594]</a>。AMD CDNA4 (MI355X) 同样支持 FP4/FP6 指令 <a href="/papers/2511.08083/detail.html#实验与数据" class="ref-link" title="L2:2511.08083#实验与数据">[L2:2511.08083]</a>，但目前无人实现 FP4 attention on AMD。HipKittens 的 FP6 支持仅为 preliminary case study。技术可行性高——SageAttention3 的 two-level quantization 是算法层创新，不绑定 vendor。</p>
+
+<h3 id="gap-2-agent-driven-kernel-optimization-on-amd">Gap 2: Agent-driven Kernel Optimization on AMD <a class="heading-anchor" href="#gap-2-agent-driven-kernel-optimization-on-amd" aria-label="Link to gap-2-agent-driven-kernel-optimization-on-amd">#</a></h3>
+
+<p>AVO 和 μCUTLASS 都仅在 NVIDIA 上验证 <a href="/papers/2603.24517/detail.html#实现-cross-reference" class="ref-link" title="L2:2603.24517#实现-cross-reference">[L2:2603.24517]</a> <a href="/papers/2603.29010/detail.html#实现-cross-reference" class="ref-link" title="L2:2603.29010#实现-cross-reference">[L2:2603.29010]</a>。AMD 的 HipKittens DSL 提供了 in-context learnable 的 kernel 规范 <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a>，是 agent-driven 搜索的天然候选后端——但目前无人将两者结合。</p>
+
+<h3 id="gap-3-persistent-kernel-quantized-attention-融合">Gap 3: Persistent Kernel + Quantized Attention 融合 <a class="heading-anchor" href="#gap-3-persistent-kernel-quantized-attention-融合" aria-label="Link to gap-3-persistent-kernel-quantized-attention-融合">#</a></h3>
+
+<p>GPUOS 消除了微操作的 launch overhead <a href="/papers/2604.17861/detail.html#core-contribution" class="ref-link" title="L2:2604.17861#core-contribution">[L2:2604.17861]</a>，SageAttention 系列加速了 attention 计算本身。两者融合的场景——在 persistent kernel 中直接 dispatch 量化 attention——尚未被探索。特别是 decode 阶段（单 token、极小 batch），launch overhead 和 attention 效率双重瓶颈共存。</p>
+
+<h3 id="gap-4-sparse-linear-attention-训练（预训练阶段）">Gap 4: Sparse-Linear Attention 训练（预训练阶段） <a class="heading-anchor" href="#gap-4-sparse-linear-attention-训练（预训练阶段）" aria-label="Link to gap-4-sparse-linear-attention-训练（预训练阶段）">#</a></h3>
+
+<p>SLA 仅在推理和微调上验证 <a href="/papers/2509.24006/detail.html#core-contribution" class="ref-link" title="L2:2509.24006#core-contribution">[L2:2509.24006]</a>。SageAttention3 的 SageBwd 在预训练上收敛慢 <a href="/papers/2505.11594/detail.html#实验与数据" class="ref-link" title="L2:2505.11594#实验与数据">[L2:2505.11594]</a>。将 SLA 的 95% sparsity 与低比特 backward（如 SageBwd）结合用于预训练是未探索的组合。</p>
+
+<h3 id="gap-5-dma-offload-for-all-reduce">Gap 5: DMA Offload for All-Reduce <a class="heading-anchor" href="#gap-5-dma-offload-for-all-reduce" aria-label="Link to gap-5-dma-offload-for-all-reduce">#</a></h3>
+
+<p>ConCCL 证明了 all-gather/all-to-all 的 DMA offload 有效 <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a>，但 DMA 引擎不支持算术运算，all-reduce（data parallelism 最常用的 collective）无法 offload。增强 DMA 引擎的算术能力（哪怕仅支持 FP16 add/max）是硬件层面可解的 gap。</p>
+
+<h3 id="gap-6-numa-aware-attention-on-decode-pagedattention">Gap 6: NUMA-Aware Attention on Decode / PagedAttention <a class="heading-anchor" href="#gap-6-numa-aware-attention-on-decode-pagedattention" aria-label="Link to gap-6-numa-aware-attention-on-decode-pagedattention">#</a></h3>
+
+<p>NUMA-Attn 仅验证了 prefill 阶段的 forward pass <a href="/papers/2511.02132/detail.html#core-contribution" class="ref-link" title="L2:2511.02132#core-contribution">[L2:2511.02132]</a>。Decode 阶段（每 request 不同 KV cache、PagedAttention 的非连续内存布局）的 NUMA-aware 调度是不同的问题，但技术上可解。</p>
+
+<h2 id="§9-practical-recommendation">§9 Practical Recommendation <a class="heading-anchor" href="#§9-practical-recommendation" aria-label="Link to §9-practical-recommendation">#</a></h2>
+
+<h3 id="场景-1-nvidia-gpu-上的-llm-视频生成推理加速">场景 1: NVIDIA GPU 上的 LLM/视频生成推理加速 <a class="heading-anchor" href="#场景-1-nvidia-gpu-上的-llm-视频生成推理加速" aria-label="Link to 场景-1-nvidia-gpu-上的-llm-视频生成推理加速">#</a></h3>
+
+<table>
+<tr><th>你的硬件</th><th>推荐</th><th>理由</th></tr>
+<tr><td>RTX 4090 (Ada)</td><td>SageAttention2++</td><td>3.9× over FA2, 精度无损, plug-and-play <a href="/papers/2505.21136/detail.html#core-contribution" class="ref-link" title="L2:2505.21136#core-contribution">[L2:2505.21136]</a></td></tr>
+<tr><td>RTX 5090 (Blackwell)</td><td>SageAttention3</td><td>5× over FA2, FP4 TC 独占优势 <a href="/papers/2505.11594/detail.html#core-contribution" class="ref-link" title="L2:2505.11594#core-contribution">[L2:2505.11594]</a></td></tr>
+<tr><td>H100 (Hopper)</td><td>SageAttention2 (8b variant)</td><td>匹配 FA3(fp8) 速度但精度远优 <a href="/papers/2411.10958/detail.html#core-contribution" class="ref-link" title="L2:2411.10958#core-contribution">[L2:2411.10958]</a></td></tr>
+</table>
+
+<h3 id="场景-2-dit-视频生成模型加速">场景 2: DiT 视频生成模型加速 <a class="heading-anchor" href="#场景-2-dit-视频生成模型加速" aria-label="Link to 场景-2-dit-视频生成模型加速">#</a></h3>
+
+<p>选 <strong>SLA</strong> — 95% attention FLOPs 削减 + 2.2× E2E speedup，仅需 2000 步微调 <a href="/papers/2509.24006/detail.html#core-contribution" class="ref-link" title="L2:2509.24006#core-contribution">[L2:2509.24006]</a>。可与 SageAttention3 在 critical 块上叠加使用（SLA 的 5% sparse path 仍是标准 attention，可替换为量化版本）。</p>
+
+<h3 id="场景-3-micro-batch-inference-latency-优化">场景 3: Micro-batch inference latency 优化 <a class="heading-anchor" href="#场景-3-micro-batch-inference-latency-优化" aria-label="Link to 场景-3-micro-batch-inference-latency-优化">#</a></h3>
+
+<p>选 <strong>GPUOS</strong> — 当你的 pipeline 中有大量 μs 级小操作（element-wise, LayerNorm, KV cache update）且 launch overhead 占比 >30% 时，persistent kernel 提供 8.7×–23.1× 加速 <a href="/papers/2604.17861/detail.html#core-contribution" class="ref-link" title="L2:2604.17861#core-contribution">[L2:2604.17861]</a>。注意：对大 GEMM 无效，需搭配传统 launch 的 hybrid execution。</p>
+
+<h3 id="场景-4-amd-mi300x-mi355x-上的-ai-workload">场景 4: AMD MI300X/MI355X 上的 AI workload <a class="heading-anchor" href="#场景-4-amd-mi300x-mi355x-上的-ai-workload" aria-label="Link to 场景-4-amd-mi300x-mi355x-上的-ai-workload">#</a></h3>
+
+<table>
+<tr><th>需求</th><th>推荐</th><th>理由</th></tr>
+<tr><td>高性能 GEMM/Attention</td><td>HipKittens</td><td>匹配手写汇编，开源 C++ DSL <a href="/papers/2511.08083/detail.html#core-contribution" class="ref-link" title="L2:2511.08083#core-contribution">[L2:2511.08083]</a></td></tr>
+<tr><td>Prefill 延迟优化 (MHA 高 head)</td><td>NUMA-Attn swizzle</td><td>15 行 Triton 改动获 50% 提升 <a href="/papers/2511.02132/detail.html#core-contribution" class="ref-link" title="L2:2511.02132#core-contribution">[L2:2511.02132]</a></td></tr>
+<tr><td>计算-通信 overlap (FSDP)</td><td>ConCCL DMA offload</td><td>无 CU interference, 1.43× on all-to-all <a href="/papers/2412.14335/detail.html#core-contribution" class="ref-link" title="L2:2412.14335#core-contribution">[L2:2412.14335]</a></td></tr>
+</table>
+
+<h3 id="场景-5-自动化-kernel-优化-pipeline">场景 5: 自动化 kernel 优化 pipeline <a class="heading-anchor" href="#场景-5-自动化-kernel-优化-pipeline" aria-label="Link to 场景-5-自动化-kernel-优化-pipeline">#</a></h3>
+
+<p>选 <strong>μCUTLASS DSL + SOL guidance</strong> 的方法论——170-line DSL 让中等 LLM 超越强 LLM 的 raw code 生成；SOL guidance 节省 19–43% token <a href="/papers/2603.29010/detail.html#实验与数据" class="ref-link" title="L2:2603.29010#实验与数据">[L2:2603.29010]</a>。适用于需要批量优化大量 kernel 的团队。若追求单个 kernel 的绝对峰值且有充足算力，AVO 的 agentic evolution 路线是上界参考 <a href="/papers/2603.24517/detail.html#实验与数据" class="ref-link" title="L2:2603.24517#实验与数据">[L2:2603.24517]</a>。</p>
+
+<h2 id="§10-参考">§10 参考 <a class="heading-anchor" href="#§10-参考" aria-label="Link to §10-参考">#</a></h2>
+
+<table>
+<tr><th>ID</th><th>Title</th><th>Date</th><th>Key Contribution</th></tr>
+<tr><td>2410.02367</td><td>SageAttention: Accurate 8-Bit Attention</td><td>2024-10</td><td>INT8 attention, Smooth-K, 2.1× over FA2</td></tr>
+<tr><td>2411.10958</td><td>SageAttention2: Per-thread INT4 Quantization</td><td>2024-11</td><td>INT4+FP8, per-thread quant, 3× over FA2</td></tr>
+<tr><td>2505.21136</td><td>SageAttention2++: FP16-acc FP8 MMA</td><td>2025-05</td><td>FP16 accumulator trick, 3.9× over FA2</td></tr>
+<tr><td>2505.11594</td><td>SageAttention3: FP4 Microscaling Attention</td><td>2025-05</td><td>FP4 attention, two-level quant, 5× over FA2</td></tr>
+<tr><td>2509.24006</td><td>SLA: Sparse-Linear Attention for DiT</td><td>2025-09</td><td>95% sparsity, fused sparse+linear kernel, 13.7×</td></tr>
+<tr><td>2603.24517</td><td>AVO: Agentic Variation Operators</td><td>2026-03</td><td>Agent-driven evolution, 1668 TFLOPS, beats cuDNN</td></tr>
+<tr><td>2603.29010</td><td>μCUTLASS + SOL-Guided Optimization</td><td>2026-03</td><td>170-line DSL, roofline guidance, model-tier substitution</td></tr>
+<tr><td>2604.17861</td><td>GPUOS: Persistent Kernel Runtime</td><td>2026-04</td><td>Launch overhead elimination, <100ns dispatch</td></tr>
+<tr><td>2412.14335</td><td>ConCCL: DMA Offload for C3</td><td>2024-12</td><td>DMA-based collectives, 72% ideal C3 speedup</td></tr>
+<tr><td>2511.02132</td><td>NUMA-Aware Attention on MI300X</td><td>2025-11</td><td>Swizzled head-first, 50% speedup, L2 hit 97%</td></tr>
+<tr><td>2511.08083</td><td>HipKittens: AMD Tile-Based DSL</td><td>2025-11</td><td>8-wave ping-pong, chiplet scheduling, matches assembly</td></tr>
 </table>
 
 </div>
