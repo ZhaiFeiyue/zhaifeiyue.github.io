@@ -588,14 +588,14 @@ function loop(ts){
   const wall = ts - lastFrame;
   lastFrame = ts;
 
+  draw();
+
   if (!paused && sim && !sim.state.done){
     const dt = wall * sim.config.spd;
     sim.tick(dt);
     processSimEvents();
     sampleChartHistory();
   }
-
-  draw();
 
   chartTimer += wall;
   if (chartTimer > 1000){
