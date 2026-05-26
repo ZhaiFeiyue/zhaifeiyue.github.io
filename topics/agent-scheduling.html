@@ -228,6 +228,103 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <hr>
 
+<h2 id="1-1-无状态调度算法">1.1 无状态调度算法 <a class="heading-anchor" href="#1-1-无状态调度算法" aria-label="Link to 1-1-无状态调度算法">#</a></h2>
+
+<p>无状态算法不维护任何请求历史或 engine 状态，每次决策独立。</p>
+
+<p><strong>Round Robin</strong>：请求依次分配 <code>W1→W2→W3→W1→...</code>。O(1) 实现极简，完全公平，但不感知负载差异，agent 多轮请求每轮可能落到不同 worker，KV Cache 命中率趋近于零。vLLM Router 默认策略。</p>
+
+<p><strong>Random</strong>：O(1) 无协调开销，多 router 实例天然无需同步。最大负载 O(log n / log log n)（Raab & Steger, "Balls into Bins", RANDOM 1998）。与 Round Robin 相同的 KV Cache 问题。</p>
+
+<p><strong>Power of Two Choices (P2C)</strong>：随机挑 2 个 worker → 选负载更低的。最大负载从 O(log n / log log n) 降到 O(log log n)——指数级改善。d=2 是最优性价比点（d=3 只有常数改善）。出处：Mitzenmacher, "The Power of Two Choices in Randomized Load Balancing", IEEE TPDS 2001。单独用效果有限，但作为 cache-aware 路由的 fallback（冷启动/无先验信息时）表现很好。SGLang <code>load_based</code> 阶段用 P2C + 内存压力打分 <code>work + λ * token_usage/(1-token_usage)</code>，其中 <code>token_usage/(1-token_usage)</code> 是凸函数——内存占用趋近 1 时分数急剧上升，形成软隔离墙。</p>
+
+<p><strong>Least Connections / Least Loaded</strong>：选 running + queued 最少的 worker。需要全局状态收集。不区分请求轻重——agent 长 session 的 decode 持续占用内存和算力，请求数不等于真实负载。vLLM production-stack <code>least_loaded</code> 策略（<a href="https://github.com/vllm-project/production-stack/pull/890">PR #890</a>）。</p>
+
+<hr>
+
+<h2 id="1-2-有状态调度算法">1.2 有状态调度算法 <a class="heading-anchor" href="#1-2-有状态调度算法" aria-label="Link to 1-2-有状态调度算法">#</a></h2>
+
+<p>维护 engine 状态（负载、缓存、历史）来做更智能的决策。</p>
+
+<p><strong>Consistent Hashing</strong>：<code>hash(routing_key) → 哈希环上找到目标 worker</code>。增删 worker 只影响相邻区域，O(1/n) key 迁移。天然 session 亲和性，O(log n) 查找。不感知实际负载——热点 key 导致 worker 过载。出处：Karger et al., "Consistent Hashing and Random Trees", STOC 1997。vLLM Router <code>consistent_hash</code>（PD 模式 prefill 默认推荐）。</p>
+
+<p><strong>Cache-Aware Routing (Radix Tree)</strong>：Router 维护 per-worker 的近似 radix tree → 匹配请求 prefix → 路由到缓存命中最高的 worker。Agent 多轮中 system prompt + 历史 context 高度重复，cache-aware 路由是 prefill 侧的最优策略。O(prefix_len) 查找开销。出处：Zheng et al., "SGLang: Efficient Execution of Structured Language Model Programs", NeurIPS 2024。SGLang RadixAttention 原生；vLLM Router <code>cache_aware</code>；Ray Serve PrefixCacheAffinityRouter；llm-d precise-prefix-cache-scorer（基于 ZMQ KV events 的精确 prefix 匹配）。</p>
+
+<p><strong>PrefixHash</strong>：提取请求前 N 个 token → xxhash → 一致性哈希环查找 → 负载过高时 fallback 到 least loaded。O(log n) 比 radix tree O(prefix_len) 快。出处：SGLang model-gateway <a href="https://github.com/sgl-project/sglang/pull/15935">PR #15935</a>, 2025。大规模部署中 cache-aware 的轻量替代。</p>
+
+<p><strong>DualMap</strong>：两个独立哈希函数 f1, f2 → 映射到 2 个候选 worker → 优先选 cache 亲和的 → TTFT 超 SLO 时切换到负载更低的 → hotspot-aware rebalancing。统一解决 cache 亲和 vs 负载均衡矛盾。出处：Chen et al., "DualMap: Enabling Both Cache Affinity and Load Balancing", ICLR 2026。</p>
+
+<p><strong>Sticky Routing (Session 亲和)</strong>：多轮对话 KV Cache 100% 复用，零迁移开销。长 session 导致负载固化。SGLang SessionAware Router（<a href="https://github.com/sgl-project/sglang/issues/25760">Issue #25760</a>）将其形式化为 <code>routing_key + role + bucket</code> 的三元组粘性。Agent session 天然 sticky，KV Cache 迁移成本极高。PD 分离中 decode 阶段隐式 sticky（一旦请求落在 decode worker 就不再迁移）。</p>
+
+<p><strong>BR-H (BalanceRoute)</strong>：专注 PD 分离中 prefill→decode 路由。用 horizon H 步前瞻估算每个 worker 未来 H 步的负载，<code>score = Σ discount^t * load(t)</code> → 选分最低的 worker。配合 termination classifier 预测请求何时结束。唯一考虑 KV Cache 单调增长特性的前瞻性算法。出处：Agrawal et al., arXiv 2605.06113, 2026。</p>
+
+<hr>
+
+<h2 id="1-3-pd-分离下的端到端路由流程">1.3 PD 分离下的端到端路由流程 <a class="heading-anchor" href="#1-3-pd-分离下的端到端路由流程" aria-label="Link to 1-3-pd-分离下的端到端路由流程">#</a></h2>
+
+<pre><code>
+请求到达 → [条件路由] input_tokens &lt; threshold?
+             │ 是(短AP)          │ 否(长prompt)
+             ▼                   ▼
+        直接发 Decode         Prefill 路由
+        (本地 AP, PPD)         │
+             │    ┌────────────┼────────────┐
+             │    ▼            ▼            ▼
+             │  Cache-Aware  PrefixHash  Consistent Hash
+             │  (Radix Tree)  (xxhash)   (session key)
+             │    │            │            │
+             │    └────────────┼────────────┘
+             │                 ▼
+             │         P2C fallback (冷启动)
+             │                 │
+             │                 ▼
+             │          Prefill 执行
+             │                 │
+             │                 ▼ KV Transfer
+             └────────→ Decode 路由
+                         │
+               ┌─────────┼─────────┐
+               ▼         ▼         ▼
+            Sticky    BR-H      P2C+内存
+          (复用KV)  (前瞻H步)   (兜底均衡)
+               │         │         │
+               └─────────┼─────────┘
+                         ▼
+                  Backpressure 背压
+                  (防 decode 过载)
+                         │
+                         ▼
+                  流式返回 tokens
+</code></pre>
+
+<hr>
+
+<h2 id="1-4-claude-code-与-cursor-的调度策略">1.4 Claude Code 与 Cursor 的调度策略 <a class="heading-anchor" href="#1-4-claude-code-与-cursor-的调度策略" aria-label="Link to 1-4-claude-code-与-cursor-的调度策略">#</a></h2>
+
+<p>两个最广泛使用的 coding agent 系统在客户端侧实现了另一种形式的"调度"——context window 管理。</p>
+
+<h3 id="claude-code：prompt-caching-即调度">Claude Code：Prompt Caching 即调度 <a class="heading-anchor" href="#claude-code：prompt-caching-即调度" aria-label="Link to claude-code：prompt-caching-即调度">#</a></h3>
+
+<p>官方博客 "Prompt caching is everything" 揭示了核心策略 <a href="/papers/2604.14228/detail.html#claude-code-compaction" class="ref-link" title="L2:2604.14228#claude-code-compaction">[L2:2604.14228]</a>：</p>
+
+<ul>
+<li><strong>请求结构按 prefix 稳定性排序</strong>：System Prompt + Tool Schemas（全局缓存 1h TTL）→ CLAUDE.md + Project Context（滚动缓存 5min TTL）→ 历史 messages → 最新一轮（uncached）</li>
+<li><strong>Prefix match</strong>：API 侧字节级精确前缀匹配，任何位置修改使后续 cache 失效</li>
+<li><strong>Cache read 成本</strong>：0.1x base（90% 折扣），是 Claude Code 运行经济性的关键</li>
+<li><strong>五层 compaction pipeline</strong>：Budget Reduction → Snip → Microcompact（cache-aware） → Context Collapse → Auto-Compact。每层成本递增，早期廉价层先执行</li>
+<li><strong>Compaction 复用 cache</strong>：compaction 时复用完全相同的 prefix（system prompt + tools + 历史），只在末尾追加 compaction 指令，确保整个 prefix 命中 cache</li>
+</ul>
+
+<h3 id="cursor：dynamic-context-discovery">Cursor：Dynamic Context Discovery <a class="heading-anchor" href="#cursor：dynamic-context-discovery" aria-label="Link to cursor：dynamic-context-discovery">#</a></h3>
+
+<p>核心思路是上下文虚拟化 <a href="/papers/blog-dynamic-context-discovery/detail.html#cursor-dcd" class="ref-link" title="L2:blog-dynamic-context-discovery#cursor-dcd">[L2:blog-dynamic-context-discovery]</a>：不把所有 tool 定义和代码文件塞进 context window，将它们抽象为可按需 lazy load 的虚拟资源。类比操作系统的虚拟内存——文件系统作为 lazy-loading 接口，只在 agent 实际需要时才加载到 context window。</p>
+
+<h3 id="客户端-vs-基础设施的互补性">客户端 vs 基础设施的互补性 <a class="heading-anchor" href="#客户端-vs-基础设施的互补性" aria-label="Link to 客户端-vs-基础设施的互补性">#</a></h3>
+
+<p>Claude Code 和 Cursor 的策略在客户端侧做 context 管理（compaction、lazy loading、prefix cache 优化），SAGA / HexAGenT 等在 serving 基础设施侧做 workflow-aware 调度。两者互补——理想的 agent serving 应同时优化两个层面。SideQuest 论文明确提到 Cursor 的 Dynamic Context Discovery 解决了"信息检索"问题但未解决"推理效率"问题 <a href="/papers/2602.22603/detail.html#sidequest-gc" class="ref-link" title="L2:2602.22603#sidequest-gc">[L2:2602.22603]</a>。</p>
+
+<hr>
+
 <h2 id="2-覆盖的-category-分布">2. 覆盖的 category 分布 <a class="heading-anchor" href="#2-覆盖的-category-分布" aria-label="Link to 2-覆盖的-category-分布">#</a></h2>
 
 <table>
