@@ -196,612 +196,320 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="agent-context-lifecycle">agent-context-lifecycle</h1>
-<div class="card-meta">Cross-category topic | 0 sources</div>
+<div class="card-meta">Cross-category topic | 30 sources</div>
 <div class="link-area" style="border-top:none;margin-top:8px">
 <a href="/topics/">← All Topics</a>
 </div>
 <div class="detail-content">
 
-<h1 id="agent-context-生命周期：从-lost-in-the-middle-到自顶向下的分析精化">Agent Context 生命周期：从 Lost in the Middle 到自顶向下的分析精化 <a class="heading-anchor" href="#agent-context-生命周期：从-lost-in-the-middle-到自顶向下的分析精化" aria-label="Link to agent-context-生命周期：从-lost-in-the-middle-到自顶向下的分析精化">#</a></h1>
+<h1 id="agent-context-生命周期：从注意力位置偏置到工作流感知的-kv-cache-管理">Agent Context 生命周期：从注意力位置偏置到工作流感知的 KV Cache 管理 <a class="heading-anchor" href="#agent-context-生命周期：从注意力位置偏置到工作流感知的-kv-cache-管理" aria-label="Link to agent-context-生命周期：从注意力位置偏置到工作流感知的-kv-cache-管理">#</a></h1>
 
 <h2 id="1-主题缘起">1. 主题缘起 <a class="heading-anchor" href="#1-主题缘起" aria-label="Link to 1-主题缘起">#</a></h2>
 
-<p>2025–2026 年，coding agent 成为 LLM 的主流使用模式。一个 agent 在执行复杂任务时，其 context 窗口会经历数十轮工具调用，累积大量文件内容、搜索结果、执行日志。这个过程暴露了两个互相交织的问题：</p>
+<p>2025–2026 年，coding agent 和 deep-research agent 成为 LLM 的主流使用模式。一个 agent 在执行复杂任务时，其 context 窗口会经历数十轮工具调用，累积大量文件内容、搜索结果、执行日志。这个过程暴露了四个分布在不同系统层级、但互相交织的问题：</p>
 
-<p>第一个是 <strong>Lost in the Middle</strong>——LLM 对 context 中间位置信息的利用能力显著低于开头和结尾。这个现象在 2023 年被 Liu et al. 首次系统性记录，到 2026 年仍未被根本解决，即使 context 窗口已扩展到 1M token。</p>
+<p><strong>第一，模型层的位置偏置。</strong> LLM 对 context 中间位置信息的利用能力显著低于开头和结尾——即 Lost in the Middle 现象。该现象在 2023 年由 Liu et al. 首次系统性记录，到 2026 年在 NoLiMa 等更严格的 benchmark 上证实：即使标称 128K–1M context 的 frontier 模型，其有效利用长度仍不超过 8K <a href="/papers/2502.05167/detail.html#key-findings" class="ref-link" title="L2:2502.05167#key-findings">[L2:2502.05167]</a>。更严格的数学分析表明，U 型偏差可能是 causal decoder + residual connections 的固有几何性质 <a href="/papers/2601.15300/detail.html#key-findings" class="ref-link" title="L2:2601.15300#key-findings">[L2:2601.15300]</a>。</p>
 
-<p>第二个是 <strong>Context 缺乏生命周期管理</strong>——agent 的 context 是 append-only 的：skill 可以渐进式加载（progressive disclosure），但没有渐进式卸载（progressive removal）。当一个复杂任务在 high-level design 和 low-level execution 之间周期性切换时，上一个 phase 加载的 low-level 细节对当前 phase 的 high-level 思考不仅没有价值，还会成为噪音——而且恰好落入 attention 的中间死区。</p>
+<p><strong>第二，agent 工作负载对 KV cache 的特殊需求。</strong> Agent 的多轮 tool-call 间隙极短（平均 925ms–1923ms），但现有推理引擎的 end-of-turn eviction 策略导致下一轮必须重入队列，per-turn queueing delay 累积可占总延迟 58.2% <a href="/papers/2511.02230/detail.html#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡" class="ref-link" title="L2:2511.02230#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡">[L2:2511.02230]</a>。这催生了 2025–2026 年最活跃的研究方向之一：<strong>agent-aware KV cache 管理</strong>。</p>
 
-<p>这两个问题的交汇点指向一个更深的架构问题：<strong>如何设计一个 context 有完整生命周期（load → use → extract → evict）的 agent 系统，而不是让 context 无限膨胀直到模型在自己的记忆中迷失？</strong></p>
+<p><strong>第三，框架层缺乏工作流感知的调度。</strong> 传统 serving 框架按单请求粒度调度，不理解 agent 工作流的 DAG 结构。多个 agent step 之间的 KV 复用、跨 step 的 context 共享、以及工作流级的公平调度，都需要框架从"请求级"跃迁到"程序级"编排 <a href="/papers/framework.html#§3-主线-B" class="ref-link" title="L3:framework#§3-主线-B">[L3:framework]</a> <a href="/papers/2602.13692/detail.html#summary" class="ref-link" title="L2:2602.13692#summary">[L2:2602.13692]</a>。</p>
 
-<p>本文从 attention 机制层面的根因分析出发，经过系统层面的 context 管理方案，最终到达一个具体的工程实践——KB 知识库的层级化管道和自顶向下的分析精化机制。整个讨论链路是：</p>
+<p><strong>第四，注意力架构的多元化使问题更加复杂。</strong> 从标准 softmax 到 compressed attention (CSA+HCA)、再到线性注意力 (KDA)，每种架构对 KV cache 的形状、大小、eviction 策略都有不同要求 <a href="/papers/model.html#§6-核心-trade-off-轴" class="ref-link" title="L3:model#§6-核心-trade-off-轴">[L3:model]</a>。框架和 agent 系统必须同时适配多种注意力范式。</p>
 
-<pre><code>
-Attention 层: Lost in the Middle 的根因是什么？
-    ↓
-Attention 层: 能否用外挂 mask 解决？已有哪些方案？
-    ↓
-系统层: Agent 为什么尤其受害？context 缺少什么？
-    ↓
-架构层: 如何通过 subagent 实现 context 隔离？
-    ↓
-设计层: 当高层发现低层输出不足时，如何反向传递精化的指导？
-</code></pre>
+<p>这四个问题的交汇点指向一个跨类别的主题：<strong>如何在模型层位置偏置的约束下，为 agent 工作负载设计有完整生命周期（load → use → evict → prefetch）的 context 管理系统？</strong> 这个问题不能由任何单一类别独立回答——它需要模型层的注意力机制、agent 层的 KV cache 策略、以及框架层的工作流调度三者协同设计。</p>
 
 <hr>
 
-<h2 id="2-lost-in-the-middle：现象、根因、与-agent-的关系">2. Lost in the Middle：现象、根因、与 Agent 的关系 <a class="heading-anchor" href="#2-lost-in-the-middle：现象、根因、与-agent-的关系" aria-label="Link to 2-lost-in-the-middle：现象、根因、与-agent-的关系">#</a></h2>
-
-<h3 id="2-1-现象：u-型性能曲线">2.1 现象：U 型性能曲线 <a class="heading-anchor" href="#2-1-现象：u-型性能曲线" aria-label="Link to 2-1-现象：u-型性能曲线">#</a></h3>
-
-<p>当 LLM 处理长 context 时，对信息的利用能力呈 U 型分布：开头（primacy）和结尾（recency）的信息被高效利用，中间位置的信息被严重低估。这不是个别模型的 bug——Liu et al. (2023) 的实验显示，GPT-3.5-Turbo 在 multi-document QA 任务中，当 relevant document 放在 context 中间时，性能下降超过 20 个百分点。更极端的是，在 20 和 30 document 设置下，middle 位置的性能甚至低于完全不给文档的 closed-book 基线（56.1%）。</p>
-
-<p>三年后的 2026 年，这个现象仍未消失。RULER、LongBench v2、HELMET 等 benchmark 在 17 个长 context 模型上的测试表明：所有模型都展现 U 型曲线，更大的 context 窗口只是把死区移得更远，并没有消除它。正如一位研究者所言："Bigger context windows did not fix it. They just gave you more middle to lose things in."</p>
-
-<h3 id="2-2-根因：三层叠加">2.2 根因：三层叠加 <a class="heading-anchor" href="#2-2-根因：三层叠加" aria-label="Link to 2-2-根因：三层叠加">#</a></h3>
-
-<h4 id="第一层：架构的先天缺陷（最根本）">第一层：架构的先天缺陷（最根本） <a class="heading-anchor" href="#第一层：架构的先天缺陷（最根本）" aria-label="Link to 第一层：架构的先天缺陷（最根本）">#</a></h4>
-
-<p>2026 年 3 月发表的 <em>Lost in the Middle at Birth: An Exact Theory of Transformer Position Bias</em> 给出了严格的数学证明：U 型曲线在模型初始化时就已存在，与训练和位置编码无关。它是 causal decoder + residual connections 的固有几何性质。</p>
-
-<p>具体机制：</p>
-<ul>
-<li><strong>Causal masking 保证 primacy bias</strong>：第一个 token 出现在所有后续 token 的注意力范围内，在代数上不可避免地获得更高权重。</li>
-<li><strong>Residual connections 锚定 recency bias</strong>：最后几个 token 通过残差路径获得最强的梯度信号。</li>
-<li><strong>中间区域被卷积式稀释</strong>：在离散 Cesàro 矩阵的幂运算下，中间 token 的梯度路由被指数级压缩，形成一个 O(1/(H-1)!) 量级的"死区"。</li>
-</ul>
-
-<p>论文的结论是：U 型偏差是拓扑层面的必然（"geometric birthright"），不是 bug，是 architecture 的 birthright。因此，修改 RoPE 等位置编码只是治标——要治本，训练范式必须被显式设计来克服这个初始化偏差。</p>
-
-<h4 id="第二层：训练过程的强化">第二层：训练过程的强化 <a class="heading-anchor" href="#第二层：训练过程的强化" aria-label="Link to 第二层：训练过程的强化">#</a></h4>
-
-<ul>
-<li>Pre-training 的 next-token prediction 天然奖励 recency（最近的 token 与下一个 token 的统计相关性最强）。</li>
-<li>Instruction tuning 天然奖励 primacy（system prompt / 指令总在开头）。</li>
-<li>中间位置在训练分布中既不是"指令"也不是"最近上下文"，两头不靠。</li>
-</ul>
-
-<p>OpenReview 上的一篇 2025 年工作提出了另一个视角：Lost-in-the-Middle 不是"缺陷"，而是对不同信息检索需求的"适应"。Pre-training 同时包含需要 uniform recall（长期记忆需求）和优先最近信息（短期记忆需求）的任务。U 型曲线是这两种需求联合训练的产物。更大的模型分布 attention 更均匀，U 型效应减弱——但不会消失。</p>
-
-<h4 id="第三层：attention-sink-效应">第三层：Attention Sink 效应 <a class="heading-anchor" href="#第三层：attention-sink-效应" aria-label="Link to 第三层：attention-sink-效应">#</a></h4>
-
-<p>模型学会将多余的 softmax 概率质量 dump 到第一个 token（"attention sink"），进一步加剧了 primacy bias，同时压缩了分配给中间 token 的注意力预算。这是一个 learned artifact，但它叠加在架构层面的先天偏差之上。</p>
-
-<h3 id="2-3-agent-coding-为什么尤其受害">2.3 Agent Coding 为什么尤其受害 <a class="heading-anchor" href="#2-3-agent-coding-为什么尤其受害" aria-label="Link to 2-3-agent-coding-为什么尤其受害">#</a></h3>
-
-<p>Agent 编码场景有几个特殊性使 lost-in-middle 问题恶化：</p>
+<h2 id="2-覆盖的-category-分布">2. 覆盖的 category 分布 <a class="heading-anchor" href="#2-覆盖的-category-分布" aria-label="Link to 2-覆盖的-category-分布">#</a></h2>
 
 <table>
-<tr><th>场景特征</th><th>为什么加剧 lost-in-middle</th></tr>
-<tr><td>多轮对话</td><td>conversation history 不断增长，早期的 research 结果被推到 middle</td></tr>
-<tr><td>多文件探索</td><td>读了 10 个文件，中间几个的内容被 attention 遗忘</td></tr>
-<tr><td>工具调用结果</td><td>search/grep 返回大量结果，关键信息可能在中间位置</td></tr>
-<tr><td>context 膨胀</td><td>agent 的 observation 累积远超人类手动 prompt 的长度</td></tr>
+<tr><th>Category</th><th>Paper count</th><th>Representative</th></tr>
+<tr><td>model</td><td>4</td><td>DeepSeek-V4 (CSA+HCA 压缩注意力), Kimi Linear (KDA 线性注意力), Massive Values (注意力机理分析)</td></tr>
+<tr><td>agent</td><td>9</td><td>Continuum (KV TTL), SideQuest (语义淘汰), SAGA (工作流图调度), Claude Code (生产架构)</td></tr>
+<tr><td>algorithm</td><td>6</td><td>NoLiMa (长上下文 benchmark), FilM/IN2 (位置偏置修复训练), PCD (对比解码)</td></tr>
+<tr><td>framework</td><td>8</td><td>ThunderAgent (程序级调度), Helium (模板化 Radix Tree), KVFlow (工作流感知缓存), KVServe (跨 DC 压缩)</td></tr>
 </table>
 
-<p>典型失败模式：agent 先读了 file A（开头），然后读了 file B、C、D（中间），最后读了 file E（结尾）。当需要综合 B/C/D 的信息做决策时，这些内容恰好在 attention 死区。</p>
+<p>共计 27 篇论文 + 3 份类别综述，覆盖 4 个类别。</p>
 
-<h3 id="2-4-已知的缓解策略">2.4 已知的缓解策略 <a class="heading-anchor" href="#2-4-已知的缓解策略" aria-label="Link to 2-4-已知的缓解策略">#</a></h3>
+<hr>
+
+<h2 id="3-时间线">3. 时间线 <a class="heading-anchor" href="#3-时间线" aria-label="Link to 3-时间线">#</a></h2>
 
 <table>
-<tr><th>策略</th><th>原理</th><th>局限</th></tr>
-<tr><td>重要信息锚定在首尾</td><td>顺应 U 型分布，把关键 context 放在 attention 热区</td><td>需要预知什么重要，且不 scale</td></tr>
-<tr><td>Attention calibration (Found-in-the-Middle)</td><td>直接修改 attention 机制，校准位置偏差</td><td>RAG 性能提升 ~15pp，但需要修改模型</td></tr>
-<tr><td>Chunk-and-summarize</td><td>先分块摘要，再用摘要作为 prompt，原文按需 drill-in</td><td>摘要可能丢失细节</td></tr>
-<tr><td>Multi-agent 分治 (Tree of Agents)</td><td>将长 context 分给多个 agent 独立处理，消除位置偏差</td><td>协调开销，agent 间信息同步</td></tr>
-<tr><td>Position-agnostic training</td><td>训练时随机化 relevant info 位置，打破位置依赖</td><td>需要重新训练</td></tr>
+<tr><th>时间</th><th>事件</th><th>意义</th></tr>
+<tr><td>2023</td><td>Liu et al. "Lost in the Middle" (TACL 2024)</td><td>首次系统记录 U 型性能曲线；GPT-3.5 在 middle position 下降超 20pp</td></tr>
+<tr><td>2024-04</td><td>FilM-7B / IN2 Training <a href="/papers/2404.16811/detail.html#core-contribution" class="ref-link" title="L2:2404.16811#core-contribution">[L2:2404.16811]</a></td><td>证明 lost-in-middle 可通过数据合成+指令微调修复，无需改架构</td></tr>
+<tr><td>2024-12</td><td>Lost in the Middle and In-Between <a href="/papers/2412.10079/detail.html#core-contribution" class="ref-link" title="L2:2412.10079#core-contribution">[L2:2412.10079]</a></td><td>发现多跳 QA 中存在第二层退化——证据间距本身是退化变量</td></tr>
+<tr><td>2025-02</td><td>NoLiMa benchmark <a href="/papers/2502.05167/detail.html#core-contribution" class="ref-link" title="L2:2502.05167#core-contribution">[L2:2502.05167]</a></td><td>去除字面匹配后，13 个 frontier 模型有效长度均 ≤8K</td></tr>
+<tr><td>2025-02</td><td>Massive Values 分析 <a href="/papers/2502.01563/detail.html#key-findings" class="ref-link" title="L2:2502.01563#key-findings">[L2:2502.01563]</a></td><td>揭示 RoPE 低频维度的 massive values 是上下文理解的功能信号</td></tr>
+<tr><td>2025-06</td><td>PCD (ACL 2025) <a href="/papers/2506.08371/detail.html#core-contribution" class="ref-link" title="L2:2506.08371#core-contribution">[L2:2506.08371]</a></td><td>训练免费的对比解码，通过 RoPE 过旋转缓解后验显著度衰减</td></tr>
+<tr><td>2025-07</td><td>KVFlow <a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="L2:2507.07400#summary">[L2:2507.07400]</a></td><td>首个 workflow-aware prefix caching，用 STE 替代 LRU</td></tr>
+<tr><td>2025-09</td><td>Halo <a href="/papers/2509.02121/detail.html#summary" class="ref-link" title="L2:2509.02121#summary">[L2:2509.02121]</a></td><td>引入 batch query processing 思路到 agent 工作流</td></tr>
+<tr><td>2025-10</td><td>Kimi Linear (KDA) <a href="/papers/2510.26692/detail.html#core-contribution" class="ref-link" title="L2:2510.26692#core-contribution">[L2:2510.26692]</a></td><td>线性注意力首次在公平对比下全面超越全注意力，KV cache −75%</td></tr>
+<tr><td>2025-11</td><td>Continuum <a href="/papers/2511.02230/detail.html#q2-方法kv-cache-ttl--program-level-fcfs" class="ref-link" title="L2:2511.02230#q2-方法kv-cache-ttl--program-level-fcfs">[L2:2511.02230]</a></td><td>提出 KV cache TTL 机制，multi-turn agent 延迟降 1.12–8.18×</td></tr>
+<tr><td>2025-11</td><td>Gemini 2.5 Flash 消除单针 LITM <a href="/papers/2511.05850/detail.html#core-contribution" class="ref-link" title="L2:2511.05850#core-contribution">[L2:2511.05850]</a></td><td>单针检索在 1M context 下实现 100% 准确率，但多针/多跳问题仍在</td></tr>
+<tr><td>2026-01</td><td>Intelligence Degradation <a href="/papers/2601.15300/detail.html#core-contribution" class="ref-link" title="L2:2601.15300#core-contribution">[L2:2601.15300]</a></td><td>量化 Qwen2.5-7B 的临界衰退点：≈40% 标称长度</td></tr>
+<tr><td>2026-02</td><td>SideQuest <a href="/papers/2602.22603/detail.html#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token" class="ref-link" title="L2:2602.22603#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token">[L2:2602.22603]</a></td><td>让 LRM 自身判断 KV 淘汰，56–65% token 降幅</td></tr>
+<tr><td>2026-02</td><td>ThunderAgent <a href="/papers/2602.13692/detail.html#summary" class="ref-link" title="L2:2602.13692#summary">[L2:2602.13692]</a></td><td>引入 agentic program 作为一等调度单元</td></tr>
+<tr><td>2026-03</td><td>PASTE <a href="/papers/2603.18897/detail.html#tldr" class="ref-link" title="L2:2603.18897#tldr">[L2:2603.18897]</a></td><td>投机性工具执行，E2E 延迟降 48.5%</td></tr>
+<tr><td>2026-03</td><td>Attention Residuals <a href="/papers/2603.15031/detail.html#core-contribution" class="ref-link" title="L2:2603.15031#core-contribution">[L2:2603.15031]</a></td><td>沿深度做 softmax 加权求和替代恒定残差，节省 ~1.25× compute</td></tr>
+<tr><td>2026-04</td><td>Claude Code 逆向分析 <a href="/papers/2604.14228/detail.html#q2-方法" class="ref-link" title="L2:2604.14228#q2-方法">[L2:2604.14228]</a></td><td>揭示生产 agent 的 "1.6% 决策 + 98.4% 确定性基础设施" 范式</td></tr>
+<tr><td>2026-05</td><td>SAGA <a href="/papers/2605.00528/detail.html#q2-方法" class="ref-link" title="L2:2605.00528#q2-方法">[L2:2605.00528]</a></td><td>Agent Execution Graph + WA-LRU 达到 Bélády 最优的 1.31× competitive ratio</td></tr>
+<tr><td>2026-05</td><td>PBKV <a href="/papers/2605.06472/detail.html#q2-方法预测驱动的三组件-kv-cache-管理" class="ref-link" title="L2:2605.06472#q2-方法预测驱动的三组件-kv-cache-管理">[L2:2605.06472]</a></td><td>GNN 多步预测驱动 KV cache，命中率 27%→69%</td></tr>
+<tr><td>2026</td><td>DeepSeek-V4 CSA+HCA <a href="/papers/deepseek-v4/detail.html#q2-方法" class="ref-link" title="L2:deepseek-v4#q2-方法">[L2:deepseek-v4]</a></td><td>1M context 下 KV cache 仅 V3(MLA) 的 10%，FLOPs 仅 27%</td></tr>
 </table>
 
 <hr>
 
-<h2 id="3-attention-层的解法：从-hard-mask-到-soft-gate">3. Attention 层的解法：从 Hard Mask 到 Soft Gate <a class="heading-anchor" href="#3-attention-层的解法：从-hard-mask-到-soft-gate" aria-label="Link to 3-attention-层的解法：从-hard-mask-到-soft-gate">#</a></h2>
-
-<h3 id="3-1-一个自然的直觉：外挂-relevance-mask">3.1 一个自然的直觉：外挂 relevance mask <a class="heading-anchor" href="#3-1-一个自然的直觉：外挂-relevance-mask" aria-label="Link to 3-1-一个自然的直觉：外挂-relevance-mask">#</a></h3>
-
-<p>面对 lost-in-middle，一个直觉的想法是：在 softmax 之前，识别出哪些 token 与当前 generation 明确不相关，直接 mask 掉，只对剩下的 relevant token 算 softmax。这样：</p>
-<ul>
-<li>softmax 的分母变小（更少的 token 竞争概率质量）</li>
-<li>不相关 token 不会偷走 attention 预算</li>
-<li>中间位置的 relevant token 有机会获得应有的 attention</li>
-</ul>
-
-<h3 id="3-2-核心矛盾：鸡生蛋问题">3.2 核心矛盾：鸡生蛋问题 <a class="heading-anchor" href="#3-2-核心矛盾：鸡生蛋问题" aria-label="Link to 3-2-核心矛盾：鸡生蛋问题">#</a></h3>
-
-<p>这个想法面临一个循环依赖：判断"相关/不相关"本身需要某种形式的 attention 计算。你还没算 QK^T，就不知道当前 query 跟哪些 key 相关。</p>
-
-<p>此外，hard mask 还有几个严重风险：</p>
-
-<table>
-<tr><th>风险</th><th>说明</th></tr>
-<tr><td>信息永久丢失</td><td>soft attention 至少给每个 token 非零概率；hard mask = 0 意味着一旦判错就无法挽回</td></tr>
-<tr><td>多跳推理断裂</td><td>token A 看起来跟 query 不相关，但它是连接 token B（相关）和答案的桥梁</td></tr>
-<tr><td>每层需要不同 mask</td><td>layer 3 的"相关"和 layer 20 的"相关"可能完全不同，一个全局 mask 不够用</td></tr>
-<tr><td>梯度被阻断</td><td>hard binary mask 不可微，训练时梯度过不去</td></tr>
-</table>
-
-<p>所有 2025–2026 年的成功方案都用 soft gating（sigmoid 连续值）而非 hard mask。以下是四条主要路线。</p>
-
-<h3 id="3-3-路线-1：用-value-表征预测-mask-—-dynamic-mask-attention-dma">3.3 路线 1：用 Value 表征预测 mask — Dynamic Mask Attention (DMA) <a class="heading-anchor" href="#3-3-路线-1：用-value-表征预测-mask-—-dynamic-mask-attention-dma" aria-label="Link to 3-3-路线-1：用-value-表征预测-mask-—-dynamic-mask-attention-dma">#</a></h3>
-
-<p>DMA (ICLR 2026) 的核心思路是用 value representation（而非 QK 分数）来生成 content-aware 的 dynamic mask：</p>
-
-<pre><code>
-传统:  score = softmax(Q @ K^T) @ V
-DMA:   mask  = sigmoid(f(V))        ← 用 V 的内容生成 mask
-       score = softmax(Q @ K^T ⊙ mask) @ V
-</code></pre>
-
-<p>这打破了循环——V 是输入的线性投影，不依赖 attention 计算。mask 是 soft（连续重要性分数），保证可微分。效果：long-context 任务上最高 10x 加速，perplexity 和 accuracy 都优于 fixed sparse attention。</p>
-
-<p>关键创新：mask 是 per-head、per-query 的——不同 attention head 学会关注不同的内容模式，不同 query 激活不同的 mask。这解决了"一个全局 mask 不够用"的问题。</p>
-
-<h3 id="3-4-路线-2：在-sdpa-输出端加-gate-—-gated-attention">3.4 路线 2：在 SDPA 输出端加 Gate — Gated Attention <a class="heading-anchor" href="#3-4-路线-2：在-sdpa-输出端加-gate-—-gated-attention" aria-label="Link to 3-4-路线-2：在-sdpa-输出端加-gate-—-gated-attention">#</a></h3>
-
-<p>Gated Attention (NeurIPS 2025, 已用于 Qwen3-Next) 选择了不同的位置：不在 softmax 前 mask，而是在 softmax 后加一个 query-dependent 的 sigmoid gate：</p>
-
-<pre><code>
-传统:  output = softmax(Q @ K^T / √d) @ V
-Gated: output = [softmax(Q @ K^T / √d) @ V] ⊙ sigmoid(Q @ W_g)
-                                                 ↑ query-dependent sparse gate
-</code></pre>
-
-<p>这个方案的优雅之处是：让 softmax 正常算，然后用 gate 来抑制不需要的信息，彻底绕开了"softmax 前怎么知道谁不相关"的问题。</p>
-
-<p>效果：</p>
-<ul>
-<li>消除 attention sink（第一个 token 不再吸收多余概率）</li>
-<li>RULER 长上下文评测提升 10+ 分</li>
-<li>训练更稳定，容忍更大 learning rate</li>
-</ul>
-
-<p>该工作的 30 个变体对比实验揭示了 gating 有效的两个根本原因：(1) 在 value 投影和 output 投影之间引入非线性，打破了低秩瓶颈；(2) sigmoid 的天然稀疏性（输出集中在 0 和 1 附近）引入了 input-dependent sparsity，消除了 attention sink。</p>
-
-<h3 id="3-5-路线-3：双重-gating-自适应稀疏度-—-gated-sparse-attention-gsa">3.5 路线 3：双重 Gating + 自适应稀疏度 — Gated Sparse Attention (GSA) <a class="heading-anchor" href="#3-5-路线-3：双重-gating-自适应稀疏度-—-gated-sparse-attention-gsa" aria-label="Link to 3-5-路线-3：双重-gating-自适应稀疏度-—-gated-sparse-attention-gsa">#</a></h3>
-
-<p>GSA (2026) 把两个位置都加了 gate：</p>
-
-<pre><code>
-V&#x27; = V ⊙ sigmoid(h @ W_Vg)       ← value gate: 早期抑制无信息维度
-O  = sparse_SDPA(Q, K, V&#x27;)       ← 只对 top-k 重要位置算 attention
-u  = O ⊙ sigmoid(h @ W_Og)       ← output gate: 丢弃无信息输出
-</code></pre>
-
-<p>关键创新是 adaptive sparsity controller：score 方差大 = 模型很确定谁重要 = 激进剪枝；方差小 = 不确定 = 保留更多 context。这让稀疏度随输入内容动态调整，而不是用固定的 top-k。</p>
-
-<h3 id="3-6-路线-4：特征维度稀疏-—-sparse-feature-attention-sfa">3.6 路线 4：特征维度稀疏 — Sparse Feature Attention (SFA) <a class="heading-anchor" href="#3-6-路线-4：特征维度稀疏-—-sparse-feature-attention-sfa" aria-label="Link to 3-6-路线-4：特征维度稀疏-—-sparse-feature-attention-sfa">#</a></h3>
-
-<p>SFA (2026) 换了一个正交的方向——不 mask token，而是把 Q/K 映射到 k-sparse code：</p>
-
-<pre><code>
-Q_sparse = top_k(Q)   # 每个 query 只激活 k 个维度
-K_sparse = top_k(K)   # 每个 key 只激活 k 个维度
-score 只在 overlap 维度上算，天然就是稀疏的
-</code></pre>
-
-<p>计算量从 O(n²d) 降到 O(n²k²/d)，当 k << d 时非常高效。SFA 与 token-level sparsity 正交，可以组合使用。</p>
-
-<h3 id="3-7-小结：不要对抗架构，要围绕它设计">3.7 小结：不要对抗架构，要围绕它设计 <a class="heading-anchor" href="#3-7-小结：不要对抗架构，要围绕它设计" aria-label="Link to 3-7-小结：不要对抗架构，要围绕它设计">#</a></h3>
-
-<p>四条路线的共同洞察：<strong>不要 hard mask，要 soft gate；不一定要在 softmax 前做，softmax 后做一样有效甚至更好。</strong> lost-in-middle 是架构的拓扑必然，在 attention 层面的解法不是消除偏差，而是提供 content-aware 的补偿机制。</p>
-
-<hr>
-
-<h2 id="4-系统层的问题：context-没有-gc">4. 系统层的问题：Context 没有 GC <a class="heading-anchor" href="#4-系统层的问题：context-没有-gc" aria-label="Link to 4-系统层的问题：context-没有-gc">#</a></h2>
-
-<h3 id="4-1-progressive-disclosure-的不对称">4.1 Progressive Disclosure 的不对称 <a class="heading-anchor" href="#4-1-progressive-disclosure-的不对称" aria-label="Link to 4-1-progressive-disclosure-的不对称">#</a></h3>
-
-<p>当前 agent 系统（包括 Cursor、各种 coding agent）在 context 管理上有一个结构性不对称：skill 和 context 可以渐进式加载（progressive disclosure），但没有渐进式卸载（progressive removal）。Context 生命周期是 append-only 的：</p>
-
-<pre><code>
-时间 →
-[system prompt] [skill A] [skill B] [tool result 1] [tool result 2] ... [tool result N]
-                ←———————————  只增不减  ———————————→
-</code></pre>
-
-<h3 id="4-2-复杂任务的周期性模式">4.2 复杂任务的周期性模式 <a class="heading-anchor" href="#4-2-复杂任务的周期性模式" aria-label="Link to 4-2-复杂任务的周期性模式">#</a></h3>
-
-<p>一个复杂的 coding 任务不是线性的，而是在 high-level 和 low-level 之间周期性切换的：</p>
-
-<pre><code>
-Phase 1: High-level design     → 需要：架构 skill, 需求摘要
-Phase 2: Low-level execution   → 需要：具体 API 文档, 代码 skill
-Phase 3: High-level review     → 需要：设计约束, 整体视角
-Phase 4: Low-level fix         → 需要：debug skill, 错误上下文
-         ↻ 循环
-</code></pre>
-
-<p>Phase 2 加载的具体 API 文档在 Phase 3 时不仅没有价值，还：</p>
-<ul>
-<li>占据 context 预算，挤压真正有用的信息</li>
-<li>落入 attention 的 middle 死区，产生噪音</li>
-<li>因为 lost-in-middle，反而可能让模型"注意到"这些过时细节而忽略当前目标</li>
-</ul>
-
-<p>这本质上是一个 context 没有 GC（垃圾回收）的问题。</p>
-
-<h3 id="4-3-2025–2026-年的系统级解法">4.3 2025–2026 年的系统级解法 <a class="heading-anchor" href="#4-3-2025–2026-年的系统级解法" aria-label="Link to 4-3-2025–2026-年的系统级解法">#</a></h3>
-
-<h4 id="contextbudget：预算感知的-context-管理-2026">ContextBudget：预算感知的 Context 管理 (2026) <a class="heading-anchor" href="#contextbudget：预算感知的-context-管理-2026" aria-label="Link to contextbudget：预算感知的-context-管理-2026">#</a></h4>
-
-<p>将 context 管理建模为预算约束的序列决策问题。用 RL 训练 agent 自己决定什么时候压缩、压缩多少。核心机制：(1) budget-conditioned inference state 在 append 新 observation 前暴露剩余 context headroom；(2) commit-block aggregation 让 agent 自适应控制压缩时机和力度。不是简单的 FIFO 淘汰，而是根据下游任务成功率来优化压缩策略。</p>
-
-<h4 id="neural-paging：类-os-的页面置换-2026">Neural Paging：类 OS 的页面置换 (2026) <a class="heading-anchor" href="#neural-paging：类-os-的页面置换-2026" aria-label="Link to neural-paging：类-os-的页面置换-2026">#</a></h4>
-
-<p>把 context 管理类比为操作系统的虚拟内存。LLM = CPU（只做推理），Page Controller = MMU（管理 context window）。context window 满了 → Page Controller 决定 EVICT 哪些 token；需要新信息 → Page Controller FETCH 进来。目标是近似 Semantic Belady's Algorithm（淘汰未来最久不会用到的 token）。关键是信息隐藏：Main LLM 以为自己有固定大小的 context window，Page Controller 透明地确保 relevant information 可用。</p>
-
-<h4 id="unified-memory-agent-uma-：端到端记忆管理-2026">Unified Memory Agent (UMA)：端到端记忆管理 (2026) <a class="heading-anchor" href="#unified-memory-agent-uma-：端到端记忆管理-2026" aria-label="Link to unified-memory-agent-uma-：端到端记忆管理-2026">#</a></h4>
-
-<p>用 RL 联合优化 memory operations（create, update, delete, reorganize）和 task execution。与 decoupled 两阶段方案（先训 memory 再训 QA）相比，联合训练的 UMA 在平均准确率上高出 10+ 个百分点（76.46% vs 66.29%）。原因是 decoupled 训练无法让 memory maintenance 预见下游 QA 需要什么信息，也无法让 QA 策略回溯影响上游 memory 决策。</p>
-
-<h4 id="coda：context-解耦的层级-agent-2025">CoDA：Context 解耦的层级 Agent (2025) <a class="heading-anchor" href="#coda：context-解耦的层级-agent-2025" aria-label="Link to coda：context-解耦的层级-agent-2025">#</a></h4>
-
-<p>核心思路完全对应 agent coding 的周期性模式问题：将 monolithic 决策过程分解为两个 contextually-isolated 角色——Planner 和 Executor。两者由同一个模型扮演，但在不同的 context 下运行。</p>
-
-<p>Executor 在 ephemeral workspace 中运行，每个 sub-task reset context，bounded by 单个文档；Planner 维护 strategic context，只看 concise summaries。关键：verbose raw documents 永远不进入 Planner 的 strategic context。Executor 是一个黑盒，抽象掉 noisy details，实现有效的 context decoupling。</p>
-
-<h4 id="codedelegator：ephemeral-persistent-状态分离-2026">CODEDELEGATOR：Ephemeral-Persistent 状态分离 (2026) <a class="heading-anchor" href="#codedelegator：ephemeral-persistent-状态分离-2026" aria-label="Link to codedelegator：ephemeral-persistent-状态分离-2026">#</a></h4>
-
-<p>将 strategic planning 与 code implementation 通过 role separation 解耦。Persistent Delegator 处理 task decomposition 和 orchestration，从不写实现代码。Ephemeral Coders 在 isolated context 中执行 atomic sub-tasks：每个 Coder 以空 context 启动，只接收它的 spec，完成后所有 trace 随实例销毁。</p>
-
-<p>核心原则 P2: Fresh Context, Focused Scope——通过 per sub-task reset context，完全防止 cross-sub-task pollution。Delegator 追踪 what is accomplished via workspace state，never how。</p>
-
-<h4 id="amnesic-protocol：主动遗忘-2025">Amnesic Protocol：主动遗忘 (2025) <a class="heading-anchor" href="#amnesic-protocol：主动遗忘-2025" aria-label="Link to amnesic-protocol：主动遗忘-2025">#</a></h4>
-
-<p>更激进的方案——把遗忘当作核心特性而非缺陷。Agent 的 context window 是 disposable RAM——它必须显式 "learn"（提取 artifact）和 "forget"（清除 context）来维持 focus。</p>
-
-<p>操作原语：</p>
-<ul>
-<li><code>stage_context(path)</code> — 加载文件到工作内存</li>
-<li><code>save_artifact(id, val)</code> — 提取关键信息到 Backpack（外部持久存储）</li>
-<li><code>unstage_context(path)</code> — 显式清除文件（progressive removal）</li>
-<li><code>switch_strategy(name)</code> — 切换 persona（"Architect" → "Implementer"）</li>
-</ul>
-
-<p>安全性由代码保证（Physical Invariants），不由 prompt 保证。如果 agent 试图在没有清除 memory 的情况下读取文件，系统物理阻止该操作。</p>
-
-<h4 id="genericagent：分层按需记忆-2026">GenericAgent：分层按需记忆 (2026) <a class="heading-anchor" href="#genericagent：分层按需记忆-2026" aria-label="Link to genericagent：分层按需记忆-2026">#</a></h4>
-
-<p>围绕 "context information density maximization" 原则构建。四层机制：(1) 原子化工具描述，保持接口简洁；(2) 分层按需记忆，默认只在 context 放 high-level 索引，需要 drill-in 时才展开具体内容，用完后自动收回；(3) 自演化，把验证过的轨迹压缩成可复用的 SOP 和可执行代码；(4) 压缩+截断层，当 context 超预算时主动管理历史信息。</p>
-
-<h3 id="4-4-理想的-context-生命周期">4.4 理想的 Context 生命周期 <a class="heading-anchor" href="#4-4-理想的-context-生命周期" aria-label="Link to 4-4-理想的-context-生命周期">#</a></h3>
-
-<p>综合上述方案，理想的 context 生命周期应该是：</p>
-
-<pre><code>
-                    ┌──── skill/context scope ────┐
-Phase 1 (design):  [arch_skill] [requirements]     → 产出: design.artifact
-                    └──────── phase 结束，清除 ────┘
-
-                    ┌──── skill/context scope ────┐
-Phase 2 (impl):    [api_skill] [design.artifact]   → 产出: code + impl.artifact
-                    └──────── phase 结束，清除 ────┘
-
-                    ┌──── skill/context scope ────┐
-Phase 3 (review):  [arch_skill] [design.artifact] [impl.artifact]
-                    └──────── phase 结束，清除 ────┘
-</code></pre>
-
-<p>核心设计原则：</p>
-
-<table>
-<tr><th>原则</th><th>说明</th></tr>
-<tr><td>Scoped loading</td><td>Skill 和 context 有明确的生命周期，不是"加载了就永远在"</td></tr>
-<tr><td>Artifact extraction</td><td>Phase 结束时，有价值的结论被提取为结构化 artifact，raw context 被丢弃</td></tr>
-<tr><td>Phase-aware loading</td><td>根据当前 phase 自动选择加载什么、卸载什么</td></tr>
-<tr><td>Budget enforcement</td><td>不是靠模型"自觉忽略"，而是物理上不让过时信息进入 context</td></tr>
-</table>
-
-<hr>
-
-<h2 id="5-kb-orchestrator：subagent-作为-context-隔离的实现">5. KB Orchestrator：Subagent 作为 Context 隔离的实现 <a class="heading-anchor" href="#5-kb-orchestrator：subagent-作为-context-隔离的实现" aria-label="Link to 5-kb-orchestrator：subagent-作为-context-隔离的实现">#</a></h2>
-
-<p>KB 知识库的 orchestrator 是上述 context 隔离理论的一个具体工程实现。它使用 Cursor 的 subagent（Task tool）机制来实现 ephemeral context：每个 subagent 启动时 context 是干净的，完成后只返回结构化的 metadata。</p>
-
-<h3 id="5-1-四个结构性防御">5.1 四个结构性防御 <a class="heading-anchor" href="#5-1-四个结构性防御" aria-label="Link to 5-1-四个结构性防御">#</a></h3>
-
-<h4 id="物理隔离（不靠模型自觉）">物理隔离（不靠模型自觉） <a class="heading-anchor" href="#物理隔离（不靠模型自觉）" aria-label="Link to 物理隔离（不靠模型自觉）">#</a></h4>
-
-<p>主 session 有严格的 Read allowlist/denylist：</p>
+<h2 id="4-技术谱系-evolution-timeline">4. 技术谱系 (Evolution Timeline) <a class="heading-anchor" href="#4-技术谱系-evolution-timeline" aria-label="Link to 4-技术谱系-evolution-timeline">#</a></h2>
+
+<p>本 topic 的技术演化跨越模型、agent、框架三个类别，形成两条主干和多条交叉分支：</p>
+
+<div class="mermaid">
+flowchart TD
+    subgraph MODEL["模型层：注意力与位置编码"]
+        MHA["MHA (标准多头注意力)"]
+        GQA["GQA (Grouped Query Attention)"]
+        MLA["MLA (Multi-head Latent Attention)<br/>K2 系列"]
+        KDA["KDA (线性注意力)<br/>Kimi Linear"]
+        CSA["CSA+HCA (压缩稀疏注意力)<br/>DeepSeek-V4"]
+        AttnRes["Attention Residuals<br/>深度 softmax 聚合"]
+        MV["Massive Values 分析<br/>RoPE 低频功能信号"]
+        
+        MHA --> GQA --> MLA
+        MLA --> KDA
+        MLA --> CSA
+        GQA --> AttnRes
+        MHA --> MV
+    end
+    
+    subgraph ALGO["算法层：位置偏置诊断与修复"]
+        LITM["Lost in the Middle<br/>Liu 2023"]
+        FilM["FilM/IN2 Training<br/>数据驱动修复"]
+        LITM2["Lost in Middle & In-Between<br/>多跳距离退化"]
+        NoLiMa["NoLiMa<br/>去字面匹配 benchmark"]
+        PCD["PCD 对比解码<br/>RoPE 过旋转"]
+        IDeg["Intelligence Degradation<br/>临界点量化"]
+        Gemini["Gemini 2.5 Flash<br/>单针 LITM 消除"]
+        
+        LITM --> FilM
+        LITM --> LITM2
+        LITM --> NoLiMa
+        LITM --> PCD
+        LITM --> IDeg
+        LITM --> Gemini
+    end
+    
+    subgraph AGENT["Agent 层：KV Cache 生命周期"]
+        EOT["End-of-turn eviction<br/>(传统策略)"]
+        TTL["Continuum<br/>KV TTL + FCFS"]
+        SQ["SideQuest<br/>语义淘汰"]
+        CMV["CMV<br/>会话裁剪"]
+        SAGA_N["SAGA<br/>AEG DAG 预测"]
+        PBKV_N["PBKV<br/>GNN 多步预测"]
+        CC["Claude Code<br/>5 层 compaction"]
+        
+        EOT --> TTL
+        EOT --> SQ
+        EOT --> CMV
+        TTL --> SAGA_N
+        SAGA_N --> PBKV_N
+    end
+    
+    subgraph FW["框架层：工作流感知调度"]
+        REQ["请求级调度<br/>(vLLM/SGLang)"]
+        TA["ThunderAgent<br/>程序级调度"]
+        HE["Helium<br/>Templated Radix Tree"]
+        HA["Halo<br/>batch DAG 整合"]
+        KVF["KVFlow<br/>workflow-aware STE"]
+        CON["Concur<br/>AIMD 准入控制"]
+        
+        REQ --> TA
+        REQ --> HE
+        REQ --> HA
+        REQ --> KVF
+        REQ --> CON
+    end
+    
+    MV -.->|"量化策略指导"| CSA
+    KDA -.->|"KV 形状变化"| KVF
+    CSA -.->|"KV 大幅缩减"| TA
+    LITM -.->|"位置偏置驱动"| TTL
+    LITM -.->|"位置偏置驱动"| SQ
+    NoLiMa -.->|"有效长度 ≤8K"| CC
+    SAGA_N -.->|"DAG 预测"| HE
+</div>
+
+<p><strong>关键分支点</strong>：</p>
 
 <ul>
-<li><strong>允许读取</strong>：<code>INDEX.md</code>（entity lookup）、<code>LINKS.md</code>（related discovery）、<code>REVIEW.md</code>（stale queue）、<code>CHANGELOG.md</code>（event history）、所有 entity 的 frontmatter（不读 body）</li>
-<li><strong>禁止读取</strong>：<code>skills/kb-L1-ingest/<strong></code>（只有 L1 subagent 读）、<code>skills/kb-L2-distill/</strong></code>（只有 L2 subagent 读）、以此类推</li>
+<li><strong>MLA 分化为 KDA 和 CSA+HCA</strong>：Moonshot 选择线性注意力路线（recurrent state，O(1) KV）<a href="/papers/2510.26692/detail.html#core-contribution" class="ref-link" title="L2:2510.26692#core-contribution">[L2:2510.26692]</a>，DeepSeek 选择压缩 softmax 路线（序列维度压缩，O(n/m) KV）<a href="/papers/deepseek-v4/detail.html#q2-方法" class="ref-link" title="L2:deepseek-v4#q2-方法">[L2:deepseek-v4]</a>。两者的 KV 形状完全不同，对下游框架的 cache 管理提出不同要求。</li>
 </ul>
-
-<p>Violation = skill leak into main session context。有 scanner (<code>kb lint</code>) 在每次 layer 完成后检查。</p>
-
-<h4 id="ephemeral-context-per-phase">Ephemeral Context per Phase <a class="heading-anchor" href="#ephemeral-context-per-phase" aria-label="Link to ephemeral-context-per-phase">#</a></h4>
-
-<p>每个 subagent 的 context 是 fresh 的——previous subagent 的 state 被 discard。这是 context 隔离的结构性防御。L1 subagent 读了原始 PDF、跑了所有 ingest 逻辑——这些全部随 subagent 销毁。L2 启动时看到的是干净的 context + 只有 <code>{path, hash, source_type}</code> 三个字段。</p>
-
-<h4 id="metadata-only-handoff（信息漏斗）">Metadata-only Handoff（信息漏斗） <a class="heading-anchor" href="#metadata-only-handoff（信息漏斗）" aria-label="Link to metadata-only-handoff（信息漏斗）">#</a></h4>
-
-<p>层之间传递的不是 raw body，而是结构化的 frontmatter 级 metadata：</p>
-
-<table>
-<tr><th>From → To</th><th>Metadata 传递内容</th></tr>
-<tr><td>L1 → L2</td><td><code>{path, hash, source_type}</code> — 3 个字段</td></tr>
-<tr><td>L2 → L3</td><td><code>{path, hash, tags, category, related[]}</code></td></tr>
-<tr><td>L3 → L4</td><td><code>{path, hash, l4_targets=[category, topic1, topic2...]}</code></td></tr>
-</table>
-
-<p>下一个 subagent 需要什么就自己去 Read。每次 phase 切换都经过一次信息压缩漏斗。</p>
-
-<h4 id="orchestrator-本身保持-high-level">Orchestrator 本身保持 high-level <a class="heading-anchor" href="#orchestrator-本身保持-high-level" aria-label="Link to orchestrator-本身保持-high-level">#</a></h4>
-
-<p>Orchestrator 的视野被限制在 frontmatter 级别——它永远处于 "high-level dispatch" 模式，具体的 low-level 内容被封装在 subagent 里。Orchestrator 不会因为 L1 阶段加载的 raw paper 内容而在 L3 的 relate 阶段被干扰。</p>
-
-<h3 id="5-2-与学术方案的对比">5.2 与学术方案的对比 <a class="heading-anchor" href="#5-2-与学术方案的对比" aria-label="Link to 5-2-与学术方案的对比">#</a></h3>
-
-<table>
-<tr><th>机制</th><th>KB Orchestrator</th><th>CoDA</th><th>CODEDELEGATOR</th><th>Amnesic</th></tr>
-<tr><td>Context 隔离</td><td>subagent per layer</td><td>Planner/Executor split</td><td>Delegator/Coder split</td><td>stage/unstage</td></tr>
-<tr><td>信息传递</td><td>metadata-only handoff</td><td>structured summary</td><td>structured schema</td><td>Artifact Backpack</td></tr>
-<tr><td>遗忘机制</td><td>subagent 销毁</td><td>Executor context reset</td><td>Coder instance terminated</td><td>explicit wipe</td></tr>
-<tr><td>Orchestrator 视野</td><td>frontmatter-only allowlist</td><td>never sees raw docs</td><td>tracks "what" not "how"</td><td>Backpack only</td></tr>
-<tr><td>物理强制</td><td>denylist + scanner</td><td>role isolation</td><td>runtime isolation</td><td>physical block</td></tr>
-</table>
-
-<p>这个设计在 skill 系统层面复现了 OS 的进程模型：orchestrator 是 init/supervisor，subagent 是 fork 出的 worker process，metadata handoff 是 IPC，denylist 是 access control。</p>
-
-<hr>
-
-<h2 id="6-反向传递：当高层发现低层输出不足">6. 反向传递：当高层发现低层输出不足 <a class="heading-anchor" href="#6-反向传递：当高层发现低层输出不足" aria-label="Link to 6-反向传递：当高层发现低层输出不足">#</a></h2>
-
-<h3 id="6-1-前向管道的局限">6.1 前向管道的局限 <a class="heading-anchor" href="#6-1-前向管道的局限" aria-label="Link to 6-1-前向管道的局限">#</a></h3>
-
-<p>KB 的 pipeline 是严格前向的：<code>extract → classify → L1 → L2 → L3 → L4</code>。当高层（如 L3）发现低层（如 L2）的输出不足时，唯一的选项是 pipeline halt。没有机制将 feedback 向下传播并触发重新运行。</p>
-
-<p>真实场景：</p>
-<ul>
-<li>L3 做 cross-paper synthesis 时，发现 L2 的 distill 把两个不同概念混为一谈</li>
-<li>L3 需要某个 comparison 数据，但 L2 的 7-section distill 没有提取出来</li>
-<li>L4 做 cross-category meta 时，发现不同 L3 之间有矛盾</li>
-<li>L3 发现一个相关 entity 还没有 L1/L2，无法做有意义的 synthesis</li>
-</ul>
-
-<h3 id="6-2-l1-不可变性约束">6.2 L1 不可变性约束 <a class="heading-anchor" href="#6-2-l1-不可变性约束" aria-label="Link to 6-2-l1-不可变性约束">#</a></h3>
-
-<p>一个关键的设计洞察是：L3/L4 不应该直接 trigger L1 re-run。原因：</p>
-
-<p><strong>L1 是忠于原文的</strong>——逐段复述，设计上不应有信息丢失。如果 L3 发现缺少某个信息，信息丢失点几乎一定在 L2 的压缩环节（从 L1 完整逐段复述到 7-section distill 的有损压缩），而不是 L1。如果 L1 做对了（faithful），那 L1 里已经有这个信息——只是 L2 distill 时没有提取出来。</p>
-
-<p>这意味着反向传递遵循严格的<strong>逐级传递</strong>规则：</p>
-
-<pre><code>
-L4 ──► L3 only
-L3 ──► L2 only
-L2 ──► L1 only（唯一能触发 L1 re-run 的层）
-L1 ──► source（不可变）
-</code></pre>
-
-<p>L3 没有资格直接评判 L1，因为 L3 看到的是 L2 的 distill 结果——如果信息不在 L2 里，应该先让 L2 重新做 distill。只有当 L2 re-run 时发现 L1 genuinely 缺失内容，才会触发 L1 re-run。</p>
-
-<p>这个约束大幅简化了系统：</p>
-
-<table>
-<tr><th>维度</th><th>无约束</th><th>逐级传递</th></tr>
-<tr><td>可能的 backward 路径</td><td>L2→L1, L3→L1, L3→L2, L4→L3, L4→L2, L4→L1</td><td>L2→L1, L3→L2, L4→L3</td></tr>
-<tr><td>决策复杂度</td><td>orchestrator 需要判断回到哪一层</td><td>每层只能回退到直接下级</td></tr>
-<tr><td>L1 不变性</td><td>弱（任何层都能触发重写）</td><td>强（只有 L2 能触发）</td></tr>
-</table>
-
-<h3 id="6-3-hybrid-重跑策略">6.3 Hybrid 重跑策略 <a class="heading-anchor" href="#6-3-hybrid-重跑策略" aria-label="Link to 6-3-hybrid-重跑策略">#</a></h3>
-
-<p>根据 feedback 类型，选择不同的 agent 策略：</p>
-
-<table>
-<tr><th>feedback type</th><th>agent 策略</th><th>读 previous output?</th><th>说明</th></tr>
-<tr><td><strong>clarification</strong></td><td>patch agent</td><td>MUST read</td><td>信息存在但被误解/简化/混淆。最常见——L2 不是"错了"，只是没有按上层需要的角度分析</td></tr>
-<tr><td><strong>insufficiency</strong></td><td>patch agent</td><td>MUST read</td><td>信息确实缺失。需要回到 input 重新提取</td></tr>
-<tr><td><strong>error</strong></td><td>full re-run</td><td>optional reference</td><td>分析根本性错误。不能信任 previous output</td></tr>
-<tr><td><strong>missing_dep</strong></td><td>new pipeline</td><td>n/a</td><td>相关 entity 缺少 L1/L2。启动独立 pipeline</td></tr>
-</table>
-
-<p>关键：无论 patch 还是 full re-run，都是新 subagent（fresh context）。Patch agent 读 previous output 是通过 file read（结构化输入），不是通过继承上一个 agent 的 conversation history。这保持了 context 隔离的架构不变量。</p>
-
-<hr>
-
-<h2 id="7-自顶向下的分析精化：对称的-abstraction-refinement">7. 自顶向下的分析精化：对称的 Abstraction-Refinement <a class="heading-anchor" href="#7-自顶向下的分析精化：对称的-abstraction-refinement" aria-label="Link to 7-自顶向下的分析精化：对称的-abstraction-refinement">#</a></h2>
-
-<h3 id="7-1-核心原则">7.1 核心原则 <a class="heading-anchor" href="#7-1-核心原则" aria-label="Link to 7-1-核心原则">#</a></h3>
-
-<p>KB 的 pyramid 是一个自下而上的抽象链：</p>
-
-<pre><code>
-L1 (concrete: faithful source copy)
-  → L2 (compress: 7-section distill)
-    → L3 (synthesize: cross-paper relate)
-      → L4 (abstract: cross-category meta)
-</code></pre>
-
-<p>当信息不足时，feedback 流向相反方向（自顶向下）。但 feedback 不是 symptom report（"你缺了 X"），而是 <strong>analysis + guidance</strong>（"我分析了问题，你应该关注什么"）。每层向下传递时，guidance 变得更具体——因为每层理解自己 input 的结构比任何高层都好。</p>
-
-<p>这形成了完美的对称：</p>
-
-<pre><code>
-构建时 (bottom-up):    具体 → 抽象     每层向上压缩信息
-修复时 (top-down):     抽象 → 具体     每层向下精化指导
-</code></pre>
-
-<h3 id="7-2-analysis-guidance，不是-symptom-relay">7.2 Analysis + Guidance，不是 Symptom Relay <a class="heading-anchor" href="#7-2-analysis-guidance，不是-symptom-relay" aria-label="Link to 7-2-analysis-guidance，不是-symptom-relay">#</a></h3>
-
-<p>feedback 包含两个部分：</p>
 
 <ul>
-<li><strong>Analysis</strong>：emitter 对问题的分析（在它自己的抽象级别上）</li>
-<li><strong>Guidance</strong>：对 target layer 的指导——告诉它应该关注什么，而不是告诉它应该怎么做</li>
+<li><strong>统计驱动 vs 语义驱动 KV 淘汰</strong>：Continuum 用时间维度的 cost-benefit 模型（TTL）<a href="/papers/2511.02230/detail.html#q2-方法kv-cache-ttl--program-level-fcfs" class="ref-link" title="L2:2511.02230#q2-方法kv-cache-ttl--program-level-fcfs">[L2:2511.02230]</a>，SideQuest 用模型自身的语义理解（辅助 LRM 线程）<a href="/papers/2602.22603/detail.html#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token" class="ref-link" title="L2:2602.22603#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token">[L2:2602.22603]</a>。两条路线在短 horizon 和长 horizon 场景下各有优势。</li>
 </ul>
-
-<p>每层按自己的 design 来执行指导——L2 收到"clarify Paged Attention motivation"后，仍然按自己的 7-section template 做 distill，只是这次知道该重点提取什么。guidance 不改变 layer 的 design，只改变它的 focus。</p>
-
-<h3 id="7-3-翻译合约">7.3 翻译合约 <a class="heading-anchor" href="#7-3-翻译合约" aria-label="Link to 7-3-翻译合约">#</a></h3>
-
-<p>每层向下传递 feedback 时，必须遵守翻译合约：<strong>你的 guidance 必须比你收到的 guidance 更具体。</strong> 这是 enforced 的——prompt 里明确要求"translate the abstract need into concrete terms that L(k-1) can act on"。</p>
-
-<p>这防止了 feedback 在传递过程中退化为模糊的抽象描述。每一跳都增加精度。</p>
-
-<h3 id="7-4-完整的分析精化链：一个具体例子">7.4 完整的分析精化链：一个具体例子 <a class="heading-anchor" href="#7-4-完整的分析精化链：一个具体例子" aria-label="Link to 7-4-完整的分析精化链：一个具体例子">#</a></h3>
-
-<pre><code>
-Step 1: L4 分析自己的输出，发现问题
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-L4 analysis: &quot;topic &#x27;agent-system&#x27; 的 hardware co-design 部分把
-  GPUOS 的 GPU partition scheduling 和 Fleet 的 network-aware
-  placement 归为同类，但前者是单机内优化，后者是集群级优化，
-  不应混为一谈&quot;
-
-L4 guidance to L3: &quot;请区分单机 GPU 资源管理 vs 集群级 placement
-  两个层次。GPUOS (2604.17861) 的贡献在 intra-node GPU partition，
-  Fleet 在 inter-node scheduling。重新做 cross-paper synthesis 时
-  按这个层次分开论述&quot;
-
-                        │
-                        ▼ new L3 subagent (fresh context)
-
-Step 2: L3 收到指导，重新读 L2，做分析
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-L3 re-reads L2 of GPUOS... 发现 L2 虽然提到了 &quot;GPU partition
-scheduling&quot; 但只描述了 API 层面的设计，没有提取 partition
-granularity 和 interference isolation 的具体机制——这是区分
-intra-node vs inter-node 的关键。
-
-L3 analysis: &quot;L2 of GPUOS 的 partition scheduling 描述停留在
-  API surface，缺乏 partition granularity（SM 级 vs CU 级）和
-  interference isolation 机制的具体分析&quot;
-
-L3 guidance to L2: &quot;重点关注 GPUOS 如何实现 fine-grained GPU
-  partitioning：
-  - partition 的最小粒度是什么（SM/CU/memory bandwidth）
-  - 不同 partition 之间的 interference isolation 怎么做
-  - 这些信息应该在 L1 的 §4 system design 部分有详述&quot;
-
-                        │
-                        ▼ new L2 subagent (fresh context)
-
-Step 3: L2 收到指导，重新读 L1
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-L2 re-reads L1 of GPUOS §4... 找到了！
-L1 §4.3 有完整的 SM-level partition 描述
-L1 §4.4 有 memory bandwidth isolation 机制
-上次 distill 时把这些归入了 &quot;implementation detail&quot; 跳过了。
-
-L2 action: 重新 distill，把 §4.3 partition granularity 和
-§4.4 isolation 机制提升到 §2 Summary 和 §3 核心三问中
-作为核心贡献。
-
-→ 问题在 L2 层解决。L1 不需要改动。
-
-                        │
-                        ▼ forward cascade
-
-Step 4: 逐层向上重建
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-L3 re-run (fresh context) → 现在 L2 有 partition 细节
-  → 可以清晰区分 intra-node vs inter-node
-L4 re-run (fresh context) → 现在 L3 的 synthesis 正确区分了层次
-  → topic &#x27;agent-system&#x27; 的 hardware co-design 部分准确了
-</code></pre>
-
-<p>每一步的特征：</p>
-<ul>
-<li>分析在本层的抽象级别发生（L4 看 topic pattern，L3 看 cross-paper delta，L2 看 section content）</li>
-<li>指导变得更具体（"混为一谈" → "缺乏 partition 机制分析" → "重新提取 §4.3 §4.4"）</li>
-<li>下层按自己的 design 执行（L2 知道怎么 distill，只需要知道该关注什么）</li>
-<li>每个箭头 = 新 subagent（fresh context），guidance 作为 structured artifact 注入</li>
-</ul>
-
-<h3 id="7-5-evidence-chain-作为-routing-table：认识论基础">7.5 Evidence Chain 作为 Routing Table：认识论基础 <a class="heading-anchor" href="#7-5-evidence-chain-作为-routing-table：认识论基础" aria-label="Link to 7-5-evidence-chain-作为-routing-table：认识论基础">#</a></h3>
-
-<p>上述的分析精化机制建立在一个更根本的原则上：<strong>高层的理解必须建立在低层的证据链上，而不是凭空创造。</strong></p>
-
-<p>KB pyramid 的认识论结构是：</p>
-
-<pre><code>
-L4 的理解 = f(L3 evidence)     不是 L4 自己想的
-L3 的理解 = f(L2 evidence)     不是 L3 自己想的
-L2 的理解 = f(L1 evidence)     不是 L2 自己想的
-L1 = source material            唯一的&quot;事实创造&quot;层
-</code></pre>
-
-<p>每一层的职责不同，但都建立在可追溯的证据链上：</p>
-
-<table>
-<tr><th>层</th><th>职责</th><th>证据来源</th><th>独特价值</th></tr>
-<tr><td>L1</td><td>忠实提取</td><td>source 原文</td><td>无损保存</td></tr>
-<tr><td>L2</td><td>分析压缩</td><td>L1</td><td>从 raw facts 中提炼 insight</td></tr>
-<tr><td>L3</td><td>跨源综合</td><td>多个 L2</td><td>发现 L2 之间的矛盾、互补、delta</td></tr>
-<tr><td>L4</td><td>跨域抽象</td><td>多个 L3</td><td>发现 L3 之间的 pattern、tension、evolution</td></tr>
-</table>
-
-<p>L3 的独特价值不是"重述 L2"，而是在 L2 之间建立关系——发现哪些 L2 互相矛盾、哪些互补、哪些是同一问题的不同解法。但这些关系的每一个端点都必须 trace 到具体的 L2 citation。</p>
-
-<p>这通过 <code><a href="/papers/<id>/detail.html#<slug>" class="ref-link" title="L2:<id>#<slug>">[L2:<id>]</a></code> citation 格式强制执行。每条断言必须携带 citation，这不只是格式要求——citation chain 同时服务三个目的：</p>
-
-<pre><code>
-[ref:L2:paper-A#core-contribution] vs [ref:L2:paper-B#core-contribution]
-         │                                      │
-         ├── 1. 正确性审计: 读者可以验证这个 claim
-         ├── 2. 矛盾发现: L3 的分析价值就在这些对比里
-         └── 3. 反向修复路由: 如果 claim 错了, 精确定位到哪个 L2 的哪个 section
-</code></pre>
-
-<p>当用户说"L3 §4 的 comparison 不清楚"时，系统 parse L3 §4 的 citation，自动知道涉及哪些 L2 entity。反向修复的路由是确定性的——不需要 agent 运行时判断，证据链本身就是路由表。</p>
-
-<h3 id="7-6-大多数链在-l2-终止">7.6 大多数链在 L2 终止 <a class="heading-anchor" href="#7-6-大多数链在-l2-终止" aria-label="Link to 7-6-大多数链在-l2-终止">#</a></h3>
-
-<p>因为 L1 是 faithful 的（逐段复述，信息都在），大多数 feedback chain 在 L2 就解决了：</p>
 
 <ul>
-<li>L3 说"我需要 bandwidth 数据" → L2 重新读 L1，找到数据，重新 distill → done</li>
-<li>L4 说"两个概念混淆" → L3 说"L2 缺乏 motivation 分析" → L2 重新读 L1，找到 motivation，重新 distill → done</li>
+<li><strong>请求级 → 程序级 → 工作流级调度</strong>：传统框架调度单个请求 → ThunderAgent 将 agent program 作为一等调度单元 <a href="/papers/2602.13692/detail.html#summary" class="ref-link" title="L2:2602.13692#summary">[L2:2602.13692]</a> → SAGA 进一步用 Agent Execution Graph 建模工作流 DAG <a href="/papers/2605.00528/detail.html#q2-方法" class="ref-link" title="L2:2605.00528#q2-方法">[L2:2605.00528]</a>。</li>
 </ul>
 
-<p>只有极少数情况（L1 agent 在初次 ingest 时 genuinely 跳过了某段内容）才需要链延伸到 L1。这也验证了 L1 immutability 作为 strong invariant 的正确性。</p>
+<p><strong>关键汇合点</strong>：</p>
 
-<h3 id="7-7-loop-safety">7.7 Loop Safety <a class="heading-anchor" href="#7-7-loop-safety" aria-label="Link to 7-7-loop-safety">#</a></h3>
-
-<p>四个 guardrails 防止无限循环：</p>
-
-<ol>
-<li><strong>Per-layer retry cap</strong>（<code>max_retries=2</code>）——每层在一次 pipeline 执行中最多被 re-run 2 次</li>
-<li><strong>Chain depth cap</strong>（<code>max_chain_depth=3</code>）——refinement chain 不能超过 pyramid 的完整深度（L4→L3→L2→L1）</li>
-<li><strong>Feedback dedup</strong>——如果 re-run 后同一个 <code>(target_layer, focus_sections)</code> tuple 重复出现，说明 fix 没生效，escalate to user</li>
-<li><strong>Nested pipeline depth cap</strong>——<code>missing_dep</code> 触发的嵌套 pipeline 不能自身再触发 <code>missing_dep</code>（depth=1）</li>
+<ul>
+<li>SAGA 和 PBKV 的 DAG/GNN 预测与 Helium 的 Templated Radix Tree 都在尝试用结构化工作流知识指导 KV cache 管理——从不同方向汇合到"工作流感知的缓存策略"。</li>
 </ul>
 
 <hr>
 
-<h2 id="8-open-challenges">8. Open Challenges <a class="heading-anchor" href="#8-open-challenges" aria-label="Link to 8-open-challenges">#</a></h2>
+<h2 id="5-技术线交错">5. 技术线交错 <a class="heading-anchor" href="#5-技术线交错" aria-label="Link to 5-技术线交错">#</a></h2>
 
-<h3 id="8-1-attention-层：u-型偏差是否可根治？">8.1 Attention 层：U 型偏差是否可根治？ <a class="heading-anchor" href="#8-1-attention-层：u-型偏差是否可根治？" aria-label="Link to 8-1-attention-层：u-型偏差是否可根治？">#</a></h3>
+<h3 id="5-1-模型层注意力设计如何约束框架层-kv-cache-管理">5.1 模型层注意力设计如何约束框架层 KV cache 管理 <a class="heading-anchor" href="#5-1-模型层注意力设计如何约束框架层-kv-cache-管理" aria-label="Link to 5-1-模型层注意力设计如何约束框架层-kv-cache-管理">#</a></h3>
 
-<p>Lost in the Middle at Birth 的证明表明 U 型偏差是 causal decoder 的拓扑必然。这意味着在不改变基础架构的情况下（例如转向 bidirectional 或 non-autoregressive 模型），U 型偏差只能被补偿，不能被消除。</p>
+<p>注意力架构决定了 KV cache 的形状、大小和生命周期特征，直接约束框架层的缓存策略。</p>
 
-<p>Gated Attention 和 DMA 提供了有效的补偿，但它们增加了参数和计算量。开放问题：能否找到零开销的补偿方案？或者说，补偿 lost-in-middle 的最优 compute-quality tradeoff 在哪里？</p>
+<p><strong>标准 MLA</strong> (K2 系列) 产生 576 floats/token 的 latent KV <a href="/papers/2507.20534/detail.html#1-architecture" class="ref-link" title="L2:2507.20534#1-architecture">[L2:2507.20534]</a>，KV cache 与序列长度线性增长。在 agent 多轮场景下，128K context 的 KV cache 可达数十 GB，直接触发 Continuum 所识别的 end-of-turn eviction 问题 <a href="/papers/2511.02230/detail.html#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡" class="ref-link" title="L2:2511.02230#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡">[L2:2511.02230]</a>。</p>
 
-<h3 id="8-2-系统层：context-gc-的粒度问题">8.2 系统层：Context GC 的粒度问题 <a class="heading-anchor" href="#8-2-系统层：context-gc-的粒度问题" aria-label="Link to 8-2-系统层：context-gc-的粒度问题">#</a></h3>
+<p><strong>KDA 线性注意力</strong> (Kimi Linear) 用 fixed-size recurrent state 替代 per-token KV，cache 大小与序列长度无关（128×128/head）<a href="/papers/2510.26692/detail.html#key-findings" class="ref-link" title="L2:2510.26692#key-findings">[L2:2510.26692]</a>。这从根本上消除了 agent 多轮场景的 KV 膨胀问题——但框架层的 prefix caching 机制（如 KVFlow 的 STE <a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="L2:2507.07400#summary">[L2:2507.07400]</a>、Helium 的 Radix Tree <a href="/papers/2603.16104/detail.html#summary" class="ref-link" title="L2:2603.16104#summary">[L2:2603.16104]</a>）假设 KV cache 是 append-only 的 token 序列，无法直接适配 recurrent state。</p>
 
-<p>现有方案在 context eviction 的粒度上差异很大：</p>
+<p><strong>CSA+HCA 压缩注意力</strong> (DeepSeek-V4) 做"先 4× 压缩再 sparse top-k 选择"，KV 条目数缩减为 O(n/m) <a href="/papers/deepseek-v4/detail.html#q2-方法" class="ref-link" title="L2:deepseek-v4#q2-方法">[L2:deepseek-v4]</a>。这要求 KVServe 等跨 DC 传输框架重新设计压缩策略——service-aware 压缩必须理解不同注意力层的压缩比差异 <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a>。</p>
+
+<h3 id="5-2-agent-工作负载模式如何驱动框架重新设计">5.2 Agent 工作负载模式如何驱动框架重新设计 <a class="heading-anchor" href="#5-2-agent-工作负载模式如何驱动框架重新设计" aria-label="Link to 5-2-agent-工作负载模式如何驱动框架重新设计">#</a></h3>
+
+<p>Agent 工作负载有三个区别于交互式对话的关键特征，每个都要求框架层的响应：</p>
+
+<p><strong>特征 1：短间隙多轮 tool call。</strong> 间隙仅 925ms–1923ms <a href="/papers/2511.02230/detail.html#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡" class="ref-link" title="L2:2511.02230#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡">[L2:2511.02230]</a>，远短于传统对话的分钟级间隔。框架响应：Continuum 为每个 tool-call 计算最优 KV 保留时间 τ*，保留 KV 而不是每轮驱逐 <a href="/papers/2511.02230/detail.html#q2-方法kv-cache-ttl--program-level-fcfs" class="ref-link" title="L2:2511.02230#q2-方法kv-cache-ttl--program-level-fcfs">[L2:2511.02230]</a>；ThunderAgent 将 agent program 整体作为调度单元，避免 turn 间的调度开销 <a href="/papers/2602.13692/detail.html#summary" class="ref-link" title="L2:2602.13692#summary">[L2:2602.13692]</a>。</p>
+
+<p><strong>特征 2：DAG 结构的工作流。</strong> Agent 的步骤间存在复杂的依赖关系（条件分支、重试循环、并行路径），不是简单的线性序列。框架响应：SAGA 用 Agent Execution Graph 形式化工作流为 DAG <a href="/papers/2605.00528/detail.html#q2-方法" class="ref-link" title="L2:2605.00528#q2-方法">[L2:2605.00528]</a>；Halo 借数据库 query optimizer 思路做 batch DAG 整合 <a href="/papers/2509.02121/detail.html#summary" class="ref-link" title="L2:2509.02121#summary">[L2:2509.02121]</a>。</p>
+
+<p><strong>特征 3：CPU 侧瓶颈。</strong> 工具执行（文件读写、搜索、编译）占 E2E 延迟 35%–88% <a href="/papers/2511.00739/detail.html#q3-最终效果如何" class="ref-link" title="L2:2511.00739#q3-最终效果如何">[L2:2511.00739]</a>。GPU 优化的上限因此被 CPU 侧限制。框架响应：PASTE 通过 pattern mining + 投机性工具执行，在 LLM "思考"时预执行下一个工具，E2E 延迟降 48.5% <a href="/papers/2603.18897/detail.html#tldr" class="ref-link" title="L2:2603.18897#tldr">[L2:2603.18897]</a>。</p>
+
+<h3 id="5-3-位置偏置如何从模型层传导到-agent-层">5.3 位置偏置如何从模型层传导到 agent 层 <a class="heading-anchor" href="#5-3-位置偏置如何从模型层传导到-agent-层" aria-label="Link to 5-3-位置偏置如何从模型层传导到-agent-层">#</a></h3>
+
+<p>Lost in the Middle 的位置偏置在 agent 场景被放大。Agent 先读 file A（context 开头），然后读 file B、C、D（推入 middle），最后读 file E（context 末尾）。当需要综合 B/C/D 的信息时，这些内容恰好在注意力死区。</p>
+
+<p>这不是简单的"单针检索"问题——NoLiMa 证明，即使去除字面匹配，13 个 frontier 模型的有效长度均 ≤8K <a href="/papers/2502.05167/detail.html#key-findings" class="ref-link" title="L2:2502.05167#key-findings">[L2:2502.05167]</a>。多跳场景更糟：证据片段之间的距离本身是独立的退化变量，且与准确率几乎线性反相关 <a href="/papers/2412.10079/detail.html#key-findings" class="ref-link" title="L2:2412.10079#key-findings">[L2:2412.10079]</a>。</p>
+
+<p>这个传导链条解释了为什么 agent 的 KV cache 管理不能是简单的 LRU：被淘汰的 token 可能正是模型在注意力死区中遗漏的关键信息。SideQuest 的语义淘汰 <a href="/papers/2602.22603/detail.html#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token" class="ref-link" title="L2:2602.22603#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token">[L2:2602.22603]</a> 和 PBKV 的 GNN 预测 <a href="/papers/2605.06472/detail.html#q2-方法预测驱动的三组件-kv-cache-管理" class="ref-link" title="L2:2605.06472#q2-方法预测驱动的三组件-kv-cache-管理">[L2:2605.06472]</a> 本质上都是在尝试用"工作流语义"来弥补"注意力机制"的位置盲区。</p>
+
+<h3 id="5-4-生产系统架构如何反映这些张力">5.4 生产系统架构如何反映这些张力 <a class="heading-anchor" href="#5-4-生产系统架构如何反映这些张力" aria-label="Link to 5-4-生产系统架构如何反映这些张力">#</a></h3>
+
+<p>Claude Code 的逆向工程揭示了一个有趣的平衡：它选择了最简单的 Agent Loop 架构（while-loop + tool calls），但用 5 层 context compaction + 7 层安全管道来管理 context 膨胀 <a href="/papers/2604.14228/detail.html#q2-方法" class="ref-link" title="L2:2604.14228#q2-方法">[L2:2604.14228]</a>。核心范式是"1.6% 决策逻辑 + 98.4% 确定性基础设施"——模型负责判断，系统负责 context 生命周期管理 <a href="/papers/2604.14228/detail.html#q3-结果" class="ref-link" title="L2:2604.14228#q3-结果">[L2:2604.14228]</a>。</p>
+
+<p>这与 SGH 的理论分析形成对照：SGH 认为 Agent Loop 有三个结构性缺陷（隐式依赖、无界 recovery、不可审计），主张用显式 DAG 替代 <a href="/papers/2604.11378/detail.html#core-contribution" class="ref-link" title="L2:2604.11378#core-contribution">[L2:2604.11378]</a>。两者反映了"信任模型判断力"与"结构化保证"之间的根本张力 <a href="/papers/agent.html#§7-冲突与调和" class="ref-link" title="L3:agent#§7-冲突与调和">[L3:agent]</a>。</p>
+
+<hr>
+
+<h2 id="6-共识与分歧">6. 共识与分歧 <a class="heading-anchor" href="#6-共识与分歧" aria-label="Link to 6-共识与分歧">#</a></h2>
+
+<h3 id="共识-1：end-of-turn-eviction-对-agent-工作负载是灾难性的">共识 1：End-of-turn eviction 对 agent 工作负载是灾难性的 <a class="heading-anchor" href="#共识-1：end-of-turn-eviction-对-agent-工作负载是灾难性的" aria-label="Link to 共识-1：end-of-turn-eviction-对-agent-工作负载是灾难性的">#</a></h3>
+
+<p>所有 5 篇 agent KV cache 论文（Continuum、SideQuest、CMV、SAGA、PBKV）都以此为出发点。Continuum 测得 per-turn queueing delay 占总延迟 58.2% <a href="/papers/2511.02230/detail.html#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡" class="ref-link" title="L2:2511.02230#q1-痛点end-of-turn-eviction-在-agent-workload-中导致严重的排队气泡">[L2:2511.02230]</a>；SAGA 报告传统 LRU 的 competitive ratio 相比 Bélády 最优偏差巨大 <a href="/papers/2605.00528/detail.html#q2-方法" class="ref-link" title="L2:2605.00528#q2-方法">[L2:2605.00528]</a>；PBKV 测得 LRU 命中率仅 27% <a href="/papers/2605.06472/detail.html#q3-结果" class="ref-link" title="L2:2605.06472#q3-结果">[L2:2605.06472]</a>。<strong>无一论文为传统 end-of-turn eviction 辩护。</strong></p>
+
+<h3 id="共识-2：位置偏置在多针-多跳场景远比单针严重">共识 2：位置偏置在多针/多跳场景远比单针严重 <a class="heading-anchor" href="#共识-2：位置偏置在多针-多跳场景远比单针严重" aria-label="Link to 共识-2：位置偏置在多针-多跳场景远比单针严重">#</a></h3>
+
+<p>Gemini 2.5 Flash 在单针检索上已消除 LITM（1M context 100% 准确率）<a href="/papers/2511.05850/detail.html#core-contribution" class="ref-link" title="L2:2511.05850#core-contribution">[L2:2511.05850]</a>，但 NoLiMa 的去字面匹配 benchmark 将所有 frontier 模型有效长度压至 ≤8K <a href="/papers/2502.05167/detail.html#key-findings" class="ref-link" title="L2:2502.05167#key-findings">[L2:2502.05167]</a>，多跳 QA 中证据间距带来额外的乘性惩罚 <a href="/papers/2412.10079/detail.html#key-findings" class="ref-link" title="L2:2412.10079#key-findings">[L2:2412.10079]</a>。<strong>所有长上下文评测论文都同意：NIAH 式 benchmark 严重高估了模型的实际长上下文能力。</strong></p>
+
+<h3 id="共识-3：kv-cache-的形状正在多样化，框架必须适配">共识 3：KV cache 的形状正在多样化，框架必须适配 <a class="heading-anchor" href="#共识-3：kv-cache-的形状正在多样化，框架必须适配" aria-label="Link to 共识-3：kv-cache-的形状正在多样化，框架必须适配">#</a></h3>
+
+<p>DeepSeek-V4 的压缩 KV (O(n/m)) <a href="/papers/deepseek-v4/detail.html#q2-方法" class="ref-link" title="L2:deepseek-v4#q2-方法">[L2:deepseek-v4]</a>、Kimi Linear 的 recurrent state (O(1)) <a href="/papers/2510.26692/detail.html#key-findings" class="ref-link" title="L2:2510.26692#key-findings">[L2:2510.26692]</a>、标准 MLA 的 per-token latent (O(n))——三种形状共存 <a href="/papers/model.html#§6-核心-trade-off-轴" class="ref-link" title="L3:model#§6-核心-trade-off-轴">[L3:model]</a>。KVServe 的 service-aware 压缩 <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a> 和 KVFlow 的 workflow-aware STE <a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="L2:2507.07400#summary">[L2:2507.07400]</a> 都必须处理这种多样性。</p>
+
+<h3 id="分歧-1：kv-保留决策应基于时间还是语义？">分歧 1：KV 保留决策应基于时间还是语义？ <a class="heading-anchor" href="#分歧-1：kv-保留决策应基于时间还是语义？" aria-label="Link to 分歧-1：kv-保留决策应基于时间还是语义？">#</a></h3>
+
+<p>Continuum 用时间维度的 cost-benefit 模型——tool call 在 TTL τ* 内返回则 KV 被保留 <a href="/papers/2511.02230/detail.html#q2-方法kv-cache-ttl--program-level-fcfs" class="ref-link" title="L2:2511.02230#q2-方法kv-cache-ttl--program-level-fcfs">[L2:2511.02230]</a>。SideQuest 认为 token 重要性是非单调的——某些 tool response 在第 t 轮看似无用但到第 t+n 轮可能重新变关键，必须用语义维度决定 <a href="/papers/2602.22603/detail.html#q1-痛点多轮-agent-工作负载中-kv-cache-线性膨胀启发式剪枝导致灾难性失败" class="ref-link" title="L2:2602.22603#q1-痛点多轮-agent-工作负载中-kv-cache-线性膨胀启发式剪枝导致灾难性失败">[L2:2602.22603]</a>。</p>
+
+<p><strong>根源</strong>：实验工作负载不同。Continuum 在 SWE-Bench/BFCL 上测试（6–11 turns），SideQuest 在 FRAMES/BrowseComp 上测试（80+ turns，120K+ tokens）<a href="/papers/agent.html#§7-冲突与调和" class="ref-link" title="L3:agent#§7-冲突与调和">[L3:agent]</a>。短 horizon 下时间维度足够；长 horizon 下语义维度不可或缺。</p>
+
+<h3 id="分歧-2：静态-dag-还是动态工作流更适合-kv-预测？">分歧 2：静态 DAG 还是动态工作流更适合 KV 预测？ <a class="heading-anchor" href="#分歧-2：静态-dag-还是动态工作流更适合-kv-预测？" aria-label="Link to 分歧-2：静态-dag-还是动态工作流更适合-kv-预测？">#</a></h3>
+
+<p>SAGA 用 Agent Execution Graph (DAG) 预测 KV 复用，假设工作流模式可建模为有向图（competitive ratio 1.31× vs Bélády）<a href="/papers/2605.00528/detail.html#q2-方法" class="ref-link" title="L2:2605.00528#q2-方法">[L2:2605.00528]</a>。PBKV 批评"静态 DAG 假设无法处理运行时条件分支和重试循环"，用 GNN 多步预测在动态工作流上达到 69% 命中率 vs 静态距离方法的 39.87% <a href="/papers/2605.06472/detail.html#q1-痛点lru-与静态-dag-假设均无法应对动态-agent-工作流" class="ref-link" title="L2:2605.06472#q1-痛点lru-与静态-dag-假设均无法应对动态-agent-工作流">[L2:2605.06472]</a>。</p>
+
+<p><strong>根源</strong>：SAGA 的 AEG 实际支持 backward retry edges 和 transition probabilities（不是纯静态 DAG），PBKV 的批评更准确地针对 KVFlow 而非 SAGA。但 SAGA 的 competitive ratio 是在 SWE-bench（相对结构化的 coding agent）上测得，高度动态的重试密集型工作流是否仍接近最优未经验证 <a href="/papers/agent.html#§7-冲突与调和" class="ref-link" title="L3:agent#§7-冲突与调和">[L3:agent]</a>。</p>
+
+<h3 id="分歧-3：lost-in-the-middle-是数据问题还是架构问题？">分歧 3：Lost in the Middle 是数据问题还是架构问题？ <a class="heading-anchor" href="#分歧-3：lost-in-the-middle-是数据问题还是架构问题？" aria-label="Link to 分歧-3：lost-in-the-middle-是数据问题还是架构问题？">#</a></h3>
+
+<p>FilM/IN2 证明仅靠合成长上下文数据 + 指令微调就能修复位置偏置，不改注意力、不改位置编码 <a href="/papers/2404.16811/detail.html#key-findings" class="ref-link" title="L2:2404.16811#key-findings">[L2:2404.16811]</a>。但临界退化分析表明 Qwen2.5-7B 在 ~40% 标称长度处出现 cliff-like 衰退，RoPE 周期性和注意力弥散是更紧的约束 <a href="/papers/2601.15300/detail.html#key-findings" class="ref-link" title="L2:2601.15300#key-findings">[L2:2601.15300]</a>。Massive Values 分析揭示 RoPE 低频维度承载关键语义功能，破坏后 GSM8K 从 76.9% 暴跌至 4.0% <a href="/papers/2502.01563/detail.html#key-findings" class="ref-link" title="L2:2502.01563#key-findings">[L2:2502.01563]</a>。</p>
+
+<p><strong>根源</strong>：不同规模和不同任务类型下，数据约束和架构约束的相对重要性不同。FilM 的修复在 32K context 的 7B 模型上有效；但在 128K+ 的更大规模下，架构层面的约束（注意力弥散、RoPE 衰减）可能成为瓶颈 <a href="/papers/model.html#§7-冲突与调和" class="ref-link" title="L3:model#§7-冲突与调和">[L3:model]</a>。</p>
+
+<h3 id="分歧-4：agent-loop-是否-够用-？">分歧 4：Agent Loop 是否"够用"？ <a class="heading-anchor" href="#分歧-4：agent-loop-是否-够用-？" aria-label="Link to 分歧-4：agent-loop-是否-够用-？">#</a></h3>
+
+<p>SGH 认为 Agent Loop 有结构性缺陷（隐式依赖、无界 recovery、不可审计），只有显式 DAG 才能根本解决 <a href="/papers/2604.11378/detail.html#约束推导-constraint-derivation" class="ref-link" title="L2:2604.11378#约束推导-constraint-derivation">[L2:2604.11378]</a>。Claude Code 的生产成功恰恰建立在 Agent Loop 之上，通过确定性基础设施兜底 <a href="/papers/2604.14228/detail.html#q3-结果" class="ref-link" title="L2:2604.14228#q3-结果">[L2:2604.14228]</a>。</p>
+
+<p><strong>根源</strong>：对 LLM 判断力的信任程度不同。Claude Code 假设 frontier 模型有"good judgment"，用 harness 兜底；SGH 假设 LLM 决策不可检查。Claude Code 的 93% approval rate 恰恰暴露了 Agent Loop 的脆弱性——一旦模型犯错，防线只有人类审批 <a href="/papers/agent.html#§7-冲突与调和" class="ref-link" title="L3:agent#§7-冲突与调和">[L3:agent]</a>。</p>
+
+<hr>
+
+<h2 id="7-根本性困难-open-challenges">7. 根本性困难 (Open Challenges) <a class="heading-anchor" href="#7-根本性困难-open-challenges" aria-label="Link to 7-根本性困难-open-challenges">#</a></h2>
+
+<h3 id="7-1-位置偏置与注意力表达力的信息论困境">7.1 位置偏置与注意力表达力的信息论困境 <a class="heading-anchor" href="#7-1-位置偏置与注意力表达力的信息论困境" aria-label="Link to 7-1-位置偏置与注意力表达力的信息论困境">#</a></h3>
+
+<p>Lost in the Middle 可能是 causal decoder + residual connections 的固有几何性质——U 型偏差在模型初始化时就存在 <a href="/papers/2601.15300/detail.html#key-findings" class="ref-link" title="L2:2601.15300#key-findings">[L2:2601.15300]</a>。Gated Attention 和 Attention Residuals 提供了有效补偿 <a href="/papers/2603.15031/detail.html#key-findings" class="ref-link" title="L2:2603.15031#key-findings">[L2:2603.15031]</a>，但补偿本身增加参数和计算量。</p>
+
+<p><strong>为什么困难</strong>：这不是"没人试"而是存在理论约束。在 causal masking 下，第一个 token 代数上不可避免地获得更高权重；residual connections 锚定 recency bias。要根治需要改变基础架构（bidirectional / non-autoregressive），但这与 LLM 的 autoregressive 生成范式冲突。线性注意力 (KDA) 通过 recurrent state 绕过了部分约束 <a href="/papers/2510.26692/detail.html#core-contribution" class="ref-link" title="L2:2510.26692#core-contribution">[L2:2510.26692]</a>，但 NoPE 方案需要 KDA 的 data-dependent gate 隐式补偿 RoPE 的语义功能——缺乏对应的机理分析 <a href="/papers/model.html#§7-冲突与调和" class="ref-link" title="L3:model#§7-冲突与调和">[L3:model]</a>。</p>
+
+<p><strong>需要哪些类别协同</strong>：model（新注意力范式）+ algorithm（理论分析框架）+ framework（适配新 KV 形状）。</p>
+
+<p><strong>预估难度</strong>：5+ 年。零开销补偿方案可能不存在；最优 compute-quality tradeoff 尚未被理论刻画。</p>
+
+<h3 id="7-2-语义淘汰的-oracle-悖论">7.2 语义淘汰的 oracle 悖论 <a class="heading-anchor" href="#7-2-语义淘汰的-oracle-悖论" aria-label="Link to 7-2-语义淘汰的-oracle-悖论">#</a></h3>
+
+<p>理想的 KV cache 淘汰应淘汰"未来最久不会用到的 token"（Semantic Bélády's Algorithm）。但判断"什么将来有用"本身需要理解任务的完整语义——这正是 agent 正在执行的推理过程。</p>
+
+<p><strong>为什么困难</strong>：SideQuest 用辅助 LRM 线程做语义判断（56–65% token 降幅）<a href="/papers/2602.22603/detail.html#q3-结果" class="ref-link" title="L2:2602.22603#q3-结果">[L2:2602.22603]</a>，但引入了对 LRM 能力的强依赖，且辅助线程本身消耗 GPU 资源。PBKV 的 Lipschitz 退化保证 <a href="/papers/2605.06472/detail.html#§4-作者证明" class="ref-link" title="L2:2605.06472#§4-作者证明">[L2:2605.06472]</a> 是目前唯一的形式化 regret bound，但其 GNN predictor 需要 per-workload 训练（~1K traces）。SAGA 的 AEG 预测在无 framework hints 时仍达 87% accuracy，但 TCT 退化 15.6% <a href="/papers/2605.00528/detail.html#§4-作者证明" class="ref-link" title="L2:2605.00528#§4-作者证明">[L2:2605.00528]</a>。</p>
+
+<p><strong>需要哪些类别协同</strong>：agent（语义理解）+ framework（高效淘汰执行）+ model（低开销语义信号提取）。</p>
+
+<p><strong>预估难度</strong>：2–3 年达到实用，但达到理论最优可能需要更长。部分方案（如 PBKV 的分层淘汰）已在特定工作负载上接近 Bélády 最优。</p>
+
+<h3 id="7-3-kv-cache-形状碎片化与框架统一">7.3 KV cache 形状碎片化与框架统一 <a class="heading-anchor" href="#7-3-kv-cache-形状碎片化与框架统一" aria-label="Link to 7-3-kv-cache-形状碎片化与框架统一">#</a></h3>
+
+<p>三种主流注意力范式产生完全不同的 KV cache 形状：MLA 的 per-token latent <a href="/papers/model.html#§6-核心-trade-off-轴" class="ref-link" title="L3:model#§6-核心-trade-off-轴">[L3:model]</a>、KDA 的 fixed-size recurrent state <a href="/papers/2510.26692/detail.html#key-findings" class="ref-link" title="L2:2510.26692#key-findings">[L2:2510.26692]</a>、CSA+HCA 的压缩条目 <a href="/papers/deepseek-v4/detail.html#q2-方法" class="ref-link" title="L2:deepseek-v4#q2-方法">[L2:deepseek-v4]</a>。现有的 KV cache 管理系统（Continuum、SAGA、PBKV）都假设标准的 per-token KV 格式。</p>
+
+<p><strong>为什么困难</strong>：框架层的 prefix caching（Radix Tree、STE）、eviction（TTL、LRU、GNN）、传输（KVServe 压缩）都依赖于 KV cache 是 token 序列这一假设。适配 recurrent state 需要重新定义"cache hit"的语义——一个 recurrent state 不能部分命中。适配压缩 KV 需要理解不同层的压缩比差异。</p>
+
+<p><strong>需要哪些类别协同</strong>：model（统一 KV 接口标准）+ framework（多形状 cache manager）+ agent（工作流级缓存策略适配）。</p>
+
+<p><strong>预估难度</strong>：1–2 年。DeepSeek-V4 和 Kimi Linear 的部署已在推动各自团队的框架适配，但跨团队的统一接口标准尚不存在。</p>
+
+<h3 id="7-4-context-生命周期的粒度问题">7.4 Context 生命周期的粒度问题 <a class="heading-anchor" href="#7-4-context-生命周期的粒度问题" aria-label="Link to 7-4-context-生命周期的粒度问题">#</a></h3>
+
+<p>现有方案在 context eviction 粒度上差异巨大：Continuum 是 turn-level（TTL 到期则整轮 KV 驱逐）<a href="/papers/2511.02230/detail.html#q2-方法kv-cache-ttl--program-level-fcfs" class="ref-link" title="L2:2511.02230#q2-方法kv-cache-ttl--program-level-fcfs">[L2:2511.02230]</a>，SideQuest 是 token-level（逐 token 语义淘汰）<a href="/papers/2602.22603/detail.html#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token" class="ref-link" title="L2:2602.22603#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token">[L2:2602.22603]</a>，CMV 是 session-level（三遍裁剪保留结构）<a href="/papers/2602.22402/detail.html#q3-结果" class="ref-link" title="L2:2602.22402#q3-结果">[L2:2602.22402]</a>，Claude Code 的 5 层 compaction 按 conversation segment 操作 <a href="/papers/2604.14228/detail.html#q2-方法" class="ref-link" title="L2:2604.14228#q2-方法">[L2:2604.14228]</a>。</p>
+
+<p><strong>为什么困难</strong>：最优粒度取决于任务类型——coding agent 可能适合 file-level（代码文件是自然的 context 单元），research agent 可能需要 paragraph-level（一篇论文的不同部分在不同阶段有不同价值），而多 agent 工作流可能需要 workflow-step-level。没有一种粒度能普遍最优，但框架支持多粒度的开销可能抵消收益。</p>
+
+<p><strong>需要哪些类别协同</strong>：agent（任务类型识别）+ framework（多粒度 eviction 机制）。</p>
+
+<p><strong>预估难度</strong>：1–2 年。组件技术已存在，需要的是系统集成。</p>
+
+<hr>
+
+<h2 id="8-成熟度判断">8. 成熟度判断 <a class="heading-anchor" href="#8-成熟度判断" aria-label="Link to 8-成熟度判断">#</a></h2>
+
+<p><strong>整体评估：研究前沿 → 早期生产</strong></p>
+
 <ul>
-<li>Amnesic: file-level（stage/unstage 整个文件）</li>
-<li>Neural Paging: token-level（精细但开销大）</li>
-<li>CoDA/CODEDELEGATOR: phase-level（整个 subagent context 销毁）</li>
+<li><strong>位置偏置诊断</strong>：<strong>成熟</strong>。LITM 现象已被充分刻画——从 2023 年的经验观察 <a href="/papers/2404.16811/detail.html#core-contribution" class="ref-link" title="L2:2404.16811#core-contribution">[L2:2404.16811]</a> 到 2026 年的理论分析 <a href="/papers/2601.15300/detail.html#core-contribution" class="ref-link" title="L2:2601.15300#core-contribution">[L2:2601.15300]</a>，从单针到多针/多跳 <a href="/papers/2412.10079/detail.html#core-contribution" class="ref-link" title="L2:2412.10079#core-contribution">[L2:2412.10079]</a> <a href="/papers/2502.05167/detail.html#core-contribution" class="ref-link" title="L2:2502.05167#core-contribution">[L2:2502.05167]</a>，diagnostic tooling 完备。</li>
 </ul>
 
-<p>什么粒度最优？可能取决于任务类型：coding agent 可能适合 file-level（因为代码文件是自然的 context 单元），而 research agent 可能需要 section-level（因为一篇论文的不同部分在不同 phase 有不同价值）。</p>
+<ul>
+<li><strong>位置偏置修复</strong>：<strong>部分成熟</strong>。数据驱动修复（FilM/IN2）在 ≤32K 有效 <a href="/papers/2404.16811/detail.html#key-findings" class="ref-link" title="L2:2404.16811#key-findings">[L2:2404.16811]</a>；训练免费解码方案（PCD）在特定设置下 +3–7% <a href="/papers/2506.08371/detail.html#key-findings" class="ref-link" title="L2:2506.08371#key-findings">[L2:2506.08371]</a>；frontier 模型已在单针上消除 LITM <a href="/papers/2511.05850/detail.html#core-contribution" class="ref-link" title="L2:2511.05850#core-contribution">[L2:2511.05850]</a>。但多针/多跳场景仍未解决。</li>
+</ul>
 
-<h3 id="8-3-分析精化链的质量保证">8.3 分析精化链的质量保证 <a class="heading-anchor" href="#8-3-分析精化链的质量保证" aria-label="Link to 8-3-分析精化链的质量保证">#</a></h3>
+<ul>
+<li><strong>Agent KV cache 管理</strong>：<strong>研究前沿，快速成熟中</strong>。2025 年 11 月 Continuum 首次提出 KV TTL <a href="/papers/2511.02230/detail.html#q2-方法kv-cache-ttl--program-level-fcfs" class="ref-link" title="L2:2511.02230#q2-方法kv-cache-ttl--program-level-fcfs">[L2:2511.02230]</a>，到 2026 年 5 月已有 5 个独立系统。Continuum 已开源为 vLLM 插件，生产可用 <a href="/papers/agent.html#§5-strength-weakness-matrix" class="ref-link" title="L3:agent#§5-strength-weakness-matrix">[L3:agent]</a>。SAGA 和 PBKV 的工作流预测方法尚在论文阶段。</li>
+</ul>
 
-<p>自顶向下的 feedback 依赖每层 agent 的分析能力。如果某层 agent 的分析本身就是错的（例如 L4 错误地认为两个概念不同，实际上它们是同一个东西），feedback chain 会传播错误的修正指令。</p>
+<ul>
+<li><strong>工作流感知调度框架</strong>：<strong>早期生产</strong>。ThunderAgent 已开源 <a href="/papers/framework.html#§4-跨论文对比表" class="ref-link" title="L3:framework#§4-跨论文对比表">[L3:framework]</a>，Helium 和 KVFlow 已有可复现的实现 <a href="/papers/framework.html#§4-跨论文对比表" class="ref-link" title="L3:framework#§4-跨论文对比表">[L3:framework]</a>。但闭源系统（SAGA、Halo）展示的最佳数字不可复现。</li>
+</ul>
 
-<p>当前的 safety net 是 retry cap + dedup detection，但更根本的解决方案可能需要引入 feedback validation gate——在 re-run 之前验证 feedback 的合理性。</p>
+<ul>
+<li><strong>注意力架构多元化对框架的影响</strong>：<strong>早期探索</strong>。KDA 和 CSA+HCA 的框架适配仍在各自团队内部进行，跨团队的统一接口标准不存在。</li>
+</ul>
 
-<h3 id="8-4-从-kb-到通用-agent：可迁移性">8.4 从 KB 到通用 Agent：可迁移性 <a class="heading-anchor" href="#8-4-从-kb-到通用-agent：可迁移性" aria-label="Link to 8-4-从-kb-到通用-agent：可迁移性">#</a></h3>
-
-<p>KB orchestrator 的设计建立在 well-defined 的层级结构（L1/L2/L3/L4）之上。这个层级是人工设计的，不是自动发现的。对于通用 coding agent，如何自动识别 "phases" 和 "abstraction levels"？</p>
-
-<p>ContextBudget 和 UMA 试图通过 RL 来学习这一点，但目前只在简单任务上验证过。将分析精化链扩展到没有预定义层级的通用 agent 场景，仍然是一个开放问题。</p>
+<p><strong>趋势方向</strong>：<strong>快速加速</strong>。agent workload 的爆发式增长驱动了从模型到框架的全栈创新。2025 年 11 月到 2026 年 5 月的 7 个月内，该领域产出了 14 篇系统论文。主要商业 agent 系统（Claude Code、Cursor、Windsurf）的部署规模正在为这些研究提供真实工作负载验证。</p>
 
 <hr>
 
@@ -809,42 +517,49 @@ L1 = source material            唯一的&quot;事实创造&quot;层
 
 <table>
 <tr><th>Topic</th><th>关系</th></tr>
-<tr><td>agent-system</td><td>强关联——agent serving 的 context 管理是本 topic 的一个具体应用场景。agent-system 侧重 serving infrastructure（KV cache, scheduling, routing），本 topic 侧重 context lifecycle</td></tr>
-<tr><td>persistent-execution-paradigm</td><td>弱关联——persistent kernel 消除了 GPU 端的 launch overhead，本 topic 消除了 LLM context 端的信息冗余。都是在对抗"不必要的重启"</td></tr>
+<tr><td><strong>agent-system</strong> (agent serving infrastructure)</td><td><strong>强关联</strong>。agent-system 侧重 serving infrastructure 的全栈设计（KV cache 调度、集群路由、SLO 管理），本 topic 侧重 context 从创建到淘汰的完整生命周期。重叠区域是 KV cache 管理——SAGA、PBKV、Continuum 同时属于两个 topic。分界点：KV cache 的 scheduling 和 eviction policy 属于本 topic；KV cache 的 storage engine 和 network transfer 属于 agent-system。</td></tr>
+<tr><td><strong>attention-optimization</strong> (注意力机制优化)</td><td><strong>中等关联</strong>。Gated Attention、DMA、GSA 等注意力优化技术影响位置偏置的严重程度和 KV cache 的形状，但它们本身更关注 accuracy/efficiency tradeoff 而非 agent 场景。如果 attention-optimization topic 的 KV-compression 分支（CSA+HCA、KDA）与本 topic 的 KV-management 分支日益交叉，可考虑将 "KV 形状多样化的框架适配" 子主题独立为新 topic。</td></tr>
+<tr><td><strong>persistent-execution-paradigm</strong> (持久化执行)</td><td><strong>弱关联</strong>。TileRT/TokenSpeed 的 persistent Engine Kernel 消除 GPU 端的 kernel launch overhead <a href="/papers/framework.html#§3-主线-C" class="ref-link" title="L3:framework#§3-主线-C">[L3:framework]</a>，本 topic 管理 LLM context 端的信息冗余。两者都在对抗"不必要的状态重建"，但操作层级不同（GPU kernel vs LLM context）。</td></tr>
 </table>
 
-<p>潜在的 topic 融合方向：如果 agent serving 系统开始在 KV cache 层面实现 context eviction（类似 Neural Paging），那么 attention-level solutions（Gated Attention）和 system-level solutions（KV cache eviction）可能在 serving infrastructure 层面统一。</p>
+<p><strong>潜在 topic 融合方向</strong>：如果 agent serving 系统开始在 KV cache 层面实现 context eviction（即 SAGA 的 WA-LRU 被集成到 vLLM/SGLang），那么 attention-level 的 KV 压缩（CSA+HCA）和 system-level 的 KV 淘汰（SAGA/PBKV）可能在 serving infrastructure 层面统一，推动本 topic 与 agent-system 的局部合并。</p>
 
 <hr>
 
 <h2 id="10-参考">10. 参考 <a class="heading-anchor" href="#10-参考" aria-label="Link to 10-参考">#</a></h2>
 
-<h3 id="核心论文">核心论文 <a class="heading-anchor" href="#核心论文" aria-label="Link to 核心论文">#</a></h3>
-
 <table>
-<tr><th>Paper</th><th>Focus</th><th>Key contribution</th></tr>
-<tr><td>Liu et al. "Lost in the Middle" (2023, TACL 2024)</td><td>现象描述</td><td>首次系统性记录 U 型性能曲线</td></tr>
-<tr><td>"Lost in the Middle at Birth" (arXiv 2603.10123, 2026)</td><td>根因证明</td><td>证明 U 型偏差是 causal decoder 的拓扑必然</td></tr>
-<tr><td>"Found in the Middle" (arXiv 2406.16008, 2024)</td><td>Attention 校准</td><td>通过 attention calibration 缓解位置偏差，RAG 提升 ~15pp</td></tr>
-<tr><td>Dynamic Mask Attention (ICLR 2026)</td><td>Sparse attention</td><td>用 value representation 生成 content-aware dynamic mask，最高 10x 加速</td></tr>
-<tr><td>Gated Attention (NeurIPS 2025, Qwen3-Next)</td><td>Output gating</td><td>SDPA 输出端加 sigmoid gate，消除 attention sink，RULER 提升 10+ 分</td></tr>
-<tr><td>Gated Sparse Attention (2026)</td><td>Dual gating</td><td>双重 gating + adaptive sparsity controller</td></tr>
-<tr><td>Sparse Feature Attention (2026)</td><td>Feature sparsity</td><td>特征维度稀疏，与 token-level sparsity 正交</td></tr>
-</table>
-
-<h3 id="context-管理系统">Context 管理系统 <a class="heading-anchor" href="#context-管理系统" aria-label="Link to context-管理系统">#</a></h3>
-
-<table>
-<tr><th>System</th><th>Focus</th><th>Key contribution</th></tr>
-<tr><td>ContextBudget (arXiv 2604.01664, 2026)</td><td>Budget-aware RL</td><td>将 context 管理建模为预算约束序列决策问题</td></tr>
-<tr><td>Neural Paging (arXiv 2603.02228, 2026)</td><td>OS-like paging</td><td>类 OS 的 context 页面置换，Semantic Belady algorithm</td></tr>
-<tr><td>UMA (arXiv 2602.18493, 2026)</td><td>End-to-end memory</td><td>RL 联合优化 memory ops 和 task execution</td></tr>
-<tr><td>CoDA (arXiv 2512.12716, 2025)</td><td>Context decoupling</td><td>Planner/Executor context 隔离</td></tr>
-<tr><td>CODEDELEGATOR (arXiv 2601.14914, 2026)</td><td>Ephemeral workers</td><td>Ephemeral-Persistent state separation</td></tr>
-<tr><td>Amnesic (github.com/B-A-M-N/Amnesic, 2025)</td><td>Active forgetting</td><td>Context 作为 disposable RAM + Physical Invariants</td></tr>
-<tr><td>GenericAgent (arXiv 2604.17091, 2026)</td><td>Info density max</td><td>分层按需记忆 + 自演化 SOP</td></tr>
-<tr><td>Tree of Agents (EMNLP 2025)</td><td>Multi-agent</td><td>多 agent 分治消除位置偏差</td></tr>
-<tr><td>"Never Lost in the Middle" (ACL 2024)</td><td>Training fix</td><td>Position-agnostic decompositional training</td></tr>
+<tr><th>Entity</th><th>Categories</th><th>Role in topic</th><th>Key contribution</th></tr>
+<tr><td><a href="/papers/2404.16811/detail.html#core-contribution" class="ref-link" title="L2:2404.16811#core-contribution">[L2:2404.16811]</a></td><td>algorithm</td><td>位置偏置修复</td><td>IN2 训练证明 LITM 可通过数据合成修复</td></tr>
+<tr><td><a href="/papers/2412.10079/detail.html#core-contribution" class="ref-link" title="L2:2412.10079#core-contribution">[L2:2412.10079]</a></td><td>algorithm</td><td>位置偏置诊断</td><td>发现多跳 QA 的双层退化：绝对位置 + 证据间距</td></tr>
+<tr><td><a href="/papers/2502.05167/detail.html#core-contribution" class="ref-link" title="L2:2502.05167#core-contribution">[L2:2502.05167]</a></td><td>algorithm</td><td>位置偏置 benchmark</td><td>去字面匹配后 frontier 模型有效长度 ≤8K</td></tr>
+<tr><td><a href="/papers/2506.08371/detail.html#core-contribution" class="ref-link" title="L2:2506.08371#core-contribution">[L2:2506.08371]</a></td><td>algorithm</td><td>解码层修复</td><td>PCD 对比解码缓解后验显著度衰减</td></tr>
+<tr><td><a href="/papers/2601.15300/detail.html#core-contribution" class="ref-link" title="L2:2601.15300#core-contribution">[L2:2601.15300]</a></td><td>algorithm</td><td>临界点量化</td><td>Qwen2.5-7B 的 cliff-like 衰退临界点 ≈40% 标称长度</td></tr>
+<tr><td><a href="/papers/2511.05850/detail.html#core-contribution" class="ref-link" title="L2:2511.05850#core-contribution">[L2:2511.05850]</a></td><td>algorithm</td><td>单针 LITM 消除</td><td>Gemini 2.5 Flash 在 1M context 单针检索 100%</td></tr>
+<tr><td><a href="/papers/2502.01563/detail.html#key-findings" class="ref-link" title="L2:2502.01563#key-findings">[L2:2502.01563]</a></td><td>model</td><td>注意力机理分析</td><td>RoPE 低频 massive values 是上下文理解功能信号</td></tr>
+<tr><td><a href="/papers/2510.26692/detail.html#core-contribution" class="ref-link" title="L2:2510.26692#core-contribution">[L2:2510.26692]</a></td><td>model</td><td>线性注意力</td><td>KDA 首次公平对比下全面超越全注意力，KV cache −75%</td></tr>
+<tr><td><a href="/papers/2603.15031/detail.html#core-contribution" class="ref-link" title="L2:2603.15031#core-contribution">[L2:2603.15031]</a></td><td>model</td><td>残差优化</td><td>Attention Residuals 沿深度 softmax 聚合，节省 1.25× compute</td></tr>
+<tr><td><a href="/papers/deepseek-v4/detail.html#q2-方法" class="ref-link" title="L2:deepseek-v4#q2-方法">[L2:deepseek-v4]</a></td><td>model</td><td>压缩注意力</td><td>CSA+HCA 在 1M 下 KV cache 仅 MLA 的 10%</td></tr>
+<tr><td><a href="/papers/2511.02230/detail.html#q2-方法kv-cache-ttl--program-level-fcfs" class="ref-link" title="L2:2511.02230#q2-方法kv-cache-ttl--program-level-fcfs">[L2:2511.02230]</a></td><td>agent</td><td>KV TTL</td><td>为 agent tool-call 计算最优 KV 保留时间</td></tr>
+<tr><td><a href="/papers/2602.22603/detail.html#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token" class="ref-link" title="L2:2602.22603#q2-方法lrm-自身作为-kv-cache-垃圾回收器并行辅助线程隔离管理-token">[L2:2602.22603]</a></td><td>agent</td><td>语义淘汰</td><td>LRM 辅助线程做语义级 KV 淘汰，56–65% token 降幅</td></tr>
+<tr><td><a href="/papers/2602.22402/detail.html#q3-结果" class="ref-link" title="L2:2602.22402#q3-结果">[L2:2602.22402]</a></td><td>agent</td><td>会话裁剪</td><td>DAG 版本控制 + 三遍裁剪，均值 20% token 缩减</td></tr>
+<tr><td><a href="/papers/2604.14228/detail.html#q2-方法" class="ref-link" title="L2:2604.14228#q2-方法">[L2:2604.14228]</a></td><td>agent</td><td>生产架构分析</td><td>Claude Code 1.6% 决策 + 98.4% 确定性基础设施</td></tr>
+<tr><td><a href="/papers/2605.00528/detail.html#q2-方法" class="ref-link" title="L2:2605.00528#q2-方法">[L2:2605.00528]</a></td><td>agent</td><td>工作流调度</td><td>AEG + WA-LRU 达 Bélády 1.31× competitive ratio</td></tr>
+<tr><td><a href="/papers/2605.06472/detail.html#q2-方法预测驱动的三组件-kv-cache-管理" class="ref-link" title="L2:2605.06472#q2-方法预测驱动的三组件-kv-cache-管理">[L2:2605.06472]</a></td><td>agent</td><td>GNN 预测</td><td>GraphSAGE 多步预测 + 分层淘汰，命中率 27%→69%</td></tr>
+<tr><td><a href="/papers/2604.11378/detail.html#core-contribution" class="ref-link" title="L2:2604.11378#core-contribution">[L2:2604.11378]</a></td><td>agent</td><td>理论框架</td><td>SGH scheduler 理论，Agent Loop 为单 ready-unit scheduler</td></tr>
+<tr><td><a href="/papers/2511.00739/detail.html#q3-最终效果如何" class="ref-link" title="L2:2511.00739#q3-最终效果如何">[L2:2511.00739]</a></td><td>agent</td><td>CPU 瓶颈</td><td>首次刻画 CPU 侧瓶颈，COMB 微批 3.9× P50 降低</td></tr>
+<tr><td><a href="/papers/2603.18897/detail.html#tldr" class="ref-link" title="L2:2603.18897#tldr">[L2:2603.18897]</a></td><td>agent</td><td>投机执行</td><td>Pattern mining + 投机工具执行，E2E 延迟 −48.5%</td></tr>
+<tr><td><a href="/papers/2602.13692/detail.html#summary" class="ref-link" title="L2:2602.13692#summary">[L2:2602.13692]</a></td><td>framework</td><td>程序级调度</td><td>Agentic program 作为一等调度单元</td></tr>
+<tr><td><a href="/papers/2603.16104/detail.html#summary" class="ref-link" title="L2:2603.16104#summary">[L2:2603.16104]</a></td><td>framework</td><td>模板化缓存</td><td>Templated Radix Tree 做 plan-level KV 优化</td></tr>
+<tr><td><a href="/papers/2509.02121/detail.html#summary" class="ref-link" title="L2:2509.02121#summary">[L2:2509.02121]</a></td><td>framework</td><td>DAG 整合</td><td>借 query optimizer 思路做 batch DAG 整合</td></tr>
+<tr><td><a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="L2:2507.07400#summary">[L2:2507.07400]</a></td><td>framework</td><td>工作流缓存</td><td>Workflow-aware STE 替代 LRU 做 prefix caching</td></tr>
+<tr><td><a href="/papers/2601.22705/detail.html#summary" class="ref-link" title="L2:2601.22705#summary">[L2:2601.22705]</a></td><td>framework</td><td>准入控制</td><td>AIMD 控制避免 KV thrashing</td></tr>
+<tr><td><a href="/papers/2604.03143/detail.html#summary" class="ref-link" title="L2:2604.03143#summary">[L2:2604.03143]</a></td><td>framework</td><td>KV 共享</td><td>Collective KV cache sharing 跨 agent</td></tr>
+<tr><td><a href="/papers/2602.21477/detail.html#summary" class="ref-link" title="L2:2602.21477#summary">[L2:2602.21477]</a></td><td>framework</td><td>记忆索引</td><td>Hierarchical memory system for multi-agent</td></tr>
+<tr><td><a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a></td><td>framework</td><td>KV 压缩传输</td><td>Service-aware 压缩，up to 10× KV 压缩</td></tr>
+<tr><td><a href="/papers/model.html#§6-核心-trade-off-轴" class="ref-link" title="L3:model#§6-核心-trade-off-轴">[L3:model]</a></td><td>model (survey)</td><td>跨论文综合</td><td>KV cache 形状连续谱：KDA→CSA→MLA→GQA</td></tr>
+<tr><td><a href="/papers/agent.html#§3-主线与分支" class="ref-link" title="L3:agent#§3-主线与分支">[L3:agent]</a></td><td>agent (survey)</td><td>跨论文综合</td><td>Agent-aware KV cache 管理 5 条技术路线</td></tr>
+<tr><td><a href="/papers/framework.html#§3-主线与分支" class="ref-link" title="L3:framework#§3-主线与分支">[L3:framework]</a></td><td>framework (survey)</td><td>跨论文综合</td><td>Agentic workflow serving 6 个系统</td></tr>
 </table>
 
 </div>

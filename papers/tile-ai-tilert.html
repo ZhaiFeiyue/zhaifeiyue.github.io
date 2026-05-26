@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: TileRT: Tile-Based Runtime for Ultra-Low-Latency LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">TileRT: Tile-Based Runtime for Ultra-Low-Latency LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> tile-ai-tilert — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/tile-ai-tilert/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="tilert-—-l3-·-代码实现-vs-博客叙事的交叉审计">TileRT — L3 · 代码实现 vs 博客叙事的交叉审计 <a class="heading-anchor" href="#tilert-—-l3-·-代码实现-vs-博客叙事的交叉审计" aria-label="Link to tilert-—-l3-·-代码实现-vs-博客叙事的交叉审计">#</a></h1>
+
+<h2 id="相关论文">相关论文 <a class="heading-anchor" href="#相关论文" aria-label="Link to 相关论文">#</a></h2>
+
+<p>TileRT 开源代码仓库（tile-ai/TileRT）处于一个独特的位置：它是 <strong>persistent execution paradigm</strong> 在生产级推理引擎中的第一个可审计实例，但其核心调度逻辑封装在闭源 C++ 库中，仅 Python 编排层开源。围绕它的 4 个相关 entity 构成了一个完整的比对网格：</p>
+
+<ol>
+<li><strong>tilert-speed-scaling-law</strong>（TileRT 官方博客）：TileRT 的设计哲学宣言，提出"Speed as the Next Scaling Law"叙事，声称 AOT 编译将整个模型展开为单个 Persistent Engine Kernel，以 warp/block/GPU 三级特化实现 tile 粒度持续重叠 <a href="/papers/tilert-speed-scaling-law/detail.html#tl-dr" class="ref-link" title="L2:tilert-speed-scaling-law#tl-dr">[L2:tilert-speed-scaling-law]</a>。这是代码仓库的"上游叙事"，代码应当是该叙事的实现——但二者之间存在显著裂缝。</li>
+</ul>
+
+<ol>
+<li><strong>2604.17861（GPUOS）</strong>：UC Santa Cruz 等提出的 persistent kernel + ring buffer + dynamic operator injection 原语，在 H100 上实现 element-wise 15.3×、attention decoding 8.7× 加速 <a href="/papers/2604.17861/detail.html#q3-结果" class="ref-link" title="L2:2604.17861#q3-结果">[L2:2604.17861]</a>。GPUOS 与 TileRT 共享"launch once, dispatch many"的基本理念，但走的是通用原语路线（任意 PyTorch op 透明加速），而非 TileRT 的模型特化路线。</li>
+</ul>
+
+<ol>
+<li><strong>2604.15379（Fleet）</strong>：AMD Research 提出的 chiplet-aware persistent megakernel，在 MI350 上通过 Chiplet-task 抽象 + M-major 协作式 tile 遍历实现 L2 cache 协作复用，bs=1 decode 比 vLLM 快 1.56× <a href="/papers/2604.15379/detail.html#tl-dr" class="ref-link" title="L2:2604.15379#tl-dr">[L2:2604.15379]</a>。Fleet 是 persistent megakernel 的另一极端实现——完全学术化、单模型验证、AMD 专属——与 TileRT 的 NVIDIA 专属+生产部署形成对称对照。</li>
+</ul>
+
+<ol>
+<li><strong>tokenspeed（TokenSpeed）</strong>：LightSeek Foundation 的 speed-of-light 推理引擎，面向 agentic workloads，通过 C++ FSM 调度器 + Placement 编译器 + Blackwell MLA 内核追求 TRT-LLM 级性能和 vLLM 级可用性 <a href="/papers/tokenspeed/detail.html#tl-dr" class="ref-link" title="L2:tokenspeed#tl-dr">[L2:tokenspeed]</a>。TokenSpeed 代表了"不走 persistent kernel 也能极致优化"的替代路径——模块化内核注册 + 静态 SPMD 编译，工程量大但可审计性强。</li>
+</ul>
+
+<p>这四者在 <strong>persistent execution paradigm</strong> 维度上形成一个谱系：GPUOS（通用原语）→ Fleet（学术 megakernel）→ TileRT 博客叙事（生产 persistent engine）→ TileRT 代码（??? 真相待审）→ TokenSpeed（non-persistent 替代方案）。</p>
+
+<h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta <a class="heading-anchor" href="#本篇-vs-相关论文的-delta" aria-label="Link to 本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="delta-1：博客叙事-vs-代码实现的裂缝">Delta 1：博客叙事 vs 代码实现的裂缝 <a class="heading-anchor" href="#delta-1：博客叙事-vs-代码实现的裂缝" aria-label="Link to delta-1：博客叙事-vs-代码实现的裂缝">#</a></h3>
+
+<p>TileRT 博客宣称 "AOT 编译将整个模型静态展开为单个 Persistent Engine Kernel，host 仅启动一次" <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>。但代码仓库揭示的执行模型与此叙事存在关键偏差：</p>
+
+<table>
+<tr><th>博客声称</th><th>代码实际</th><th>裂缝评估</th></tr>
+<tr><td>单个 Persistent Engine Kernel</td><td><code>dsa_show_hands_prepare_money()</code> 捕获 CUDA graph，<code>dsa_show_hands()</code> 回放 <a href="/papers/tile-ai-tilert/detail.html#§3-架构-方法图" class="ref-link" title="L2:tile-ai-tilert#§3-架构-方法图">[L2:tile-ai-tilert]</a></td><td><strong>CUDA graph ≠ persistent kernel</strong>。Graph 是录制-回放模型，kernel 在 graph replay 时仍会逐个被硬件 scheduler 调度；persistent kernel 是 GPU 端常驻执行，永不退出。二者的 host-device 交互模型根本不同</td></tr>
+<tr><td>Warp/Block/GPU 三级特化</td><td>Python 层完全不可见；所有 fused op 的 <code>tilert_forward()</code> 最终 dispatch 到 <code>torch.ops.tilert.*</code> C++ 算子 <a href="/papers/tile-ai-tilert/detail.html#§4-作者证明" class="ref-link" title="L2:tile-ai-tilert#§4-作者证明">[L2:tile-ai-tilert]</a></td><td>C++ 黑盒中可能确实存在 warp specialization，但<strong>开源代码无法验证</strong></td></tr>
+<tr><td>AOT 编译期将整个模型静态展开</td><td>代码构建路径是 Python 动态注册 <code>register_op()</code> → 运行时 <code>init_tilert_weights()</code> → <code>prepare_money()</code> CUDA graph capture <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a></td><td>看不到 AOT 编译器 IR、不可见的编译期优化；Python 层展示的是<strong>运行时组装 + 图捕获</strong>模式</td></tr>
+<tr><td>GPU-resident orchestration，通信从 NCCL 迁入 persistent kernel</td><td>每个 fused op 带 AllReduce 后缀（<code>UnProjOAllReduce</code>, <code>ExpertDownAllReduce</code>），但 AllReduce 实现完全在 C++ 中 <a href="/papers/tile-ai-tilert/detail.html#§6-论证链" class="ref-link" title="L2:tile-ai-tilert#§6-论证链">[L2:tile-ai-tilert]</a></td><td>通信原语的实现不可审计；是否真正绕过 NCCL 无法从开源代码确认</td></tr>
+<tr><td>Heterogeneous Workers: GPU0 = Sparse Indexer, GPU1-7 = MLA Workers</td><td>代码中 <code>num_devices=8</code> 硬编码对称 TP，所有 8 个 GPU 构建相同的 <code>Dsa</code> 模型栈 <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a></td><td><strong>对称 vs 非对称</strong>直接冲突。博客描述的 GPU0 异构角色在开源 Python 代码中完全没有体现</td></tr>
+</table>
+
+<p><strong>核心判断</strong>：博客叙事是 TileRT v0.1.4（生产版）的设计目标或内部实现的技术营销描述，但开源代码仓库（截至 v0.1.3/v0.1.4-dev）展示的是一个更保守的执行模型——CUDA graph 录制-回放 + 闭源 C++ tile 调度。"Persistent Engine Kernel"可能存在于 C++ 黑盒中（CUDA graph capture 内部的 C++ kernel 可以是 persistent 的），但从可审计的 Python 层无法确认。</p>
+
+<h3 id="delta-2：tilert-vs-gpuos-——-模型特化-vs-通用原语">Delta 2：TileRT vs GPUOS —— 模型特化 vs 通用原语 <a class="heading-anchor" href="#delta-2：tilert-vs-gpuos-——-模型特化-vs-通用原语" aria-label="Link to delta-2：tilert-vs-gpuos-——-模型特化-vs-通用原语">#</a></h3>
+
+<table>
+<tr><th>维度</th><th>TileRT</th><th>GPUOS</th></tr>
+<tr><td>设计目标</td><td>单模型极致延迟 (batch=1)</td><td>通用微操作加速</td></tr>
+<tr><td>kernel 策略</td><td>整图 CUDA graph + 闭源 tile scheduler</td><td>Persistent kernel + ring buffer + dynamic dispatch <a href="/papers/2604.17861/detail.html#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection" class="ref-link" title="L2:2604.17861#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection">[L2:2604.17861]</a></td></tr>
+<tr><td>可审计性</td><td>Python 壳 + C++ 黑盒</td><td>3793 行全开源 <a href="/papers/2604.17861/detail.html#key-findings" class="ref-link" title="L2:2604.17861#key-findings">[L2:2604.17861]</a></td></tr>
+<tr><td>动态性</td><td><code>update_sampling_config()</code> 需完全 teardown + re-capture <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a></td><td>NVRTC JIT 零停机热更新 <a href="/papers/2604.17861/detail.html#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection" class="ref-link" title="L2:2604.17861#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection">[L2:2604.17861]</a></td></tr>
+<tr><td>硬件绑定</td><td>8×B200 硬编码</td><td>H100/RTX 5090/GB10 三平台 <a href="/papers/2604.17861/detail.html#q3-结果" class="ref-link" title="L2:2604.17861#q3-结果">[L2:2604.17861]</a></td></tr>
+<tr><td>batching</td><td>batch=1 only</td><td>hybrid：小 op 走 GPUOS，大 GEMM 走传统 launch</td></tr>
+<tr><td>生产状态</td><td>Z.ai 生产部署</td><td>学术原型</td></tr>
+</table>
+
+<p>GPUOS 的根本优势在于<strong>可组合性</strong>——它是 PyTorch TorchDispatch 层的透明加速，不需要重写模型 <a href="/papers/2604.17861/detail.html#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection" class="ref-link" title="L2:2604.17861#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection">[L2:2604.17861]</a>。TileRT 的根本优势在于<strong>端到端极致</strong>——把 Norm+Proj+Quant+Comm 四类操作跨边界融合为 20+ fused ops <a href="/papers/tile-ai-tilert/detail.html#§4-作者证明" class="ref-link" title="L2:tile-ai-tilert#§4-作者证明">[L2:tile-ai-tilert]</a>，是 GPUOS per-op dispatch 做不到的。但 GPUOS 的 3793 行全开源在学术可信度上完全碾压 TileRT 的闭源黑盒。</p>
+
+<h3 id="delta-3：tilert-vs-fleet-——-nvidia-手工优化-vs-amd-系统化抽象">Delta 3：TileRT vs Fleet —— NVIDIA 手工优化 vs AMD 系统化抽象 <a class="heading-anchor" href="#delta-3：tilert-vs-fleet-——-nvidia-手工优化-vs-amd-系统化抽象" aria-label="Link to delta-3：tilert-vs-fleet-——-nvidia-手工优化-vs-amd-系统化抽象">#</a></h3>
+
+<p>Fleet 的核心创新是 <strong>Chiplet-task 抽象</strong>——把"一颗 XCD + 其 4 MB L2"作为显式调度单元 <a href="/papers/2604.15379/detail.html#key-findings" class="ref-link" title="L2:2604.15379#key-findings">[L2:2604.15379]</a>。TileRT 没有等价的硬件拓扑感知概念（代码中不可见 SM/GPC 级调度逻辑），其 tile 调度完全在 C++ 黑盒中。但 Fleet 在 bs=1 时加速仅来自 dispatch 压缩（L2 hit 16.9% ≈ baseline 的 16.4%）<a href="/papers/2604.15379/detail.html#key-findings" class="ref-link" title="L2:2604.15379#key-findings">[L2:2604.15379]</a>，而 TileRT 在 bs=1 达到 600 tok/s <a href="/papers/tile-ai-tilert/detail.html#§5-实验与数据" class="ref-link" title="L2:tile-ai-tilert#§5-实验与数据">[L2:tile-ai-tilert]</a>——暗示 TileRT 的 tile 级计算-通信重叠在 bs=1 场景下远比 Fleet 的 L2 协作更有效。</p>
+
+<h3 id="delta-4：tilert-vs-tokenspeed-——-闭源黑盒-vs-全栈可审计">Delta 4：TileRT vs TokenSpeed —— 闭源黑盒 vs 全栈可审计 <a class="heading-anchor" href="#delta-4：tilert-vs-tokenspeed-——-闭源黑盒-vs-全栈可审计" aria-label="Link to delta-4：tilert-vs-tokenspeed-——-闭源黑盒-vs-全栈可审计">#</a></h3>
+
+<p>TokenSpeed 选择了与 TileRT 完全对立的工程哲学 <a href="/papers/tokenspeed/detail.html#核心三问" class="ref-link" title="L2:tokenspeed#核心三问">[L2:tokenspeed]</a>：</p>
+
+<table>
+<tr><th>维度</th><th>TileRT</th><th>TokenSpeed</th></tr>
+<tr><td>调度器</td><td>C++ 黑盒 tile scheduler</td><td>C++ FSM 13 状态 + RAII 类型安全，全开源</td></tr>
+<tr><td>模型定义</td><td>手写 fused ops per model</td><td>Placement 注解 + 编译器自动通信</td></tr>
+<tr><td>内核</td><td>闭源 tile-level 融合</td><td>5-band 内核注册表 + 插件化</td></tr>
+<tr><td>并行模式</td><td>8-way 对称 TP 硬编码</td><td>不对称 TP（ATTN_TP ≠ MoE_TP），编译器自动 resharding</td></tr>
+<tr><td>batching</td><td>batch=1 only</td><td>连续 batching + retraction</td></tr>
+<tr><td>目标</td><td>单请求极致 TPOT</td><td>Pareto: latency × throughput</td></tr>
+</table>
+
+<p>TokenSpeed 的 MLA q-head 折叠使 agent 典型 decode 延迟近乎减半 <a href="/papers/tokenspeed/detail.html#key-design-decisions" class="ref-link" title="L2:tokenspeed#key-design-decisions">[L2:tokenspeed]</a>——这是一种可审计、可复现的 kernel 优化，与 TileRT 的闭源 tile 调度形成鲜明对比。</p>
+
+<h2 id="可攻击面">可攻击面 <a class="heading-anchor" href="#可攻击面" aria-label="Link to 可攻击面">#</a></h2>
+
+<h3 id="attack-1：persistent-engine-kernel-还是-cuda-graph？">Attack 1：Persistent Engine Kernel 还是 CUDA Graph？ <a class="heading-anchor" href="#attack-1：persistent-engine-kernel-还是-cuda-graph？" aria-label="Link to attack-1：persistent-engine-kernel-还是-cuda-graph？">#</a></h3>
+
+<p>博客宣称 TileRT 是 "Persistent Engine Kernel" <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>，代码显示是 CUDA graph capture/replay <a href="/papers/tile-ai-tilert/detail.html#§3-架构-方法图" class="ref-link" title="L2:tile-ai-tilert#§3-架构-方法图">[L2:tile-ai-tilert]</a>。这是两种根本不同的执行模型：</p>
+
+<ul>
+<li><strong>Persistent kernel</strong>（GPUOS/Fleet 的做法）：kernel launch 一次，永不退出，通过 device-side polling 接收新任务 <a href="/papers/2604.17861/detail.html#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection" class="ref-link" title="L2:2604.17861#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection">[L2:2604.17861]</a></li>
+<li><strong>CUDA graph</strong>（TileRT 代码的做法）：录制 kernel 序列为 DAG，一次性 replay，但每个 kernel 仍由硬件 scheduler 调度</li>
+</ul>
+
+<p>可能的调和解释：TileRT 的 C++ 自定义算子内部可能是一个 persistent kernel，被包装为单个 CUDA graph node。这在技术上可行（persistent kernel 可以被 graph capture），但意味着"persistent"的粒度不是"整个模型"，而是"单个 C++ 算子内部"——这与博客叙事的宏大叙事有质的差异。<strong>无法从开源代码验证</strong>。</p>
+
+<h3 id="attack-2：heterogeneous-workers-的证据缺失">Attack 2：Heterogeneous Workers 的证据缺失 <a class="heading-anchor" href="#attack-2：heterogeneous-workers-的证据缺失" aria-label="Link to attack-2：heterogeneous-workers-的证据缺失">#</a></h3>
+
+<p>博客详细描述 GPU0 = Sparse Indexer Worker，GPU1-7 = MLA Workers <a href="/papers/tilert-speed-scaling-law/detail.html#§3-架构-方法图" class="ref-link" title="L2:tilert-speed-scaling-law#§3-架构-方法图">[L2:tilert-speed-scaling-law]</a>。但代码中 8 个 GPU 构建完全相同的 <code>Dsa</code> 模型栈，权重加载循环 <code>for device_id in range(self.num_devices)</code> 对所有设备一视同仁 <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>。稀疏注意力的 <code>sparse_index</code> 操作在每个 GPU 上都有对应的 fused op <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>，未见到 GPU0 独占 sparse indexing 的逻辑。</p>
+
+<p><strong>可能解释</strong>：(a) Heterogeneous Workers 仅在 GLM-5.1 的 C++ 后端实现，Python 层不体现；(b) 博客描述的是 v0.1.4 目标架构，v0.1.3 代码尚未实现。无论哪种，开源代码与博客声称不一致是事实。</p>
+
+<h3 id="attack-3：性能数字的可复现性">Attack 3：性能数字的可复现性 <a class="heading-anchor" href="#attack-3：性能数字的可复现性" aria-label="Link to attack-3：性能数字的可复现性">#</a></h3>
+
+<p>TileRT 声称 DeepSeek-V3.2 达 600 tok/s，GLM-5 达 500 tok/s <a href="/papers/tile-ai-tilert/detail.html#§5-实验与数据" class="ref-link" title="L2:tile-ai-tilert#§5-实验与数据">[L2:tile-ai-tilert]</a>。但：</p>
+
+<ul>
+<li>核心 tile 调度逻辑在闭源 C++ 中——外部无法审计性能优化的来源</li>
+<li>闭源 <code>.so</code> 发布为 Docker 镜像中的 pip wheel——无法从源码复现构建</li>
+<li>无与 vLLM/SGLang/TRT-LLM 在相同硬件上的受控对比实验</li>
+<li>无 profiler trace 或火焰图公开</li>
+</ul>
+
+<p>对比 GPUOS 的 3793 行全开源 + Table 2 多平台基准 <a href="/papers/2604.17861/detail.html#q3-结果" class="ref-link" title="L2:2604.17861#q3-结果">[L2:2604.17861]</a>，和 Fleet 的 rocprofiler L2 hit 数据 + HBM 流量逐 batch 对比 <a href="/papers/2604.15379/detail.html#key-findings" class="ref-link" title="L2:2604.15379#key-findings">[L2:2604.15379]</a>，TileRT 的性能声称缺乏最基本的可验证性。TokenSpeed 同样在 preview 状态，但至少公开了 Kimi K2.5 的 Pareto 曲线图 <a href="/papers/tokenspeed/detail.html#核心三问" class="ref-link" title="L2:tokenspeed#核心三问">[L2:tokenspeed]</a>。</p>
+
+<h3 id="attack-4：batch1-硬编码的战略代价">Attack 4：batch=1 硬编码的战略代价 <a class="heading-anchor" href="#attack-4：batch1-硬编码的战略代价" aria-label="Link to attack-4：batch1-硬编码的战略代价">#</a></h3>
+
+<p><code>ModelArgs.max_batch_size = 1</code> 和 <code>FlashSparseMLA</code> 的 <code>assert batch == 1</code> 将 TileRT 限制在纯 TPOT 优化 <a href="/papers/tile-ai-tilert/detail.html#§4-作者证明" class="ref-link" title="L2:tile-ai-tilert#§4-作者证明">[L2:tile-ai-tilert]</a>。这意味着：</p>
+
+<ul>
+<li>不支持连续 batching——无法作为通用 serving engine</li>
+<li>P/D 分离中 prefill 必须委托给外部系统（SGLang），增加系统复杂度</li>
+<li>无法利用 batch 间 KV cache 共享（prefix caching 不可能）</li>
+<li>Fleet 证明了即使在 bs=1-16 区间，dispatch 压缩也有 1.15-1.5× 收益 <a href="/papers/2604.15379/detail.html#key-findings" class="ref-link" title="L2:2604.15379#key-findings">[L2:2604.15379]</a>——但 TileRT 彻底放弃了 bs>1 的可能性</li>
+</ul>
+
+<p>TokenSpeed 的 retraction FSM 展示了如何在内存压力下优雅处理长 context agent 请求 <a href="/papers/tokenspeed/detail.html#key-design-decisions" class="ref-link" title="L2:tokenspeed#key-design-decisions">[L2:tokenspeed]</a>，而 TileRT 的 batch=1 硬编码完全避开了这类系统设计难题。</p>
+
+<h3 id="attack-5：updatesamplingconfig-的生产脆弱性">Attack 5：<code>update_sampling_config()</code> 的生产脆弱性 <a class="heading-anchor" href="#attack-5：updatesamplingconfig-的生产脆弱性" aria-label="Link to attack-5：updatesamplingconfig-的生产脆弱性">#</a></h3>
+
+<p>变更 temperature/top_p/top_k 时需完全 teardown + re-capture 整个 forward pass 的 CUDA graph <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>。在生产 serving 中，不同用户请求常有不同的 sampling 参数——每次切换就是一次完整的 graph re-capture。GPUOS 的 persistent kernel 天然支持动态 workload 且性能不退化 <a href="/papers/2604.17861/detail.html#key-findings" class="ref-link" title="L2:2604.17861#key-findings">[L2:2604.17861]</a>。</p>
+
+<h3 id="attack-6：稀疏注意力的独立发明声称">Attack 6：稀疏注意力的独立发明声称 <a class="heading-anchor" href="#attack-6：稀疏注意力的独立发明声称" aria-label="Link to attack-6：稀疏注意力的独立发明声称">#</a></h3>
+
+<p>TileRT 代码中的 <code>sparse_index</code>（64 个 index heads, top-2048 KV 位置选择）被 L2 蒸馏标注为"独立于 DeepSeek 原始论文的 TileRT 特有优化" <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>。但权重名称 <code>self_attn.indexer.wk</code> 直接出现在 DeepSeek-V3.2 的 model checkpoint 中——这些权重不是 TileRT 训练的，而是模型本身带的。TileRT 的贡献是在 batch=1 decode 下高效实现了这种稀疏注意力（将 160K 位置缩减为 2048，KV 读取量降低 ~78×），而非发明了这种机制。</p>
+
+<h2 id="生态位">生态位 <a class="heading-anchor" href="#生态位" aria-label="Link to 生态位">#</a></h2>
+
+<h3 id="tilert-在-persistent-execution-paradigm-中的定位">TileRT 在 persistent execution paradigm 中的定位 <a class="heading-anchor" href="#tilert-在-persistent-execution-paradigm-中的定位" aria-label="Link to tilert-在-persistent-execution-paradigm-中的定位">#</a></h3>
+
+<pre><code>
+通用性 ←————————————————————————→ 极致性
+     GPUOS                 Fleet                TileRT (code)
+   (任意 op)         (单模型 AMD)         (单模型×单硬件 NVIDIA)
+   3793 行全开源     学术原型未开源          Python 壳 + C++ 黑盒
+   15.3× element     1.56× bs=1             600 tok/s bs=1
+                                           Z.ai 生产部署
+</code></pre>
+
+<p>TileRT 占据了一个独特生态位：<strong>唯一在生产中验证 persistent execution 理念的系统</strong>。GPUOS 是学术原型（无 multi-GPU）<a href="/papers/2604.17861/detail.html#limitations" class="ref-link" title="L2:2604.17861#limitations">[L2:2604.17861]</a>；Fleet 是学术验证（单模型单卡）<a href="/papers/2604.15379/detail.html#limitations" class="ref-link" title="L2:2604.15379#limitations">[L2:2604.15379]</a>；TokenSpeed 走了 non-persistent 路线 <a href="/papers/tokenspeed/detail.html#核心三问" class="ref-link" title="L2:tokenspeed#核心三问">[L2:tokenspeed]</a>。TileRT 虽然开源程度最低，但"Z.ai 生产部署"这一事实给了它不可替代的验证价值。</p>
+
+<h3 id="范式演进中的位置">范式演进中的位置 <a class="heading-anchor" href="#范式演进中的位置" aria-label="Link to 范式演进中的位置">#</a></h3>
+
+<p>将 TileRT 放入更大的范式演进主线 <a href="/papers/2604.15379/detail.html#范式演进定位" class="ref-link" title="L2:2604.15379#范式演进定位">[L2:2604.15379]</a>：</p>
+
+<table>
+<tr><th>范式</th><th>被显式化的隐式约束</th><th>代表系统</th></tr>
+<tr><td>PagedAttention (2023)</td><td>KV cache 连续分配假设</td><td>vLLM</td></tr>
+<tr><td>FlashAttention (2022)</td><td>HBM 带宽约束</td><td>FA1/FA2/FA3</td></tr>
+<tr><td>Chiplet-task (2026)</td><td>L2 物理分区</td><td>Fleet</td></tr>
+<tr><td><strong>Tile-level fusion (2025-2026)</strong></td><td><strong>kernel launch 边界</strong></td><td><strong>TileRT</strong></td></tr>
+<tr><td>FSM type-safe scheduling (2026)</td><td>KV cache 资源安全</td><td>TokenSpeed</td></tr>
+</table>
+
+<p>TileRT 的贡献是将"kernel 间的执行边界"从隐式约束变为显式优化目标——通过 tile-level fused ops 消除 RMSNorm/GEMM/AllReduce 之间的边界 <a href="/papers/tile-ai-tilert/detail.html#§4-作者证明" class="ref-link" title="L2:tile-ai-tilert#§4-作者证明">[L2:tile-ai-tilert]</a>。博客将这个贡献叙述为 "Persistent Engine Kernel" <a href="/papers/tilert-speed-scaling-law/detail.html#q2-方法" class="ref-link" title="L2:tilert-speed-scaling-law#q2-方法">[L2:tilert-speed-scaling-law]</a>，代码实现为 "20+ fused ops + CUDA graph"——形式不同，但解决的根本问题一致：消除 kernel boundary overhead。</p>
+
+<h3 id="博客-代码一致性的生态信号">博客-代码一致性的生态信号 <a class="heading-anchor" href="#博客-代码一致性的生态信号" aria-label="Link to 博客-代码一致性的生态信号">#</a></h3>
+
+<p>TileRT 博客-代码裂缝本身是一个有价值的生态信号。它揭示了 persistent execution paradigm 的<strong>成熟度阶梯</strong>：</p>
+
+<ol>
+<li><strong>概念层</strong>（博客叙事）：Persistent Engine Kernel, warp specialization, GPU-resident orchestration</li>
+<li><strong>工程层</strong>（代码实际）：tile-level fused ops + CUDA graph capture + 闭源 C++ scheduler</li>
+<li><strong>生产层</strong>（Z.ai 部署）：不可审计但已验证</li>
+</ul>
+
+<p>从概念到生产的差距暗示：即使 TileRT 团队，也需要在"理想的 persistent kernel 架构"和"可以发货的 CUDA graph + fused ops 组合"之间做工程妥协。这对后续研究者是重要的参考——persistent kernel 的完整愿景（GPUOS/Fleet 描绘的那种）在生产中可能仍需要大量工程折衷。</p>
+
+<h2 id="未探索方向">未探索方向 <a class="heading-anchor" href="#未探索方向" aria-label="Link to 未探索方向">#</a></h2>
+
+<h3 id="方向-1：persistent-kernel-dynamic-operator-injection-的生产化">方向 1：Persistent Kernel + Dynamic Operator Injection 的生产化 <a class="heading-anchor" href="#方向-1：persistent-kernel-dynamic-operator-injection-的生产化" aria-label="Link to 方向-1：persistent-kernel-dynamic-operator-injection-的生产化">#</a></h3>
+
+<p>GPUOS 的 NVRTC JIT + dual-slot aliasing 实现零停机热更新 <a href="/papers/2604.17861/detail.html#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection" class="ref-link" title="L2:2604.17861#q2-方法-persistent-kernel-ring-buffer-dynamic-operator-injection">[L2:2604.17861]</a>，TileRT 的 <code>update_sampling_config()</code> 需完全 re-capture CUDA graph <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>。如果将 GPUOS 的 dynamic injection 机制引入 TileRT 的 tile scheduler——在 persistent kernel 内部支持运行时 operator 更新——可以消除 sampling config 变更时的 graph teardown 开销，同时保留 tile-level fusion 的延迟优势。这是 GPUOS 的通用性与 TileRT 的极致性的直接组合。</p>
+
+<h3 id="方向-2：chiplet-aware-tile-scheduling-on-blackwell">方向 2：Chiplet-aware Tile Scheduling on Blackwell <a class="heading-anchor" href="#方向-2：chiplet-aware-tile-scheduling-on-blackwell" aria-label="Link to 方向-2：chiplet-aware-tile-scheduling-on-blackwell">#</a></h3>
+
+<p>Fleet 证明了 chiplet-aware scheduling 在 AMD MI350 上的价值 <a href="/papers/2604.15379/detail.html#key-findings" class="ref-link" title="L2:2604.15379#key-findings">[L2:2604.15379]</a>。NVIDIA Blackwell 是双 die 架构（逻辑上相干但物理 NUMA），TileRT 在 B200 上运行但完全不可见是否有 die-aware 调度。将 Fleet 的 Chiplet-task 概念（把"一个 die + 其 L2 分区"作为调度单元）引入 TileRT 的 tile scheduler，可能在 batch>1 扩展时释放额外性能——但首先需要 TileRT 突破 batch=1 硬编码。</p>
+
+<h3 id="方向-3：可审计的-tile-level-fusion-dsl">方向 3：可审计的 Tile-level Fusion DSL <a class="heading-anchor" href="#方向-3：可审计的-tile-level-fusion-dsl" aria-label="Link to 方向-3：可审计的-tile-level-fusion-dsl">#</a></h3>
+
+<p>TileRT 当前 20+ fused ops 是手写的 Python 壳 + 闭源 C++ 实现。TokenSpeed 的内核注册表展示了 5-band 优先级插件化设计 <a href="/papers/tokenspeed/detail.html#key-design-decisions" class="ref-link" title="L2:tokenspeed#key-design-decisions">[L2:tokenspeed]</a>。如果将 TileRT 的 fused op 规格（如 <code>RMSNormProjxWqkvia</code> = RMSNorm + QKV + FP8 解量化）表达为可编程的 tile-level DSL（类似 TileLang/Triton 但支持跨算子融合描述），社区可以审计、复现、扩展这些融合模式，而非依赖闭源 C++ 黑盒。TileRT 的参考内核已混合使用 TileLang 和 Triton <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>——这暗示 TileLang 生态可能是实现可审计 tile fusion DSL 的自然载体。</p>
+
+<h3 id="方向-4：fleet-expert-chiplet-task-tilert-moe-fusion">方向 4：Fleet Expert-Chiplet-task + TileRT MoE Fusion <a class="heading-anchor" href="#方向-4：fleet-expert-chiplet-task-tilert-moe-fusion" aria-label="Link to 方向-4：fleet-expert-chiplet-task-tilert-moe-fusion">#</a></h3>
+
+<p>Fleet 的 Chiplet-task 对 MoE 不直接适用（M-major 协作假设被 expert routing 打破），但 MoE 的 expert 稀疏激活与 chiplet 私有 L2 天然亲和 <a href="/papers/2604.15379/detail.html#对立观点主动搜索-moe-其实可能比-dense-更契合-fleet" class="ref-link" title="L2:2604.15379#对立观点主动搜索-moe-其实可能比-dense-更契合-fleet">[L2:2604.15379]</a>。TileRT 已实现 MoE routing 的 tile-level fusion（<code>ExpertSelectUpGateSiLU</code> 融合选择+投影+激活为单 kernel）<a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>。组合两者：在 chiplet-aware 调度框架中，将 expert 按亲和性绑定到特定 XCD/die 的 L2，同时在每个 XCD 内部使用 TileRT 式 tile-level MoE fusion——这是 persistent execution paradigm 在 MoE 场景的自然延伸，但目前无论 Fleet 还是 TileRT 都没有探索。</p>
+
+<h3 id="方向-5：cross-engine-p-d-with-type-safe-handoff">方向 5：Cross-engine P/D with Type-safe Handoff <a class="heading-anchor" href="#方向-5：cross-engine-p-d-with-type-safe-handoff" aria-label="Link to 方向-5：cross-engine-p-d-with-type-safe-handoff">#</a></h3>
+
+<p>TileRT 的 <code>inject_cache()</code> API 接受外部 prefill 系统的 KV cache <a href="/papers/tile-ai-tilert/detail.html#§7-实现-cross-reference" class="ref-link" title="L2:tile-ai-tilert#§7-实现-cross-reference">[L2:tile-ai-tilert]</a>，TokenSpeed 的 FSM 用 RAII 保证 KV cache 资源安全 <a href="/papers/tokenspeed/detail.html#key-findings" class="ref-link" title="L2:tokenspeed#key-findings">[L2:tokenspeed]</a>。一个未探索的组合是：prefill engine（SGLang/TokenSpeed，支持连续 batching + 高吞吐）生产 KV cache，通过 type-safe 序列化协议传递给 decode engine（TileRT，batch=1 极致延迟），TokenSpeed 的 FSM 状态机保证 KV 页面在跨引擎传递时不会双重释放或遗漏。当前 TileRT 的 <code>inject_cache()</code> 接受裸 tensor tuple，无任何资源安全保证——这是 P/D 分离部署中的真实风险点。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/tilert-speed-scaling-law.html">tilert-speed-scaling-law</a> (blog) 
+<a href="/papers/2604.17861.html">2604.17861</a> (related) 
+<a href="/papers/2604.15379.html">2604.15379</a> (related) 
+<a href="/papers/deepseek-v4.html">deepseek-v4</a> (related) 
+<a href="/papers/tokenspeed.html">tokenspeed</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

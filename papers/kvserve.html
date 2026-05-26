@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: KVServe: Service-aware KV-cache Compression for Bandwidth-efficient Disaggregated LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">KVServe: Service-aware KV-cache Compression for Bandwidth-efficient Disaggregated LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> kvserve — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/kvserve/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+<h1 id="kvserve-vs-相关论文：跨篇综合">KVServe vs 相关论文：跨篇综合 <a class="heading-anchor" href="#kvserve-vs-相关论文：跨篇综合" aria-label="Link to kvserve-vs-相关论文：跨篇综合">#</a></h1>
+
+<h2 id="相关论文">相关论文 <a class="heading-anchor" href="#相关论文" aria-label="Link to 相关论文">#</a></h2>
+
+<p>本篇选取 4 篇相关论文/系统，覆盖 PD 分离架构下的 KV-cache I/O 优化、跨 DC prefill offload、PD 调度/SLO 管理和 agent 推理引擎设计，与 KVServe 在"disaggregated serving 中 KV-cache 传输瓶颈"这一核心问题上形成多维对比。</p>
+
+<p><strong>DualPath (2602.21548)</strong> — KVServe 与 DualPath 共享同一个痛点：PD 分离架构中 KV-cache 传输成为 TTFT 主要瓶颈。但两者的解法方向完全对立。DualPath 从<strong>网络拓扑</strong>入手——发现 decode engine 的 SNIC 空闲，开辟 storage→DE→CNIC→PE 的第二条数据路径，用 InfiniBand VL QoS 做流量隔离，聚合所有节点的 SNIC 带宽。KVServe 从<strong>数据压缩</strong>入手——在 prefill engine 的 GPU 上执行 Hadamard Transform + Hybrid Quantizer + nvCOMP ANS 三阶段压缩 pipeline，将 KV payload 缩小 10× 后再走原有传输路径。两者的设计哲学可概括为"增加带宽 vs 减少数据量"。DualPath 需要双网物理隔离（计算 NIC + 存储 NIC）、InfiniBand VL 硬件级 QoS 配置、3FS 分布式存储——硬件门槛极高（DeepSeek 生产级基础设施）。KVServe 只需 vLLM external connector + nvCOMP GPU 库——硬件门槛低，但受限于 nvCOMP 的 NVIDIA GPU 绑定。两者理论上可以组合：DualPath 提供更大的传输带宽管道，KVServe 压缩管道内的数据量，叠加效果可能使 cross-datacenter PD serving 在更低带宽下可行。但 DualPath 的 layerwise streaming 粒度（逐层传输）与 KVServe 的 per-request 压缩粒度（整个 KV tensor 压缩后传输）需要对齐——KVServe 的 auto-chunking（8-layer chunk）可以适配 DualPath 的 layer block 传输单元。Kind: related。</p>
+
+<p><strong>PrfaaS (2604.15039)</strong> — KVServe 与 PrfaaS 共享"减少 PD 间 KV 传输流量"的目标，但作用域和技术路径截然不同。PrfaaS 在<strong>架构层面</strong>减少 KV 体量——通过 hybrid attention（KDA:MLA=3:1）将单实例 KV 吞吐从 ~60 Gbps（dense MiniMax-M2.5）降到 ~3 Gbps（1T Kimi-Linear 风格模型），使跨 DC Ethernet 传输变得可行。KVServe 在<strong>传输层面</strong>压缩已有 KV 数据——不改变模型架构，通过 lossy quantization + lossless codec 将任意 KV-cache 缩小 10×。PrfaaS 的 KV 体量降低来自<strong>模型设计时</strong>的 attention 架构选择（linear attention 层不产生 full-attention KV），是一次性的、模型绑定的；KVServe 的压缩是<strong>serving 时</strong>的动态行为，对任何 MHA/GQA 模型即插即用（但不支持 MLA）。两者的组合空间明确：PrfaaS 的 hybrid attention 已将 KV 吞吐降到 ~3 Gbps，如果再叠加 KVServe 的 10× 压缩，理论上可将跨 DC KV 传输降到 ~300 Mbps——甚至 1 Gbps commodity Ethernet 都足够。但这需要验证 KVServe 的 hybrid quantizer 对 hybrid attention 模型的 KV 分布是否仍有效（linear attention 的 KV 分布可能与 full MHA 不同，DuoAttention head scores 可能不适用）。PrfaaS 的层间 prefill pipeline（逐层计算 → 逐层发 KV）与 KVServe 的压缩 pipeline 在粒度上匹配——两者都在 layer 级别处理 KV 数据。Kind: related。</p>
+
+<p><strong>DynaServe (2504.09285)</strong> — KVServe 与 DynaServe 面向 PD serving 的不同层面。DynaServe 解决的是<strong>PD 调度</strong>问题——prefill 和 decode 的动态负载不均导致 colocation 干扰（P99 TBT >300ms）和 disaggregation 资源浪费（MFU 低至 0.2%）。其核心创新是 micro-request 抽象，在任意 token 边界分割请求，通过两级调度框架在 SLO 约束下最大化 goodput。KVServe 解决的是<strong>PD 传输</strong>问题——一旦 scheduler 决定了 KV-cache 从 prefill 到 decode 的路由，如何在有限带宽下高效完成传输。两者正交且互补：DynaServe 决定"KV 往哪发"，KVServe 决定"KV 怎么压缩着发"。DynaServe 的 chunk-based KV transfer（DMA 推送完成的 KV chunk 与下一 chunk 计算重叠，non-overlapped transfer 减少 94%）与 KVServe 的压缩可叠加——先压缩再 chunk 传输，或 chunk 级压缩传输。但集成有工程挑战：DynaServe 的 KV transfer 基于 vLLM 的 NCCL/RDMA 原语，KVServe 在这之上插入了压缩/解压层——需要确保 chunk-based 传输的 chunk 边界与 KVServe 的 auto-chunking 对齐。更深层的关系：DynaServe 的 SLO-aware 调度可以感知 KVServe 的压缩 overhead——如果当前带宽足够高（KVServe 的 controller 判断 <code>B > B_crit</code>），DynaServe 可跳过压缩直接传输，避免不必要的 codec 延迟。这需要 DynaServe 的 execution predictor 集成 KVServe 的 analytical model。Kind: related。</p>
+
+<p><strong>TokenSpeed (tokenspeed)</strong> — KVServe 与 TokenSpeed 代表 LLM serving 栈的不同层次。TokenSpeed 是一个<strong>完整推理引擎</strong>——从请求接收（SMG HTTP Gateway）到调度（C++ FSM + RAII 类型安全）到模型执行（Placement 编译器 + Blackwell MLA 内核）到输出返回，覆盖整个 serving lifecycle。KVServe 是一个<strong>vLLM 外部插件</strong>——仅在 KV-cache save/load 路径上拦截数据做压缩/解压，不涉及调度、模型执行或请求管理。TokenSpeed 205K LOC vs KVServe 12.6K LOC——规模差异反映了两者的定位差异。但两者在 PD disaggregation 场景下有交集：TokenSpeed 通过 Mooncake 集成支持 PD 分离，其 PD 间的 KV 传输面临与 vLLM 相同的带宽瓶颈——KVServe 的压缩技术原则上可以移植到 TokenSpeed 的 PD transport 层。移植挑战：(1) TokenSpeed 的 FSM 调度器用 C++ <code>std::variant<13 states></code> 管理状态，KVServe 的 compression adapter 是 Python 实现——需要 C++ 重写或 nanobind FFI 桥接；(2) TokenSpeed 的内核注册表有 5-band 优先级系统，KVServe 的 nvCOMP codec 需要注册为 PLUGIN band 内核才能参与选择；(3) KVServe 的 service-aware controller（analytical model + bandit）需要与 TokenSpeed 的调度器共享 bandwidth 和 SLO 信息——而 TokenSpeed 的调度器运行在独立的 C++ 进程中，通过 ZMQ IPC 通信。更值得注意的是：TokenSpeed 的 MLA q-head 折叠针对 agent 场景的 small-batch decode 优化，而 KVServe 明确不支持 MLA 架构——这意味着 KVServe 无法服务 TokenSpeed 主力优化的 DeepSeek V3/V4 和 Kimi K2.5 模型。Kind: related。</p>
+
+<h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta <a class="heading-anchor" href="#本篇-vs-相关论文的-delta" aria-label="Link to 本篇-vs-相关论文的-delta">#</a></h2>
+
+<p>KVServe 的核心 delta 是 <strong>service-aware 的模块化 KV-cache 压缩 pipeline + zero-fork vLLM 集成</strong>——将 KV 传输优化从"网络/调度/架构层面"下沉到"数据压缩层面"，通过 analytical model + ε-greedy bandit 的两层在线决策根据实时 bandwidth/SLO 动态选择最优 compression profile，以 external connector 身份寄生在 vLLM 上实现零修改接入。</p>
+
+<table>
+<tr><th>维度</th><th>KVServe</th><th>DualPath</th><th>PrfaaS</th><th>DynaServe</th><th>TokenSpeed</th></tr>
+<tr><td>优化目标</td><td>PD 间 KV 传输压缩</td><td>PD 间存储 I/O 带宽聚合</td><td>跨 DC prefill offload</td><td>PD 调度负载均衡</td><td>Agent inference 全链路</td></tr>
+<tr><td>核心技术</td><td>Transform + Quantizer + Codec 模块化 pipeline</td><td>Dual-path + CNIC VL isolation</td><td>Hybrid attention + 阈值路由</td><td>Micro-request + APS 两级调度</td><td>FSM + Placement 编译器 + MLA kernel</td></tr>
+<tr><td>KV 传输优化方式</td><td>GPU-side lossy+lossless 压缩（减少数据量）</td><td>开辟第二条 NIC 路径（增加带宽）</td><td>模型架构改变降 KV 体量</td><td>Chunk-based overlap（隐藏传输）</td><td>N/A（继承底层 transport）</td></tr>
+<tr><td>Service-aware 决策</td><td>✅ Analytical model + Bandit 在线自适应</td><td>✅ 三级分类 + 路径选择</td><td>✅ 双时间尺度调度</td><td>✅ SLO-aware batch composition</td><td>❌（固定 kernel selection）</td></tr>
+<tr><td>引擎集成方式</td><td>vLLM external connector（zero-fork）</td><td>内部框架（~5K 行修改）</td><td>内部 vLLM fork</td><td>vLLM-based（~3K 行）</td><td>独立引擎（~205K LOC）</td></tr>
+<tr><td>硬件依赖</td><td>nvCOMP (NVIDIA GPU only)</td><td>InfiniBand VL QoS + 3FS + 双网隔离</td><td>commodity Ethernet (跨 DC)</td><td>RDMA 网络</td><td>Blackwell (SM100/103)</td></tr>
+<tr><td>MLA 支持</td><td>❌（明确跳过）</td><td>✅（DeepSeek MLA 原生）</td><td>✅（hybrid attention 含 MLA）</td><td>❌（未评估）</td><td>✅（核心优化目标）</td></tr>
+<tr><td>适用场景</td><td>Cross-node/datacenter PD 低带宽传输</td><td>Agentic PD 推理 I/O 瓶颈</td><td>长 context prefill 跨 DC offload</td><td>混合 PD serving 动态负载</td><td>Agent decode-heavy workload</td></tr>
+<tr><td>压缩比 / 带宽提升</td><td>Up to 10× 压缩</td><td>1.87× 吞吐提升</td><td>4-13× KV 吞吐降低（架构级）</td><td>94% non-overlapped transfer 减少</td><td>N/A</td></tr>
+<tr><td>开源状态</td><td>✅ Apache-2.0 (GitHub)</td><td>❌ 内部系统</td><td>❌ 内部系统</td><td>❌ 计划开源</td><td>✅ MIT (Preview)</td></tr>
+<tr><td>生产验证</td><td>❌ 学术项目（同节点测试）</td><td>✅ DeepSeek 生产部署（1152 GPU）</td><td>✅ Moonshot AI 内部验证</td><td>❌ 研究测试平台</td><td>⚠️ Preview 状态</td></tr>
+</table>
+
+<h2 id="关键数值对比">关键数值对比 <a class="heading-anchor" href="#关键数值对比" aria-label="Link to 关键数值对比">#</a></h2>
+
+<table>
+<tr><th>数值维度</th><th>KVServe</th><th>DualPath</th><th>PrfaaS</th><th>DynaServe</th><th>TokenSpeed</th></tr>
+<tr><td>KV 压缩比 / 带宽增益</td><td><strong>up to 10×</strong> 压缩</td><td><strong>1.87×</strong> 离线吞吐提升</td><td><strong>15.5×</strong> KV 吞吐架构级降低 (32K)</td><td><strong>94%</strong> non-overlapped transfer 减少</td><td>N/A</td></tr>
+<tr><td>端到端延迟改善</td><td><strong>8.5×</strong> TTFT 降低</td><td><strong>1.96×</strong> 在线 APS 提升</td><td><strong>-64%</strong> P90 TTFT</td><td><strong>1.91×</strong> goodput 提升</td><td><strong>~9%</strong> min-latency vs TRT-LLM</td></tr>
+<tr><td>GPU 修改量</td><td><strong>0 行</strong> vLLM 修改</td><td><strong>~5K 行</strong>内部框架</td><td>未公开</td><td><strong>~3K 行</strong> Python+C++</td><td><strong>~205K LOC</strong> 独立引擎</td></tr>
+<tr><td>代码规模</td><td><strong>~12.6K</strong> LOC</td><td>未开源</td><td>未开源</td><td>~3K 行（估计）</td><td><strong>~205K</strong> LOC</td></tr>
+<tr><td>评估规模</td><td>同节点双引擎测试</td><td><strong>1152 GPU</strong> 近线性扩展</td><td>32×H200 + 64×H20</td><td>2 servers × 4 A100</td><td>Kimi K2.5 on B200</td></tr>
+<tr><td>生产验证</td><td>❌ 无</td><td>✅ DeepSeek 生产</td><td>✅ Moonshot AI 内部</td><td>❌ 研究测试</td><td>⚠️ Preview</td></tr>
+</table>
+
+<p><strong>数值对比启示</strong>：</p>
+
+<p>KVServe 的 10× 压缩比在纸面上最激进，但有两个关键 caveat：(1) "up to"意味着最优条件（hybrid_ratio=0.8, aggressive quantization + ANS），生产中位数可能在 3-5× 范围；(2) 10× 是有损压缩，而 DualPath 的 1.87× 和 PrfaaS 的 15.5× 是无损的。如果用"无损等效压缩比"衡量（考虑 accuracy 退化的 cost），KVServe 的 effective 收益可能低于 PrfaaS。</p>
+
+<p>评估规模的差距值得关注：DualPath 在 1152 GPU 的 DeepSeek 生产集群上验证，PrfaaS 在 96 GPU 的 Moonshot AI 环境下验证，而 KVServe 仅在同节点双引擎测试平台上验证。从"研究原型到生产部署"的距离，KVServe 最远——其 offline profiling 工具链（~7K LOC，占总代码 >50%）的成熟度暗示这是一个研究项目而非生产系统。</p>
+
+<h2 id="pairwise-深度分析">Pairwise 深度分析 <a class="heading-anchor" href="#pairwise-深度分析" aria-label="Link to pairwise-深度分析">#</a></h2>
+
+<h3 id="kvserve-vs-dualpath-—-数据压缩-vs-带宽聚合的设计空间对比">KVServe vs DualPath — 数据压缩 vs 带宽聚合的设计空间对比 <a class="heading-anchor" href="#kvserve-vs-dualpath-—-数据压缩-vs-带宽聚合的设计空间对比" aria-label="Link to kvserve-vs-dualpath-—-数据压缩-vs-带宽聚合的设计空间对比">#</a></h3>
+
+<p><strong>问题空间重叠度</strong>：高。两者都直接面对 PD 分离架构中 KV-cache 传输延迟主导 TTFT 的问题。DualPath 的量化分析（PE SNIC 持续饱和，DE SNIC 几乎空闲）和 KVServe 的动机（7B 模型 1K token KV ~250 MB，跨 DC 传输延迟远超 prefill 计算）描述了同一个瓶颈的两种表征。</p>
+
+<p><strong>解法对比</strong>：DualPath 是"供给侧"方案——不改变 KV 数据本身，而是增加传输通道的总带宽（从 1× SNIC 到 (P+D)× SNIC）。KVServe 是"需求侧"方案——不改变传输通道，而是缩小需要传输的数据量（10× 压缩）。从信息论角度，KVServe 利用了 KV-cache 的统计冗余（quantized uint8 中 2-4 bit 有效位 + ANS 进一步无损压缩），DualPath 利用了硬件资源的空间冗余（idle DE SNIC）。</p>
+
+<p><strong>代价结构差异</strong>：</p>
+<ul>
+<li>DualPath 的代价是<strong>工程复杂度</strong>——CNIC-centric data path 要求所有 H2D/D2H 绕路走 NIC RDMA Write（替代 cudaMemcpyAsync），需要 InfiniBand VL arbiter 配置、RDMA verbs API 精通、PCIe 拓扑验证。这是大规模生产部署中"唯一可行路径"的工程判断，外部团队最难复现</li>
+<li>KVServe 的代价是<strong>精度风险</strong>——lossy quantization（80% head 降到 2-3 bit）不可逆地丢弃信息。虽然论文声称"accuracy preserved"，但依赖 DuoAttention head scores 的离线 profiling，且不同 prompt 分布下 head importance 可能漂移</li>
+</ul>
+
+<p><strong>组合可行性</strong>：两者可以垂直叠加。DualPath 的 dual-path 提供更大的传输管道，KVServe 压缩管道内的数据量，叠加后可在更低带宽下实现更低 TTFT。但需要解决粒度对齐：DualPath 的 Layer Block 是逐层传输单位，KVServe 的 auto-chunking 默认 8 层——需要将 chunk 粒度降到 1 层以匹配 DualPath 的 layerwise streaming。KVServe 的 wire protocol（ZMQ metadata + NCCL body）需要适配 DualPath 的 CNIC RDMA Write 传输原语。</p>
+
+<p><strong>适用场景区分</strong>：DualPath 最优场景是 agentic workload（短 append、高并发、长 context、高 KV-cache 命中率 >95%），此时 I/O 瓶颈最严重。KVServe 最优场景是 cross-datacenter / edge deployment（10-100 Gbps 低带宽链路），此时传输延迟而非 I/O 吞吐是瓶颈。在同集群高速 NVLink/RDMA 环境下，KVServe 的压缩 overhead 可能反而增加延迟（controller 的 benefit condition <code>B < (1-1/cr)·S</code> 不满足）。</p>
+
+<p><strong>Analytical model 对比</strong>：DualPath 的 Eq.1-9 定义了 P/D ratio 的 bottleneck-free 范围（<code>g=8, s=1</code> 时 <code>P/D ∈ [1/7, 7/2]</code>），核心约束是 CNIC/SNIC/DRAM 的带宽上限。KVServe 的 Theorem 1 <code>B < (1-1/cr)·S</code> 定义了"压缩是否有益"的判据，核心变量是 bandwidth B 和 codec speed S。两个 analytical model 的结构相似——都将系统约束转化为物理量的不等式——但约束维度不同：DualPath 在拓扑空间（节点数、NIC 数）内求解，KVServe 在压缩空间（压缩比、codec 速度）内求解。理论上可以构建联合 analytical model：将 DualPath 的 effective bandwidth（考虑 dual-path 聚合）代入 KVServe 的 benefit condition，得到"在 DualPath 架构下，何时还需要额外压缩"的 closed-form 条件。</p>
+
+<h3 id="kvserve-vs-prfaas-—-传输层压缩-vs-架构层-kv-体量降低">KVServe vs PrfaaS — 传输层压缩 vs 架构层 KV 体量降低 <a class="heading-anchor" href="#kvserve-vs-prfaas-—-传输层压缩-vs-架构层-kv-体量降低" aria-label="Link to kvserve-vs-prfaas-—-传输层压缩-vs-架构层-kv-体量降低">#</a></h3>
+
+<p><strong>本质差异</strong>：PrfaaS 的 KV 体量降低发生在<strong>模型训练/设计时</strong>——选择 KDA:MLA=3:1 的 hybrid attention 架构意味着 75% 的层使用 linear attention（不产生 full-attention KV），单实例 KV 吞吐从 ~60 Gbps 降到 ~3 Gbps。这个选择不可逆——模型一旦训练完成，KV 体量就固定了。KVServe 的压缩发生在<strong>serving 时</strong>——对任何已有模型的 KV-cache 做后处理压缩，不改变模型本身。</p>
+
+<p><strong>KV 吞吐对比</strong>：PrfaaS 的 1T hybrid 模型在 32K seq len 下 KV 吞吐仅 3.87 Gbps（Table 3），而 dense MiniMax-M2.5 达 59.93 Gbps——hybrid attention 实现了 <strong>15.5× 架构级降低</strong>。KVServe 在传输层面实现 <strong>10× 压缩</strong>。两者叠加理论上可达 ~155× 总降低——使 KV 传输在 sub-Gbps 带宽下可行。但这是理论上界：hybrid attention 的 linear state 部分可能不适合 KVServe 的 quantization（linear attention 的 state 维度和分布与 full-attention KV 不同）。</p>
+
+<p><strong>Service-aware 决策的异同</strong>：两者都有在线自适应机制。PrfaaS 用双时间尺度调度器——short-term 监控 egress 利用率做 per-request 路由，long-term 监控 Eq.8 balance 做 P↔D 角色转换。KVServe 用 analytical model + bandit——Tier-1 筛选 Pareto 前沿 candidates，Tier-2 在线学习残差。PrfaaS 的决策维度是"请求路由到哪个集群"，KVServe 的决策维度是"用哪个 compression profile"。两者的 analytical model 有结构相似性：PrfaaS 的 <code>Θ = min(compute_bound, BW_bound)</code> 和 KVServe 的 <code>T_p = T_model + V/S + V·cr/B</code> 都将吞吐表示为计算和传输的 min/sum 关系。</p>
+
+<p><strong>互补空间</strong>：PrfaaS 的 PrfaaS-PD 架构中，compute-dense PrfaaS 集群做 prefill 后需将 KV 通过 commodity Ethernet 回流到 decode 集群。即使 hybrid attention 已将 KV 吞吐降到 ~3 Gbps，在 100 Gbps VPC 下 4 个实例的聚合 egress 仍达 13 Gbps（13% 链路占用）。KVServe 的 10× 压缩可将 egress 降到 ~1.3 Gbps（1.3% 链路占用），为更多 PrfaaS 实例释放带宽——从而实现更高的 PrfaaS 集群利用率。PrfaaS 的层间 prefill pipeline（layer k 算完就发 layer k KV）与 KVServe 的 auto-chunking 在 layer 粒度上天然对齐。</p>
+
+<p><strong>Throughput model 交互</strong>：PrfaaS 的核心方程 <code>Θ_prfaas = min(N_prfaas/T_prefill, B_out/S_kv)</code> 中，S_kv 是 KV 数据大小。KVServe 的 compression 将 S_kv 降低为 S_kv/cr（cr 为压缩比），代入 PrfaaS 方程：<code>Θ_prfaas = min(N_prfaas/T_prefill, B_out·cr/S_kv)</code>。当 PrfaaS 是 compute-bound 时（第一项小），KVServe 无额外收益；当 PrfaaS 是 BW-bound 时（第二项小），KVServe 将 BW 上限放大 cr 倍。PrfaaS 的 case study 中 compute-bound 成立（13 Gbps vs 100 Gbps 链路，7-8× headroom），此时 KVServe 无法帮助。但如果 PrfaaS 扩展到更多实例（16 × 3 Gbps = 48 Gbps，接近 100 Gbps 链路的 50%），BW 开始紧张——此时 KVServe 的 10× 压缩使 48 Gbps egress 降到 4.8 Gbps，从根本上消除 BW 约束。关键洞察：KVServe 对 PrfaaS 的价值不在当前 case study 的规模，而在 PrfaaS <strong>规模扩展后</strong>的 BW 瓶颈回归场景。</p>
+
+<h3 id="kvserve-vs-dynaserve-—-传输优化-vs-调度优化的正交关系">KVServe vs DynaServe — 传输优化 vs 调度优化的正交关系 <a class="heading-anchor" href="#kvserve-vs-dynaserve-—-传输优化-vs-调度优化的正交关系" aria-label="Link to kvserve-vs-dynaserve-—-传输优化-vs-调度优化的正交关系">#</a></h3>
+
+<p><strong>问题域分离</strong>：DynaServe 的核心矛盾是 prefill-decode 干扰——同置（colocation）导致 P99 TBT >300ms，分离（disaggregation）导致 GPU 利用率不均（MFU 0.2%-43%）。KVServe 的核心矛盾是 PD 间 KV 传输带宽不足。两者面向 serving stack 的不同层级：DynaServe 优化<strong>请求到 GPU 的映射</strong>，KVServe 优化<strong>GPU 间 KV 数据的搬运效率</strong>。</p>
+
+<p><strong>技术层面的互补</strong>：DynaServe 的 micro-request 抽象允许在任意 token 边界分割请求，产生 α/β 两个子请求——当 α 和 β 在不同 GPU 上执行时，需要通过 RDMA 传输 α 的 KV-cache 到 β 所在 GPU。DynaServe 的 chunk-based KV transfer 将非重叠传输减少 94%——但当带宽本身不足时（cross-node/DC 场景），chunk overlap 无法帮助。KVServe 的 KV 压缩可以叠加在 DynaServe 的 chunk transfer 之上：每个 chunk 在 GPU 上压缩后传输，解压后注入远端 KV-cache。</p>
+
+<p><strong>Controller/Scheduler 交互</strong>：DynaServe 的全局调度器用二分搜索（K=6 步，<20ms/request）找最优分割点，其 execution predictor 需要预测跨 GPU KV transfer 延迟。KVServe 的 service-aware controller 根据实时 bandwidth 选择 compression profile——如果两者集成，DynaServe 的 predictor 需要感知 KVServe 的压缩行为：(1) 在高带宽时（<code>B > B_crit</code>），KVServe 跳过压缩，DynaServe 预测原始 transfer latency；(2) 在低带宽时，KVServe 启用压缩，DynaServe 需要预测 compress_time + compressed_transfer_time + decompress_time。这要求 DynaServe 的 profile table 增加"KVServe compression profile"维度。</p>
+
+<p><strong>SLO 语义的差异</strong>：DynaServe 优化 P99 TBT（time-between-tokens），这是 decode 阶段的延迟指标。KVServe 优化 TTFT（time-to-first-token），这是 prefill 阶段的延迟指标（KV 传输延迟直接影响 TTFT）。两者的 SLO 目标不冲突——DynaServe 关注 decode 质量，KVServe 关注 prefill-to-decode 的交接速度。</p>
+
+<p><strong>Micro-request 与 compression 的交互效应</strong>：DynaServe 的 micro-request 在任意 token 边界 s 处将请求分割为 α（tokens 1..s）和 β（tokens s+1..L）。α 的 KV-cache 需要从 α-GPU 传输到 β-GPU。当 s 从 P（标准 PD 分割）变为中间值时，传输的 KV 大小从 full-prefill KV 变为 partial-prefill KV——KVServe 的 compression benefit 随 KV 大小变化。小 KV（s << P）可能低于 <code>min_compress_size</code> 阈值（KVServe 默认 1024 bytes），直接跳过压缩。大 KV（s ≈ P）则充分利用压缩。这意味着 DynaServe 的最优 split point 在有 KVServe 时会发生偏移——压缩降低了大 KV 传输的 cost，使得"更多数据留在 α-GPU 执行、更大 KV 传输"的决策变得更优。DynaServe 的 execution predictor 需要纳入 compression cost model 才能找到 KVServe-aware 的最优 split。</p>
+
+<h3 id="kvserve-vs-tokenspeed-—-插件-vs-引擎的定位差异">KVServe vs TokenSpeed — 插件 vs 引擎的定位差异 <a class="heading-anchor" href="#kvserve-vs-tokenspeed-—-插件-vs-引擎的定位差异" aria-label="Link to kvserve-vs-tokenspeed-—-插件-vs-引擎的定位差异">#</a></h3>
+
+<p><strong>抽象层级对比</strong>：TokenSpeed 是完整的推理引擎栈——C++ FSM 调度器保证 KV-cache 的 RAII 类型安全、Placement 编译器自动插入 SPMD 通信、5-band 内核注册表做 hardware-aware kernel selection。KVServe 是 vLLM 的一个 external connector——仅拦截 <code>save_kv_layer</code>/<code>start_load_kv</code> 路径上的 KV 数据。这种"完整栈 vs 单点插件"的对比揭示了两种 serving 优化哲学：TokenSpeed 认为极致性能需要全栈重写（从调度器到内核），KVServe 认为 KV 传输优化可以作为独立组件外挂在任何引擎上。</p>
+
+<p><strong>MLA 不兼容的深层原因</strong>：KVServe 的 <code>get_required_kvcache_layout()</code> 强制返回 NHD layout，遇到 MLA 直接跳过返回 None。这不是实现疏忽而是架构约束：MLA（Multi-head Latent Attention）将 KV 投影到低维 latent space，KV-cache 的维度和结构与 MHA/GQA 完全不同——DuoAttention 的 per-head importance scores 概念不适用于 MLA 的 shared latent representation。TokenSpeed 的核心优化目标（DeepSeek V3/V4、Kimi K2.5）全部使用 MLA——这意味着 KVServe 与 TokenSpeed 的模型生态几乎不重叠。如果要在 TokenSpeed 的 PD transport 中引入 KV 压缩，需要一个全新的、针对 MLA latent space 设计的压缩方案（可能利用 latent space 的低秩特性做更高效的 quantization）。</p>
+
+<p><strong>Connector vs FSM 的资源管理哲学</strong>：KVServe 通过 <code>kv_connector_module_path</code> 注入，其 compression adapter 在 Python 层执行，不参与 vLLM 的调度和 KV 分配决策。TokenSpeed 的 FSM 用 <code>unique_ptr<DeviceNodeRef></code> + move 语义在编译期保证 KV-cache 不会双重释放或遗漏释放。如果 KVServe 的压缩层在 FSM 的某个中间状态（如 <code>PrefillDone → Decoding</code> 的 KV 传输阶段）引入额外的 buffer 分配（staging buffer for compressed data），这些 buffer 的生命周期需要纳入 FSM 的 RAII 管理——否则可能在 Retraction（内存压力 eviction）时出现 buffer 泄漏。</p>
+
+<p><strong>Controller vs Kernel Registry 的自适应机制对比</strong>：KVServe 的 service-aware controller 用 analytical model + bandit 在 <code>(accuracy_bucket, bandwidth_interval)</code> 空间中在线选择最优 compression profile。TokenSpeed 的内核注册表在 startup 时根据 <code>(platform, dtype, features)</code> 静态选择最优 kernel——没有运行时自适应。两者代表"在线学习 vs 离线选择"的两种 trade-off：KVServe 的 controller 适应动态变化的 bandwidth，代价是 bandit 冷启动期可能选择次优 profile；TokenSpeed 的 registry 稳定可预测，但不能适应运行时条件变化。</p>
+
+<p><strong>开发模式对比</strong>：KVServe 的 offline_search/ 工具链（~7K LOC，占总代码 >50%）反映了其研究导向——大量工作在离线 profiling（accuracy eval、compression ratio eval、speed eval、param search），runtime 代码相对简洁。TokenSpeed 相反——runtime 代码 ~200K LOC，离线工具极少，反映了其工程导向。两者代表"research prototype"和"production engine"的典型开发模式。如果 KVServe 的技术要生产落地，需要将 offline profiling 自动化并集成到 CI/CD pipeline（模型更新时自动重跑 DuoAttention profiling + param search），而不是作为独立的手动步骤。</p>
+
+<h2 id="跨系统技术路径对比：kv-传输优化的四条路">跨系统技术路径对比：KV 传输优化的四条路 <a class="heading-anchor" href="#跨系统技术路径对比：kv-传输优化的四条路" aria-label="Link to 跨系统技术路径对比：kv-传输优化的四条路">#</a></h2>
+
+<p>PD 分离架构中 KV-cache 传输瓶颈的解法可以按"改什么"分为四条技术路径，KVServe 和四篇相关论文各占其一（或多条路径）：</p>
+
+<h3 id="路径-a-增加传输带宽（dualpath）">路径 A: 增加传输带宽（DualPath） <a class="heading-anchor" href="#路径-a-增加传输带宽（dualpath）" aria-label="Link to 路径-a-增加传输带宽（dualpath）">#</a></h3>
+
+<p>DualPath 通过开辟第二条 NIC 路径（DE SNIC → CNIC → PE）聚合所有节点的存储 NIC 带宽。其带宽增益 = (P+D)/P × 基础 SNIC 带宽（在 2P4D 配置下约 3× 基础带宽）。代价是 CNIC-centric data path 的工程复杂度（所有 H2D/D2H 绕路走 NIC RDMA Write）和 InfiniBand VL QoS 的硬件依赖。带宽增益是 multiplicative 的——总有效带宽 = 基础带宽 × DualPath 乘数。DualPath 的带宽增益有理论上限：Eq.9 的 bottleneck-free 区间 <code>P/D ∈ [1/7, 7/2]</code> 限制了可用的 P:D 比例，从而限制了 DE SNIC 贡献的最大带宽。</p>
+
+<h3 id="路径-b-减少-kv-数据量——serving-时压缩（kvserve）">路径 B: 减少 KV 数据量——serving 时压缩（KVServe） <a class="heading-anchor" href="#路径-b-减少-kv-数据量——serving-时压缩（kvserve）" aria-label="Link to 路径-b-减少-kv-数据量——serving-时压缩（kvserve）">#</a></h3>
+
+<p>KVServe 在 GPU 上执行三阶段压缩 pipeline，将 KV payload 缩小 up to 10×。代价是 lossy quantization 的 accuracy 风险和 codec 计算开销。数据量降低也是 multiplicative 的——传输时间 = 原始传输时间 / 压缩比。与路径 A 可叠加：effective 传输时间 = 原始传输时间 / (带宽乘数 × 压缩比)。</p>
+
+<h3 id="路径-c-减少-kv-数据量——模型架构级（prfaas）">路径 C: 减少 KV 数据量——模型架构级（PrfaaS） <a class="heading-anchor" href="#路径-c-减少-kv-数据量——模型架构级（prfaas）" aria-label="Link to 路径-c-减少-kv-数据量——模型架构级（prfaas）">#</a></h3>
+
+<p>PrfaaS 通过 hybrid attention 架构（KDA:MLA=3:1）在模型设计时将 KV 体量降低 4-13×。这是 lossless 的——不引入 quantization error。代价是模型架构绑定（必须训练时就选择 hybrid attention）。与路径 B 可叠加但需验证——hybrid attention 的 KV 分布可能不同。</p>
+
+<h3 id="路径-d-隐藏传输延迟——overlap-和调度（dynaserve-tokenspeed）">路径 D: 隐藏传输延迟——overlap 和调度（DynaServe / TokenSpeed） <a class="heading-anchor" href="#路径-d-隐藏传输延迟——overlap-和调度（dynaserve-tokenspeed）" aria-label="Link to 路径-d-隐藏传输延迟——overlap-和调度（dynaserve-tokenspeed）">#</a></h3>
+
+<p>DynaServe 的 chunk-based KV transfer 实现 compute-transfer overlap（non-overlapped transfer 减少 94%）。TokenSpeed 的 Retraction 机制在 memory pressure 下保存 KV 到 host 避免重计算。两者不减少数据量也不增加带宽，而是通过调度使传输延迟不出现在 critical path 上。路径 D 的理论极限是"完美 overlap"——传输延迟全部隐藏在计算之后。但这要求 compute window ≥ transfer time，在 prefill 阶段（计算较长）通常成立，在 decode 阶段（单 token 计算极短）几乎不可能。这也是为什么 KV 传输优化主要在 prefill-to-decode 交接路径上有意义。</p>
+
+<p><strong>KVServe 的定位判断</strong>：KVServe 选择路径 B 的核心原因是<strong>通用性和低门槛</strong>——不需要改变模型架构（vs 路径 C）、不需要特殊硬件拓扑（vs 路径 A）、不需要重写引擎调度器（vs 路径 D）。代价是引入 lossy compression 的 accuracy 风险——这在四条路径中是独有的。从叠加性看，路径 B 可以与路径 A/C/D 中的任何一条组合，理论上实现 multiplicative 加速——但每增加一个叠加层都增加系统复杂度和 failure mode。</p>
+
+<p>路径 B 的另一个独特风险是<strong>退化模式不可预测</strong>——当 quantization 导致 accuracy 下降时，不像路径 A/D 的退化（带宽不足 → 延迟线性增加）那样可预测。accuracy 退化可能在 99% 的 request 上不可见，但在 1% 的 edge case（特定 prompt 激活 quantization-sensitive head）上突然显现——这种长尾风险在 safety-critical 应用中不可接受。</p>
+
+<h3 id="四路径叠加的理论上界">四路径叠加的理论上界 <a class="heading-anchor" href="#四路径叠加的理论上界" aria-label="Link to 四路径叠加的理论上界">#</a></h3>
+
+<p>假设同时应用 DualPath（3× 带宽）+ PrfaaS hybrid attention（10× KV 降低）+ KVServe 压缩（10× 再压缩）+ DynaServe overlap（94% non-overlapped 消除），理论上传输瓶颈可降低 ~300×。但这是不现实的：(1) PrfaaS 的 hybrid attention 已改变 KV 分布，KVServe 的 quantizer 在 low-entropy KV 上压缩比下降；(2) DualPath 的 CNIC 带宽与 KVServe 压缩后的小数据包不一定高效（RDMA Write 的 per-message overhead 在小 message 时占比增大）；(3) 多层叠加的 failure mode 交互使系统可靠性急剧下降。实际可行的组合是选择 1-2 条路径：低带宽跨 DC 场景用路径 B+C，高并发同集群场景用路径 A+D。</p>
+
+<h3 id="场景-路径匹配矩阵">场景-路径匹配矩阵 <a class="heading-anchor" href="#场景-路径匹配矩阵" aria-label="Link to 场景-路径匹配矩阵">#</a></h3>
+
+<table>
+<tr><th>场景</th><th>最优路径组合</th><th>原因</th><th>KVServe 角色</th></tr>
+<tr><td>同节点 PD（NVLink 900 GB/s）</td><td>路径 D（overlap）</td><td>带宽充足，压缩 overhead > 传输节省</td><td>❌ 无价值（<code>B > B_crit</code>）</td></tr>
+<tr><td>同集群 PD（100-400 Gbps RDMA）</td><td>路径 A + D</td><td>带宽中等，DualPath 聚合 + overlap 足够</td><td>⚠️ 边际价值（仅在接近 SNIC 饱和时有益）</td></tr>
+<tr><td>跨 DC PD（10-100 Gbps Ethernet）</td><td><strong>路径 B + C</strong></td><td>带宽严重不足，必须同时降低数据量</td><td><strong>✅ 核心价值</strong></td></tr>
+<tr><td>Edge deployment（≤10 Gbps wireless）</td><td><strong>路径 B</strong></td><td>极低带宽，每 byte 都珍贵</td><td><strong>✅ 最高价值</strong></td></tr>
+<tr><td>Agentic 高并发（>1000 agents）</td><td>路径 A + D</td><td>I/O throughput 瓶颈，DualPath 最直接</td><td>❌ 非主要瓶颈</td></tr>
+</table>
+
+<h2 id="可攻击面">可攻击面 <a class="heading-anchor" href="#可攻击面" aria-label="Link to 可攻击面">#</a></h2>
+
+<p>以下攻击针对 KVServe L2 中的具体论证和设计声明。</p>
+
+<p><strong>Attack 1: DuoAttention head scores 的离线 profiling 是落地的隐性门槛——且 scoring 可能在推理时漂移</strong></p>
+
+<p>KVServe 的 hybrid precision quantizer 依赖 DuoAttention 的 offline profiled head scores CSV 来区分 retrieval heads（4-bit 高精度）和 streaming heads（2-3 bit 低精度）。这个设计有三个问题：(1) <strong>新模型上线延迟</strong>——每个新模型需要先跑一遍 DuoAttention profiling 生成 CSV，profiling 本身需要代表性 prompt 数据集、GPU 资源和数小时时间，对快速迭代的模型上线流程（如 Qwen3/Qwen3.5 每隔数周发布新版本）构成瓶颈。(2) <strong>Prompt 分布漂移</strong>——DuoAttention 的 head importance scores 是在特定 prompt 分布下 profiled 的，但生产 serving 的 prompt 分布会随时间变化（如从对话式迁移到代码生成）。当实际 prompt 分布与 profiling 分布显著偏移时，原本被标为"不重要"的 streaming head 可能在新分布下变为 retrieval head——aggressive quantization 将导致 accuracy 退化而不被检测到。(3) <strong>跨模型架构不通用</strong>——DuoAttention 设计为 MHA/GQA 模型，其 head importance 概念建立在"每个 head 独立执行 attention"的假设上。对于 grouped query attention（如 Llama 3），多个 query head 共享一个 KV head，DuoAttention 的 per-query-head scoring 如何映射到 per-KV-head quantization 精度？论文的 offline_search/ 工具链（~7K LOC）暗示 profiling 过程相当繁重，但未提供自动化 pipeline 或 continuous monitoring。DualPath 和 DynaServe 的方案不存在此类离线依赖——它们的优化是 model-agnostic 的。</p>
+
+<p><strong>Attack 2: nvCOMP GPU 压缩库的单点依赖——锁死 NVIDIA 生态且增加供应链风险</strong></p>
+
+<p>KVServe 的 codec 阶段仅支持 NVIDIA nvCOMP GPU 压缩库（7 种算法：ANS, Bitcomp, Cascaded, Deflate, GDeflate, LZ4, Zstd）。这个设计有四个风险：(1) <strong>AMD GPU 完全不可用</strong>——随着 MI300X/MI350X 在推理场景的渗透（Azure 提供 MI300X 实例，Meta 大规模部署 MI300X），nvCOMP 绑定将 KVServe 排除在 50%+ 的异构 GPU 市场之外。ROCm 没有等价的 GPU 压缩库——在 AMD GPU 上实现等效功能需要用 HIP 重写整个 codec 层。(2) <strong>nvCOMP 版本兼容性</strong>——nvCOMP 的 API 在大版本间有 breaking change（如 2.x → 3.x 的 batched API 变更），CUDA toolkit 版本约束使得生产环境中 nvCOMP 升级常被阻塞。(3) <strong>GPU 压缩的 overhead-to-benefit ratio 在高带宽场景下反转</strong>——KVServe 自己的 analytical model 表明，当 <code>B > B_crit = (1-1/cr)·S</code> 时压缩 overhead 超过传输节省。在 NVLink 400 GB/s 互联下，B_crit 非常高——大多数同节点 PD 场景下压缩反而增加延迟。nvCOMP 的 GPU 占用（compute resource + HBM bandwidth for codec）在这些场景下是纯开销。(4) <strong>与 DualPath 的对比暴露了硬件依赖的不对称</strong>——DualPath 依赖 InfiniBand VL QoS（跨供应商标准，Mellanox 和 Intel NIC 均支持），而 KVServe 依赖 nvCOMP（NVIDIA 专有库）。如果未来推理基础设施向多供应商 GPU 迁移，DualPath 的方案可移植性更强。</p>
+
+<p><strong>Attack 3: zero-fork 的"信息边界"限制——connector API 暴露的信息不足以支持全局最优决策</strong></p>
+
+<p>KVServe 以 external connector 身份接入 vLLM，不修改 vLLM 调度器和 KV block 管理。论文将此视为优势（"版本跟进成本低"），但这个信息边界有三个代价：(1) <strong>看不到 scheduler 内部状态</strong>——KVServe 的 controller 基于 per-request 信息（KV 数据大小、当前 bandwidth）做 compression profile 选择，但不知道 scheduler 的 pending queue 长度、memory pressure level 或预期的 future request arrival rate。在 high-load 场景下，scheduler 可能已经在做 preemption/eviction——KVServe 的 controller 不知道这些上下文，可能做出与 scheduler 冲突的决策（如在 memory pressure 下仍选择低压缩 profile，导致 staging buffer 加剧 OOM）。(2) <strong>无法参与 batch scheduling</strong>——KVServe 的压缩是 per-request 的，不做跨 request batching。但同时到达的多个 request 可能共享 prefix（PrfaaS 和 TokenDance 都观察到高 prefix 复用率），batched 压缩可以利用跨 request 的 KV 相关性获得更高压缩比。connector API 不提供 batch 级别的 KV 访问——KVServe 只能逐 request 处理。(3) <strong>不知道 engine 的 CUDA stream/graph 状态</strong>——KVServe 在 <code>wait_for_save()</code> 中启动压缩，在 <code>start_load_kv()</code> 中启动解压。但 vLLM 可能已经在使用 CUDA graph capture（尤其是 decode 阶段）——KVServe 的 codec 操作如果在 captured graph 的 stream 上执行，会打断 graph replay。connector API 没有提供 stream isolation 机制。</p>
+
+<p><strong>Attack 4: 10× 压缩比的"up to"条件——最优条件下的 headline number 与生产中位数可能差距显著</strong></p>
+
+<p>论文的 headline number"up to 10× KV 压缩"来自 Hadamard + aggressive quantization（hybrid_ratio=0.8, 低精度 head 2-3 bit）+ ANS 无损压缩的叠加。但这个数字有四个 caveat：(1) <strong>hybrid_ratio=0.8 意味着 80% head 降到 2-3 bit</strong>——这是"aggressive"设定。论文未报告不同 aggressiveness 下的 accuracy-compression Pareto 前沿。如果生产部署为保证 accuracy 将 hybrid_ratio 降到 0.5（50% head 低精度），压缩比可能从 10× 降到 ~5×。(2) <strong>ANS 的额外无损压缩效果取决于 quantized 数据的熵分布</strong>——2-3 bit quantized uint8 的实际熵取决于 KV 值分布的 uniformity。如果模型的 KV 值分布高度非均匀（某些 head 的值集中在窄 range），ANS 效果好；如果分布已经较均匀，ANS 仅提供 1.2-1.5× 额外压缩而非 2-3×。论文未报告跨模型/跨工作负载的 ANS 压缩比方差。(3) <strong>Hadamard Transform 的开启不是默认</strong>——default config 不含 Transform（只用 Quantizer+Codec），custom config 才加入 Hadamard。没有 Hadamard 的 quantization 在存在 outlier 的 KV 分布上效果显著下降。(4) <strong>与 PrfaaS 的架构级 15.5× 降低和 DualPath 的 1.87× 吞吐提升相比，KVServe 的 10× 是有损的</strong>——PrfaaS 的降低来自 attention 架构（信息无损），DualPath 的提升来自带宽聚合（数据无损），KVServe 的压缩引入不可逆的 quantization error。在 accuracy-critical 场景下（如 medical/legal AI），即使少量 accuracy 退化也不可接受——此时 DualPath 的无损方案更合适。</p>
+
+<p><strong>Attack 5: "accuracy preserved"声明的验证不充分——缺少跨任务、跨模型、跨分布的系统性 accuracy 评估</strong></p>
+
+<p>论文声称 KVServe "accuracy preserved"，但验证证据不充分：(1) <strong>评估模型有限</strong>——offline_search/ 的 lm_evaluator.py 支持多种 config，但论文未报告跨模型的 accuracy 数据（仅在 README badge 中声称 accuracy preserved，无具体数字）。hybrid precision 对不同模型架构的影响差异极大——Llama 3 的 GQA（8 KV heads）与 Qwen 的 GQA（8 KV heads）的 head importance 分布可能不同，统一的 hybrid_ratio=0.8 可能在某些模型上引入显著退化。(2) <strong>任务覆盖不足</strong>——KV-cache 压缩对 retrieval-heavy 任务（如 needle-in-haystack、multi-hop QA）的影响可能远大于 generation-heavy 任务（如摘要、翻译）。retrieval 任务依赖精确的 attention pattern 来定位关键信息——aggressive quantization 可能破坏这些 pattern。论文的 offline_search 工具链支持 lm-eval-harness 但未报告 retrieval benchmark 结果。(3) <strong>accuracy 退化是 prompt-dependent 的</strong>——同一个 compression profile 在不同 prompt 上的 accuracy 影响不同（某些 prompt 激活少量关键 head，这些 head 被低精度量化的概率与 hybrid_ratio 直接相关）。与 CacheGen 和 KIVI 的 accuracy 对比也未报告——这些先前工作至少提供了 perplexity 数字。</p>
+
+<p><strong>Attack 6: 1-to-1 PD 拓扑限制——在 fan-out/aggregation 生产场景下不适用</strong></p>
+
+<p>KVServe 当前仅支持一个 producer → 一个 consumer per TP rank 的传输拓扑。但生产 PD serving 常见多种拓扑：(1) <strong>1-to-N fan-out</strong>——一个 prefill engine 的 KV-cache 需要发送到 N 个 decode engine（当 decode 端做 DP replication 时），KVServe 需要在 producer 侧压缩一次、发送 N 份（或让 N 个 consumer 各自接收同一份 compressed data）。(2) <strong>N-to-1 aggregation</strong>——N 个 prefill engine 各处理 prompt 的不同 chunk（chunked prefill 的分布式版本），decode engine 需要接收并聚合 N 份 KV-cache。KVServe 的 per-request compression metadata（min_val, scale per head）在 aggregation 时需要额外的 metadata merge 逻辑。(3) <strong>KV migration</strong>——当 decode engine 间需要 KV-cache 迁移（负载均衡或 preemption 恢复时），迁移路径上也可以用压缩——但 KVServe 的 connector 只挂载在 prefill→decode 路径上，不覆盖 decode→decode 迁移。DualPath 虽然也没有显式支持 fan-out（scheduler 选择 single PE-DE pair），但其 dual-path 设计天然支持多 DE 并行读取同一 storage 中的 KV-cache。DynaServe 的 micro-request 设计允许一个 request 的 α/β 路由到不同 GPU——意味着 KV transfer 拓扑天然多样。KVServe 的 1-to-1 限制在这些场景下需要上层路由逻辑做拓扑适配。与 DualPath 对比：DualPath 虽然也以 PE-DE pair 为单位，但其 scheduler 可以为每个 request 独立选择 PE 和 DE——有效支持 many-to-many 拓扑。DynaServe 的 micro-request 更灵活——同一 request 的 α/β 可以路由到任意 GPU pair，拓扑天然多样。</p>
+
+<h2 id="生态位">生态位 <a class="heading-anchor" href="#生态位" aria-label="Link to 生态位">#</a></h2>
+
+<p><strong>范式定位</strong>：KVServe 代表 PD serving 优化从"调度/架构"层面向"传输数据面"层面的延伸。传统 PD serving 优化集中在三个层面：(1) 调度层——如何分配请求到 P/D 实例（DynaServe 的 micro-request、PrfaaS 的阈值路由）；(2) 架构层——如何从模型设计上减少 KV 体量（PrfaaS 的 hybrid attention）；(3) 网络层——如何利用硬件拓扑提供更多带宽（DualPath 的 dual-path + VL QoS）。KVServe 开辟了第四个层面——<strong>数据面压缩</strong>：不改变调度、模型或网络，仅在 GPU 上对 KV 数据做压缩后传输。这个层面的独特价值在于它与前三个层面正交，可以叠加在任何 PD 框架之上。</p>
+
+<p><strong>在 vLLM 生态中的位置</strong>：KVServe 是目前最复杂的 vLLM V1 external connector 实现——覆盖压缩、chunked prefill、TP、service-aware controller 四个维度。它验证了 vLLM 的 <code>KVConnectorBase_V1</code> 接口在复杂场景下的可用性和局限性。如果 KVServe 的设计被 vLLM 社区认可，可能推动 connector 接口的扩展——增加 scheduler state 访问、batch-level KV 接口、stream isolation 等能力。反过来，如果 vLLM 的 connector API 不稳定（vLLM 每周多个 breaking change），KVServe 的 zero-fork 优势将随版本迭代被侵蚀。</p>
+
+<p><strong>竞争方案生态位对比</strong>：</p>
+
+<table>
+<tr><th>生态位</th><th>方案</th><th>KVServe 优势</th><th>KVServe 劣势</th></tr>
+<tr><td>KV 传输优化</td><td>DualPath (dual-path)</td><td>无需双网隔离，硬件门槛低</td><td>压缩引入 accuracy 风险；高带宽下 overhead 反转</td></tr>
+<tr><td>KV 体量降低</td><td>PrfaaS (hybrid attention)</td><td>模型无关，任何 MHA/GQA 模型即插即用</td><td>降低幅度不如架构级（10× vs 15.5×）；lossy</td></tr>
+<tr><td>PD 调度</td><td>DynaServe (micro-request)</td><td>直接降低传输数据量（而非隐藏传输）</td><td>不解决调度层负载均衡；1-to-1 拓扑受限</td></tr>
+<tr><td>推理引擎</td><td>TokenSpeed (FSM engine)</td><td>零集成成本（connector 接入）</td><td>不支持 MLA 模型；无法利用 TokenSpeed 的 kernel/scheduler 优势</td></tr>
+<tr><td>KV 压缩 (prior)</td><td>CacheGen (delta+entropy coding)</td><td>GPU-resident 全流程，无 GPU↔CPU 搬运</td><td>nvCOMP 单点依赖；DuoAttention offline profiling 门槛</td></tr>
+<tr><td>KV 压缩 (prior)</td><td>KIVI (uniform quantization)</td><td>Hybrid precision 利用 head importance 分布，同 accuracy 下压缩比更高</td><td>额外的 DuoAttention CSV 依赖</td></tr>
+</table>
+
+<p><strong>定位判断</strong>：KVServe 在 cross-node / cross-datacenter + MHA/GQA 模型 + 中低带宽（10-100 Gbps）的三重交集场景下价值最大——此时 KV 传输延迟是 TTFT 的主要瓶颈，压缩的 benefit 远超 overhead，且 MLA 模型的局限不影响。对外部团队的核心可移植思想：(1) "三阶段模块化 pipeline 的 ABC 抽象"——Transform/Quantizer/Codec 接口定义清晰，新组件只需实现接口即可插入；(2) "analytical model 的 benefit condition"——<code>B < (1-1/cr)·S</code> 将"是否压缩"从工程直觉转化为可计算的物理条件，适用于任何需要动态决定是否做 compression/transcoding 的 serving 场景；(3) "wire protocol 的 GPU-resident placeholder 设计"——将 metadata 和 GPU tensor 分离的 control-data plane split，适用于任何需要序列化含 GPU tensor 的复合结构的场景。</p>
+
+<p><strong>生态演进预测</strong>：随着 MLA 模型占据主流（DeepSeek V3/V4 已是开源社区最活跃的模型系列）和高速互联普及（NVLink 5.0 1.8 TB/s、Ultra Ethernet 800 Gbps），KVServe 的原始适用场景（MHA/GQA + 低带宽）正在收窄。KVServe 的长期价值取决于两个方向的突破：(1) 扩展到 MLA 架构——如果能设计出针对 latent space 的有效压缩方案，适用场景立即覆盖当前最热门的模型生态；(2) 与 DualPath/PrfaaS 等方案叠加——作为"通用数据面压缩层"嵌入任何 PD 框架，即使单独收益递减也能作为叠加组件提供边际价值。如果两个方向都不突破，KVServe 可能被边缘化为"low-bandwidth edge deployment"的 niche 方案——而 edge LLM serving 本身规模有限。</p>
+
+<p><strong>KVServe 方法论的可迁移价值</strong>：即使 KVServe 作为具体系统的适用场景收窄，其方法论有三个方面的持久价值：</p>
+<ol>
+<li><strong>Service-aware 在线决策架构</strong>——analytical model 做 Pareto 筛选 + bandit 做残差学习的两层架构，适用于任何需要在线自适应的 serving 组件（如 speculative decoding 的 draft length 选择、continuous batching 的 batch size 决策、prefix caching 的 eviction policy 选择）。KVServe 证明了这种 theory-guided + data-driven 的混合方法在 serving 场景下比纯 heuristic（如 vLLM 的固定策略）或纯 online learning（如 pure bandit/RL）更有效——theory 缩小搜索空间，data 校正 theory 的系统性偏差</li>
+<li><strong>GPU-resident wire protocol 设计</strong>——<code>["__kvserve_aux_tensor__", idx]</code> placeholder 替换 + msgpack 序列化的 control-data plane split 方案，适用于任何需要在 GPU tensor 和 CPU metadata 混合结构中做序列化/反序列化的场景（如分布式 checkpoint、GPU-side data pipeline、cross-engine tensor migration）</li>
+<li><strong>Modular compression pipeline 的 ABC 抽象</strong>——Transform/Quantizer/Codec 三阶段各有清晰的接口边界和独立配置，可以作为 reference architecture 被 GPU 数据压缩领域的其他应用（如 gradient compression、activation checkpointing、embedding compression）采用</li>
+</ul>
+
+<h2 id="跨系统工程经验提炼">跨系统工程经验提炼 <a class="heading-anchor" href="#跨系统工程经验提炼" aria-label="Link to 跨系统工程经验提炼">#</a></h2>
+
+<p>从 KVServe 与四篇相关论文的对比中，可以提炼三条跨系统的工程经验：</p>
+
+<p><strong>经验 1: Analytical model 作为系统设计的"第一性原理"工具</strong>。KVServe 的 <code>B < (1-1/cr)·S</code>、DualPath 的 Eq.1-9 bottleneck-free 条件、PrfaaS 的 <code>Θ = min(compute, BW)</code> 吞吐模型——三个系统都将核心设计决策建立在 closed-form analytical model 之上，而非 purely empirical tuning。这些 model 的共同特征：(a) 变量少（2-4 个），可以手算验证；(b) 直接指导 go/no-go 决策（KVServe: 是否压缩；DualPath: 哪条路径；PrfaaS: 路由到哪个集群）；(c) 提供可证伪的预测（可以用实测数据验证 model 的准确度）。DynaServe 虽然也有 execution predictor，但更依赖 runtime profiling 而非 analytical model——其 profile table 的四元组 <code>(plen, ctx, dnum, time)</code> 是 empirical 的，不提供 closed-form insight。</p>
+
+<p><strong>经验 2: "寄生" vs "重写"的 serving 系统演进路径</strong>。KVServe 选择"寄生"（external connector on vLLM），TokenSpeed 选择"重写"（独立引擎），DualPath 和 PrfaaS 选择"内部定制"（公司内部框架）。"寄生"的优势是低集成成本和快速验证，但受限于 host API 的信息边界；"重写"提供最大自由度但维护成本高、社区采纳慢；"内部定制"适合特定公司的生产需求但不可复制。KVServe 的 zero-fork 设计验证了 vLLM connector API 的扩展能力，但其 limitations（看不到 scheduler state、不支持 batch-level KV 接口）也暴露了 connector API 的不足——这可能推动 vLLM 社区扩展 connector 接口。</p>
+
+<p><strong>经验 3: 学术原型与生产系统的"信任差距"</strong>。DualPath 在 1152 GPU 的 DeepSeek 生产集群上验证、PrfaaS 在 Moonshot AI 内部验证、TokenSpeed 虽是 Preview 但有 NVIDIA DevTech 等工业合作方。KVServe 仅有同节点双引擎的 test harness 验证——所有 headline numbers（10× 压缩、9× 通信加速、8.5× 延迟降低）来自 README badge 而非 peer-reviewed benchmark。生产部署面临的长尾问题——GPU contention 导致的 codec 延迟 jitter、NCCL 超时、nvCOMP 版本不兼容、DuoAttention CSV 的模型版本错配——在学术原型中不可见。这个信任差距是 KVServe 落地的最大非技术障碍。</p>
+
+<h2 id="未探索方向">未探索方向 <a class="heading-anchor" href="#未探索方向" aria-label="Link to 未探索方向">#</a></h2>
+
+<p><strong>方向 1: MLA 架构下的 KV-cache 压缩——从 per-head importance 到 latent space redundancy exploitation</strong>。KVServe 当前明确跳过 MLA 模型（DeepSeek V3/V4、Kimi K2.5），但这些模型正在成为推理基础设施的核心工作负载。MLA 将 KV 投影到低维 latent space（如 DeepSeek V3 的 512-dim latent vs 128-dim head），KV-cache 已经是压缩表示——传统 per-head quantization 不适用。</p>
+
+<p>探索方向：利用 MLA latent space 的低秩特性做压缩——latent vector 在 token 维度上可能存在强相关（相邻 token 的 latent 差异小），可用 delta coding + quantization 进一步压缩。DuoAttention 的"head importance"概念可替换为"latent dimension importance"——profiling 哪些 latent 维度对 attention output 贡献大，对不重要维度做更激进量化。这需要重新设计 hybrid quantizer 的轴线（从 per-head 到 per-latent-dimension），但三阶段 pipeline 的 ABC 抽象可以保持不变（只需替换 Quantizer 实现）。</p>
+
+<p>实现路径：(1) 在 MLA 的 latent space 上做 SVD 分析，找到 dominant dimensions 和 negligible dimensions 的分界线——类似于 DuoAttention 对 head importance 的分析但在 dimension 级别；(2) 利用 TokenSpeed 的 MLA q-head 折叠 insight——如果 latent space 的有效维度很少（<256 out of 512），压缩后的 MLA KV 可能比 MHA/GQA KV 更适合 nvCOMP ANS（更低的有效熵）；(3) 验证压缩对 MLA 的 accuracy 影响——MLA 的 latent space 是 learned 的（不像 MHA 的 head 是 architectural），quantization error 在 latent space 中的传播特性需要实证评估。如果成功，KVServe 的适用范围将从 MHA/GQA 扩展到 MLA，覆盖 TokenSpeed 服务的全部模型。</p>
+
+<p><strong>方向 2: 跨 request batched compression——利用 prefix 共享的 KV 冗余提升压缩比</strong>。当前 KVServe 的压缩是 per-request 的，每个 request 独立压缩/解压。但 PrfaaS 和 TokenDance 的分析表明，生产 workload 中 prefix 复用率极高（PrfaaS 假设 prefix 占 >60% context，TokenDance 的 All-Gather 场景有 91-97% 块级重叠）。同 prefix 的多个 request 的 KV-cache 在 prefix 部分完全相同——per-request 独立压缩浪费了这个冗余。</p>
+
+<p>方案：在 connector 层维护一个"compressed prefix cache"，同 prefix 的 KV 只压缩传输一次、consumer 侧缓存 compressed representation，后续 request 只需传输 suffix 部分的 KV。这将 N 个同 prefix request 的传输量从 N×(prefix+suffix) 降到 1×prefix + N×suffix，与 KVServe 的 true-FLOPs tracking 概念一致。实现需要扩展 connector API——增加 prefix hash 查询和 compressed prefix 缓存管理，这与 vLLM 的 automatic prefix caching 机制有天然的接口对齐。</p>
+
+<p><strong>方向 3: DualPath + KVServe 的垂直叠加——双路径 + 压缩的联合优化</strong>。DualPath 聚合 SNIC 带宽（供给侧），KVServe 压缩 KV 数据（需求侧）。两者可在 agentic + cross-node PD 场景下叠加：DualPath 的 dual-path 提供 2× 基础 SNIC 带宽，KVServe 的 10× 压缩将 KV 数据量降低一个量级。联合效果：effective bandwidth 提升 ~20×，使得原本需要数百 ms 的 KV 传输降到十余 ms。</p>
+
+<p>关键适配：(1) DualPath 的 layerwise streaming 要求逐层传输 KV——KVServe 的 auto-chunking 需要改为 per-layer compression，增加 codec 调用次数但降低单次 buffer 大小；(2) KVServe 的 service-aware controller 需要感知 DualPath 的 dual-path 状态——当 DE read path 激活时有效带宽翻倍，controller 应相应降低 compression aggressiveness（减少 codec overhead）；(3) DualPath 的 CNIC RDMA Write 传输原语替代 KVServe 的 NCCL transport——需要适配 wire protocol 的 control-data plane split 到 RDMA verbs API。</p>
+
+<p>联合 analytical model：将 DualPath 的 effective bandwidth <code>B_eff = B_snic × (1 + D/P)</code> 代入 KVServe 的 benefit condition，得到联合 condition <code>B_snic × (1 + D/P) < (1-1/cr)·S</code>。在 DualPath 的 2P4D 配置下 <code>B_eff = 3 × B_snic</code>，KVServe 的压缩仅在 <code>B_snic < (1-1/cr)·S/3</code> 时有益——即 DualPath 的带宽聚合将 KVServe 的有益区间缩小了 3×。这意味着叠加后 KVServe 的价值递减——DualPath 已经解决了大部分传输瓶颈，KVServe 仅在"DualPath 仍然不够"的极端低带宽场景下有额外价值。这个方向的挑战在于两者的工程栈差异巨大——DualPath 是 DeepSeek 内部框架（~5K 行修改，未开源），KVServe 是 vLLM connector——叠加需要在同一个 serving 框架中同时实现两者。</p>
+
+<p><strong>方向 4: CPU/AMD GPU fallback codec——消除 nvCOMP 单点依赖</strong>。KVServe 的 codec 阶段仅支持 nvCOMP，在 AMD GPU 或 CPU-only 场景下整个压缩 pipeline 失效。探索方向：实现多后端 codec 层——</p>
+
+<p>(1) <strong>AMD GPU 路径</strong>：用 hipBLAS + custom HIP kernel 实现 ANS 编码（ROCm 缺少 nvCOMP 等价库，但 ANS 算法本身无专利，可用 Triton 或 HIP 实现）。AMD CDNA4（MI350X/MI355X）的 CU 架构与 NVIDIA SM 不同——ANS 的 table lookup 密集操作可能在 AMD 的 LDS（Local Data Share）上更高效（CDNA4 LDS 128 KB/CU vs NVIDIA L1 192 KB/SM），但 AMD 缺少等价的硬件 entropy coder。</p>
+
+<p>(2) <strong>CPU fallback 路径</strong>：用 Intel ISA-L（hardware-accelerated ANS on AVX-512）或 FSE（Finite State Entropy，Facebook 开源）做 CPU-side lossless 压缩，接受 GPU↔CPU 数据搬运的开销作为 trade-off。CPU fallback 在 bandwidth-limited 场景下仍有净收益——如果传输节省（如从 250 MB 降到 25 MB 在 10 Gbps 链路上节省 ~180 ms）远超 GPU→CPU 搬运 + CPU 压缩 + CPU→GPU 搬运（~20-30 ms via PCIe），overall 仍正收益。</p>
+
+<p>三阶段 pipeline 的 ABC 抽象使这种多后端实现自然——只需在 Codec 接口下增加 backend 选择逻辑。KVServe 的 service-aware controller 可以进一步扩展：在 backend 选择维度上增加"GPU nvCOMP vs GPU HIP-ANS vs CPU ISA-L"的选项，controller 根据平台、KV 大小和 bandwidth 自动选择最优 backend。</p>
+
+<p><strong>方向 5: KVServe 的 service-aware controller 与 DynaServe 的 execution predictor 融合——统一的 compress-aware serving scheduler</strong>。当前 KVServe 的 controller 和 DynaServe 的 scheduler 独立决策——KVServe 决定 compression profile，DynaServe 决定 request 分割和 GPU 路由。两者融合为统一调度器：(1) 将 KVServe 的 bandwidth/compression-ratio 状态空间与 DynaServe 的 GPU-load/SLO 状态空间合并，形成 <code>(bandwidth, compression_profile, gpu_load, slo_headroom)</code> 四维决策空间；(2) DynaServe 的二分搜索在搜索最优 split point 时，同时考虑每种 split 下的最优 compression profile——split 点决定 KV 传输量，传输量 + bandwidth 决定是否压缩以及 profile 选择；(3) 用 DynaServe 的 SLO-aware profile table 扩展 KVServe 的 analytical model——将 <code>T_p = T_model + V/S + V·cr/B</code> 中的 <code>T_model</code> 替换为 DynaServe 的 runtime-calibrated latency predictor。融合后的调度器可以做出如"在高负载低带宽时选择 aggressive compression + fine-grained split"、"在低负载高带宽时跳过 compression + full prefill on one GPU"这类联合决策。实现路径：在 vLLM 的 scheduler 层增加 compression-aware 扩展点，让 connector 可以向 scheduler 暴露 compression cost model。</p>
+
+<p><strong>方向 6: Bandit controller 从 ε-greedy 升级到 contextual bandit——利用 request 特征做 per-request 最优 profile 选择</strong>。当前 KVServe 的 Tier-2 bandit 在 <code>(accuracy_bucket, bandwidth_interval)</code> 二维空间中做 ε-greedy 探索，所有 request 在同一 bucket 内共享学习结果。但 request 间存在显著差异——不同 prompt 长度、不同 model、不同 KV 分布对同一 compression profile 的响应不同。升级为 contextual bandit：context 向量包括 <code>(kv_size, num_layers, head_dim, num_kv_heads, prompt_length, bandwidth_estimate)</code>，action 是 compression profile 选择，reward 是 actual_transfer_time 的负值。用 LinUCB 或 neural contextual bandit 替代 ε-greedy，在 100-500 个 request 后即可收敛到 per-context 最优策略。这解决了当前 controller 的三个问题：(1) 冷启动期从 ε-greedy 的 O(1/ε) 样本降到 contextual bandit 的 O(d·log(T)) 样本；(2) 不同 prompt 长度的最优 profile 可以不同（长 prompt 的 KV 更大，aggressive compression 的绝对节省更大，更值得承受 codec overhead）；(3) 动态 bandwidth 变化下的 adaptation 更快（contextual bandit 通过 bandwidth_estimate 特征直接泛化，不需要在新 bandwidth interval 从头学习）。</p>
+
+<p><strong>方向 7: KV-cache compression 作为 vLLM connector 生态的标准化接口——从 KVServe 的 ad-hoc 实现到 connector-level compression API</strong>。KVServe 验证了 vLLM external connector 可以实现复杂的 KV-cache 压缩功能。但其 compression pipeline 是 ad-hoc 集成的——直接在 <code>wait_for_save()</code> / <code>start_load_kv()</code> 中嵌入压缩逻辑。更优雅的方案：在 vLLM 的 <code>KVConnectorBase_V1</code> 接口中增加标准化的 compression hook——<code>compress_kv(kv_tensor, metadata) → compressed_bytes</code> 和 <code>decompress_kv(compressed_bytes, metadata) → kv_tensor</code>。这使得任何 connector 实现者（不限于 KVServe）都能透明地集成压缩功能——Mooncake connector、NVIDIA Dynamo connector、custom RDMA connector 都可以复用同一个 compression layer。进一步：compression API 应暴露 <code>should_compress(bandwidth, kv_size) → bool</code> 的 service-aware 决策点，使 KVServe 的 analytical model 成为框架级的标准能力而非外挂插件。这个方向的推动力不在 KVServe 团队——而在 vLLM 社区对 connector API 的标准化进程中。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2602.21548.html">2602.21548</a> (related) 
+<a href="/papers/2604.15039.html">2604.15039</a> (related) 
+<a href="/papers/2504.09285.html">2504.09285</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
