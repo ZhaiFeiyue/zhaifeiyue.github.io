@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Not All Prefills Are Equal: PPD Disaggregation for Multi-turn LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Not All Prefills Are Equal: PPD Disaggregation for Multi-turn LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2603.13358</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">serving</span><span class="tag">disaggregation</span><span class="tag">multi-turn</span><span class="tag">scheduling</span><span class="tag">KV-cache</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2603.13358" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="not-all-prefills-are-equal-ppd-disaggregation-for-multi-turn-llm-serving">Not All Prefills Are Equal: PPD Disaggregation for Multi-turn LLM Serving <a class="heading-anchor" href="#not-all-prefills-are-equal-ppd-disaggregation-for-multi-turn-llm-serving" aria-label="Link to not-all-prefills-are-equal-ppd-disaggregation-for-multi-turn-llm-serving">#</a></h1>
+
+<blockquote>
+Zongze Li, Jingyu Liu, Zhen Xu, Yineng Zhang, Tahseen Rabbani, Ce Zhang | 2025-03 | https://arxiv.org/abs/2603.13358
+Category: framework | Tags: serving, disaggregation, multi-turn, scheduling, KV-cache
+Read: 2026-05-25
+</blockquote>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Multi-turn PD disaggregation wastes 99% of prefill compute re-processing cached history. PPD observes append-prefill causes only 2% TPOT degradation (vs. 48% for full prefill) and dynamically routes Turn 2+ requests to decode nodes via an offline-profiled scoring function, cutting Turn 2+ TTFT by 48–73% while maintaining TPOT.</p>
+
+<h2 id="§2-核心三问">§2 核心三问 <a class="heading-anchor" href="#§2-核心三问" aria-label="Link to §2-核心三问">#</a></h2>
+
+<p><strong>Q1 痛点: 多轮对话下PD分离架构的根本低效</strong></p>
+
+<p>标准PD disaggregation的单向KV传输协议（P→D, 无反向通道）导致多轮对话每一轮都必须：(1) 在P节点重新计算整个历史KV cache（含上轮response），占multi-turn prefill成本的99%；(2) 重复将KV cache通过网络传回D节点，饱和带宽引发高延迟甚至服务降级。在2P_2D配置下，传统PD在12个QPS中有9个出现服务崩溃。</p>
+
+<p><strong>Q2 方法: PPD — 基于干扰差异的动态路由</strong></p>
+
+<p>核心洞察：append-prefill（仅处理新增$m$个token，复用已缓存KV）与full prefill的decode干扰相差一个数量级（2% vs. 48% TPOT degradation at batch 200）。PPD将routing decision形式化为优化问题：</p>
+
+<p>$$S(\psi;\,\pi,\mathbf{w}) = w_{\text{ttft}}\,\Delta_{\text{ttft}} - w_{\text{tpot}}\,\Delta_{\text{tpot}}$$</p>
+
+<p>$S > 0$ 时Turn 2+请求在D节点本地执行append-prefill，否则走传统PD路径。算法分两阶段：Phase 1离线对工作负载网格逐点profiling建表；Phase 2在线将请求映射到最近网格点，<1ms返回decision。传统PD是PPD的特例（$x \equiv 0$）。</p>
+
+<p><strong>核心技术壁垒</strong>：将"append-prefill干扰极低"这一微架构观察与"无静态策略全面占优"的系统级发现连接成一个可操作的per-request routing decision——通过offline profiling将高维工作负载空间离散化为lookup table，以零运行时开销实现动态最优。</p>
+
+<p><strong>Q3 结果</strong></p>
+
+<ul>
+<li>Turn 2+ TTFT降低48–73%（合成负载），15–25%平均查询延迟降低（真实数据集）</li>
+<li>将不稳定配置（2P_2D, 3P_1D）从频繁服务崩溃恢复为100%成功率</li>
+<li>网络越慢优势越大：TTFT改善从64%（NVLink）增长至70%（100GbE）</li>
+<li>Per-metric winner counts（27测试点）: PPD在TPOT胜12次、TTFT胜14次、SR=100%，唯一全面竞争性策略</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2603.13358/fig3.png" alt="Figure 3: PPD dynamic routing architecture — Replica vs PD vs PPD"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "Dynamic routing of append-prefill with PPD").</em></p>
+
+<p>PPD架构的关键在于引入了PPD Router模块。Turn 1请求仍走传统PD路径（P节点处理full prefill → KV transfer → D节点decode），但Turn 2+请求由Router基于当前workload估计、user SLO权重、node配置三因素决策：路由到P（走PD path）或在D节点本地执行append-prefill（复用已缓存KV）。PD和Replica均为PPD的特例。</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Router as PPD Router
+    participant P as Prefill Node
+    participant D as Decode Node
+
+    Note over Client,D: Turn 1 (always PD path)
+    Client->>Router: request (turn=1)
+    Router->>P: full prefill
+    P->>D: KV transfer
+    D->>Client: token stream
+
+    Note over Client,D: Turn 2+ (dynamic decision)
+    Client->>Router: request (turn≥2)
+    Router->>Router: lookup S(ψ;π,w)
+    alt S > 0 (route locally)
+        Router->>D: append-prefill (cached KV)
+        D->>Client: token stream
+    else S ≤ 0 (route to P)
+        Router->>P: full prefill
+        P->>D: KV transfer
+        D->>Client: token stream
+    end
+</div>
+
+<h3 id="system-scope">System Scope <a class="heading-anchor" href="#system-scope" aria-label="Link to system-scope">#</a></h3>
+
+<ul>
+<li><strong>Stage coverage</strong>: prefill + decode; fuses append-prefill into decode nodes when routing locally</li>
+<li><strong>Serving mode</strong>: continuous batching; disaggregated prefill-decode as baseline</li>
+<li><strong>Parallelism</strong>: does not own TP/PP/EP — operates at request-routing layer above parallelism dimensions</li>
+<li><strong>Deployment</strong>: multi-node disaggregated (P nodes + D nodes); single-node also supported as replica fallback</li>
+</ul>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="notation-table">Notation Table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$x$</td><td>fraction of Turn 2+ AP routed to decode (hardware-level) or per-request binary decision</td></tr>
+<tr><td>$\pi$</td><td>node assignment (e.g., 1P_3D = 1 prefill + 3 decode GPUs)</td></tr>
+<tr><td>$\phi$</td><td>user-defined SLO distribution</td></tr>
+<tr><td>$\psi$</td><td>workload descriptor (QPS, input/output lengths, turns)</td></tr>
+<tr><td>$\mathbf{w} = (w_{\text{ttft}}, w_{\text{tpot}})$</td><td>operator-specified SLO weights</td></tr>
+<tr><td>$\Delta_{\text{ttft}}$</td><td>relative TTFT improvement of local vs. PD path</td></tr>
+<tr><td>$\Delta_{\text{tpot}}$</td><td>relative TPOT degradation of local vs. PD path</td></tr>
+<tr><td>$S(\psi;\pi,\mathbf{w})$</td><td>benefit score; positive → route locally</td></tr>
+<tr><td>$\mathcal{J}(x;\pi,\phi)$</td><td>expected SLO under routing fraction $x$</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Objective function</strong>:</p>
+
+<p>$$\mathcal{J}(x;\pi,\phi) := \mathbb{E}_{\psi, \text{SLO} \sim \phi}[\text{SLO}(P_\pi(1-x), D_\pi(x), \psi)]$$</p>
+
+<p>物理意义：在node assignment $\pi$下，routing fraction $x$的期望SLO表现。$P_\pi(1-x)$表示prefill节点处理$(1-x)$比例的AP，$D_\pi(x)$表示decode节点处理$x$比例。PPD求解 $\arg\max_x \mathcal{J}$。</p>
+
+<p><strong>Scoring function (Eq. 1)</strong>:</p>
+
+<p>$$S(\psi;\,\pi,\mathbf{w}) = w_{\text{ttft}}\,\Delta_{\text{ttft}} - w_{\text{tpot}}\,\Delta_{\text{tpot}}$$</p>
+
+<p>物理意义：正值意味着local处理的TTFT增益（乘以operator权重）超过TPOT损失。减号反映两者的trade-off方向：TTFT改善是增益，TPOT劣化是代价。$w_{\text{tpot}}$越大对TPOT越敏感，更倾向走PD path。</p>
+
+<h3 id="6项检查">6项检查 <a class="heading-anchor" href="#6项检查" aria-label="Link to 6项检查">#</a></h3>
+
+<ol>
+<li><strong>Monotonicity</strong>: $\Delta_{\text{ttft}}$在P-scarce配置下单调增加（P节点越少TTFT越大），$\Delta_{\text{tpot}}$在decode-heavy负载下增加。$S$不单调——这正是需要per-request decision的原因。</li>
+<li><strong>边界行为</strong>: $x=0$ 退化为PD; $x=1$ 退化为Full AP-to-D。PPD的optimum在内部时取决于workload profile。</li>
+<li><strong>First-order verification</strong>: Table 1中1P_3D高QPS下TTFT改善-73.3%，与§6.2报告的"48–73%"一致。</li>
+<li><strong>Convexity</strong>: 隐含为非凸（no single static dominates），故exhaustive grid search而非gradient-based。</li>
+<li><strong>Dimensional consistency</strong>: $S$无量纲（两个相对变化量的加权差）；$\mathcal{J}$量纲取决于SLO metric（ms for latency, tok/s for throughput）。</li>
+<li><strong>Sensitivity</strong>: 权重$(w_{\text{ttft}}, w_{\text{tpot}})$直接控制Pareto frontier上的operating point，Figure 6验证了从0%到95% D-local的单调滑动。</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="干扰分析：full-prefill-vs-append-prefill">干扰分析：Full Prefill vs. Append Prefill <a class="heading-anchor" href="#干扰分析：full-prefill-vs-append-prefill" aria-label="Link to 干扰分析：full-prefill-vs-append-prefill">#</a></h3>
+
+<p><img src="/assets/2603.13358/fig2.png" alt="Figure 2: Prefill-decode interference measurement"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "Prefill-decode interference. Decode TPOT degradation when co-locating with one full-prefill vs. one append-prefill operation (both processing 1,024 tokens)").</em></p>
+
+<p>这是PPD的基础性实证。在H100上Llama-3.1-8B，full prefill在batch 200处造成+48% TPOT degradation，而append-prefill仅+2%——量级差距验证了"decode节点可安全处理Turn 2+ AP"的核心假设。绿色线（append-prefill）几乎与蓝色基线（decode-only）重合。</p>
+
+<h3 id="pareto-frontiers">Pareto Frontiers <a class="heading-anchor" href="#pareto-frontiers" aria-label="Link to pareto-frontiers">#</a></h3>
+
+<p><img src="/assets/2603.13358/fig1.png" alt="Figure 1: P99 TTFT vs. TPS Pareto frontiers under long-context workload"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "99th-percentile (P99) TTFT vs. Tokens-per-Second (TPS) Pareto frontiers under a long-context workload (10k input, 100 output tokens, 5 turns) at three load levels").</em></p>
+
+<p>三个QPS面板清晰展示：D-local capable配置（蓝色）始终dominate orange baselines（PD/Replica），PPD "Best"标注点精准落在Pareto frontier最优区域。随QPS升高，baselines的TTFT爆炸式增长（log scale X轴），而D-local capable维持稳定。</p>
+
+<h3 id="稳定性与延迟">稳定性与延迟 <a class="heading-anchor" href="#稳定性与延迟" aria-label="Link to 稳定性与延迟">#</a></h3>
+
+<p><img src="/assets/2603.13358/fig4.png" alt="Figure 4: PPD improves stability and reduces latency"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "PPD improves stability and reduces latency. Average query latency vs. QPS for three configurations on ShareGPT and WildChat datasets").</em></p>
+
+<p>最striking的发现：传统PD下2P_2D和3P_1D大量× markers（服务崩溃），而PPD的solid lines始终稳定。1P_3D配置中PPD减少15–25%平均延迟。这证明PPD不仅优化性能，更重要的是将"不可用"配置变为"可用"。</p>
+
+<h3 id="网络鲁棒性">网络鲁棒性 <a class="heading-anchor" href="#网络鲁棒性" aria-label="Link to 网络鲁棒性">#</a></h3>
+
+<p><img src="/assets/2603.13358/fig5.png" alt="Figure 5: PPD advantage grows as network slows"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "PPD's advantage grows monotonically as the simulated network slows").</em></p>
+
+<p>Left panel: PD的TTFT随网络变慢从143.7ms增至170.6ms (+18.7%)，PPD保持flat ~51ms——因为local execution零网络依赖。Right panel: end-to-end latency差距从NVLink的3028→2968ms扩大到100GbE的3169→2983ms。</p>
+
+<h3 id="ttft-tpot-trade-off-frontier">TTFT-TPOT Trade-off Frontier <a class="heading-anchor" href="#ttft-tpot-trade-off-frontier" aria-label="Link to ttft-tpot-trade-off-frontier">#</a></h3>
+
+<p><img src="/assets/2603.13358/fig6.png" alt="Figure 6: Weight-based TTFT-TPOT trade-off frontier"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "w_tpot traces a monotonic frontier between TTFT and TPOT. Turn 2+ latency on 1P_3D under prefill-heavy workloads").</em></p>
+
+<p>Operator通过$w_{\text{tpot}}$控制在frontier上的position：$w_{\text{tpot}}=1$（balanced）路由95% locally获得-96% TTFT / +7% TPOT；$w_{\text{tpot}}=6$路由20% locally获得-40% TTFT / +2% TPOT。灰色band是achievable region，验证了连续可控性。</p>
+
+<h3 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h3>
+
+<p><img src="/assets/2603.13358/tab1.png" alt="Table 1: Turn 2 TTFT improvement switching from x=0 to x=1"></p>
+
+<p><em>Paper's Table 1: TTFT improvement grows with load for P-scarce configs (1P: -57.8% to -73.3%) and diminishes when P is abundant (3P: -24.9% to -44.3%).</em></p>
+
+<p><img src="/assets/2603.13358/tab3.png" alt="Table 3: Per-metric winner counts across 27 test points"></p>
+
+<p><em>Paper's Table 3: PPD是唯一同时在TPOT(12/27)、TTFT(14/27)、SR(27/27)三维竞争的策略。$x=0$赢TPOT 10/27但TTFT 0/27且SR仅4/27；$x=1$赢TTFT 13/27但TPOT仅5/27。</em></p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Mechanism</th></tr>
+<tr><td>1</td><td>Full prefill与append-prefill的decode干扰差距一个数量级</td><td>Figure 2: 48% vs. 2% at batch 200</td><td>Append-prefill复杂度$O(m(n+m))$ vs. full的$O(n^2)$；当$m \ll n$时计算量差$n/m$倍</td></tr>
+<tr><td>2</td><td>无单一静态$x$在所有SLO/workload组合中占优</td><td>Table 2: Replica赢TTFT 63.3%场景，$x=0$赢TPOT 38.3%，$x=1$赢throughput 27%</td><td>不同workload profile的prefill/decode比例不同，最优routing fraction随之变化</td></tr>
+<tr><td>3</td><td>Per-request dynamic routing可以逼近Pareto frontier</td><td>Figure 1: "Best" markers落在D-local capable frontier最优点</td><td>Offline profiling覆盖workload grid，online lookup在<1ms内选择最优$x$</td></tr>
+<tr><td>4</td><td>PPD将不稳定配置变为100%成功率</td><td>Figure 4: 2P_2D从9/12崩溃→0崩溃</td><td>减少~75% KV transfer volume（3.1平均turns → 仅Turn 1需要传输），解除网络瓶颈</td></tr>
+<tr><td>5</td><td>PPD优势与网络无关且随网络变慢单调增长</td><td>Figure 5: TTFT advantage从64%→70%</td><td>Local execution无网络组件；PD的TTFT中KV transfer延迟占比随带宽降低增加</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>PPD原型实现在vLLM disaggregated serving infrastructure之上，复用vLLM的：</p>
+<ul>
+<li>KV transfer protocol（P→D cache传输）</li>
+<li>Prefix cache（用于识别cached KV entries）</li>
+<li>Session management（确保Turn 2+请求路由到持有KV cache的同一D节点）</li>
+</ul>
+
+<p>具体实现细节在Appendix B描述但未提供源码或commit hash。</p>
+
+<p>[实现未公开] — 论文未开源代码，无file:line引用。</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Discretization thresholds</strong>: lookup table沿三轴离散化——accumulated context length ($n_{\text{ctx}}$), input/output ratio ($n_{\text{in}}/n_{\text{out}}$), system QPS ($q$)。网格粒度未明确，但decision time <1ms暗示table规模适中。</li>
+</ul>
+
+<ol>
+<li><strong>Session affinity</strong>: Turn 2+请求必须路由到持有上轮KV cache的那个特定D节点，而非任意D节点。这要求scheduler维护session→node映射表。如果该D节点故障或过载，fallback回PD path（$x=0$）。</li>
+</ul>
+
+<h2 id="§8-scheduling-resource-management">§8 Scheduling & Resource Management <a class="heading-anchor" href="#§8-scheduling-resource-management" aria-label="Link to §8-scheduling-resource-management">#</a></h2>
+
+<p><strong>Routing granularity</strong>: per-request（非per-token或per-layer）。每个Turn 2+请求作为原子单元决策一次routing。</p>
+
+<p><strong>Preemption</strong>: 未提及。一旦请求被路由到D节点local执行或送往P节点，无cancel/restart机制。</p>
+
+<p><strong>Admission control</strong>: 通过scoring function隐式实现。当系统过载时$\Delta_{\text{tpot}}$增大，$S$趋负，更多请求走PD path——自适应降级。极端过载时PPD退化为标准PD（$x=0$）。</p>
+
+<p><strong>Fairness</strong>: 无per-tenant保证。所有Turn 2+请求使用相同scoring function和权重。</p>
+
+<p><strong>KV cache management</strong>:</p>
+<ul>
+<li>分配单元：未具体说明（继承vLLM的paged allocation）</li>
+<li>碎片化：D节点持有multi-turn KV cache增长问题由vLLM page table管理</li>
+<li>Eviction：未讨论。长会话可能导致D节点KV memory耗尽，此时应fallback到PD path</li>
+<li>Swap：未提及CPU/disk offload</li>
+</ul>
+
+<h2 id="§9-workload-characterization">§9 Workload Characterization <a class="heading-anchor" href="#§9-workload-characterization" aria-label="Link to §9-workload-characterization">#</a></h2>
+
+<table>
+<tr><th>Workload regime</th><th>PPD</th><th>PD ($x=0$)</th><th>Why</th></tr>
+<tr><td>Short prompts, long output (decode-heavy)</td><td>TTFT↓68%, TPOT≈</td><td>TPOT slightly better</td><td>AP很短→local执行几乎零干扰；但decode-heavy使D节点batch大，AP额外负载可感知</td></tr>
+<tr><td>Long prompts, short output (prefill-heavy)</td><td>TTFT↓96%, TPOT↑7–12%</td><td>TPOT better</td><td>AP处理长new-prompt仍有计算成本，但TTFT gains巨大因避免了10K+ token KV transfer</td></tr>
+<tr><td>Balanced I/O, high concurrency</td><td>TTFT↓65%, stability↑</td><td>Service degradation</td><td>KV transfer饱和网络导致PD崩溃；PPD消除~75%传输量</td></tr>
+<tr><td>Turn 1 dominant (few multi-turn)</td><td>≈PD</td><td>≈PPD</td><td>Turn 1两者行为一致；PPD退化为PD无额外收益也无损失</td></tr>
+<tr><td>Slow network (100GbE)</td><td>TTFT advantage grows to 70%</td><td>TTFT degrades +18.7%</td><td>PPD local path零网络依赖；PD的KV transfer成为瓶颈</td></tr>
+</table>
+
+<p>PPD loses on: prefill-heavy workloads where TPOT matters more than TTFT（operator需要调高$w_{\text{tpot}}$来保护decode quality）。</p>
+
+<h2 id="§10-evaluation">§10 Evaluation <a class="heading-anchor" href="#§10-evaluation" aria-label="Link to §10-evaluation">#</a></h2>
+
+<p><strong>Baselines</strong>:</p>
+<ul>
+<li>vLLM disaggregated serving（standard PD, $x=0$）</li>
+<li>Replica mode (4R)</li>
+<li>Static $x=1$ (Full AP-to-D)</li>
+<li>Hybrid R+P/D configurations (7 configs, generally underperform)</li>
+</ul>
+
+<p><strong>Baseline fairness</strong>: 所有configurations使用相同硬件（4×H100），相同model（Llama-3.1-8B），相同vLLM codebase。未提及specific commit hash。</p>
+
+<p><strong>Metric definitions</strong>:</p>
+<ul>
+<li>TTFT: time-to-first-token (Turn 2+ specifically)</li>
+<li>TPOT: time-per-output-token (average)</li>
+<li>TPS: tokens-per-second (output throughput)</li>
+<li>SR: success rate (≥95% completing without timeout)</li>
+<li>Query latency: end-to-end per-conversation</li>
+</ul>
+
+<p><strong>Datasets</strong>: ShareGPT (user-shared ChatGPT conversations), WildChat (in-the-wild conversations with varied patterns)</p>
+
+<h2 id="§11-api-usability">§11 API & Usability <a class="heading-anchor" href="#§11-api-usability" aria-label="Link to §11-api-usability">#</a></h2>
+
+<p><strong>User-facing API</strong>: 继承vLLM的OpenAI-compatible API。PPD对用户完全透明——无需修改client代码。</p>
+
+<p><strong>Config surface</strong>: 两个核心参数：$w_{\text{ttft}}$和$w_{\text{tpot}}$（operator权重）。Node assignment $\pi$是部署时决定。Offline profiling phase需要workload grid benchmark（one-time cost）。</p>
+
+<p><strong>Migration cost (vLLM → PPD)</strong>:</p>
+<ul>
+<li>需要vLLM disaggregated serving基础设施</li>
+<li>添加PPD routing module（scheduler integration）</li>
+<li>运行一次offline profiling生成lookup table</li>
+<li>配置operator权重</li>
+<li>无model修改、无custom ops、无kernel变更</li>
+</ul>
+
+<h2 id="§12-adoption-ecosystem">§12 Adoption & Ecosystem <a class="heading-anchor" href="#§12-adoption-ecosystem" aria-label="Link to §12-adoption-ecosystem">#</a></h2>
+
+<ul>
+<li><strong>Upstream status</strong>: 未合并到vLLM/SGLang主线。论文为学术工作，prototype基于vLLM。</li>
+<li><strong>Production deployment</strong>: 未声明production use。</li>
+<li><strong>Downstream requirements</strong>: 需要disaggregated serving mode（vLLM已支持）+ prefix cache + session affinity。不引入新的parallelism constraint。</li>
+<li><strong>Concurrent work</strong>: AMPD（He et al., 2026）使用online queue-delay estimation而非offline table。</li>
+</ul>
+
+<h2 id="§13-deployment-context">§13 Deployment Context <a class="heading-anchor" href="#§13-deployment-context" aria-label="Link to §13-deployment-context">#</a></h2>
+
+<ul>
+<li><strong>Serving stage</strong>: both prefill and decode; routing decision at request admission layer</li>
+<li><strong>Concurrency regime</strong>: 全范围有效；低QPS时PPD≈$x=1$，高QPS时PPD动态调整保护TPOT</li>
+<li><strong>Hardware affinity</strong>: 在H100验证。HBM bandwidth越大→KV transfer越快→PD的缺点减弱→PPD优势缩小；反之网络越慢（跨节点部署）PPD优势越大</li>
+<li><strong>Ecosystem integration</strong>: 基于vLLM disaggregated serving。Integration是scheduler-level patch（routing module），非fork</li>
+<li><strong>Migration path</strong>: vLLM用户启用disaggregated serving → 添加PPD router → 运行offline profiling → 设置SLO weights → 上线</li>
+</ul>
+
+<p>§12 Software → Hardware reverse implication: <strong>不触发</strong>。PPD是纯软件request-routing策略，不涉及persistent megakernel、chiplet affinity、cache-scope control等硬件亲和设计。</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

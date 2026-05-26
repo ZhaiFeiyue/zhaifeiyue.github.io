@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>MFS: Multi-stage Flow Scheduling for LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">MFS: Multi-stage Flow Scheduling for LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2603.17456</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">serving</span><span class="tag">scheduling</span><span class="tag">network-contention</span><span class="tag">SLO-aware</span><span class="tag">disaggregation</span><span class="tag">MoE</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2603.17456" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="mfs-multi-stage-flow-scheduling-for-llm-serving">MFS: Multi-stage Flow Scheduling for LLM Serving <a class="heading-anchor" href="#mfs-multi-stage-flow-scheduling-for-llm-serving" aria-label="Link to mfs-multi-stage-flow-scheduling-for-llm-serving">#</a></h1>
+
+<blockquote>
+Yijun Sun, Xudong Liao, Songrun Xie, Hao Chen, Han Tian, Wenxue Li, Yiming Zhang, Kai Chen
+iSING Lab, HKUST; SJTU; USTC | 2026-03 | https://arxiv.org/abs/2603.17456
+Category: framework | Tags: serving, scheduling, network-contention, SLO-aware, disaggregation, MoE
+</blockquote>
+
+<hr>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>MFS解决disaggregated MoE serving中三阶段通信（KV-cache复用 + collective comm + P2D传输）的网络争用问题，通过反转经典MLFQ的Reverse Multi-Level Queue实现Defer-and-Promote策略，无需精确laxity即可近似Least-Laxity-First调度，TTFT SLO达标率提升1.2×–2.4×。</p>
+
+<hr>
+
+<h2 id="§2-核心三问">§2 核心三问 <a class="heading-anchor" href="#§2-核心三问" aria-label="Link to §2-核心三问">#</a></h2>
+
+<p><strong>Q1: 痛点 — 为什么现有disaggregated LLM serving的TTFT不达标？</strong></p>
+
+<p>现代LLM serving采用prefill-decode分离架构+EP/TP/SP多维并行。生成第一个token需要三阶段通信：(1) 从远程prefill unit获取可复用KV-cache blocks，(2) 模型并行的collective communication（如all-to-all），(3) Prefill-to-Decode (P2D)传输完整KV-cache。这三阶段的flow在共享网络链路上时间重叠并相互争用，导致：</p>
+
+<ul>
+<li><strong>Intra-request contention</strong>：同一请求不同layer的KV传输(Stage 1&3)与collective comm(Stage 2)争抢带宽</li>
+<li><strong>Inter-request contention</strong>：不同prefill unit的并发请求竞争链路，热门KV block的skewed popularity加剧</li>
+</ul>
+
+<p>实测结果：争用使TTFT膨胀约50%，all-to-all CCT增加1.8×（Fig 5）。</p>
+
+<p>现有调度方案的核心缺陷：<strong>stage-agnostic</strong>。Fair Sharing稀释Stage 2吞吐；SJF偏好小flow（KV传输）而饿死collective comm；EDF因Stage 3有explicit deadline而过度优先化；coflow调度管理数据并行flow但忽略跨stage依赖。所有方案都没有TTFT-to-flow-deadline的映射机制。</p>
+
+<p><img src="/assets/2603.17456/fig4.png" alt="Figure 4: Two forms of contention in disaggregated LLM serving"></p>
+
+<p><em>Paper Figure 4: 左侧为intra-request contention——同一请求的Layer-1/2/3的KV、EP、PD三阶段通信在时间上重叠并争用链路；右侧为inter-request contention——不同请求R1/R2/R3的通信在同一serving instance上竞争。红色虚线圈标注争用热点。</em></p>
+
+<p><strong>Q2: 方法 — Defer-and-Promote + Reverse Multi-Level Queue</strong></p>
+
+<p>MFS的核心观察：在prefill推进过程中，全局TTFT deadline逐步具体化(materialize)为flow级别的deadline。初始阶段(Stage 1&2)的flow-level deadline是implicit的（由TTFT和下游任务联合决定）；到最终阶段(Stage 3)，TTFT直接成为显式的flow-level bound。</p>
+
+<p>基于此，MFS提出<strong>Defer-and-Promote</strong>调度原则：</p>
+
+<ul>
+<li><strong>Principle #1 (Explicit-deadline flows)</strong>：P2D flow初始置于最低优先级，仅在Minimal Link Utilization (MLU)超过阈值时才提升——即只在剩余带宽恰好不足以按时完成时才提权</li>
+<li><strong>Principle #2 (Implicit-deadline flows)</strong>：collective comm因直接阻塞当前layer计算而获最高隐式优先级；KV-cache prefetch基于Relative Layer Index (RLI)分配优先级，目标layer越近、优先级越高</li>
+</ul>
+
+<p>实现机制为<strong>Reverse Multi-Level Queue (RMLQ)</strong>：反转经典MLFQ（经典是demote-down，RMLQ是promote-up）。$K$个优先级队列中，$P_1$（最高）保留给MLU≈1的P2D flow，$P_K$（最低）是所有P2D flow的默认入口，中间层由implicit-deadline flow按RLI占据。</p>
+
+<blockquote>
+<strong>核心技术壁垒</strong>：将全局TTFT deadline转化为per-flow优先级而无需精确laxity估计。这要求同时解决三个问题：(1) explicit-deadline flow的promote时机（MLU阈值设计），(2) implicit-deadline flow的相对紧迫度估计（RLI代理），(3) cross-stage争用的仲裁（队列分配 + tie-breaking规则）。反转MLFQ是使这一切在commodity switch硬件优先级队列上可实现的关键——通过layer粒度决策+DSCP包标记避免优先级抖动和包重排。
+</blockquote>
+
+<p><strong>Q3: 结果</strong></p>
+
+<ul>
+<li>32-GPU真实testbed：TTFT降低20%–50%，non-overlapped CCT减少~50%（Fig 9）</li>
+<li>大规模仿真（4个MoE模型 × 2种workload）：TTFT SLO达标率提升1.2×–2.4×（Fig 10-11）</li>
+<li>在同等SLO hit rate下支撑1.2×–1.4×更高的请求速率</li>
+<li>Earliness分布显著改善：P2D flow不再过早完成浪费带宽（Fig 13）</li>
+</ul>
+
+<hr>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<h3 id="系统总览-—-rmlq设计">系统总览 — RMLQ设计 <a class="heading-anchor" href="#系统总览-—-rmlq设计" aria-label="Link to 系统总览-—-rmlq设计">#</a></h3>
+
+<p><img src="/assets/2603.17456/fig8.png" alt="Figure 8: MFS RMLQ Design Overview"></p>
+
+<p><em>Paper Figure 8: MFS的核心数据结构RMLQ。左侧communication library拦截通信任务，将implicit-deadline flow（Stage 1 KV cache reuse, Stage 2 collective comm）和explicit-deadline flow（Stage 3 P2D）分别映射到K级优先级队列。每个包被标记对应优先级的DSCP值，交换机硬件队列实现物理层面的流量隔离。</em></p>
+
+<p>RMLQ是MFS的核心抽象。与经典MLFQ（新任务高优先级，随时间降级）相反，RMLQ将所有flow初始化在低优先级，仅在紧迫度增加时向上提升。这自然实现了Defer-and-Promote：带宽默认分给立即需要的collective comm，P2D flow只在deadline临近时才争抢带宽。</p>
+
+<h3 id="网络争用场景">网络争用场景 <a class="heading-anchor" href="#网络争用场景" aria-label="Link to 网络争用场景">#</a></h3>
+
+<p><img src="/assets/2603.17456/fig3.png" alt="Figure 3: Communication contention in disaggregated LLM serving"></p>
+
+<p><em>Paper Figure 3: 展示disaggregated集群中三阶段通信的争用场景。Prefill unit内部EP=32的all-to-all通信(Stage 2, 蓝色)、跨unit的KV cache reuse(Stage 1, 紫色)、到Decode unit的P2D transfer(Stage 3, 橙色)共享leaf-spine网络的bottleneck链路。红色虚线标注争用位置。</em></p>
+
+<h3 id="请求生命周期">请求生命周期 <a class="heading-anchor" href="#请求生命周期" aria-label="Link to 请求生命周期">#</a></h3>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Coordinator
+    participant PrefillUnit as Prefill Unit (EP=8)
+    participant RemoteKV as Remote KV Store
+    participant DecodeUnit as Decode Unit
+
+    Client->>Coordinator: Request (prompt, TTFT deadline D_r)
+    Coordinator->>Coordinator: Feasibility check + EDF ordering
+    Coordinator->>PrefillUnit: Schedule prefill
+
+    loop Layer l = 1..L
+        Note over PrefillUnit: Compute layer l attention+FFN
+        par Stage 1: KV Prefetch (RLI-based priority)
+            PrefillUnit->>RemoteKV: Fetch KV blocks for layer l+k
+            RemoteKV-->>PrefillUnit: KV blocks (priority = f(RLI))
+        and Stage 2: Collective Comm (highest implicit priority)
+            PrefillUnit->>PrefillUnit: All-to-all (EP sync)
+        and Stage 3: P2D Transfer (MLU-promoted)
+            PrefillUnit->>DecodeUnit: P2D KV for layer l (DSCP tagged)
+            Note over PrefillUnit: MLU check → promote if urgent
+        end
+    end
+
+    DecodeUnit-->>Client: First token (TTFT)
+</div>
+
+<h3 id="调度决策细节">调度决策细节 <a class="heading-anchor" href="#调度决策细节" aria-label="Link to 调度决策细节">#</a></h3>
+
+<p><strong>Explicit-deadline (P2D) 调度</strong>：MLU驱动的lazy promotion。</p>
+
+<p>$$\mathrm{MLU}_i(t) = \frac{\mathrm{Size_{rem}}(t)}{\mathrm{Time_{rem}}(t) \cdot B \cdot (1 - \rho)}$$</p>
+
+<p>Flow在$P_j$被promote到$P_{j-1}$当$\mathrm{MLU}_i(t) \geq \tau_j$。阈值$\{\tau_j\}$将$[0,1]$ MLU空间划分为$K$个优先级带。决策在<strong>layer边界</strong>而非per-packet执行，避免优先级抖动。</p>
+
+<p><strong>Implicit-deadline 调度</strong>：RLI代理紧迫度。</p>
+
+<ul>
+<li>$\mathrm{RLI} = 0$：当前layer需要的数据 → 最高隐式优先级（deferral立即stall GPU）</li>
+<li>$\mathrm{RLI} > 0$：未来layer → 可延迟，优先级随RLI递减</li>
+</ul>
+
+<p>Stage 2 (collective comm) 定义上RLI=0，始终获得implicit-deadline flow中的最高优先级。</p>
+
+<p><strong>Cross-stage仲裁</strong>：同一优先级层级内，implicit-deadline flow（Stage 2）tie-break胜过explicit-deadline flow（P2D），因为前者的deferral会立即stall计算。</p>
+
+<hr>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Definition</th></tr>
+<tr><td>$L$</td><td>Transformer layers</td></tr>
+<tr><td>$\ell$</td><td>Current layer index</td></tr>
+<tr><td>$K$</td><td>Number of priority queues in RMLQ</td></tr>
+<tr><td>$P_i$</td><td>Priority queue $i$ ($P_1$ highest, $P_K$ lowest)</td></tr>
+<tr><td>$\tau_j$</td><td>MLU threshold for promotion from $P_j$ to $P_{j-1}$; $\tau_K = +\infty$</td></tr>
+<tr><td>$\mathrm{Size_{rem}}(t)$</td><td>Remaining data to transmit at time $t$</td></tr>
+<tr><td>$\mathrm{Time_{rem}}(t)$</td><td>Time remaining before TTFT deadline at $t$</td></tr>
+<tr><td>$B$</td><td>Link bandwidth</td></tr>
+<tr><td>$\rho$</td><td>Background traffic utilization ratio</td></tr>
+<tr><td>$D_r$</td><td>TTFT deadline for request $r$</td></tr>
+<tr><td>$\mathrm{RLI}$</td><td>Relative Layer Index: distance from current execution layer to target layer</td></tr>
+<tr><td>$\mathrm{MLU}_i(t)$</td><td>Minimal Link Utilization for flow $i$ at time $t$</td></tr>
+</table>
+
+<h3 id="核心方程物理意义">核心方程物理意义 <a class="heading-anchor" href="#核心方程物理意义" aria-label="Link to 核心方程物理意义">#</a></h3>
+
+<p><strong>MLU (Eq. 1)</strong>:</p>
+
+<p>$$\mathrm{MLU}_i(t) = \frac{\mathrm{Size_{rem}}(t)}{\mathrm{Time_{rem}}(t) \cdot B \cdot (1 - \rho)}$$</p>
+
+<p>分子是剩余待传数据量；分母是deadline前可用的有效带宽容量（总带宽$B$扣除background traffic占比$\rho$再乘以剩余时间）。MLU表示"为使flow按时完成，至少需要占据多大比例的链路带宽"。</p>
+
+<ul>
+<li>$\mathrm{MLU} \ll 1$：flow有充裕slack，可安全defer</li>
+<li>$\mathrm{MLU} \to 1$：flow必须立即获得几乎全部可用带宽才能按时完成 → 紧急promote</li>
+<li>$\mathrm{MLU} > 1$：即使独占带宽也无法按时完成 → 触发feasibility pruning</li>
+</ul>
+
+<p>为什么用$1-\rho$而非$1$：$\rho$是对当前链路background利用率的保守估计。不扣除$\rho$会低估紧迫度，导致promote过晚。</p>
+
+<h3 id="6项检查">6项检查 <a class="heading-anchor" href="#6项检查" aria-label="Link to 6项检查">#</a></h3>
+
+<table>
+<tr><th>#</th><th>Check</th><th>Result</th></tr>
+<tr><td>1</td><td><strong>边界: flow完成</strong> ($\mathrm{Size_{rem}}=0$)</td><td>$\mathrm{MLU}=0$，无需优先级 ✓</td></tr>
+<tr><td>2</td><td><strong>边界: deadline迫近</strong> ($\mathrm{Time_{rem}} \to 0$)</td><td>$\mathrm{MLU} \to \infty$，触发立即promote到$P_1$ ✓</td></tr>
+<tr><td>3</td><td><strong>单调性</strong></td><td>时间流逝中$\mathrm{Time_{rem}}$单调递减；若flow被defer则$\mathrm{Size_{rem}}$不变 → MLU单调递增 → flow只promote不demote ✓</td></tr>
+<tr><td>4</td><td><strong>量纲</strong></td><td>$[\text{bytes}] / ([\text{s}] \times [\text{bytes/s}] \times [\text{无量纲}]) = [\text{无量纲比例}]$ ✓</td></tr>
+<tr><td>5</td><td><strong>阈值语义</strong></td><td>$\tau_j$将$[0,1]$切分为$K$段；$\tau_K=+\infty$使所有新flow从$P_K$开始；$\tau_2$接近1使只有真正紧急的flow到达$P_1$ ✓</td></tr>
+<tr><td>6</td><td><strong>实例验证</strong> (Table 1)</td><td>Flow C: size=3, remain_time=0 → $\mathrm{MLU}=\infty$ → 立即$P_1$; Flow A: size=2, remain=9, deadline=18 → $\mathrm{MLU}$很小 → 留在$P_K$; Flow B: size=4, remain=6, deadline=12 → 中等MLU → 中间优先级。与Fig 8(d) Defer-and-Promote行为一致 ✓</td></tr>
+</table>
+
+<h3 id="rli的隐式deadline建模">RLI的隐式deadline建模 <a class="heading-anchor" href="#rli的隐式deadline建模" aria-label="Link to rli的隐式deadline建模">#</a></h3>
+
+<p>RLI没有显式方程，而是一个整数距离度量：当前执行layer $\ell$与目标KV-cache所需layer $\ell'$之间的距离$\ell' - \ell$。物理意义是"还有多少layer的计算时间作为缓冲"——layer执行时间大致均匀，所以RLI近似线性映射到可用slack。</p>
+
+<p>RLI=0时deferral立即stall GPU（zero slack），所以Stage 2 collective comm定义上获得最高隐式优先级。RLI>0的KV prefetch有层数作为buffer，可以承受一定deferral。</p>
+
+<hr>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="争用影响量化（motivation-measurement）">争用影响量化（Motivation measurement） <a class="heading-anchor" href="#争用影响量化（motivation-measurement）" aria-label="Link to 争用影响量化（motivation-measurement）">#</a></h3>
+
+<p><img src="/assets/2603.17456/fig5.png" alt="Figure 5: Impact of communication contention on Mixtral 8x7B"></p>
+
+<p><em>Paper Figure 5: 16-GPU testbed (50 Gbps/GPU), Mixtral 8×7B, TP=1 EP=8, QwenB-agent workload, 1 req/s/GPU, 65% prompt reuse. (a) 争用使TTFT分布右移约50%（归一化TTFT中位数从~0.8上升到~1.2）; (b) all-to-all CCT的CDF显示争用下CCT近乎翻倍(1.8×)，从~30ms中位膨胀到~55ms。</em></p>
+
+<p>这张图是MFS立论的基石：它证明网络争用——而非计算或内存——是disaggregated MoE serving中TTFT违规的主因。~50%的TTFT膨胀意味着即使计算完全无bottleneck，网络调度不当就足以导致大量SLO violation。</p>
+
+<h3 id="testbed实测（32-gpu-mixtral-8×7b）">Testbed实测（32-GPU, Mixtral-8×7B） <a class="heading-anchor" href="#testbed实测（32-gpu-mixtral-8×7b）" aria-label="Link to testbed实测（32-gpu-mixtral-8×7b）">#</a></h3>
+
+<p><img src="/assets/2603.17456/fig9.png" alt="Figure 9: Testbed TTFT and CCT results"></p>
+
+<p><em>Paper Figure 9: 8-server 32-GPU testbed, Mixtral-8×7B. (a) MFS将normalized TTFT降低约20%（QwenA-Conv）到50%（QwenB-agent）; (b) normalized CCT减少约30%–55%。QwenB-agent（高复用率、短序列、密集inter-request争用）获益更大。</em></p>
+
+<p>QwenB-agent workload获益更大的原因：65%的prompt复用率导致大量KV-cache fetch请求集中在少数"hot" remote unit上，inter-request争用更严重。MFS的feasibility check + defer策略在此场景下精确抑制了bandwidth浪费。</p>
+
+<h3 id="大规模仿真-—-conversation-workload-qwena">大规模仿真 — Conversation workload (QwenA) <a class="heading-anchor" href="#大规模仿真-—-conversation-workload-qwena" aria-label="Link to 大规模仿真-—-conversation-workload-qwena">#</a></h3>
+
+<p><img src="/assets/2603.17456/fig10.png" alt="Figure 10: SLO attainment on conversation workload"></p>
+
+<p><em>Paper Figure 10: 4个MoE模型(Mixtral-8×22B, DBRX, Qwen3-Coder, Grok2)在conversation workload下的SLO attainment vs per-GPU request rate。MFS（绿色）在所有模型和负载点上一致性超越FS/SJF/EDF/Karuna。</em></p>
+
+<p>关键观察：(1) 在低负载下所有方案接近100% SLO attainment，差异在中高负载才拉开；(2) MFS的优势在DBRX上最明显（~2×），因DBRX的EP度高导致all-to-all通信量大，争用更严重；(3) Karuna（coflow scheduler）表现不优于EDF，因为它只管data-parallel coflow而忽略cross-stage依赖。</p>
+
+<h3 id="大规模仿真-—-agent-workload-qwenb">大规模仿真 — Agent workload (QwenB) <a class="heading-anchor" href="#大规模仿真-—-agent-workload-qwenb" aria-label="Link to 大规模仿真-—-agent-workload-qwenb">#</a></h3>
+
+<p><img src="/assets/2603.17456/fig11.png" alt="Figure 11: SLO attainment on agent workload"></p>
+
+<p><em>Paper Figure 11: Agent workload下的SLO attainment。与conversation workload相比，MFS的优势更显著——在高负载区域baseline几乎全部降至<25%而MFS仍维持50%+。Agent workload的短序列+高复用率+突发性加剧了inter-request争用。</em></p>
+
+<p>Agent workload更能区分MFS的价值：(1) 短序列意味着更多请求在单位时间内竞争网络；(2) 高KV复用率使hot-block争用集中化；(3) 严格TTFT SLO（agentic pipeline的timeout要求）对scheduling质量更敏感。</p>
+
+<h3 id="cct与earliness-breakdown">CCT与Earliness breakdown <a class="heading-anchor" href="#cct与earliness-breakdown" aria-label="Link to cct与earliness-breakdown">#</a></h3>
+
+<p><img src="/assets/2603.17456/fig13.png" alt="Figure 13: CCT and earliness CDF on DBRX"></p>
+
+<p><em>Paper Figure 13: DBRX, QwenA conversation, 0.7 req/s/GPU. (a) Normalized CCT CDF: MFS将CCT中位数从~0.4降至~0.15，约60%改善。(b) Normalized earliness CDF: MFS的earliness集中在0附近（just-in-time完成），而其他方案的P2D flow过早完成（earliness<0），浪费了本可让给collective comm的带宽。</em></p>
+
+<p>Fig 13(b)是Defer-and-Promote机制的直接验证：earliness分布紧贴0说明P2D flow恰好在deadline前完成，而非提前占用带宽。FS/SJF/EDF的负earliness（过早完成）正是它们浪费带宽、挤压collective comm的证据。</p>
+
+<h3 id="关键数值汇总">关键数值汇总 <a class="heading-anchor" href="#关键数值汇总" aria-label="Link to 关键数值汇总">#</a></h3>
+
+<table>
+<tr><th>Metric</th><th>MFS vs Baselines</th><th>Evidence</th></tr>
+<tr><td>TTFT SLO attainment</td><td>1.2×–2.4× improvement</td><td>Fig 10-11, across 4 models × 2 workloads</td></tr>
+<tr><td>Non-overlapped CCT</td><td>~50% reduction</td><td>Fig 9(b), Fig 13(a)</td></tr>
+<tr><td>Sustainable request rate at same SLO hit</td><td>1.2×–1.4× higher</td><td>Fig 10-11 saturation points</td></tr>
+<tr><td>TTFT reduction (testbed)</td><td>20%–50%</td><td>Fig 9(a)</td></tr>
+<tr><td>Earliness</td><td>Near-zero (just-in-time)</td><td>Fig 13(b)</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>§Ref</th></tr>
+<tr><td>1</td><td>Disaggregated MoE serving的TTFT违规主要来源于三阶段通信的网络争用</td><td>实测TTFT膨胀~50%, CCT增加1.8× (Fig 5)</td><td>§2.2</td></tr>
+<tr><td>2</td><td>现有flow/coflow调度器因stage-agnostic而无法有效解决此争用</td><td>FS稀释Stage 2, SJF偏好小flow, EDF过度优先化Stage 3, coflow忽略cross-stage依赖 (Fig 6-8, Table 1)</td><td>§2.3, §3.2</td></tr>
+<tr><td>3</td><td>TTFT deadline在prefill推进过程中逐步从implicit具体化为explicit</td><td>Stage 1&2的deadline由TTFT和下游任务联合决定(implicit); Stage 3的deadline等于TTFT本身(explicit) — 结构性质允许分级调度</td><td>§3.2</td></tr>
+<tr><td>4</td><td>Defer-and-Promote通过RMLQ近似Least-Laxity-First调度而无需精确laxity</td><td>MLU量化explicit-deadline flow的紧迫度; RLI代理implicit-deadline flow的相对紧迫度; layer粒度promotion保证switch硬件兼容</td><td>§4.2-4.5</td></tr>
+<tr><td>5</td><td>MFS在4个MoE模型上一致性提升SLO attainment 1.2×–2.4×</td><td>Simulation: Mixtral-8×22B, DBRX, Qwen3-Coder, Grok2 (Fig 10-11); Testbed: Mixtral-8×7B (Fig 9)</td><td>§6.1-6.2</td></tr>
+<tr><td>6</td><td>CCT减半 + earliness归零证明mechanism生效</td><td>CCT CDF左移(Fig 13a); earliness集中在0(Fig 13b) — 与Defer-and-Promote的设计意图精确匹配</td><td>§6.2</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>[实现未公开]</p>
+
+<p>MFS描述为pluggable module集成到NCCL + Mooncake + vLLM中，但截至2026-05未公开源代码。</p>
+
+<h3 id="实现架构要点">实现架构要点 <a class="heading-anchor" href="#实现架构要点" aria-label="Link to 实现架构要点">#</a></h3>
+
+<ul>
+<li><strong>NCCL adapter</strong>: 拦截collective communication任务，在host-side软件队列中执行RLI-based优先级排序后再提交</li>
+<li><strong>Mooncake adapter</strong>: 拦截KV-cache transfer任务（Stage 1 & 3），执行MLU计算和priority assignment</li>
+<li><strong>DSCP tagging</strong>: 将RMLQ优先级映射到IP header的DSCP字段，commodity switch的hardware priority queue实现物理隔离</li>
+<li><strong>Centralized coordinator</strong>: 维护所有active requests的deadline和进度，执行inter-request scheduling（feasibility check + EDF ordering）</li>
+<li><strong>Layer-progress callback</strong>: vLLM推理引擎在每层完成后通知MFS，触发RLI更新和MLU重计算</li>
+</ul>
+
+<h3 id="核心技术壁垒（补充）">核心技术壁垒（补充） <a class="heading-anchor" href="#核心技术壁垒（补充）" aria-label="Link to 核心技术壁垒（补充）">#</a></h3>
+
+<p>RMLQ的工程难点在于让layer-granularity promotion在commodity switch上可行。如果per-packet重新标记priority，会导致同一flow的包在switch不同queue中被乱序消费。Layer-granularity确保一个layer内的所有包标记一致，batch promotion在layer边界原子性地完成。这需要communication library和推理引擎之间精确的layer-progress同步。</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>DSCP到switch queue的映射</strong>：需要switch配置将DSCP值映射到对应的hardware priority queue。现有datacenter switch（如Mellanox SN系列）标准支持8个优先级队列，足以支撑MFS的$K$级RMLQ（论文默认$K \leq 8$）。</li>
+<li><strong>Background traffic $\rho$ 的估计</strong>：MLU公式中$\rho$不是实时测量的瞬时值，而是一个配置参数（保守估计）。这意味着MLU的紧迫度评估天然偏保守——宁可早promote也不冒deadline miss的风险。实际部署中$\rho$需要根据集群flow profile调优。</li>
+</ul>
+
+<hr>
+
+<h2 id="§8-system-scope">§8 System Scope <a class="heading-anchor" href="#§8-system-scope" aria-label="Link to §8-system-scope">#</a></h2>
+
+<table>
+<tr><th>Dimension</th><th>Value</th></tr>
+<tr><td>Stage coverage</td><td>Prefill（三阶段通信全在prefill阶段）；P2D transfer跨越到decode</td></tr>
+<tr><td>Serving / training</td><td>Serving（online, latency-sensitive）</td></tr>
+<tr><td>Batching</td><td>Continuous batching implied（多request并发prefill）</td></tr>
+<tr><td>Parallelism owned</td><td><strong>网络调度层</strong>：不改变TP/PP/EP/SP的计算逻辑，仅调度它们产生的通信flow</td></tr>
+<tr><td>Parallelism delegated</td><td>计算调度（request batching, chunked prefill）→ vLLM; collective algorithm → NCCL; KV transfer → Mooncake</td></tr>
+<tr><td>Deployment</td><td>Multi-node, disaggregated prefill-decode</td></tr>
+</table>
+
+<p>MFS的独特定位：它不是一个完整的serving engine，而是嵌入existing engine（vLLM）和communication library（NCCL/Mooncake）之间的<strong>网络调度中间层</strong>。这种pluggable设计意味着MFS可以与不同serving engine组合，但也意味着它对compute scheduling没有控制力。</p>
+
+<hr>
+
+<h2 id="§9-scheduling-resource-management">§9 Scheduling & Resource Management <a class="heading-anchor" href="#§9-scheduling-resource-management" aria-label="Link to §9-scheduling-resource-management">#</a></h2>
+
+<h3 id="scheduling-decisions">Scheduling decisions <a class="heading-anchor" href="#scheduling-decisions" aria-label="Link to scheduling-decisions">#</a></h3>
+
+<table>
+<tr><th>Aspect</th><th>MFS Design</th></tr>
+<tr><td>Granularity</td><td>Flow-level，决策在layer边界执行</td></tr>
+<tr><td>Preemption</td><td>隐式——低优先级flow被高优先级flow starve（bandwidth preemption），不会kill/restart</td></tr>
+<tr><td>Admission control</td><td>Feasibility check: 如果request无论如何都无法满足TTFT deadline，其flow被deprioritize以避免阻塞可行请求</td></tr>
+<tr><td>Fairness</td><td>Per-request TTFT deadline驱动优先级（EDF-like at request level），无per-tenant保证</td></tr>
+<tr><td>Inter-request ordering</td><td>基于TTFT deadline的EDF + feasibility pruning</td></tr>
+<tr><td>Intra-request ordering</td><td>Stage 2 > Stage 1 (by RLI) > Stage 3 (deferred, MLU-promoted)</td></tr>
+</table>
+
+<h3 id="memory-management">Memory management <a class="heading-anchor" href="#memory-management" aria-label="Link to memory-management">#</a></h3>
+
+<p>MFS不直接管理KV-cache内存，而是调度KV-cache的<strong>传输</strong>。KV-cache allocation/eviction由Mooncake处理。MFS控制的是传输的timing和priority：</p>
+
+<ul>
+<li>KV prefetch (Stage 1): 提前几层开始传输，RLI决定何时提升优先级</li>
+<li>P2D transfer (Stage 3): defer到deadline临近才传输，通过MLU控制promote节奏</li>
+<li>无swap to CPU/disk机制（不在MFS scope内）</li>
+</ul>
+
+<hr>
+
+<h2 id="§10-workload-characterization">§10 Workload Characterization <a class="heading-anchor" href="#§10-workload-characterization" aria-label="Link to §10-workload-characterization">#</a></h2>
+
+<table>
+<tr><th>Workload regime</th><th>MFS</th><th>Baseline (FS/SJF/EDF/Karuna)</th><th>Why</th></tr>
+<tr><td>MoE + EP + 高争用</td><td><strong>强优势</strong> (1.5–2.4× SLO)</td><td>CCT被KV transfer挤压</td><td>Multi-stage awareness精确隔离Stage 2</td></tr>
+<tr><td>Agent workload (短序列, 高KV复用, 突发)</td><td><strong>最强优势</strong> (接近2.4×)</td><td>Inter-request contention严重, 所有baseline崩溃</td><td>Feasibility pruning + defer避免hot-block堆积</td></tr>
+<tr><td>Conversation workload (较长序列, 中等复用)</td><td><strong>中等优势</strong> (1.2–1.5×)</td><td>争用存在但less severe</td><td>Collective comm保护仍有效</td></tr>
+<tr><td>低负载, 少量并发请求</td><td>微弱优势</td><td>争用有限, 所有方案都能达标</td><td>几乎无争用需要resolve</td></tr>
+<tr><td>Dense model (无EP, TP-only)</td><td>论文未评估</td><td>缺少Stage 1的KV复用争用</td><td>争用降至2阶段, MFS价值可能降低</td></tr>
+<tr><td>极高$\rho$ (background traffic heavy)</td><td>未评估, 但MLU的$\rho$项提供适应性</td><td>更容易争用</td><td>MLU保守估计在高$\rho$下自然更快promote</td></tr>
+</table>
+
+<p>论文主要展示了MFS "赢"的regime。<strong>缺失的regime</strong>：(1) dense model（无EP的all-to-all争用小得多），(2) 单节点（intra-node NVLink不经过switch，DSCP无用），(3) 超大规模集群（centralized coordinator可能成为bottleneck）。</p>
+
+<hr>
+
+<h2 id="§11-evaluation-details">§11 Evaluation Details <a class="heading-anchor" href="#§11-evaluation-details" aria-label="Link to §11-evaluation-details">#</a></h2>
+
+<h3 id="baselines与公平性">Baselines与公平性 <a class="heading-anchor" href="#baselines与公平性" aria-label="Link to baselines与公平性">#</a></h3>
+
+<ul>
+<li><strong>Fair Sharing (FS)</strong>: 标准TCP行为，所有flow平分带宽</li>
+<li><strong>Shortest Job First (SJF)</strong>: 按flow大小排序</li>
+<li><strong>Earliest Deadline First (EDF)</strong>: 按deadline排序（Stage 3有explicit deadline，其他implicit）</li>
+<li><strong>Karuna</strong>: Deadline-aware coflow scheduler（管理data-parallel coflow但不管cross-stage）</li>
+</ul>
+
+<p>论文未提及baseline的调优细节（如Karuna的参数选择）。FS/SJF/EDF是标准策略无需调参。</p>
+
+<h3 id="metric定义">Metric定义 <a class="heading-anchor" href="#metric定义" aria-label="Link to metric定义">#</a></h3>
+
+<ul>
+<li><strong>SLO attainment</strong>: 满足TTFT deadline的请求占比（主指标）</li>
+<li><strong>Normalized CCT</strong>: 相对于无争用baseline的collective completion time</li>
+<li><strong>Normalized earliness</strong>: $(D_r - t_{\text{complete}}) / D_r$，0表示just-in-time，负值表示过早完成</li>
+</ul>
+
+<p>"Throughput"在本文中体现为"在同等SLO attainment下的最大可持续request rate"，不是传统的output tok/s。</p>
+
+<h3 id="hardware-setup">Hardware setup <a class="heading-anchor" href="#hardware-setup" aria-label="Link to hardware-setup">#</a></h3>
+
+<ul>
+<li>Testbed: 8 servers × 4 NVIDIA 3090 GPUs × 2 Mellanox NICs = 32 GPU, single ToR switch, 50 Gbps/GPU effective</li>
+<li>Simulation: 模拟更大规模集群（具体GPU数量未详细说明），4个MoE模型</li>
+</ul>
+
+<hr>
+
+<h2 id="§12-api-usability">§12 API & Usability <a class="heading-anchor" href="#§12-api-usability" aria-label="Link to §12-api-usability">#</a></h2>
+
+<ul>
+<li><strong>User-facing API</strong>: 无独立API。MFS作为pluggable module嵌入vLLM+NCCL+Mooncake stack，对serving engine的上层API透明</li>
+<li><strong>Config surface</strong>: 主要参数为$K$（优先级队列数）、$\{\tau_j\}$（MLU阈值）、$\rho$（background traffic估计）。论文提供了sensitivity analysis但未给出明确的auto-tuning方案</li>
+<li><strong>Migration cost</strong>: 需要(1) NCCL和Mooncake的adapter集成（代码层面的hook），(2) switch的DSCP-to-queue mapping配置，(3) vLLM的layer-progress callback集成。中等复杂度——非零侵入但不需要fork entire engine</li>
+</ul>
+
+<hr>
+
+<h2 id="§13-adoption-ecosystem">§13 Adoption & Ecosystem <a class="heading-anchor" href="#§13-adoption-ecosystem" aria-label="Link to §13-adoption-ecosystem">#</a></h2>
+
+<ul>
+<li>截至2026-05，<strong>未合入</strong>任何主流开源框架（vLLM/SGLang/TRT-LLM）</li>
+<li>未公开源代码</li>
+<li>论文来自HKUST iSING Lab（Kai Chen组），networking方向背景</li>
+<li>MFS的DSCP-based方案依赖switch支持hardware priority queues——这在datacenter交换机中是标准功能，但需要运维配置</li>
+<li>对下游的强制要求：communication library必须暴露task拦截点，推理引擎必须提供layer-progress callback</li>
+</ul>
+
+<hr>
+
+<h2 id="§14-deployment-context">§14 Deployment Context <a class="heading-anchor" href="#§14-deployment-context" aria-label="Link to §14-deployment-context">#</a></h2>
+
+<table>
+<tr><th>Dimension</th><th>Value</th></tr>
+<tr><td>Serving stage</td><td>Prefill only / P2D bridge to decode</td></tr>
+<tr><td>Concurrency regime</td><td>Mid-to-high（≥8并发prefill requests，才有足够争用让MFS发挥作用）</td></tr>
+<tr><td>Hardware affinity</td><td>需要多NIC + switch的hardware priority queue; 3090/H100/H800均可; NVLink intra-node通信不受益</td></tr>
+<tr><td>Ecosystem integration</td><td>vLLM (scheduler) + NCCL (collective) + Mooncake (KV transfer) + commodity Ethernet switch</td></tr>
+<tr><td>Integration cost</td><td>Adapter hook到NCCL/Mooncake + switch DSCP配置 + vLLM layer callback; 不需要fork engine</td></tr>
+<tr><td>Migration path</td><td>vLLM用户需要: (1) 部署MFS coordinator service, (2) 替换NCCL/Mooncake library为MFS-instrumented版本, (3) 配置switch priority queues, (4) 设置TTFT SLO参数</td></tr>
+</table>
+
+<p>MFS解决的问题（multi-stage网络争用）在以下场景最相关：大规模disaggregated MoE serving（EP度高、KV复用率高、请求密集）。对于小规模部署（单机或2-4节点）、dense model、或NVLink-heavy拓扑，MFS的价值有限。</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

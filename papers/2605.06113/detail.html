@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Tackling the Data-Parallel Load Balancing Bottleneck in LLM Serving: Practical Online Routing at Scale — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Tackling the Data-Parallel Load Balancing Bottleneck in LLM Serving: Practical Online Routing at Scale</h1>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2605.06113</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">load-balancing</span><span class="tag">LLM-serving</span><span class="tag">data-parallelism</span><span class="tag">online-routing</span><span class="tag">KV-cache</span><span class="tag">barrier-synchronization</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/algorithm.html">← algorithm Survey</a>
+<a href="https://arxiv.org/abs/2605.06113" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="balanceroute-practical-online-routing-for-dp-load-balancing-in-llm-serving">BalanceRoute: Practical Online Routing for DP Load Balancing in LLM Serving <a class="heading-anchor" href="#balanceroute-practical-online-routing-for-dp-load-balancing-in-llm-serving" aria-label="Link to balanceroute-practical-online-routing-for-dp-load-balancing-in-llm-serving">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>BalanceRoute 利用分段线性 F-score 捕获 barrier 同步下 safe-margin fill 与 overflow 之间的 $(G{-}1)$ 倍不对称性，通过两阶段算法（贪心填充 + 精细分配）在毫秒级预算内实现 DP 负载均衡。无需预测的 BR-0 即可将不均衡降低 4.1×、吞吐提升 +11.8%；加上轻量二元终止分类器的 BR-H 达到 +15.4%，优势随 $G$ 超线性增长。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>DP decode 的 barrier 同步使每步延迟由最重 worker 决定；KV-cache 随生成单调增长且迁移代价极高（sticky assignment），加上到达非平稳、决策窗口 < 100 ms，现有通用启发式（Random / RR / P2C / JSQ）对 LLM decode 结构无感知。Chen et al. (2026) 报告生产部署中 >40% 加速器时间因 barrier 空闲而浪费。</p>
+
+<p><img src="/assets/2605.06113/fig1.png" alt="Figure 1: Balanced vs imbalanced DP decode under barrier synchronization"></p>
+
+<p><em>Paper Figure 1, verbatim (caption: "Data-parallel decode under barrier synchronization").</em></p>
+
+<p>图 1 直观对比：均衡分配时所有 worker 近乎同时到达 barrier（利用率 88–94%）；不均衡时 straggler 将步延迟拉高，轻载 worker 空闲等待（Worker 3/4 仅 32–42% 利用率）。每步空闲在 request 生命期内逐步累积。</p>
+
+<p><strong>问题形式化</strong>:</p>
+
+<ul>
+<li><strong>目标函数</strong>: 最小化累积不均衡 $\sum_k I(k)$，其中 $I(k) = G \cdot M(k) - \sum_{g} L_g(k)$</li>
+<li><strong>假设</strong>: sticky assignment（非抢占）、KV-cache 线性增长 $w_i^{(j)} = s_i + j - 1$、barrier 同步使步延迟 = $\max_g L_g(k)$</li>
+<li><strong>算法单步输入</strong>: 等待池 $R_{\text{wait}}(k)$（含已知 prefill 长度 $s_i$），每个 worker 的活跃集 $\mathcal{A}_g(k)$ 与负载 $L_g(k)$</li>
+<li><strong>算法单步输出</strong>: 对每个 worker 的 admission 子集 $Q_g \subseteq R_{\text{wait}}(k)$</li>
+</ul>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>核心机制 — 分段线性 F-score</strong>: 度量将候选子集 $Q$ 分配给 worker $g$ 对单步不均衡 $I(k)$ 的边际效应：</p>
+
+<p>$$F_g(Q) = \Delta_s(Q) - G \cdot (\Delta_s(Q) - m_g)_+$$</p>
+
+<p>其中 $\Delta_s(Q) = \sum_{i \in Q} s_i$ 为候选总 prefill 负载，$m_g = M(k) - L_g(k)$ 为 safe margin。</p>
+
+<table>
+<tr><th>区域</th><th>条件</th><th>F-score 行为</th><th>物理意义</th></tr>
+<tr><td>Safe regime</td><td>$\Delta_s(Q) \leq m_g$</td><td>$F_g(Q) = \Delta_s(Q)$</td><td>每单位负载减少 1 单位 deficit</td></tr>
+<tr><td>Overflow regime</td><td>$\Delta_s(Q) > m_g$</td><td>$F_g(Q) = G \cdot m_g - (G{-}1) \cdot \Delta_s(Q)$</td><td>每单位溢出增加 $(G{-}1)$ 单位不均衡</td></tr>
+</table>
+
+<p>交叉点处不对称性为 $(G{-}1)$ 倍：$G{=}16$ 时一单位溢出产生 15 倍不均衡代价。</p>
+
+<p><strong>Before vs After 对比</strong>:</p>
+
+<table>
+<tr><th></th><th>Before (JSQ/P2C/RR)</th><th>After (BR-0 / BR-H)</th></tr>
+<tr><td>决策信号</td><td>队列长度或随机选择</td><td>分段线性 F-score（感知 safe margin 与 overflow 不对称）</td></tr>
+<tr><td>容量区分</td><td>无</td><td>两阶段：充裕容量下贪心填充 / 稀缺容量下精细子集选择</td></tr>
+<tr><td>未来感知</td><td>无</td><td>BR-H: 常数 horizon $H$ 折扣 F-score + 二元终止分类器</td></tr>
+<tr><td>复杂度</td><td>$O(1)$ per request</td><td>毫秒级 per step（两阶段分解保证）</td></tr>
+</table>
+
+<p><strong>BR-H 扩展</strong>: 将 F-score 推广到 horizon 折扣形式：</p>
+
+<p>$$F_g(Q) = \alpha \, (\mathbf{1}^\top \mathbf{d}) \, \Delta_s(Q) - \beta \, (\Delta_s(Q) \, \mathbf{1} - \mathbf{m}_g)_+^\top \mathbf{d}$$</p>
+
+<p>其中 $\mathbf{d} = (1, \gamma, \ldots, \gamma^H)^\top$ 为折扣向量，$\mathbf{m}_g$ 为 horizon margin 向量。BR-0 是 $H{=}0, \alpha{=}1, \beta{=}G$ 的特例。BR-H 仅需二元终止分类器（request 是否在 $H$ 步内结束），而非完整长度回归——论文论证二元分类器比完整回归更可靠，因为噪声增长快于信号。</p>
+
+<p><strong>核心技术壁垒</strong>: 分段线性 F-score 将 barrier 同步的物理约束（max-load 决定步延迟）精确编码为一个具有尖锐交叉的目标函数，使 safe-margin fill 与 overflow 的不对称代价可在 $O(1)$ 内求值。这个洞见非平凡——它将看似需要整数规划的在线调度问题化简为可在毫秒级求解的贪心 + 子集选择，且理论上给出了最优结构（overflow 代价随 $G$ 线性放大）。现有通用负载均衡文献中没有类似的 barrier-aware 分段评分函数。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li>BR-0（无预测）: 不均衡降低 4.1×（Proprietary）/ 1.94×（Azure），吞吐 +11.8% / +8.8% over JSQ</li>
+<li>BR-H deployed (ExactMatch): 吞吐 +15.4% / +14.5% over JSQ，同时 TPOT P95 最低</li>
+<li>随 $G$ 增长优势超线性放大：BR-H 在 $G{=}4/8/16$ 分别 +13.4% / +21.5% / +34.5%</li>
+<li>部署在 144-NPU Ascend 910C 集群，验证硬件无关性</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2605.06113/fig2.png" alt="Figure 2: BalanceRoute system architecture with stateful proxy"></p>
+
+<p><em>Paper Figure 2, verbatim (caption: "System architecture. A stateful proxy maintains the cluster snapshot and runs the BR-H rule.").</em></p>
+
+<p>系统采用三层架构：控制面（Stateful Python Proxy）、Prefill Tier（kv_producer）、Decode Tier（kv_consumer）。</p>
+
+<p>关键数据流：① Client request 经 Payload Mutator 改写（设 <code>max_tokens=1</code> 触发 prefill-only）→ ② Prefill 完成后返回 KV handle，request 进入 Prompt Pool → ③ BR-H Dispatcher 从 Cluster Snapshot $\sigma(k) = \{\mathcal{A}_g(k), L_g(k), \hat{c}_i(k)\}$ 读取状态，运行 horizon F-score 选择最优 (worker, subset) 分配，重写 payload 发送到 decode worker → ④ SSE telemetry 回传 per-token 进度，增量更新 snapshot。</p>
+
+<p>三个设计原则：<strong>集中式状态</strong>（horizon F-score 需要跨 worker 视图）；<strong>Above-the-engine 集成</strong>（通过 payload mutation 和 SSE 解析，零引擎修改）；<strong>Pool 解耦</strong>（prefill 完成的 request 缓存在 prompt pool 中，等待 decode dispatcher 以全局视图调度）。</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant PM as Payload Mutator
+    participant P as Prefill Tier
+    participant PP as Prompt Pool
+    participant BR as BR-H Dispatcher
+    participant CS as Cluster Snapshot
+    participant D as Decode Tier
+
+    C->>PM: OpenAI-compat request
+    PM->>P: mutated payload (max_tokens=1)
+    P-->>PP: KV handle + prefill result
+    BR->>CS: read σ(k)
+    BR->>PP: select from R_wait(k)
+    Note over BR: Stage 1: greedy fill (abundant capacity)<br/>Stage 2: refined subset (scarce capacity)
+    BR->>D: rewritten payload + KV handle
+    D-->>CS: SSE telemetry (per-token Δ)
+    D-->>C: streamed response
+</div>
+
+<p><strong>两阶段算法流程</strong>:</p>
+
+<ol>
+<li><strong>Stage 1（充裕容量）</strong>: 当总空闲槽 $S_{\text{tot}} > S_{\text{greedy}}$ 时，选容量最大的 worker，将 F-score 最高的 request 贪心分配。此时必在 safe regime，$F_g(\{i\}) = s_i$，等价于将最大 request 发给最轻 worker。</li>
+<li><strong>Stage 2（稀缺容量）</strong>: 剩余槽位按 $(\texttt{cap}_g, \min_h m_{g,h})$ 优先队列排序。对每个 worker 考虑 $R_{\max}$ 个候选 request 的最优子集 $Q^\star$，最大化 $F_g(Q)$。若最优子集非正分，仍分配单个 request 避免饥饿。</li>
+</ul>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th><th>首次出现</th></tr>
+<tr><td>$G$</td><td>DP worker 数量</td><td>§2.2</td></tr>
+<tr><td>$B$</td><td>每 worker 最大并发 request 数</td><td>§2.2</td></tr>
+<tr><td>$k$</td><td>离散 decode step 索引</td><td>§2.2</td></tr>
+<tr><td>$s_i$</td><td>Request $i$ 的 prefill token 数（路由时已知）</td><td>§2.2</td></tr>
+<tr><td>$o_i$</td><td>Request $i$ 的总 decode 步数（路由时未知）</td><td>§2.2</td></tr>
+<tr><td>$w_i^{(j)}$</td><td>Request $i$ 在第 $j$ 步的 KV 负载，$= s_i + j - 1$</td><td>§2.2</td></tr>
+<tr><td>$L_g(k)$</td><td>Worker $g$ 在步 $k$ 的总 KV 负载</td><td>§2.2</td></tr>
+<tr><td>$M(k)$</td><td>最重 worker 负载，$= \max_g L_g(k)$</td><td>§2.2</td></tr>
+<tr><td>$I(k)$</td><td>步 $k$ 的总不均衡，$= G \cdot M(k) - \sum_g L_g(k)$</td><td>§2.2</td></tr>
+<tr><td>$m_g$</td><td>Worker $g$ 的 safe margin，$= M(k) - L_g(k)$</td><td>§2.2</td></tr>
+<tr><td>$\Delta_s(Q)$</td><td>候选子集的总 prefill 负载，$= \sum_{i \in Q} s_i$</td><td>§2.2</td></tr>
+<tr><td>$F_g(Q)$</td><td>分段线性 F-score</td><td>§3.1</td></tr>
+<tr><td>$\alpha, \beta, \gamma$</td><td>BR-H 超参：reward 缩放、overflow 惩罚、折扣因子</td><td>§4.1</td></tr>
+<tr><td>$H$</td><td>常数 lookahead horizon</td><td>§4</td></tr>
+<tr><td>$\mathbf{d}$</td><td>折扣向量 $(1, \gamma, \ldots, \gamma^H)^\top$</td><td>§4.1</td></tr>
+<tr><td>$\mathbf{m}_g$</td><td>Horizon margin 向量</td><td>§4.1</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Eq. (1) — BR-0 F-score</strong>: $F_g(Q) = \Delta_s(Q) - G \cdot (\Delta_s(Q) - m_g)_+$</p>
+
+<p>F-score 分解为 reward（deficit 填充收益）减去 penalty（overflow 代价乘以 $G$）。Safe regime 下 penalty 为零，每单位负载一单位收益。Overflow regime 下每单位溢出产生 $(G{-}1)$ 单位不均衡代价——因为新的 max-load 抬高了 barrier，所有 $G$ 个 worker 都必须等到这个新 max。</p>
+
+<p><strong>Eq. (2) — BR-H horizon F-score</strong>: $F_g(Q) = \alpha \, (\mathbf{1}^\top \mathbf{d}) \, \Delta_s(Q) - \beta \, (\Delta_s(Q) \, \mathbf{1} - \mathbf{m}_g)_+^\top \mathbf{d}$</p>
+
+<p>将单步 F-score 在 $H$ 步 horizon 上求和，几何折扣 $\gamma$ 使近期预测权重更高。$\alpha, \beta$ 从理论值 $(1, G)$ 解耦为可调参数，补偿预测噪声。逻辑上：未来 $H$ 步中每一步的 overflow 都按该步的 margin 向量独立判断是否激活惩罚。</p>
+
+<h3 id="6-项检验">6 项检验 <a class="heading-anchor" href="#6-项检验" aria-label="Link to 6-项检验">#</a></h3>
+
+<table>
+<tr><th>#</th><th>检验项</th><th>判定</th></tr>
+<tr><td>1</td><td>F-score 在 $m_g$ 处的连续性</td><td>✓ — 在 $\Delta_s = m_g$ 处左右极限一致 $= m_g$，但导数不连续（分段线性交叉点）</td></tr>
+<tr><td>2</td><td>BR-0 → BR-H 特例归约</td><td>✓ — $H{=}0$ 时 $\mathbf{d} = (1)$, $\mathbf{m}_g = (m_g)$，取 $\alpha{=}1, \beta{=}G$ 恢复 Eq. (1)</td></tr>
+<tr><td>3</td><td>极端情况 $G{=}1$</td><td>✓ — $G{=}1$ 时 $I(k) = 0$ 恒成立，F-score 退化为常数，路由无意义</td></tr>
+<tr><td>4</td><td>极端情况 $m_g{=}0$（满载 worker）</td><td>✓ — F-score $= \Delta_s - G \cdot \Delta_s = -(G{-}1)\Delta_s < 0$，正确表示任何 admission 都纯增不均衡</td></tr>
+<tr><td>5</td><td>Stage 2 starvation guard</td><td>✓ — 最优子集非正分时仍分配单 request，保证 waiting pool 不无限增长</td></tr>
+<tr><td>6</td><td>目标一致性：$F_g$ 最大化 ↔ $I(k)$ 最小化</td><td>✓ — $F_g$ 定义为 $-\Delta I(k)$（不均衡减少量），故最大化 F-score 等价于最小化单步不均衡增量</td></tr>
+</table>
+
+<h3 id="算法特定证明分析">算法特定证明分析 <a class="heading-anchor" href="#算法特定证明分析" aria-label="Link to 算法特定证明分析">#</a></h3>
+
+<ul>
+<li><strong>无形式化收敛定理</strong>: 论文不含收敛定理或近似比证明。F-score 是一阶贪心的评分函数，论文未给出其与全局最优 $\min \sum_k I(k)$ 的近似比界。理想情况下应有 competitive ratio bound（如 $O(\log G)$ 竞争比），但论文选择了纯实证路线。</li>
+<li><strong>方差/复杂度界</strong>: 论文未分析 BR-H 预测噪声对 F-score 质量的影响界。$\gamma$ 的选择隐式控制了预测误差放大，但无显式 bias-variance 分析。</li>
+<li><strong>损失分解</strong>: $F_g$ 自然分解为 reward 项（deficit fill）和 penalty 项（overflow cost），物理意义清晰。Penalty 系数 $G$（BR-0）或 $\beta$（BR-H）控制两项权衡。</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="实验设置">实验设置 <a class="heading-anchor" href="#实验设置" aria-label="Link to 实验设置">#</a></h3>
+
+<ul>
+<li><strong>硬件</strong>: 144-NPU Ascend 910C 集群</li>
+<li><strong>模型</strong>: DeepSeek-V3 671B (W8A8)；验证也在 Qwen3-30B-A3B (MoE) / Atlas 910B</li>
+<li><strong>拓扑</strong>: 默认 4P1D（4 prefill nodes × 16 NPUs TP=8，1 decode node × 32 NPUs DP=8 TP=4），$G{=}8$</li>
+<li><strong>软件栈</strong>: vllm-ascend V1 scheduler, continuous batching, PagedAttention, MooncakeConnector</li>
+<li><strong>数据集</strong>: Proprietary production trace (8k requests, mean prompt 3,197 / output 1,185) + Azure-2024 conversation split (10k requests, mean prompt 4,652 / output 1,052, filtered output > 1000)</li>
+<li><strong>基线</strong>: Random, Round-Robin, P2C, JSQ (vLLM default)</li>
+</ul>
+
+<h3 id="主要结果">主要结果 <a class="heading-anchor" href="#主要结果" aria-label="Link to 主要结果">#</a></h3>
+
+<p><img src="/assets/2605.06113/tab1.png" alt="Table 1: Main results on Proprietary Data and Azure-2024"></p>
+
+<p><em>Paper Table 1, verbatim (caption: "Main results on Proprietary Data and Azure-2024. G=8, heavy load.").</em></p>
+
+<p>所有 BR 行在所有指标上完全支配所有基线行。BR-0（无预测）将 Proprietary 上不均衡从 JSQ 的 215k 降至 52k（4.1×），吞吐从 843 提升至 943 tok/s（+11.8%）。Deployed BR-H (ExactMatch) 达 977 tok/s（+15.4%），且 TPOT P95 78.8 ms 为所有方法最低——吞吐增益不以尾延迟为代价。</p>
+
+<h3 id="负载均衡可视化">负载均衡可视化 <a class="heading-anchor" href="#负载均衡可视化" aria-label="Link to 负载均衡可视化">#</a></h3>
+
+<p><img src="/assets/2605.06113/fig3.png" alt="Figure 3: Per-worker KV-cache workload comparison across routing methods"></p>
+
+<p><em>Paper Figure 3, verbatim (caption: "Per-worker KV-cache workload on Proprietary Data, G=8.").</em></p>
+
+<p>四面板对比 1,500 步 decode 段的 8 worker 瞬时 KV 负载。Random（左上）worker 轨迹散布 220k–340k 范围，大量空间浪费在 straggler 等待。JSQ（右上）收窄至 200k–320k 但仍有显著漂移。BR-0（左下）将全部 8 worker 压缩到 240k–290k 窄带。BR-H ExactMatch（右下）进一步收紧至 240k–275k，可见 horizon 信息的增量价值。</p>
+
+<h3 id="部署级-br-h-可视化">部署级 BR-H 可视化 <a class="heading-anchor" href="#部署级-br-h-可视化" aria-label="Link to 部署级-br-h-可视化">#</a></h3>
+
+<p><img src="/assets/2605.06113/fig6.png" alt="Figure 6: BR-H deployed with Survival predictor workload trace"></p>
+
+<p><em>Paper Figure 6, verbatim (caption: "Per-worker instantaneous KV-cache workload on Proprietary Data under BR-H deployed with the empirical-survival predictor, H=80, G=8.").</em></p>
+
+<p>Survival 预测器下 BR-H 的 trace-mean 不均衡为 40,757 token，可见 worker 带宽压缩在 225k–250k 范围。与 BR-0 (51,927) 相比收窄明显，但宽于 ExactMatch (36,277)。Stage-1 confidence gate 使长尾 request 回退到保守锚 $H$，因此增益主要来自分类器有信心的 request。</p>
+
+<h3 id="缩放实验">缩放实验 <a class="heading-anchor" href="#缩放实验" aria-label="Link to 缩放实验">#</a></h3>
+
+<p><img src="/assets/2605.06113/tab2.png" alt="Table 2 and Figure 4: Scaling summary across G=4,8,16"></p>
+
+<p><em>Paper Table 2 + Figure 4, verbatim (caption: "Scaling summary on Proprietary Data. G=4 (2P1D, 48 NPUs), G=8 (4P1D, 96 NPUs), G=16 (5P1D, 144 NPUs).").</em></p>
+
+<p>关键发现：BR-H 吞吐优势随 $G$ 超线性增长：+13.4%（$G{=}4$）→ +21.5%（$G{=}8$）→ +34.5%（$G{=}16$），拟合 $\Delta \propto G^{0.69}$。BR-0 增长较平（$\Delta \propto G^{0.44}$），BR-H-over-BR-0 的增量从 +2% 扩大到 +12%，说明预测价值在大规模下被放大。</p>
+
+<p>同时注意反直觉现象：$G{=}16$ 时 P2C (688k) 和 JSQ (676k) 的不均衡反而比 RR (616k) 更差——"聪明"的经典启发式在大规模下变得反效果。</p>
+
+<h3 id="数据集分析">数据集分析 <a class="heading-anchor" href="#数据集分析" aria-label="Link to 数据集分析">#</a></h3>
+
+<table>
+<tr><th>数据集</th><th>Requests</th><th>Mean prompt</th><th>Mean output</th><th>特点</th></tr>
+<tr><td>Proprietary</td><td>8,000</td><td>3,197</td><td>1,185</td><td>重尾输出分布，生产级</td></tr>
+<tr><td>Azure-2024</td><td>10,000</td><td>4,652</td><td>1,052</td><td>公开可复现，conversation split，filtered output > 1000</td></tr>
+</table>
+
+<p>两个 trace 均在重载（集群近饱和）下评估。Azure-2024 过滤掉短输出 request 是因为 decode-stage 不均衡仅在长输出时占主导。论文未报告 eval overlap 检查（不适用于在线调度场景）。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>论证环节</th><th>依据</th><th>关键量</th></tr>
+<tr><td>1</td><td>DP decode 的 barrier 同步使每步延迟 = $\max_g L_g(k)$，idle 随 $G$ 按 order-statistics 增长</td><td>§2.1 形式化 + Chen et al. (2026) 报告 >40% waste</td><td>$I(k) = G \cdot M(k) - \sum_g L_g(k)$</td></tr>
+<tr><td>2</td><td>通用启发式（RR/P2C/JSQ）不感知 LLM-specific 结构（sticky assignment + 单调增长 KV + 毫秒决策窗口）</td><td>§1 论证 + §6 实验验证（基线不均衡 >100k–438k）</td><td>四个 hardness property</td></tr>
+<tr><td>3</td><td>分段线性 F-score 从 $I(k)$ 的边际效应推导，揭示 safe/overflow 的 $(G{-}1)$ 倍不对称性</td><td>§3.1 代数推导（Eq. 1）</td><td>交叉点 $\Delta_s = m_g$</td></tr>
+<tr><td>4</td><td>两阶段分解将 NP-hard 子集选择问题化简为毫秒可解：充裕容量下贪心 + 稀缺容量下优先队列子集选择</td><td>§3.2 算法设计</td><td>阈值 $S_{\text{greedy}}$</td></tr>
+<tr><td>5</td><td>Horizon 折扣扩展将 F-score 推广到 $H$ 步 lookahead，仅需二元终止分类器而非全长度回归</td><td>§4 代数推导（Eq. 2）+ BR-0 特例归约</td><td>$(\alpha, \beta, \gamma)$ 三参数</td></tr>
+<tr><td>6</td><td>集中式 stateful proxy + above-the-engine 集成使算法在零引擎修改下部署于 144-NPU 集群</td><td>§5 系统实现</td><td>SSE telemetry + payload mutation</td></tr>
+<tr><td>7</td><td>BR-0 在 $G{=}8$ 上将不均衡降至 52k（JSQ 的 1/4），吞吐提升 +11.8%；BR-H deployed 达 +15.4%，且 TPOT P95 最低</td><td>§6.2 Table 1</td><td>977 tok/s vs 843 tok/s</td></tr>
+<tr><td>8</td><td>优势随 $G$ 超线性增长（$\Delta \propto G^{0.69}$），从 +13.4% ($G{=}4$) 到 +34.5% ($G{=}16$)</td><td>§6.3 Table 2 + Figure 4</td><td>power-law fit</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>代码开放状态</strong>: [实现未公开] — 论文部署在 vllm-ascend（Ascend-NPU port of vLLM）之上，但 BalanceRoute proxy 代码未开源。</p>
+
+<p><strong>最近开源参考</strong>: 基线实现基于 vLLM 的 router 策略（<code>vllm.entrypoints.openai.api_server</code> 的 Random / RR / P2C / JSQ 选项）。</p>
+
+<p><strong>核心技术壁垒展开</strong>: F-score 的实现本身是轻量的（一个 piecewise-linear 函数求值），真正的工程壁垒在于维护毫秒级更新的 Cluster Snapshot $\sigma(k)$：</p>
+
+<ol>
+<li>需要通过 SSE stream inline parsing 逐 token 追踪每个 request 的 decode 进度，增量更新 $L_g(k)$ 和 $\hat{c}_i(k)$</li>
+<li>Cross-tier KV transfer 的 late-binding 设计（Prompt Pool 缓存 + decode dispatch 解耦）需要精确的 <code>PrefillerBudget</code> 背压控制</li>
+<li>Stage 2 的子集选择（在 $R_{\max}$ 候选中搜索最优子集）需要在 < 1 ms 内完成，论文在 Appendix D 中描述了计算优化但未公开实现</li>
+</ul>
+
+<p><strong>关键实现细节</strong>:</p>
+
+<ol>
+<li><strong>BR-0 pool-bypass path</strong>: 当预测基础设施不可用时，BR-0 可以跳过 Prompt Pool 缓冲，直接在 request 到达时路由——这个快速路径避免了池化引入的额外延迟，但牺牲了 Stage 2 的全局子集选择能力。</li>
+<li><strong>$(\beta, \gamma)$ 调参</strong>: Table 1 显示两组超参 $(43, 0.86)$ 和 $(14.67, 0.64)$ 产生相近结果（不均衡 24.0k vs 23.6k），论文未报告系统化超参搜索方法。$\gamma{=}0.64$ 对应 $H{=}80$ 步后权重衰减至 $0.64^{80} \approx 10^{-16}$，实质 effective horizon 远小于名义 $H$。</li>
+</ul>
+
+<h3 id="可复现性与生态">可复现性与生态 <a class="heading-anchor" href="#可复现性与生态" aria-label="Link to 可复现性与生态">#</a></h3>
+
+<ul>
+<li>训练代码 / 路由代码均未开源</li>
+<li>最近开源参考：vLLM 的路由策略实现是基线；Chen et al. (2026) 的 DP-decode 形式化是理论前驱</li>
+<li>论文部署在 Ascend 910C（华为）上，非 NVIDIA GPU，社区复现需适配</li>
+<li>核心算法（F-score + 两阶段）概念简单，可在任何 PD-disaggregated 系统上复现；工程难点在 stateful proxy 的实时状态维护</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

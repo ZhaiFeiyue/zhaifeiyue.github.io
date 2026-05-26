@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Contextual Memory Virtualisation: DAG-Based State Management and Structurally Lossless Trimming for LLM Agents — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Contextual Memory Virtualisation: DAG-Based State Management and Structurally Lossless Trimming for LLM Agents</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2602.22402</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">context-management</span><span class="tag">session-branching</span><span class="tag">prompt-trimming</span><span class="tag">dag-state-model</span><span class="tag">llm-agent-tooling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2602.22402" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+<h1 id="cmv-dag-state-management-and-structurally-lossless-trimming-for-llm-agents">CMV: DAG State Management and Structurally Lossless Trimming for LLM Agents <a class="heading-anchor" href="#cmv-dag-state-management-and-structurally-lossless-trimming-for-llm-agents" aria-label="Link to cmv-dag-state-management-and-structurally-lossless-trimming-for-llm-agents">#</a></h1>
+
+<blockquote>
+Cosmo Santoni | 2026-02 | <a href="https://arxiv.org/abs/2602.22402">arXiv 2602.22402</a>
+Category: agent | Tags: context-management, session-branching, prompt-trimming, dag-state-model, llm-agent-tooling
+Read: 2026-05-25
+</blockquote>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>CMV 将 LLM agent 会话历史建模为 DAG（快照为节点、分支为边），配合三遍流式裁剪算法（保留用户/助手消息、删除 tool 输出/base64/元数据），实现均值 20%、峰值 86% 的 token 缩减，并在 prompt caching 场景下 10 轮内收回缓存失效惩罚。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点：会话状态不可复用，autocompaction-摧毁累积理解">Q1 痛点：会话状态不可复用，autocompaction 摧毁累积理解 <a class="heading-anchor" href="#q1-痛点：会话状态不可复用，autocompaction-摧毁累积理解" aria-label="Link to q1-痛点：会话状态不可复用，autocompaction-摧毁累积理解">#</a></h3>
+
+<p>LLM coding agent 在长会话中积累架构理解、设计决策、代码库惯例等高价值上下文。当 context window 接近上限时，原生 autocompaction（如 Claude Code <code>/compact</code>）将 132k token 压缩到 2.3k——损失率 98%。新会话必须从零重建，导致 10–20 轮、15–30 分钟、输入成本二次增长的重复劳动。</p>
+
+<p>现有方案各有缺陷：RAG 不保存对话状态；MemGPT 仅单会话 + 模型自管理内存；prompt 压缩（LongLLMLingua / RECOMP / In-Context AE）在 embedding 层操作、与 CMV 正交；原生 <code>/rewind</code> / <code>--fork</code> 缺少命名状态和谱系追踪。</p>
+
+<p><img src="/assets/2602.22402/fig1.png" alt="Figure 1: autocompaction 前后对比"></p>
+
+<p><em>Paper Figure 1: 左侧 132k token（76% 容量），右侧 2.3k token（12% 容量）。Autocompaction 将 98% 积累的会话状态压缩为寥寥数句。</em></p>
+
+<p>Figure 1 直观展示了问题的严重性：左右两幅截图来自同一个 Claude Code 会话，一次 autocompaction 即抹去了几乎全部上下文。这不是 edge case——paper 的 76 个会话平均 84k token，说明大量会话在 compact 后都会遭遇类似损失。</p>
+
+<h3 id="q2-方法：os-虚拟内存类比-→-dag-版本控制-三遍裁剪">Q2 方法：OS 虚拟内存类比 → DAG 版本控制 + 三遍裁剪 <a class="heading-anchor" href="#q2-方法：os-虚拟内存类比-→-dag-版本控制-三遍裁剪" aria-label="Link to q2-方法：os-虚拟内存类比-→-dag-版本控制-三遍裁剪">#</a></h3>
+
+<p><strong>类比</strong>：如同 OS virtual memory 将物理 RAM 抽象为连续地址空间、通过 paging 实现透明换入换出，CMV 将 LLM context window 抽象为可持久化、可分支的虚拟状态空间——用户可将"84k token 的理解"作为稳定根节点，衍生多条独立工作流，无需重建。</p>
+
+<p><strong>DAG 状态模型</strong>：会话历史 $G = (V, E)$，其中节点 $v \in V$ 是不可变快照（JSONL 对话日志 + 元数据），边 $(v_i, v_j) \in E$ 表示从 $v_i$ fork 出独立工作会话后生成 $v_j$。四个原语：Snapshot（捕获）、Branch（fork + 可选 trim）、Trim（Snapshot + Branch 复合）、Tree（ASCII 可视化谱系图）。</p>
+
+<p><strong>三遍裁剪算法</strong>：</p>
+
+<ul>
+<li><strong>Pass 1</strong> — 边界检测：用 <code>String.includes()</code> 扫描原始行，定位最后一个 compaction boundary $B$</li>
+<li><strong>Pass 2</strong> — 孤儿 ID 收集：收集 $B$ 之前所有 <code>tool_use</code> ID 集合 $\mathcal{O}$</li>
+<li><strong>Pass 3</strong> — 流式过滤：跳过 $B$ 前所有行；剥离 base64 图片、thinking block、API 元数据；将超过阈值 $\tau$（默认 500 字符）的 <code>tool_result</code> / 写工具输入替换为 stub；丢弃 <code>tool_use_id ∈ \mathcal{O}</code> 的孤儿 tool result</li>
+</ul>
+
+<p><strong>保留保证</strong>：每条 user message、assistant response、tool invocation 元数据（file_path, command, description 等）原样保留——只剥离机械性输出。</p>
+
+<p><strong>核心技术壁垒</strong>：孤儿 tool result 处理。原生 compaction 的边界可能切割 tool_use/tool_result 配对——tool_use 在边界前被丢弃，但对应的 tool_result 留在边界后。LLM API 严格校验配对关系，缺少 tool_use 的 tool_result 直接触发 validation error。CMV 通过两遍前置扫描（Pass 1 + 2）预收集将成为孤儿的 ID，在 Pass 3 静默丢弃，保证 API 正确性——这是三遍架构存在的根本原因。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li>76 个真实 Claude Code 编码会话，均值 token 缩减 <strong>20%</strong>，中位 12%，峰值 <strong>86%</strong></li>
+<li>Mixed 会话（tool result ≥ 15% JSONL bytes，12/76 个）：均值 <strong>39%</strong> 缩减，break-even <strong>10 轮</strong></li>
+<li>Conversational 会话（64/76 个）：均值 17% 缩减，break-even 40 轮</li>
+<li>两种缩减模式：(1) pre-compaction 历史跳过（高缩减尾部），(2) tool output + 元数据剥离（mixed 会话主力）</li>
+<li>分支复用避免 context rebuilding 的收益被作者标注为 "dominant but unquantified"</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+stateDiagram-v2
+    state "Session s₀ (active)" as S0
+    state "Snapshot v₀ (immutable)" as V0
+    state "Branch s₁ (auth work)" as S1
+    state "Branch s₂ (API refactor)" as S2
+    state "Branch s₃ (perf tuning)" as S3
+    state "Three-Pass Trimmer" as TRIM
+
+    S0 --> V0: Snapshot(s₀)
+    V0 --> TRIM: Branch(v₀, trim=true)
+    TRIM --> S1: fork + orientation msg
+    TRIM --> S2: fork + orientation msg
+    TRIM --> S3: fork + orientation msg
+
+    state TRIM {
+        state "Pass 1: Boundary Detection" as P1
+        state "Pass 2: Orphan ID Collection" as P2
+        state "Pass 3: Streaming Filter" as P3
+        P1 --> P2
+        P2 --> P3
+    }
+</div>
+
+<p><em>CMV 工作流：用户在 session s₀ 中积累 context 后执行 Snapshot 生成不可变节点 v₀；随后可多次 Branch 并经过三遍 Trimmer 产出独立子会话。DAG 的 tree 命令可渲染完整谱系图。</em></p>
+
+<p>Pass 3 的七条裁剪规则按优先级：pre-compaction skip → metadata removal → base64 stripping → tool_result stub → tool_input stub → thinking block removal → orphan stripping。白名单字段（file_path, command, url 等）在 stub 时永远保留，确保模型仍知道"读过哪些文件、跑过哪些命令"。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p>无形式化作者证明 — 仅实证。</p>
+
+<p>论文的数学内容限于经济可行性的 cost model（§4.1），不涉及收敛或正确性的形式证明。</p>
+
+<p><strong>Cost model 符号表</strong>：</p>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$T$</td><td>token count</td></tr>
+<tr><td>$h$</td><td>cache hit rate</td></tr>
+<tr><td>$P_\text{read}$</td><td>cache read price / M tokens</td></tr>
+<tr><td>$P_\text{write}$</td><td>cache write price / M tokens</td></tr>
+<tr><td>$T_\text{pre}$, $T_\text{post}$</td><td>trim 前后 token count</td></tr>
+<tr><td>$n^*$</td><td>break-even turn</td></tr>
+</table>
+
+<p><strong>Cost model 方程</strong>：</p>
+
+<p>稳态每轮成本：$C(T, h) = \frac{T}{10^6}(h \cdot P_\text{read} + (1-h) \cdot P_\text{write})$</p>
+
+<p>Cold-cache 惩罚轮成本：$C_\text{cold}(T) = \frac{T}{10^6} \cdot P_\text{write}$</p>
+
+<p>一次性惩罚：$\Delta_\text{penalty} = C_\text{cold}(T_\text{post}) - C(T_\text{pre}, h)$</p>
+
+<p>每轮节约：$\Delta_\text{savings} = C(T_\text{pre}, h) - C(T_\text{post}, h)$</p>
+
+<p>Break-even 轮数：$n^* = \lceil \Delta_\text{penalty} / \Delta_\text{savings} \rceil + 1$</p>
+
+<p><strong>物理意义</strong>：trim 后的首轮丢失缓存前缀（写价格），后续轮因更小 prefix 而在 cache hit 下节省。$n^*$ 就是累积节约追平一次性惩罚所需的轮数。</p>
+
+<p><strong>6 checks</strong>：</p>
+
+<ol>
+<li><strong>量纲一致性</strong>：$C(T,h)$ 输出 $，$T / 10^6 \times \$ / M$ = $ ✓</li>
+<li><strong>边界条件 $h=1$</strong>：$C = T \cdot P_\text{read} / 10^6$（全缓存命中），符合直觉 ✓</li>
+<li><strong>边界条件 $h=0$</strong>：$C = T \cdot P_\text{write} / 10^6 = C_\text{cold}(T)$（无缓存 = 冷启动），退化正确 ✓</li>
+<li><strong>$T_\text{post} = T_\text{pre}$ 时</strong>：$\Delta_\text{savings} = 0$，$n^* \to \infty$（无缩减 = 永远不回本），正确 ✓</li>
+<li><strong>$T_\text{post} = 0$ 时</strong>：$\Delta_\text{penalty}$ 为负（trimmed 首轮更便宜），$n^* = 1$，符合"极端缩减即时回本" ✓</li>
+<li><strong>实际数值验证</strong>：Table 1 下 Opus 4.6 $P_\text{write} = \$6.25$, $P_\text{read} = \$0.50$, $h=0.9$。84k token session: $C(84000, 0.9) = 0.084 \times (0.9 \times 0.50 + 0.1 \times 6.25) = \$0.0903$。若 $T_\text{post} = 67200$（20% 缩减），$\Delta_\text{savings} = \$0.018 / \text{turn}$, $\Delta_\text{penalty} \approx \$0.33$, $n^* \approx 19$。与 Table 2 中位数 38 的偏差可归因于实际分布——确认 cost model 量级正确 ✓</li>
+</ul>
+
+<p><strong>可形式化但未做</strong>：trimming 的 "structurally lossless" 可以形式定义为投影函数 $\pi: M \to M'$ 使得 $\forall m \in M_{\text{user}} \cup M_{\text{assistant}}: m \in M'$，即 user/assistant 消息集合不变。论文以自然语言声明但未用集合论证明。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="数据来源与方法">数据来源与方法 <a class="heading-anchor" href="#数据来源与方法" aria-label="Link to 数据来源与方法">#</a></h3>
+
+<p>单用户 Claude Code（Opus 4.6）三个月的实际编码会话，排除子代理会话和 <10 messages / <5k token 的会话后保留 76 个。以 chars/4 估算 token（对 text-dominated 会话准确、对 image-heavy 会话高估）。假设 $h = 0.9$ 缓存命中率。</p>
+
+<h3 id="核心结果">核心结果 <a class="heading-anchor" href="#核心结果" aria-label="Link to 核心结果">#</a></h3>
+
+<p><img src="/assets/2602.22402/fig2.png" alt="Figure 2: Token 缩减分布"></p>
+
+<p><em>Paper Figure 2: 76 个会话的 token reduction 分布，按 bloat profile 着色。中位 12%，均值 20.4%，长尾可达 86%。</em></p>
+
+<p>分布呈右偏长尾：29 个会话缩减 <5%（几乎纯对话），但 12 个 mixed 会话平均 39%。这意味着 CMV trimming 对 tool-heavy 会话有显著价值，对纯对话会话接近无效——适用性取决于 workflow 类型。</p>
+
+<p><img src="/assets/2602.22402/fig3.png" alt="Figure 3: Break-even 与 reduction 关系"></p>
+
+<p><em>Paper Figure 3: 散点图。>30% 缩减的会话在 15 轮内 break-even（"worth it" 区域），<10% 缩减的会话聚集在 60 轮 cap（"trimming is unnecessary" 区域）。</em></p>
+
+<p>Figure 3 是论文经济论证的关键图：它将 reduction 和 break-even 的非线性关系可视化——30% 是实用分界线，低于此值 trimming 在 API 定价下可能是净负面的。两条注释线（<15 turns = worth it, <5 turns = easy win）帮助实践者快速判断。</p>
+
+<p><img src="/assets/2602.22402/fig4.png" alt="Figure 4: 累积成本对比"></p>
+
+<p><em>Paper Figure 4: 累积输入成本。高亮会话（46% 缩减）在 turn 6 回本，此后持续节省。淡线显示其他会话的分布。</em></p>
+
+<p>高亮线清晰展示了 trim-then-cache 策略的典型行为：首轮 cold miss 造成跳跃，但更小的 prefix 使后续每轮斜率降低，curve 持续发散。</p>
+
+<p><img src="/assets/2602.22402/fig5.png" alt="Figure 5: 会话上下文组成"></p>
+
+<p><em>Paper Figure 5: 各会话 JSONL 字节组成。绿色 = 对话内容（保留），其他颜色 = 可裁剪开销（tool results, thinking/sigs, file history 等）。</em></p>
+
+<p>Figure 5 解释了 bimodal 分布的根源：有些会话（如左侧几个）tool result + file history 占比超 40%，给 trimmer 留出大量空间；右侧会话几乎全是对话，trimmer 无处可削。</p>
+
+<h3 id="分段结果（table-3）">分段结果（Table 3） <a class="heading-anchor" href="#分段结果（table-3）" aria-label="Link to 分段结果（table-3）">#</a></h3>
+
+<table>
+<tr><th>Bloat Profile</th><th>Sessions</th><th>Mean Red.</th><th>Med. Red.</th><th>Mean Break-even</th><th>Mean Context</th></tr>
+<tr><td>Mixed (≥15%)</td><td>12</td><td>39%</td><td>33%</td><td>10 turns</td><td>97k</td></tr>
+<tr><td>Conversational (<15%)</td><td>64</td><td>17%</td><td>10%</td><td>40 turns</td><td>82k</td></tr>
+<tr><td>All</td><td>76</td><td>20%</td><td>12%</td><td>35 turns</td><td>84k</td></tr>
+</table>
+
+<p>Mixed 会话虽仅占 16%，但平均上下文更大（97k vs 82k），break-even 更快（10 vs 40），是 trimming 的主要受益群体。</p>
+
+<h3 id="未量化的主要收益">未量化的主要收益 <a class="heading-anchor" href="#未量化的主要收益" aria-label="Link to 未量化的主要收益">#</a></h3>
+
+<p>论文明确承认：branching 带来的 context rebuilding 避免是 "primary value proposition"，但仅以定性论述支撑。一次 branch load 成本 $0.53（cache-write, 84k token），缓存命中后降至 $0.04——远低于从零重建同等理解的 10–20 轮累积成本。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>论点</th><th>证据</th><th>逻辑类型</th></tr>
+<tr><td>1</td><td>Autocompaction 在 context window 满时造成 98% 的会话状态损失</td><td>Fig. 1: 132k → 2.3k 观测实例</td><td>观察归纳（n=1 实例）</td></tr>
+<tr><td>2</td><td>现有方案（RAG, MemGPT, prompt compression）不能保留完整对话状态</td><td>§1 功能对比表：RAG 无状态、MemGPT 单会话、压缩操作在 embedding 层</td><td>分类排除</td></tr>
+<tr><td>3</td><td>DAG 版本控制模型 + 四原语可实现跨会话 context 复用</td><td>§2 形式定义 $G=(V,E)$ + Snapshot/Branch/Trim/Tree 语义</td><td>构造性设计</td></tr>
+<tr><td>4</td><td>三遍裁剪算法在 structural level 无损压缩 conversation log</td><td>Algorithm 1 + 七条规则 + 孤儿处理保证 API 正确性</td><td>算法规约</td></tr>
+<tr><td>5</td><td>Trimming 在 mixed 会话中经济可行（39% 缩减, 10 轮 break-even）</td><td>Table 3, Fig. 2–4: 76 session 实测</td><td>经验验证</td></tr>
+<tr><td>6</td><td>Context rebuilding 避免是主要价值但未定量测量</td><td>§4.4: 定性论述 "10–20 turns / 15–30 min"</td><td>未验证声明</td></tr>
+</table>
+
+<p>论证链从问题观察（step 1）经由排除现有方案（step 2）到设计方案（step 3–4），再经实验验证（step 5），最后以未验证声明（step 6）结束。注意 step 1 的 98% 数字来自单例观测，step 6 完全无量化支撑。</p>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>开源参考实现：<a href="https://github.com/CosmoNaught/claude-code-cmv">github.com/CosmoNaught/claude-code-cmv</a></p>
+
+<h3 id="核心技术壁垒：孤儿-tool-result-检测">核心技术壁垒：孤儿 tool result 检测 <a class="heading-anchor" href="#核心技术壁垒：孤儿-tool-result-检测" aria-label="Link to 核心技术壁垒：孤儿-tool-result-检测">#</a></h3>
+
+<p>三遍架构存在的唯一原因是 LLM API 的 tool_use / tool_result 严格配对约束。如果 API 允许未配对的 tool_result（或自动忽略），Pass 2 可以被消除，算法退化为单遍流式过滤。CMV 在 userland 解决了一个本质上属于 API schema 设计的问题——未来 API 松绑此约束将使此壁垒消失。</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Pass 1 的 String.includes() 优化</strong>：对每行原始文本做字符串匹配检测 compaction marker，只解析命中行的 JSON。对大文件（>100k 行 JSONL）这比逐行 JSON.parse 快一个数量级。</li>
+<li><strong>Stub 阈值 $\tau = 500$ 字符的合理性</strong>：保留足够短的 tool 输出（error messages、short file reads）原样传递，仅 stub 长输出。最小值设为 50 字符防止过度裁剪。白名单字段（file_path, command 等）永远不被 stub，确保 model 保留 "做了什么" 的元知识。</li>
+</ul>
+
+<h3 id="agent-specific-补充">Agent-specific 补充 <a class="heading-anchor" href="#agent-specific-补充" aria-label="Link to agent-specific-补充">#</a></h3>
+
+<p><strong>§ Agent scope</strong>: 本文的 agent 是 coding agent（Claude Code），属闭环（single-user 持续交互、tool-use dominated），交互模式为多轮、人在环路。CMV 不改变 agent 本身的推理能力，而是管理其 context window 生命周期。</p>
+
+<p><strong>§ Planning & reasoning</strong>: CMV 不涉及 agent 的 planning / reasoning 机制——它在 agent 下层运行，管理会话日志。用户手动决定何时 snapshot / branch / trim。无 backtracking（快照不可变），但可通过创建新 branch 实现功能等价的 "回到旧状态"。</p>
+
+<p><strong>§ Tool & environment interface</strong>: CMV 自身的 "tools" 是四个 CLI 命令（snapshot, branch, trim, tree），操作对象是文件系统上的 JSONL 文件。Side effects: snapshot 为只读复制；branch 创建新会话目录；trim 在 branch 基础上修改 JSONL。Environment 假定：文件系统确定性、Claude Code JSONL 格式稳定。</p>
+
+<p><strong>§ LLM backbone requirements</strong>: 无最小模型要求——CMV 操作的是 conversation log 而非 model weights。论文评估仅用 Opus 4.6，但方法对任何遵循 tool_use / tool_result schema 的 API 通用。</p>
+
+<p><strong>§ Evaluation</strong>: 无标准 benchmark。76 个真实 session 的 case study，single-user（n=1 user）。Metric: token reduction %, break-even turns, cumulative $ cost。无 pass@k / success rate / reasoning accuracy 测量。无与其他工具的 A/B 对照。</p>
+
+<p><strong>§ Production readiness</strong>: 参考实现是 CLI wrapper over filesystem + JSONL 操作。无沙箱（直接操作 Claude Code session 文件）。无 auth / secrets 管理。无并发控制（手动单用户操作）。Observability: Tree 命令提供谱系可视化。成本控制：break-even 分析作为事前决策工具。</p>
+
+<p>[实现已公开] — https://github.com/CosmoNaught/claude-code-cmv</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
