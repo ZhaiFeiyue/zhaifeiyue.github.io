@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: KVFlow: Efficient Prefix Caching for Accelerating LLM-Based Multi-Agent Workflows — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">KVFlow: Efficient Prefix Caching for Accelerating LLM-Based Multi-Agent Workflows</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2507.07400 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2507.07400/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="l3-relate-·-kvflow-2507-07400">L3 Relate · KVFlow (2507.07400) <a class="heading-anchor" href="#l3-relate-·-kvflow-2507-07400" aria-label="Link to l3-relate-·-kvflow-2507-07400">#</a></h1>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<table>
+<tr><th>Entity</th><th>关系类型</th><th>为什么相关</th></tr>
+<tr><td>DualPath (2602.21548)</td><td>同层互补</td><td>同为 agentic workload 下的 KV-cache I/O 优化；DualPath 解决 PD 分离架构的存储带宽瓶颈，KVFlow 解决单节点 prefix cache eviction 策略</td></tr>
+<tr><td>PPD (2603.13358)</td><td>正交组合</td><td>PPD 将 Turn 2+ append-prefill 路由到 decode 节点本地执行，避免 KV transfer；KVFlow 优化 prefix cache 的驱逐和预取。两者可叠加——KVFlow 管 GPU-CPU cache 层，PPD 管请求路由层</td></tr>
+<tr><td>MFS (2603.17456)</td><td>同层正交</td><td>MFS 调度 disaggregated MoE serving 中三阶段通信的网络争用（TTFT SLO）；KVFlow 调度 CPU→GPU KV prefetch 的时机。两者关注不同瓶颈面（网络 vs PCIe），均利用 workflow/request 级未来信息做优先级决策</td></tr>
+<tr><td>TensorHub (2604.09107)</td><td>设计范式共鸣</td><td>TensorHub 用 Reference-Oriented Storage + pipeline replication 解决 RL 权重传输；KVFlow 用 workflow-aware eviction + proactive prefetch 解决 KV cache 搬运。共同 insight：利用 application-layer 结构信息（workflow graph / version DAG）来指导系统层数据调度</td></tr>
+<tr><td>PrfaaS (2604.15039)</td><td>互补层级</td><td>PrfaaS 将跨 DC 的 KV 传输带宽通过 hybrid attention 压到 ~3 Gbps 使之可行；KVFlow 在单节点 PCIe 链路上通过 proactive prefetch 隐藏 KV 加载延迟。两者分别优化跨集群和节点内的 KV 搬运效率</td></tr>
+<tr><td>ZeRO-Prefill (2605.02960)</td><td>正交可组合</td><td>ZeRO-Prefill 用 AsyncEP 消除 MoE 每层 AllToAll，对 prefill-only 大 batch 有效；KVFlow 优化多 agent 小 dynamic suffix 的 cache 管理。两者优化完全不同的 workload regime（throughput-heavy vs latency-sensitive interactive）</td></tr>
+<tr><td>TileRT (tilert-speed-scaling-law)</td><td>不同抽象层</td><td>TileRT 从 kernel 执行层面消除 inter-kernel gap（persistent engine kernel）；KVFlow 从系统调度层面消除 cache miss 延迟。TileRT 解决 BS≈1 decode 效率，KVFlow 解决 multi-agent prefill 效率——两者不冲突但面向不同性能瓶颈</td></tr>
+<tr><td>KVServe (kvserve)</td><td>互补组件</td><td>KVServe 压缩 PD 间 KV 传输（降 volume）；KVFlow 优化 GPU-CPU 间 KV 搬运的时序（降 exposed latency）。KVServe 的 10x 压缩可进一步放大 KVFlow proactive prefetch 的效果——压缩后的 KV 体积更小，PCIe 预取更快完成</td></tr>
+</table>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="2-1-kvflow-独有贡献">2.1 KVFlow 独有贡献 <a class="heading-anchor" href="#2-1-kvflow-独有贡献" aria-label="Link to 2-1-kvflow-独有贡献">#</a></h3>
+
+<p><strong>Application-layer graph 下沉到 cache eviction 决策</strong>：KVFlow 是第一个将 workflow DAG 拓扑信息（而非历史访问模式）注入到 KV-cache eviction policy 的工作。其 Agent Step Graph 抽象通过 <code>max+1</code>/<code>min+1</code> aggregation function 统一了 DAG、cycle、conditional branch，生成 per-node Steps-to-Execution (STE) 距离度量 <a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="L2:2507.07400#core-contribution">[L2:2507.07400]</a>。</p>
+
+<p>与其他工作的分水岭对比：</p>
+
+<table>
+<tr><th>维度</th><th>KVFlow</th><th>DualPath</th><th>PPD</th><th>MFS</th><th>TensorHub</th></tr>
+<tr><td>信息来源</td><td>workflow 拓扑（<strong>未来</strong>）</td><td>网络拓扑（静态）</td><td>workload profile（offline 统计）</td><td>TTFT deadline（per-request）</td><td>version DAG（当前/历史）</td></tr>
+<tr><td>决策粒度</td><td>radix tree KV node</td><td>request → path</td><td>request → node route</td><td>flow → priority queue</td><td>tensor → source replica</td></tr>
+<tr><td>预测目标</td><td>哪个 agent KV 将被下一步使用</td><td>哪条 path 带宽未饱和</td><td>AP 是否干扰 decode</td><td>P2D flow 何时必须完成</td><td>哪个 replica 负载最低</td></tr>
+<tr><td>前提假设</td><td><strong>workflow graph 静态可观测</strong></td><td>PD 分离 + dual NIC</td><td>multi-turn session</td><td>disaggregated MoE + switch QoS</td><td>RL trainer-rollout topology</td></tr>
+</table>
+
+<h3 id="2-2-增量-vs-同期工作">2.2 增量 vs 同期工作 <a class="heading-anchor" href="#2-2-增量-vs-同期工作" aria-label="Link to 2-2-增量-vs-同期工作">#</a></h3>
+
+<p><strong>vs DualPath</strong> <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a>：DualPath 聚合 PE+DE 双侧存储 NIC 带宽解决 agentic workload 的 I/O 瓶颈，在 1152 GPU 生产级集群验证。KVFlow 的规模仅为单节点单 GPU（A10G/H100），且假设 CPU 二级缓存无限大 <a href="/papers/2507.07400/detail.html#质疑假设" class="ref-link" title="L2:2507.07400#质疑假设">[L2:2507.07400]</a>。两者解决同一 workload 类型（agentic）但在不同系统规模和不同层级：DualPath 是"带宽够不够"，KVFlow 是"在有限 GPU 显存下谁被换出"。</p>
+
+<p><strong>vs PrfaaS</strong> <a href="/papers/2604.15039/detail.html#核心技术壁垒" class="ref-link" title="L2:2604.15039#核心技术壁垒">[L2:2604.15039]</a>：PrfaaS 的核心壁垒是层间 prefill pipelining（compute layer k 与传输 layer k-1 的 KV 重叠），使跨 DC KV 传输可行。KVFlow 的 proactive prefetch 利用 PCIe full-duplex 重叠 CPU→GPU load 与 GPU→CPU output——两者都是 "pipeline overlap" 思路，但 PrfaaS 操作在跨 DC Ethernet（~100 Gbps），KVFlow 操作在本机 PCIe（2-64 GB/s）。PrfaaS 需要 hybrid attention 模型才能将 $\Phi_{\text{kv}}$ 降到可行范围；KVFlow 对任何 GQA/MHA/MLA 模型架构透明。</p>
+
+<p><strong>vs MFS</strong> <a href="/papers/2603.17456/detail.html#核心三问" class="ref-link" title="L2:2603.17456#核心三问">[L2:2603.17456]</a>：MFS 的 Defer-and-Promote 策略和 KVFlow 的 STE 优先级有哲学相似——都是 "未来紧迫度决定当前优先级"。MFS 用 MLU（Minimal Link Utilization）量化 explicit-deadline flow 的紧迫度；KVFlow 用 STE（steps-to-execution）量化 agent 的被调用距离。但 MFS 面向网络 flow 调度（commodity switch 硬件优先级队列），KVFlow 面向内存驱逐策略（radix tree 软件优先级）。MFS 有严格 TTFT deadline 驱动；KVFlow 没有 per-request SLO 感知。</p>
+
+<p><strong>vs ZeRO-Prefill</strong> <a href="/papers/2605.02960/detail.html#设计绑定批判" class="ref-link" title="L2:2605.02960#设计绑定批判">[L2:2605.02960]</a>：ZeRO-Prefill 绑定 prefill-only 大 batch 吞吐场景，KVFlow 绑定 interactive multi-agent serving 小 batch latency 场景。两者的工作负载假设完全不重叠——ZeRO-Prefill 的饱和阈值 T 要求每 GPU 有足够 FLOPs 覆盖 AllGather，而 KVFlow 的 agent prompt 通常只有 1-8K tokens、dynamic suffix 仅几十 token，compute window 极短。</p>
+
+<h3 id="2-3-矛盾点">2.3 矛盾点 <a class="heading-anchor" href="#2-3-矛盾点" aria-label="Link to 2-3-矛盾点">#</a></h3>
+
+<p>DualPath 声称 agentic workload 的 KV-cache 命中率高达 98.7% <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a>，此时 prefill 退化为 I/O-intensive（cache-compute ratio 22 GB/PFLOP）。KVFlow 的实验设置为 8192 fixed + 32 dynamic tokens，cache hit 应该也极高 <a href="/papers/2507.07400/detail.html#实验与数据" class="ref-link" title="L2:2507.07400#实验与数据">[L2:2507.07400]</a>。</p>
+
+<p><strong>矛盾根源</strong>：DualPath 的场景是"KV 存储在 3FS SSD 上、需要走 SNIC 加载"（storage I/O 瓶颈），而 KVFlow 的场景是"KV 在 CPU DRAM 上、需要走 PCIe 加载"（PCIe 瓶颈）。两者面对的物理介质不同——DualPath 是"SSD → DRAM → GPU"三级，KVFlow 是"CPU DRAM → GPU HBM"两级。DualPath 的 98.7% 命中率指的是"3FS 中有对应 KV"而非"GPU HBM 中有"；KVFlow 的场景是"GPU HBM 装不下所有 agent prefix"。两者在各自范围内都正确。</p>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<h3 id="3-1-workflow-graph-静态可观测假设过强">3.1 workflow graph 静态可观测假设过强 <a class="heading-anchor" href="#3-1-workflow-graph-静态可观测假设过强" aria-label="Link to 3-1-workflow-graph-静态可观测假设过强">#</a></h3>
+
+<p>KVFlow 的全部优势建立在 Agent Step Graph 可以在请求时刻给出完整拓扑 <a href="/papers/2507.07400/detail.html#质疑假设" class="ref-link" title="L2:2507.07400#质疑假设">[L2:2507.07400]</a>。对 MetaGPT/AutoGen/PEER 这类静态角色 pipeline 成立；但 ReAct/Reflexion/autonomous agent 在运行时动态生成下一步 agent（基于 LLM output 决策），STE 无法预先计算。<strong>论文未在动态 workflow 场景做任何实验</strong>。</p>
+
+<p>反击力度：<strong>致命级</strong>——如果 2026 年 agentic 范式从静态 DAG 向动态 agent（self-play、tree-of-thought、open-ended planner）迁移，KVFlow 的核心抽象需要根本性重新设计。</p>
+
+<h3 id="3-2-评测公平性和深度不足">3.2 评测公平性和深度不足 <a class="heading-anchor" href="#3-2-评测公平性和深度不足" aria-label="Link to 3-2-评测公平性和深度不足">#</a></h3>
+
+<ul>
+<li>仅对比 SGLang 两种配置（GPU-only 和 HiCache），未对比 vLLM / TRT-LLM / Mooncake <a href="/papers/2507.07400/detail.html#实验与数据" class="ref-link" title="L2:2507.07400#实验与数据">[L2:2507.07400]</a></li>
+<li>未报告 TTFT / TPOT / P99 等 serving 标准指标；只用 E2E latency 和 speedup ratio <a href="/papers/2507.07400/detail.html#性能评测" class="ref-link" title="L2:2507.07400#性能评测">[L2:2507.07400]</a></li>
+<li>缺少 ablation 分离 "eviction only" vs "prefetch only" vs "status-aware scheduling" 的独立贡献</li>
+<li>仅单 GPU 实验；无多 GPU / 跨节点验证</li>
+</ul>
+
+<p>对比 DualPath 在 1152 GPU 生产 trace 上的验证 <a href="/papers/2602.21548/detail.html#实验与数据" class="ref-link" title="L2:2602.21548#实验与数据">[L2:2602.21548]</a>，或 MFS 在 4 模型 × 2 workload 大规模仿真 <a href="/papers/2603.17456/detail.html#实验与数据" class="ref-link" title="L2:2603.17456#实验与数据">[L2:2603.17456]</a>，KVFlow 的实验规模明显偏小。</p>
+
+<h3 id="3-3-cpu-二级缓存无限假设">3.3 CPU 二级缓存无限假设 <a class="heading-anchor" href="#3-3-cpu-二级缓存无限假设" aria-label="Link to 3-3-cpu-二级缓存无限假设">#</a></h3>
+
+<p>论文假设 CPU DRAM 能装下所有被驱逐的 KV <a href="/papers/2507.07400/detail.html#质疑假设" class="ref-link" title="L2:2507.07400#质疑假设">[L2:2507.07400]</a>。在高并发场景（几百 workflow × 几十 agent × 8K token prefix），CPU RAM 也会爆。DualPath 明确给出了 working set 模型（$\lambda\bar{T} \times \text{total\_len}/2$）和成本分析（$r^3$ 扩展）<a href="/papers/2602.21548/detail.html#working-set-model" class="ref-link" title="L2:2602.21548#working-set-model">[L2:2602.21548]</a>；KVFlow 完全没有这方面的分析。</p>
+
+<h3 id="3-4-pcie-带宽利用率的-fragmentation-上限">3.4 PCIe 带宽利用率的 fragmentation 上限 <a class="heading-anchor" href="#3-4-pcie-带宽利用率的-fragmentation-上限" aria-label="Link to 3-4-pcie-带宽利用率的-fragmentation-上限">#</a></h3>
+
+<p>KVFlow 作者自己承认 SGLang 的 KV fragmented layout 导致 PCIe 带宽无法打满 <a href="/papers/2507.07400/detail.html#limitations" class="ref-link" title="L2:2507.07400#limitations">[L2:2507.07400]</a>。proactive prefetch 只是更好地 overlap 了"不满的带宽"。如果 KV 在 CPU 上也是碎片化存储（non-contiguous），DMA 传输无法达到 PCIe 理论带宽。这限制了 KVFlow 的加速上界。</p>
+
+<h3 id="3-5-只有-8192-fixed-token-才有-2-91×-是-cherry-picking">3.5 "只有 8192 fixed token" 才有 2.91× 是 cherry-picking <a class="heading-anchor" href="#3-5-只有-8192-fixed-token-才有-2-91×-是-cherry-picking" aria-label="Link to 3-5-只有-8192-fixed-token-才有-2-91×-是-cherry-picking">#</a></h3>
+
+<p>KVFlow 的 headline 数字 2.91× 出现在 8192 fixed / 32 dynamic / 32 output 的极端配置下 <a href="/papers/2507.07400/detail.html#实验与数据" class="ref-link" title="L2:2507.07400#实验与数据">[L2:2507.07400]</a>。在更现实的配置（4096 fixed tokens）下降到 ~1.9×；长 decode（512 output）下仅 ~1.2×。论文未用真实 agentic trace（如 DualPath 使用的 DeepSeek 生产 coding agent trace）验证——合成 workload 可能过度偏向 KVFlow 的优势区间。</p>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<h3 id="4-1-范式定位">4.1 范式定位 <a class="heading-anchor" href="#4-1-范式定位" aria-label="Link to 4-1-范式定位">#</a></h3>
+
+<p>KVFlow 属于 <strong>"serving 层开始感知 application-layer structure"</strong> 的新方向。传统 serving 系统（vLLM/SGLang）视每个请求为独立 stateless 单元；KVFlow 要求前端告知后端 workflow 依赖关系，是 "application-serving co-design" 的早期代表。</p>
+
+<p>同属此范式的工作：</p>
+<ul>
+<li>Parrot (OSDI'24)：workflow-aware 调度器（偏 request scheduling，不动 cache）</li>
+<li>Autellix (2502.13965)：multi-step 请求的 latency-optimal 调度</li>
+<li>Cognify (2502.08056)：frontend workflow 自动调优</li>
+</ul>
+
+<p>KVFlow 的独特切入点是 <strong>cache eviction policy</strong>——在已有的 Parrot/Autellix 调度器之下，再下沉一层到 KV-cache 生命周期管理。</p>
+
+<h3 id="4-2-采纳证据">4.2 采纳证据 <a class="heading-anchor" href="#4-2-采纳证据" aria-label="Link to 4-2-采纳证据">#</a></h3>
+
+<ul>
+<li>截至 2026-05，代码<strong>未合入 SGLang 主线</strong>也未公开 <a href="/papers/2507.07400/detail.html#adoption-maturity" class="ref-link" title="L2:2507.07400#adoption-maturity">[L2:2507.07400]</a></li>
+<li>vLLM v1 的"可插拔 eviction policy" RFC 讨论中 KVFlow 被引为 natural plugin 候选</li>
+<li>与 UCSD 同组 Cognify、InferCept 形成系列工作，但三者互相独立实现</li>
+<li>无已知的生产部署案例</li>
+</ul>
+
+<h3 id="4-3-竞争者时间线">4.3 竞争者时间线 <a class="heading-anchor" href="#4-3-竞争者时间线" aria-label="Link to 4-3-竞争者时间线">#</a></h3>
+
+<table>
+<tr><th>时间</th><th>系统</th><th>与 KVFlow 的关系</th></tr>
+<tr><td>2024-06</td><td>Parrot (OSDI'24)</td><td>workflow-aware 调度，不动 cache</td></tr>
+<tr><td>2025-07</td><td><strong>KVFlow</strong></td><td>workflow-aware <strong>cache eviction</strong></td></tr>
+<tr><td>2026-02</td><td>DualPath</td><td>agentic cache I/O 瓶颈的生产级方案（不做 eviction 优化）</td></tr>
+<tr><td>2026-02</td><td>Autellix</td><td>multi-step scheduling（与 KVFlow 互补）</td></tr>
+<tr><td>2026-04</td><td>PrfaaS</td><td>跨 DC KV 传输可行性（hybrid attention 方向）</td></tr>
+<tr><td>2026-05</td><td>KVServe</td><td>PD 间 KV 压缩（与 KVFlow 正交）</td></tr>
+</table>
+
+<p>KVFlow 在时间线上是 "workflow-aware cache eviction" 的 first mover，但由于缺乏开源和生产验证，后续工作（DualPath/PrfaaS）已经在更大规模上验证了各自的方案，生态影响力超越 KVFlow。</p>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<h3 id="5-1-kvflow-kvserve：压缩预取流水线">5.1 KVFlow + KVServe：压缩预取流水线 <a class="heading-anchor" href="#5-1-kvflow-kvserve：压缩预取流水线" aria-label="Link to 5-1-kvflow-kvserve：压缩预取流水线">#</a></h3>
+
+<p>KVFlow 的 proactive prefetch 受限于 PCIe 带宽；KVServe 可将 KV 体积压缩 10x <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a>。组合方案：在 CPU 上预存压缩后的 KV（~100 MB → ~10 MB per agent），GPU 侧接收后实时解压。这将：</p>
+<ul>
+<li>大幅缩短 prefetch 完成时间（10x 更少数据量 over PCIe）</li>
+<li>减少 CPU DRAM 压力（10x 更小存储）</li>
+<li>代价是增加了 GPU 侧解压开销</li>
+</ul>
+
+<p><strong>技术挑战</strong>：KVServe 当前不支持 "CPU→GPU 传输中解压" 的 streaming 解压模式，只支持 PD 间传输；需要扩展到 CPU offload 场景。</p>
+
+<h3 id="5-2-动态-workflow-的增量-ste-更新">5.2 动态 workflow 的增量 STE 更新 <a class="heading-anchor" href="#5-2-动态-workflow-的增量-ste-更新" aria-label="Link to 5-2-动态-workflow-的增量-ste-更新">#</a></h3>
+
+<p>将 Agent Step Graph 从"请求时刻一次性给出"改为"运行时增量更新"：当 ReAct agent 产生下一步决策后，新增 edge 到 graph，重算受影响节点的 STE，触发 eviction priority 更新。</p>
+
+<p><strong>技术挑战</strong>：增量 STE 更新的一致性——如果在 "旧 STE → 新 STE" 转换过程中有 prefetch 正在进行，可能导致错误预取。需要 STE version 与 prefetch transaction 关联。</p>
+
+<h3 id="5-3-mfs-式-defer-and-promote-思路用于-kv-prefetch-调度">5.3 MFS 式 Defer-and-Promote 思路用于 KV prefetch 调度 <a class="heading-anchor" href="#5-3-mfs-式-defer-and-promote-思路用于-kv-prefetch-调度" aria-label="Link to 5-3-mfs-式-defer-and-promote-思路用于-kv-prefetch-调度">#</a></h3>
+
+<p>MFS 的 MLU 概念可以移植到 KVFlow：为每个待预取的 KV block 计算 "Minimal PCIe Utilization" = remaining_KV_size / (STE × avg_step_time × PCIe_BW)。MLU 高的 block 优先占据 PCIe 带宽；MLU 低的 block defer 到后续 step。这比 KVFlow 当前的 "预取下一步所有可能 agent" 更精细。</p>
+
+<h3 id="5-4-跨节点-prefix-cache-迁移-ste-传播">5.4 跨节点 prefix cache 迁移 + STE 传播 <a class="heading-anchor" href="#5-4-跨节点-prefix-cache-迁移-ste-传播" aria-label="Link to 5-4-跨节点-prefix-cache-迁移-ste-传播">#</a></h3>
+
+<p>KVFlow 仅支持单 GPU <a href="/papers/2507.07400/detail.html#limitations" class="ref-link" title="L2:2507.07400#limitations">[L2:2507.07400]</a>。在分布式多实例 serving 场景下，不同 workflow 实例分布在不同 GPU 上，共享 system prompt 的 prefix KV 可以跨 GPU 迁移。STE 信息可以跨节点传播——如果 GPU-A 上的 agent X 即将被激活，且其 prefix 恰好在 GPU-B 上有 cache，可以触发跨节点预取。</p>
+
+<p><strong>与 DualPath 的结合</strong>：DualPath 的 dual-path loading 机制（PE SNIC + DE SNIC 聚合带宽）可以承载跨节点 KV 预取的数据传输 <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a>。</p>
+
+<h3 id="5-5-zero-prefill-的-frontend-三规则启发-kvflow-的-batch-组合">5.5 ZeRO-Prefill 的 frontend 三规则启发 KVFlow 的 batch 组合 <a class="heading-anchor" href="#5-5-zero-prefill-的-frontend-三规则启发-kvflow-的-batch-组合" aria-label="Link to 5-5-zero-prefill-的-frontend-三规则启发-kvflow-的-batch-组合">#</a></h3>
+
+<p>ZeRO-Prefill 的 prefix-aware routing + true-FLOPs tracking <a href="/papers/2605.02960/detail.html#核心三问" class="ref-link" title="L2:2605.02960#核心三问">[L2:2605.02960]</a> 可以指导 KVFlow 的 multi-workflow 调度：当多个 workflow 的 agent 共享 prefix 时，将它们路由到同一 GPU，利用 radix tree 的共享前缀节点减少 KV 存储和 prefetch 量。KVFlow 当前没有考虑 cross-workflow prefix sharing 的优化。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2604.03143.html">2604.03143</a> (related) 
+<a href="/papers/2504.20068.html">2504.20068</a> (related) 
+<a href="/papers/2601.12967.html">2601.12967</a> (related) 
+<a href="/papers/2602.21548.html">2602.21548</a> (related) 
+<a href="/papers/2601.22705.html">2601.22705</a> (related) 
+<a href="/papers/2602.13692.html">2602.13692</a> (related) 
+<a href="/papers/2603.16104.html">2603.16104</a> (related) 
+<a href="/papers/2505.05286.html">2505.05286</a> (related) 
+<a href="/papers/2511.01633.html">2511.01633</a> (related) 
+<a href="/papers/2602.21477.html">2602.21477</a> (related) 
+<a href="/papers/2604.15039.html">2604.15039</a> (related) 
+<a href="/papers/2603.18897.html">2603.18897</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

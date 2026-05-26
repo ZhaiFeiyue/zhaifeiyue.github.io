@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Not All Prefills Are Equal: PPD Disaggregation for Multi-turn LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Not All Prefills Are Equal: PPD Disaggregation for Multi-turn LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2603.13358 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2603.13358/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+<h1 id="ppd-vs-相关论文：跨篇综合">PPD vs 相关论文：跨篇综合 <a class="heading-anchor" href="#ppd-vs-相关论文：跨篇综合" aria-label="Link to ppd-vs-相关论文：跨篇综合">#</a></h1>
+
+<h2 id="相关论文">相关论文 <a class="heading-anchor" href="#相关论文" aria-label="Link to 相关论文">#</a></h2>
+
+<p>本篇选取 8 篇相关实体，覆盖 PD 分离推理、MoE serving 调度、RL 训练权重传输、低延迟推理引擎和 KV-cache 压缩等维度，与 PPD 形成多角度对比。</p>
+
+<p><strong>DualPath (2602.21548)</strong> — 与 PPD 最直接可比的 PD 分离优化工作。两者都识别到标准 PD 分离架构下多轮对话的 KV-cache 传输低效，但解法路径完全不同：PPD 通过动态路由将 Turn 2+ 请求在 decode 节点本地执行 append-prefill 以规避 KV 传输 <a href="/papers/2603.13358/detail.html#核心三问" class="ref-link" title="L2:2603.13358#核心三问">[L2:2603.13358]</a>；DualPath 通过聚合 DE 端空闲 SNIC 带宽建立第二条 KV-cache 加载路径以加速传输 <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a>。PPD 是"避免传输"，DualPath 是"加速传输"。PPD 面向通用多轮对话（ShareGPT/WildChat），DualPath 面向 agentic RL 工作负载（DeepSeek coding agent，157 轮/session）。Kind: related。</p>
+
+<p><strong>MFS (2603.17456)</strong> — 与 PPD 正交但互补的网络调度优化。PPD 解决 PD 分离中"Turn 2+ KV 传输是否值得"的路由层决策 <a href="/papers/2603.13358/detail.html#核心三问" class="ref-link" title="L2:2603.13358#核心三问">[L2:2603.13358]</a>；MFS 解决 PD 分离中"KV 传输、collective comm、P2D 传输三阶段如何争用网络"的网络调度层决策 <a href="/papers/2603.17456/detail.html#核心三问" class="ref-link" title="L2:2603.17456#核心三问">[L2:2603.17456]</a>。PPD 的价值在于消除不必要的 KV 传输（减少 ~75% 传输量），MFS 的价值在于优化剩余传输的网络优先级。两者可叠加：PPD 减少 Turn 2+ 的 PD 传输量后，MFS 对 Turn 1 的 P2D 传输做 RMLQ 调度。MFS 面向 MoE 模型的 EP all-to-all 争用，PPD 不涉及并行策略层。Kind: related。</p>
+
+<p><strong>TensorHub (2604.09107)</strong> — RL 训练权重传输框架，与 PPD 的问题域不同但共享"利用多副本实现 fan-out 带宽放大"的设计模式。TensorHub 用 Reference-Oriented Storage + pipeline replication 在 rollout 扩展中实现线性带宽增长 <a href="/papers/2604.09107/detail.html#核心三问" class="ref-link" title="L2:2604.09107#核心三问">[L2:2604.09107]</a>；PPD 用 per-request 路由决策在 decode 节点间分散 prefill 负载。TensorHub 的"无所有权存储"思想——所有副本对等、任意节点可服务——与 PPD 的 session affinity 设计形成对比：PPD 的 Turn 2+ 必须路由到持有 KV cache 的特定 D 节点，不具备 TensorHub 的副本灵活性。Kind: related。</p>
+
+<p><strong>PrfaaS (2604.15039)</strong> — PD 分离的另一条路线：将长上下文 prefill offload 到跨 DC 独立集群 <a href="/papers/2604.15039/detail.html#tl-dr" class="ref-link" title="L2:2604.15039#tl-dr">[L2:2604.15039]</a>。PPD 在单集群内优化 Turn 2+ 路由，PrfaaS 跨集群优化 Turn 1 长前缀路由——两者攻击 PD 分离的不同阶段。PrfaaS 依赖混合注意力将 $\Phi_{\text{kv}}$ 压缩到 ≈3 Gbps 使跨 DC 可行 <a href="/papers/2604.15039/detail.html#实验与数据" class="ref-link" title="L2:2604.15039#实验与数据">[L2:2604.15039]</a>；PPD 不限制模型架构。PrfaaS 的 throughput model（Eq.1–8）中的长度阈值 $t$ 路由与 PPD 的 scoring function $S(\psi;\pi,\mathbf{w})$ 在设计模式上类似——都是基于 workload 参数的 per-request 路由决策，但 PrfaaS 按长度阈值分流，PPD 按 TTFT/TPOT trade-off 分流。Kind: related。</p>
+
+<p><strong>ZeRO-Prefill (2605.02960)</strong> — 面向 prefill-only workload 的 MoE 执行优化。ZeRO-Prefill 反转 EP 数据流方向（weight streaming 替代 activation routing），消除 AllToAll 通信 <a href="/papers/2605.02960/detail.html#核心三问" class="ref-link" title="L2:2605.02960#核心三问">[L2:2605.02960]</a>；PPD 反转 PD 数据流方向（append-prefill 在 decode 节点执行替代传统 P→D KV 传输）。两者共享"反转传统数据流方向"的设计直觉，但作用层不同：ZeRO-Prefill 优化模型并行层的通信，PPD 优化 PD 分离层的路由。ZeRO-Prefill 绑定 prefill-only 场景 <a href="/papers/2605.02960/detail.html#核心三问" class="ref-link" title="L2:2605.02960#核心三问">[L2:2605.02960]</a>，PPD 面向完整的多轮 prefill+decode 生命周期。Kind: related。</p>
+
+<p><strong>TileRT blog (tilert-speed-scaling-law)</strong> — 从完全不同的角度攻击推理延迟：将整个模型 AOT 编译为单个 Persistent Engine Kernel，消除 inter-kernel idle <a href="/papers/tilert-speed-scaling-law/detail.html#q1-q2-q3" class="ref-link" title="L2:tilert-speed-scaling-law#q1-q2-q3">[L2:tilert-speed-scaling-law]</a>。TileRT 面向 batch=1 超低延迟 decode，PPD 面向中高并发多轮 serving。两者不可直接组合（TileRT 不支持 PD 分离架构中的动态路由），但 TileRT 的 heterogeneous workers 思想（GPU0 运行 Sparse Indexer，GPU1–7 运行 MLA Workers）与 PPD 的 P/D 节点异构角色分配在概念上有映射关系。Kind: related。</p>
+
+<p><strong>KVServe (kvserve)</strong> — KV-cache 压缩框架，与 PPD 互补。PPD 通过路由规避 Turn 2+ 的 KV 传输 <a href="/papers/2603.13358/detail.html#核心三问" class="ref-link" title="L2:2603.13358#核心三问">[L2:2603.13358]</a>，KVServe 通过压缩降低 Turn 1 不可避免的 KV 传输量 <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a>。KVServe 的 analytical model 提供了压缩是否有益的精确判据 $B < (1-1/cr) \cdot S$ <a href="/papers/kvserve/detail.html#逻辑故事还原" class="ref-link" title="L2:kvserve#逻辑故事还原">[L2:kvserve]</a>，类似于 PPD 的 scoring function $S > 0$ 判据——两者都是"是否采取优化动作"的 go/no-go 决策函数。KVServe 不支持 MLA 架构 <a href="/papers/kvserve/detail.html#limitations" class="ref-link" title="L2:kvserve#limitations">[L2:kvserve]</a>，PPD 在 vLLM 上不限模型架构。Kind: related。</p>
+
+<p><strong>TileRT code (tile-ai-tilert)</strong> — TileRT 的开源代码实现，验证了 blog 中描述的 tile-level 调度在 8×B200 上的部署 <a href="/papers/tile-ai-tilert/detail.html#q1-·-q2-·-q3" class="ref-link" title="L2:tile-ai-tilert#q1-·-q2-·-q3">[L2:tile-ai-tilert]</a>。DeepSeek-V3.2 达 600 tok/s，GLM-5 达 500 tok/s——但仅支持 batch=1 <a href="/papers/tile-ai-tilert/detail.html#实验与数据" class="ref-link" title="L2:tile-ai-tilert#实验与数据">[L2:tile-ai-tilert]</a>。PPD 的价值在中高并发场景下体现（批处理 200 级别的 decode batch），与 TileRT 的 batch=1 场景互斥。Kind: related。</p>
+
+<h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta <a class="heading-anchor" href="#本篇-vs-相关论文的-delta" aria-label="Link to 本篇-vs-相关论文的-delta">#</a></h2>
+
+<p>PPD 的核心 delta 是发现并量化了 append-prefill 与 full prefill 对 decode 干扰的量级差异（2% vs 48% TPOT degradation at batch 200），并将这一微架构观察转化为可操作的 per-request 动态路由决策 <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>。</p>
+
+<table>
+<tr><th>维度</th><th>PPD</th><th>DualPath</th><th>MFS</th><th>TensorHub</th><th>PrfaaS</th><th>ZeRO-Prefill</th><th>TileRT</th><th>KVServe</th></tr>
+<tr><td>瓶颈定位</td><td>Multi-turn KV 重传</td><td>Storage NIC 单点饱和</td><td>三阶段网络争用</td><td>权重传输 fan-out</td><td>Cross-DC KV 传输</td><td>MoE 三重冗余</td><td>Inter-kernel idle</td><td>PD KV 传输带宽</td></tr>
+<tr><td>优化层面</td><td>Request routing</td><td>数据通路 (RDMA)</td><td>网络调度</td><td>存储抽象</td><td>跨 DC 架构</td><td>模型并行执行</td><td>微架构执行</td><td>KV 压缩</td></tr>
+<tr><td>核心机制</td><td>Scoring function</td><td>Dual-path loading</td><td>RMLQ</td><td>ROS + pipeline rep.</td><td>长度阈值路由</td><td>AsyncEP</td><td>Persistent kernel</td><td>Transform+Quant+Codec</td></tr>
+<tr><td>模型要求</td><td>无</td><td>无</td><td>MoE + EP</td><td>无</td><td>Hybrid attention</td><td>MoE (prefill-only)</td><td>DeepSeek-V3.2/GLM-5</td><td>非 MLA</td></tr>
+<tr><td>硬件要求</td><td>vLLM disagg.</td><td>InfiniBand 双网 + 3FS</td><td>Switch HW priority</td><td>RDMA NIC</td><td>Commodity Ethernet</td><td>NVLink (D2D AG)</td><td>8×B200 NVL</td><td>NVIDIA nvCOMP</td></tr>
+<tr><td>规模验证</td><td>4 GPU</td><td><strong>1152 GPU</strong></td><td>32 GPU</td><td>1024 GPU</td><td>96 GPU</td><td>8 GPU</td><td>8 GPU</td><td>同节点测试</td></tr>
+<tr><td>开源</td><td>否</td><td>否</td><td>否</td><td>否</td><td>否</td><td>是 (vLLM flag)</td><td>部分</td><td>是</td></tr>
+</table>
+
+<p><strong>PPD vs DualPath — "避免传输" vs "加速传输"的根本分歧</strong>。PPD 观察到 Turn 2+ 的 append-prefill 干扰极低（2% TPOT degradation），因此直接在 decode 节点本地执行，完全规避 KV 传输 <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>。DualPath 不区分 turn number，而是通过 DE 端 SNIC + RDMA 计算网络加速所有 KV-cache 传输 <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a>。这反映了两种工作负载的结构性差异：PPD 面向通用多轮对话（平均 3.1 turns，ShareGPT/WildChat），Turn 2+ 的新增 token 数 $m$ 远小于历史 context $n$，append-prefill 的 $O(m(n+m))$ 复杂度远低于 full prefill 的 $O(n^2)$ <a href="/papers/2603.13358/detail.html#论证链" class="ref-link" title="L2:2603.13358#论证链">[L2:2603.13358]</a>。DualPath 面向 agentic RL（平均 157 轮、429 token/轮 append），KV-cache 命中率 98.7%，prefill 已退化为 I/O-bound <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a>。在 DualPath 的场景中，PPD 的"本地 append-prefill"同样成立但不足够——因为 RL rollout 的 batch 规模远大于 PPD 评估的 4 GPU 配置。</p>
+
+<p><strong>PPD vs PrfaaS — per-request 路由决策的两种形态</strong>。PPD 的 scoring function $S(\psi;\pi,\mathbf{w}) = w_{\text{ttft}}\Delta_{\text{ttft}} - w_{\text{tpot}}\Delta_{\text{tpot}}$ 是一个 TTFT/TPOT 的加权 trade-off <a href="/papers/2603.13358/detail.html#作者证明" class="ref-link" title="L2:2603.13358#作者证明">[L2:2603.13358]</a>。PrfaaS 的长度阈值 $t$ 由 $\Theta_{\text{prfaas}}/p = \Theta_{\text{pd-p}}/(1-p)$ 的平衡点唯一确定 <a href="/papers/2604.15039/detail.html#作者证明" class="ref-link" title="L2:2604.15039#作者证明">[L2:2604.15039]</a>。两者都实现了"不是所有请求都应该走同一条路径"的核心洞察，但 PPD 按 workload 状态动态切换（offline profiling + online lookup），PrfaaS 按请求长度静态分流。PPD 的优势在于 workload 自适应性——$w_{\text{tpot}}$ 从 1 到 6 可单调地在 TTFT 和 TPOT 之间滑动 <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>；PrfaaS 的优势在于有闭合形式的最优解且可证明单调性。</p>
+
+<p><strong>PPD vs MFS — 减少传输 vs 优化传输调度</strong>。PPD 将 Turn 2+ 的 ~75% KV 传输量消除（3.1 平均 turns → 仅 Turn 1 需传输）<a href="/papers/2603.13358/detail.html#论证链" class="ref-link" title="L2:2603.13358#论证链">[L2:2603.13358]</a>，MFS 对剩余的 KV 传输做 Defer-and-Promote 优先级调度以减少 collective comm 被挤压 <a href="/papers/2603.17456/detail.html#核心三问" class="ref-link" title="L2:2603.17456#核心三问">[L2:2603.17456]</a>。两者叠加效应明确：PPD 先减少 Turn 2+ 的 P2D 传输流量，MFS 再对 Turn 1 不可避免的 P2D 传输做精细化网络调度——PPD 减少了 MFS 需要管理的 Stage 3 flow 数量，使 MFS 的 RMLQ 队列更空，间接提升 Stage 2 collective comm 的带宽分配。</p>
+
+<p><strong>PPD vs ZeRO-Prefill — 共享"反转数据流方向"的设计直觉</strong>。传统 EP 是"activation 路由到 expert 所在 GPU"，ZeRO-Prefill 反转为"expert weight 流式搬到 activation 所在 GPU" <a href="/papers/2605.02960/detail.html#核心三问" class="ref-link" title="L2:2605.02960#核心三问">[L2:2605.02960]</a>。传统 PD 是"Turn 2+ KV 在 P 节点重算再传到 D 节点"，PPD 反转为"Turn 2+ 在 D 节点本地 append-prefill"<a href="/papers/2603.13358/detail.html#核心三问" class="ref-link" title="L2:2603.13358#核心三问">[L2:2603.13358]</a>。两者的成功条件结构相似——ZeRO-Prefill 需要大 compute window（T = t_EP × F_GPU × γ）覆盖 AllGather 延迟，PPD 需要 append-prefill 的干扰足够低（2% at batch 200）以不降低 decode 质量。但 ZeRO-Prefill 的前提是 prefill-only workload <a href="/papers/2605.02960/detail.html#核心三问" class="ref-link" title="L2:2605.02960#核心三问">[L2:2605.02960]</a>，PPD 适用于完整的多轮 prefill+decode 生命周期。</p>
+
+<p><strong>PPD 的独有增量</strong>：</p>
+<ol>
+<li><strong>唯一量化 append-prefill vs full prefill 干扰差异的工作</strong>——Figure 2 的 2% vs 48% TPOT degradation 是 PPD 的基础性实证 <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>。其余 7 篇均未区分这两种 prefill 模式的 decode 干扰特性。</li>
+<li><strong>唯一将 PD 分离路由形式化为可操作 scoring function 的工作</strong>——$S(\psi;\pi,\mathbf{w})$ 将 per-request 路由决策从启发式调参转化为离线 profiling + 在线 lookup <a href="/papers/2603.13358/detail.html#作者证明" class="ref-link" title="L2:2603.13358#作者证明">[L2:2603.13358]</a>。PrfaaS 的长度阈值路由虽然也是 per-request，但 decision boundary 是一维（长度），PPD 是多维（QPS × I/O ratio × context length）。</li>
+<li><strong>唯一证明"传统 PD 和 Replica 都是 PPD 特例"的工作</strong>——PPD 将 $x=0$（标准 PD）和 $x=1$（Full AP-to-D）统一为同一框架的两个极端 <a href="/papers/2603.13358/detail.html#核心三问" class="ref-link" title="L2:2603.13358#核心三问">[L2:2603.13358]</a>，通过连续权重 $w_{\text{tpot}}$ 在 Pareto frontier 上单调滑动。</li>
+</ul>
+
+<h2 id="可攻击面">可攻击面 <a class="heading-anchor" href="#可攻击面" aria-label="Link to 可攻击面">#</a></h2>
+
+<p><strong>Attack 1: append-prefill 干扰的 batch size 外推风险 (针对 Figure 2 及论证链 Step 1)</strong></p>
+
+<p>PPD 的核心论据——append-prefill 仅 2% TPOT degradation——来自 H100 上 Llama-3.1-8B 的单次干扰测量（"co-locating with one append-prefill operation processing 1,024 tokens"）<a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>。但这测量的是<strong>单个</strong> append-prefill 请求对 batch 200 的干扰。在实际 PPD 部署中，如果路由器将大量 Turn 2+ 请求同时路由到同一 D 节点（高 QPS 下 $x \to 1$），则该 D 节点可能同时执行<strong>多个</strong> append-prefill 请求——多个 AP 的叠加干扰可能远超单个 AP 的 2%。论文未提供多个并发 append-prefill 对 decode 的干扰测量数据。DualPath 的 layerwise streaming 实验也表明，单操作干扰测量无法线性外推到并发场景 <a href="/papers/2602.21548/detail.html#实验与数据" class="ref-link" title="L2:2602.21548#实验与数据">[L2:2602.21548]</a>。如果并发 AP 干扰为 20%（5 个并发 AP × 非线性叠加），PPD 的 scoring function 需要重新标定。</p>
+
+<p><strong>Attack 2: Offline profiling 的 workload 漂移问题 (针对论证链 Step 3)</strong></p>
+
+<p>PPD 的路由决策依赖 Phase 1 offline profiling 建立的 lookup table——沿 accumulated context length、input/output ratio、system QPS 三轴离散化 <a href="/papers/2603.13358/detail.html#实现-cross-reference" class="ref-link" title="L2:2603.13358#实现-cross-reference">[L2:2603.13358]</a>。这个 lookup table 在 workload 分布稳定时有效，但真实多轮对话的 workload 分布高度非平稳：ZeRO-Prefill 的生产数据显示 65.3% 的 input tokens 是 prefill-only <a href="/papers/2605.02960/detail.html#核心三问" class="ref-link" title="L2:2605.02960#核心三问">[L2:2605.02960]</a>，这类流量模式与 PPD 评估的 ShareGPT/WildChat 多轮对话差异巨大。PrfaaS 的双时间尺度调度器正是为应对这种非平稳性设计的——短期 per-request 反应 + 长期周期性 rebalance <a href="/papers/2604.15039/detail.html#架构-方法图" class="ref-link" title="L2:2604.15039#架构-方法图">[L2:2604.15039]</a>。PPD 缺乏 online re-profiling 或 adaptive lookup table 更新机制。</p>
+
+<p><strong>Attack 3: Session affinity 的单点故障与负载不均 (针对实现 cross-reference)</strong></p>
+
+<p>PPD 的 Turn 2+ 必须路由到持有上轮 KV cache 的特定 D 节点——session affinity 是硬约束 <a href="/papers/2603.13358/detail.html#实现-cross-reference" class="ref-link" title="L2:2603.13358#实现-cross-reference">[L2:2603.13358]</a>。如果该 D 节点过载或故障，fallback 回 PD path（$x=0$）。这个设计有两个脆弱性：(1) 热门用户的多轮长会话可能导致某个 D 节点 KV 内存耗尽——论文未讨论 eviction 策略 <a href="/papers/2603.13358/detail.html#scheduling-resource-management" class="ref-link" title="L2:2603.13358#scheduling-resource-management">[L2:2603.13358]</a>；(2) session 分布不均导致 D 节点负载严重偏斜——TensorHub 通过"所有副本对等、任意节点可服务"的 ROS 设计解决了类似问题 <a href="/papers/2604.09107/detail.html#核心三问" class="ref-link" title="L2:2604.09107#核心三问">[L2:2604.09107]</a>，但 PPD 的 KV cache 不可在 D 节点间迁移。DualPath 的调度器考虑了 HBM-aware DE 选择 <a href="/papers/2602.21548/detail.html#实验与数据" class="ref-link" title="L2:2602.21548#实验与数据">[L2:2602.21548]</a>，PPD 未涉及 D 节点间的负载均衡。</p>
+
+<p><strong>Attack 4: 评估规模的局限性 (针对论证链 Step 4-5)</strong></p>
+
+<p>PPD 在 4×H100 上评估 3 种 PD 配置（1P_3D、2P_2D、3P_1D），最大 QPS 12 <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>。DualPath 在 1152 GPU 上验证近线性扩展 <a href="/papers/2602.21548/detail.html#实验与数据" class="ref-link" title="L2:2602.21548#实验与数据">[L2:2602.21548]</a>，TensorHub 在 1024 GPU 上验证 <a href="/papers/2604.09107/detail.html#核心三问" class="ref-link" title="L2:2604.09107#核心三问">[L2:2604.09107]</a>，PrfaaS 在 96 GPU 上验证 <a href="/papers/2604.15039/detail.html#实验与数据" class="ref-link" title="L2:2604.15039#实验与数据">[L2:2604.15039]</a>。PPD 的 4 GPU 规模无法回答：(1) scoring function 的 lookup table 是否需要随集群规模重新标定——更多 D 节点意味着更多 session 分散、更低的 per-D 并发 AP，干扰特性可能变化；(2) 网络拓扑从 NVLink（4 GPU 同节点）扩展到跨节点 InfiniBand 时，PPD 的 TTFT 优势是否保持——论文的网络模拟（Figure 5）仅限于单链路带宽限制，未模拟多跳网络拓扑。</p>
+
+<p><strong>Attack 5: Turn 1 仍然是传统 PD 的完整瓶颈 (隐含在架构设计中)</strong></p>
+
+<p>PPD 仅优化 Turn 2+——Turn 1 请求仍走完整的 PD path（full prefill on P → KV transfer → decode on D）<a href="/papers/2603.13358/detail.html#架构-方法图" class="ref-link" title="L2:2603.13358#架构-方法图">[L2:2603.13358]</a>。在 first-contact-heavy workload（大量新用户、少量回访）下，PPD 退化为标准 PD，无任何收益。DualPath 的双路径加载对所有请求（包括 Turn 1）均有效 <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a>。KVServe 的压缩对 Turn 1 KV 传输同样有效 <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a>。PPD + KVServe 的组合可能比单独 PPD 更通用——PPD 减少 Turn 2+ 传输量，KVServe 压缩 Turn 1 传输量。</p>
+
+<h2 id="生态位">生态位 <a class="heading-anchor" href="#生态位" aria-label="Link to 生态位">#</a></h2>
+
+<p><strong>范式定位</strong>：PPD 代表 PD 分离架构从"单一静态策略"到"per-request 动态策略选择"的范式转变。在此之前，PD 分离的部署配置（P/D 比例、路由策略）是部署时一次性决定的；PPD 之后，每个请求根据实时 workload 状态独立决策最优路径。这个 per-request 路由范式与 PrfaaS 的长度阈值路由 <a href="/papers/2604.15039/detail.html#作者证明" class="ref-link" title="L2:2604.15039#作者证明">[L2:2604.15039]</a> 和 KVServe 的 service-aware 压缩 profile 选择 <a href="/papers/kvserve/detail.html#逻辑故事还原" class="ref-link" title="L2:kvserve#逻辑故事还原">[L2:kvserve]</a> 形成一个趋势：PD 分离系统正从静态配置走向在线自适应。</p>
+
+<p><strong>学术定位与产业差距</strong>：PPD 是学术工作（4×H100 prototype on vLLM），未声明生产部署 <a href="/papers/2603.13358/detail.html#adoption-ecosystem" class="ref-link" title="L2:2603.13358#adoption-ecosystem">[L2:2603.13358]</a>。相比之下，DualPath 在 DeepSeek 1152 GPU 生产环境部署 <a href="/papers/2602.21548/detail.html#adoption-ecosystem" class="ref-link" title="L2:2602.21548#adoption-ecosystem">[L2:2602.21548]</a>，TileRT 在 Z.ai 生产部署 <a href="/papers/tile-ai-tilert/detail.html#实验与数据" class="ref-link" title="L2:tile-ai-tilert#实验与数据">[L2:tile-ai-tilert]</a>，TensorHub 在 ByteDance 生产部署 <a href="/papers/2604.09107/detail.html#adoption-ecosystem" class="ref-link" title="L2:2604.09107#adoption-ecosystem">[L2:2604.09107]</a>。PPD 的价值主要在于提供了一个轻量的、可在 vLLM 上增量实施的多轮优化方案，对于中小规模部署（4-16 GPU）有直接实用价值。</p>
+
+<p><strong>采纳信号</strong>：</p>
+<ul>
+<li><strong>正面</strong>：(1) PPD 是 vLLM 上的 scheduler-level patch，无 model 修改、无 custom kernel，迁移成本极低 <a href="/papers/2603.13358/detail.html#api-usability" class="ref-link" title="L2:2603.13358#api-usability">[L2:2603.13358]</a>；(2) 将不稳定配置（2P_2D、3P_1D）从频繁崩溃恢复为 100% 成功率，这对运维来说是刚性需求 <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>；(3) PD 和 Replica 均为 PPD 特例，切换零风险。</li>
+<li><strong>障碍</strong>：(1) 代码未开源；(2) offline profiling 建表的 one-time cost 和对 workload 漂移的脆弱性；(3) session affinity 限制了 D 节点灵活性；(4) 4 GPU 评估规模的可扩展性未验证。</li>
+</ul>
+
+<p><strong>竞争方案生态位对比</strong>：</p>
+
+<table>
+<tr><th>场景</th><th>最优方案</th><th>PPD 的相对位置</th></tr>
+<tr><td>中小规模多轮对话（4-16 GPU）</td><td><strong>PPD</strong></td><td>最轻量的多轮优化，无硬件/模型约束</td></tr>
+<tr><td>大规模 agentic RL（千 GPU）</td><td>DualPath</td><td>PPD 的 session affinity 和 4 GPU 验证规模不足</td></tr>
+<tr><td>MoE + EP 网络争用</td><td>MFS</td><td>PPD 不涉及并行策略层的网络调度</td></tr>
+<tr><td>Prefill-only 高吞吐</td><td>ZeRO-Prefill</td><td>PPD 面向 prefill+decode 生命周期</td></tr>
+<tr><td>跨 DC 异构部署</td><td>PrfaaS</td><td>PPD 限于单集群</td></tr>
+<tr><td>Batch=1 极低延迟</td><td>TileRT</td><td>PPD 面向中高并发 batched serving</td></tr>
+<tr><td>低带宽 PD 传输</td><td>KVServe</td><td>PPD 减少传输量，KVServe 压缩传输量，两者互补</td></tr>
+</table>
+
+<h2 id="未探索方向">未探索方向 <a class="heading-anchor" href="#未探索方向" aria-label="Link to 未探索方向">#</a></h2>
+
+<p><strong>方向 1: PPD + KVServe 组合——全 turn 覆盖的 PD 优化</strong>。PPD 仅优化 Turn 2+（本地 append-prefill 规避传输），Turn 1 仍走完整 PD path。KVServe 的三阶段压缩 pipeline（Transform → Quantizer → Codec）可将 Turn 1 的 KV 传输量降低 10× <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a>。两者组合的 scoring function 可扩展为三路决策：Turn 1 走 PD + KVServe 压缩传输，Turn 2+（$S > 0$）走 D 节点本地 AP，Turn 2+（$S \leq 0$）走 PD + KVServe。KVServe 的 analytical model 中的 $B < (1-1/cr) \cdot S$ 判据 <a href="/papers/kvserve/detail.html#逻辑故事还原" class="ref-link" title="L2:kvserve#逻辑故事还原">[L2:kvserve]</a> 可以作为 PPD scoring function 的扩展维度——当网络带宽低于阈值时自动启用压缩。实现路径：两者都基于 vLLM，KVServe 的 external connector 机制与 PPD 的 scheduler patch 在架构上正交。</p>
+
+<p><strong>方向 2: Multi-D-node KV migration 打破 session affinity</strong>。PPD 的 session affinity 硬约束（Turn 2+ 必须路由到持有 KV cache 的特定 D 节点）是负载均衡和容错的根本限制。借鉴 TensorHub 的 Reference-Oriented Storage 思想 <a href="/papers/2604.09107/detail.html#核心三问" class="ref-link" title="L2:2604.09107#核心三问">[L2:2604.09107]</a>——权重副本对等、任意节点可服务——PPD 可以引入 lazy KV migration：当目标 D 节点过载时，将 KV cache 通过 RDMA 迁移到空闲 D 节点，再在空闲节点执行 append-prefill。DualPath 的 layerwise streaming 机制 <a href="/papers/2602.21548/detail.html#核心三问" class="ref-link" title="L2:2602.21548#核心三问">[L2:2602.21548]</a> 提供了 KV 迁移的传输范式——逐层传输与 decode 计算重叠。迁移决策可以嵌入 PPD 的 scoring function：$S_{\text{migrate}}(\psi;\pi,\mathbf{w})$ 在 local-AP、PD-path、migrate-then-AP 三路中选最优。</p>
+
+<p><strong>方向 3: Online adaptive profiling 替代静态 lookup table</strong>。PPD 的 Phase 1 offline profiling 在 workload 稳定时有效，但真实 serving 的流量模式持续漂移。KVServe 的 ε-greedy bandit controller 用 EWMA（α=0.2）在线学习 analytical model 的残差 <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a>——这个机制可直接移植到 PPD：用 bandit 在线校正 $\Delta_{\text{ttft}}$ 和 $\Delta_{\text{tpot}}$ 的 profiled 值。PrfaaS 的双时间尺度调度器 <a href="/papers/2604.15039/detail.html#架构-方法图" class="ref-link" title="L2:2604.15039#架构-方法图">[L2:2604.15039]</a>（短期 per-request + 长期周期性 rebalance）提供了另一种模式——PPD 可以在短期用 lookup table 做快速决策，长期用监控到的 TTFT/TPOT 实际表现 online re-fit scoring function。</p>
+
+<p><strong>方向 4: PPD + MFS 联合优化——减少传输量 + 优化传输调度</strong>。PPD 消除 ~75% 的 Turn 2+ P2D 传输 <a href="/papers/2603.13358/detail.html#论证链" class="ref-link" title="L2:2603.13358#论证链">[L2:2603.13358]</a>，但剩余的 Turn 1 P2D 传输仍需要与 EP all-to-all 和 KV prefetch 争用网络。MFS 的 RMLQ 调度可对 Turn 1 的 P2D 传输做 Defer-and-Promote <a href="/papers/2603.17456/detail.html#核心三问" class="ref-link" title="L2:2603.17456#核心三问">[L2:2603.17456]</a>，而 PPD 减少的 Turn 2+ 传输量直接降低了 MFS 需要管理的 Stage 3 flow 密度。具体实现：PPD 的路由器告知 MFS 哪些请求走 PD path（需要 P2D 传输），MFS 仅对这些请求的 P2D flow 做优先级管理；走 local AP 的 Turn 2+ 请求完全不产生 Stage 3 flow，释放带宽给 Stage 2 collective comm。</p>
+
+<p><strong>方向 5: 并发 append-prefill 干扰的精确建模</strong>。PPD 的核心实证（2% TPOT degradation）基于单个 AP 请求的干扰测量 <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>。当 $x \to 1$（高比例 Turn 2+ 走 local AP）时，D 节点可能同时执行多个 AP——并发 AP 的叠加干扰函数 $\delta_{\text{tpot}}(k)$（$k$ 个并发 AP）可能是超线性的。ZeRO-Prefill 的饱和阈值 T <a href="/papers/2605.02960/detail.html#核心三问" class="ref-link" title="L2:2605.02960#核心三问">[L2:2605.02960]</a> 提供了类似的"什么时候 overlap 不再成立"的精确判据。PPD 可以将 scoring function 扩展为 $S(\psi, k;\pi,\mathbf{w})$，其中 $k$ 是当前 D 节点已有的并发 AP 数，通过 offline profiling 建立 $\delta_{\text{tpot}}(k)$ 的查找表。当 $k$ 超过某个阈值使 $S < 0$ 时，后续 Turn 2+ 自动回退到 PD path——实现细粒度的自适应降级。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2504.09285.html">2504.09285</a> (related) 
+<a href="/papers/2409.19256.html">2409.19256</a> (related) 
+<a href="/papers/2509.02121.html">2509.02121</a> (related) 
+<a href="/papers/2504.20068.html">2504.20068</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Efficient Serving for Dynamic Agent Workflows with Prediction-based KV-Cache Management — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Efficient Serving for Dynamic Agent Workflows with Prediction-based KV-Cache Management</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2605.06472 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2605.06472/detail.html">→ Detail (L2)</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="pbkv-vs-peers-—-l3-per-paper-synthesis">PBKV vs Peers — L3 Per-Paper Synthesis <a class="heading-anchor" href="#pbkv-vs-peers-—-l3-per-paper-synthesis" aria-label="Link to pbkv-vs-peers-—-l3-per-paper-synthesis">#</a></h1>
+
+<h2 id="§1-相关论文">§1 相关论文 <a class="heading-anchor" href="#§1-相关论文" aria-label="Link to §1-相关论文">#</a></h2>
+
+<table>
+<tr><th>论文</th><th>关系</th><th>核心关联</th></tr>
+<tr><td><strong>SAGA</strong> (2605.00528)</td><td>直接竞争</td><td>最近似系统：都用 workflow graph 预测 KV 复用驱动淘汰策略。SAGA 用 AEG 的转移概率 × overlap 计算 $P_{reuse}$，PBKV 用 GraphSAGE 多步预测产生 $K$-step agent 分布。SAGA 是集群级分布式调度（AEG + WA-LRU + session affinity + AFS），PBKV 是引擎级缓存管理（预测 + 分层淘汰 + 保守预取）。</td></tr>
+<tr><td><strong>Continuum</strong> (2511.02230)</td><td>互补竞争</td><td>都解决 agent 工具调用间隙的 KV cache 保留问题。Continuum 用 TTL 机制——以 cost-benefit 模型计算最优保留时间，核心创新是 OutofOrderCost 中的 memoryfulness factor $\eta$；PBKV 用预测驱动的主动淘汰/预取。Continuum 解决排队气泡（per-turn queueing delay），PBKV 解决淘汰决策质量。</td></tr>
+<tr><td><strong>SideQuest</strong> (2602.22603)</td><td>方法对比</td><td>都做 agent 工作负载的 KV cache 淘汰，但层级完全不同。SideQuest 在<strong>单请求内部</strong>用 LRM 辅助线程语义判断哪些 tool response 已过期（intra-request eviction）；PBKV 在<strong>serving 引擎层</strong>跨多工作流预测 agent 调用并全局优化缓存分配（inter-workflow eviction）。</td></tr>
+<tr><td><strong>PASTE</strong> (2603.18897)</td><td>正交互补</td><td>都减少 agent serving 延迟，但攻击不同瓶颈。PASTE 通过投机性工具执行将 tool stall 与 LLM 思考重叠（减少等待时间），PBKV 通过预测性缓存管理减少 re-prefill 代价（减少计算浪费）。两者可叠加。</td></tr>
+<tr><td><strong>Claude Code Analysis</strong> (2604.14228)</td><td>生态参照</td><td>逆向工程揭示生产级 agent 的 5 层上下文压缩管道（budget reduction → snip → microcompact → context collapse → auto-compact），但全部在单 session 应用层操作。PBKV 工作在 serving 引擎层，处理多 session 的 GPU/host 缓存分配——两者在不同抽象层处理同一资源（KV cache / context）。</td></tr>
+<tr><td><strong>SGH</strong> (2604.11378)</td><td>理论对照</td><td>SGH 提出将 agent 执行建模为静态 DAG 的调度器框架，假设任务依赖可在规划时枚举。PBKV 的核心 motivation 恰恰是静态 DAG 假设的失败——动态工作流含条件分支和重试循环，运行时 agent 调用序列无法预定义。</td></tr>
+<tr><td><strong>CPU-Centric</strong> (2511.00739)</td><td>互补视角</td><td>揭示 CPU 工具执行占 agent E2E 延迟高达 88%，GPU 优化边际递减。PBKV 假设 GPU KV cache 管理是瓶颈——两者攻击 serving pipeline 的不同段落。当 GPU 侧 cache miss 被 PBKV 消除后，瓶颈可能转移至 CPU 工具执行。</td></tr>
+<tr><td><strong>CMV</strong> (2602.22402)</td><td>生态互补</td><td>CMV 管理 coding agent 的跨 session 会话状态（DAG 版本控制 + 三遍裁剪），面向单用户 CLI 工具。PBKV 管理 serving 引擎的 GPU KV cache 分配，面向多租户在线推理。两者在完全不同的栈层操作，但共享"agent context 是稀缺资源需精细管理"的核心认知。</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§2-本篇-vs-相关论文的-delta">§2 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#§2-本篇-vs-相关论文的-delta" aria-label="Link to §2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="delta-1-预测驱动-vs-反应式缓存管理">Delta 1: 预测驱动 vs 反应式缓存管理 <a class="heading-anchor" href="#delta-1-预测驱动-vs-反应式缓存管理" aria-label="Link to delta-1-预测驱动-vs-反应式缓存管理">#</a></h3>
+
+<p>PBKV 是 agent serving 领域首个将 <strong>algorithms-with-predictions</strong> 框架（Lykouris & Vassilvitskii 2021）应用于 KV cache 管理的工作 <a href="/papers/2605.06472/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.06472#q1-q2-q3">[L2:2605.06472]</a>。对比：</p>
+
+<ul>
+<li><strong>Continuum</strong> 的 TTL 是反应式的——根据工具调用历史统计设置保留时间，本质是"等多久再丢" <a href="/papers/2511.02230/detail.html#q1-q2-q3" class="ref-link" title="L2:2511.02230#q1-q2-q3">[L2:2511.02230]</a>。TTL 不预测下一个 agent 是谁，也不利用 workflow 的 DAG 结构。</li>
+<li><strong>SAGA</strong> 的 $P_{reuse}$ 也是预测性的，但基于 AEG 的转移概率是从历史 trace 的频率统计得出 <a href="/papers/2605.00528/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.00528#q1-q2-q3">[L2:2605.00528]</a>，本质是 Markov 一步转移；PBKV 的 GraphSAGE 预测器融合拓扑嵌入 + 前缀注意力 + LLM 语义信号，做 $K$-step 联合预测 <a href="/papers/2605.06472/detail.html#架构-方法图" class="ref-link" title="L2:2605.06472#架构-方法图">[L2:2605.06472]</a>，能区分"同一 agent 在不同前缀路径下的行为差异"。</li>
+<li><strong>SideQuest</strong> 用 LRM 自身做语义判断 <a href="/papers/2602.22603/detail.html#q1-q2-q3" class="ref-link" title="L2:2602.22603#q1-q2-q3">[L2:2602.22603]</a>，是最"智能"的淘汰方式，但每次触发需要 ~110-140 token 的辅助推理 <a href="/papers/2602.22603/detail.html#实验与数据" class="ref-link" title="L2:2602.22603#实验与数据">[L2:2602.22603]</a>，且只在单请求内操作。PBKV 的预测器 ~350K 参数、1.18ms 推理 <a href="/papers/2605.06472/detail.html#实验与数据" class="ref-link" title="L2:2605.06472#实验与数据">[L2:2605.06472]</a>，跨工作流全局操作，开销低 3-4 个数量级。</li>
+</ul>
+
+<h3 id="delta-2-确定性护栏-概率系统的分层稳健性">Delta 2: 确定性护栏 + 概率系统的分层稳健性 <a class="heading-anchor" href="#delta-2-确定性护栏-概率系统的分层稳健性" aria-label="Link to delta-2-确定性护栏-概率系统的分层稳健性">#</a></h3>
+
+<p>PBKV 的核心架构创新——退役缓存淘汰提供不依赖预测的确定性基线（单独贡献 1.66× 命中率），评分驱动淘汰在此基础上叠加概率收益，保守预取仅用空闲资源——确保在预测精度从 0.94 到随机的整个谱上都严格优于 LRU <a href="/papers/2605.06472/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.06472#q1-q2-q3">[L2:2605.06472]</a>。这种"graceful degradation"在同类工作中独特：</p>
+
+<ul>
+<li><strong>Continuum</strong> 的 TTL 过期时直接驱逐 → 退化为标准 vLLM 行为 <a href="/papers/2511.02230/detail.html#q1-q2-q3" class="ref-link" title="L2:2511.02230#q1-q2-q3">[L2:2511.02230]</a>，无中间态。</li>
+<li><strong>SAGA</strong> 的 WA-LRU 在 AEG 预测失败时退化至标准 LRU <a href="/papers/2605.00528/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.00528#q1-q2-q3">[L2:2605.00528]</a>，无分层保护。</li>
+<li><strong>SideQuest</strong> 的辅助线程如果未完成则不执行淘汰（安全但放弃收益）<a href="/papers/2602.22603/detail.html#架构-方法图" class="ref-link" title="L2:2602.22603#架构-方法图">[L2:2602.22603]</a>，没有中间退化路径。</li>
+</ul>
+
+<p>PBKV 通过 Lipschitz 遗憾界（Theorem 5.1）将这种直觉形式化：遗憾 $\leq \frac{1}{2(1-\gamma)} \sum \epsilon_c^{\gamma}$，常数独立于系统规模 <a href="/papers/2605.06472/detail.html#作者证明" class="ref-link" title="L2:2605.06472#作者证明">[L2:2605.06472]</a>。这是唯一一篇提供预测误差与性能退化之间定量关系的 agent serving 工作。</p>
+
+<h3 id="delta-3-动态工作流支持">Delta 3: 动态工作流支持 <a class="heading-anchor" href="#delta-3-动态工作流支持" aria-label="Link to delta-3-动态工作流支持">#</a></h3>
+
+<p>PBKV 明确针对<strong>动态工作流</strong>（条件分支、重试循环），这是 KVFlow 和 SAGA 的 AEG 都无法完整处理的场景 <a href="/papers/2605.06472/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.06472#q1-q2-q3">[L2:2605.06472]</a>。SAGA 的 AEG 将工作流建模为带转移概率的 DAG，但论文承认"对动态多 agent 框架需要 AEG re-inference per epoch" <a href="/papers/2605.00528/detail.html#实验与数据" class="ref-link" title="L2:2605.00528#实验与数据">[L2:2605.00528]</a>。SGH 更是直接要求静态 DAG——"任务依赖可在规划时完全枚举" <a href="/papers/2604.11378/detail.html#core-contribution" class="ref-link" title="L2:2604.11378#core-contribution">[L2:2604.11378]</a>，与动态工作流本质冲突。PBKV 用 GraphSAGE 的归纳式学习处理训练时未见过的前缀路径 <a href="/papers/2605.06472/detail.html#作者证明" class="ref-link" title="L2:2605.06472#作者证明">[L2:2605.06472]</a>，在理论上对动态拓扑更 robust。</p>
+
+<h3 id="delta-4-生命周期感知淘汰的简洁工程贡献">Delta 4: 生命周期感知淘汰的简洁工程贡献 <a class="heading-anchor" href="#delta-4-生命周期感知淘汰的简洁工程贡献" aria-label="Link to delta-4-生命周期感知淘汰的简洁工程贡献">#</a></h3>
+
+<p>退役缓存淘汰（LAE）是一个极其简单但此前无人实现的机制：监听工作流终止事件 → 标记私有缓存为退役 → 优先淘汰。Per-node workflow-set + 终止回调，实现复杂度极低 <a href="/papers/2605.06472/detail.html#实现-cross-reference" class="ref-link" title="L2:2605.06472#实现-cross-reference">[L2:2605.06472]</a>。这一机制单独贡献了命中率从 27% 到 44.91% 的跃升 <a href="/papers/2605.06472/detail.html#实验与数据" class="ref-link" title="L2:2605.06472#实验与数据">[L2:2605.06472]</a>——性价比极高。Continuum 和 SAGA 都没有这种"确定性零价值"的先验利用。</p>
+
+<h3 id="delta-5-缺失的维度——排队调度与分布式支持">Delta 5: 缺失的维度——排队调度与分布式支持 <a class="heading-anchor" href="#delta-5-缺失的维度——排队调度与分布式支持" aria-label="Link to delta-5-缺失的维度——排队调度与分布式支持">#</a></h3>
+
+<p>PBKV 不涉及排队调度优化和分布式扩展——这恰好是 Continuum 和 SAGA 的强项：</p>
+
+<ul>
+<li>Continuum 通过 program-level FCFS 消除 per-turn queueing delay（占总延迟 58.2%）<a href="/papers/2511.02230/detail.html#q1-q2-q3" class="ref-link" title="L2:2511.02230#q1-q2-q3">[L2:2511.02230]</a>。</li>
+<li>SAGA 通过 session-affinity + work-stealing 实现跨 64 GPU 的分布式调度 <a href="/papers/2605.00528/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.00528#q1-q2-q3">[L2:2605.00528]</a>。</li>
+</ul>
+
+<p>PBKV 的评估局限于单引擎（SGLang + 8× A6000），未验证多机场景。在集群级部署中，PBKV 的预测驱动淘汰 + SAGA 的分布式路由 + Continuum 的排队优化，三者解决不同子问题，理论上可组合。</p>
+
+<hr>
+
+<h2 id="§3-可攻击面">§3 可攻击面 <a class="heading-anchor" href="#§3-可攻击面" aria-label="Link to §3-可攻击面">#</a></h2>
+
+<h3 id="attack-1-预测器的泛化性未被充分验证">Attack 1: 预测器的泛化性未被充分验证 <a class="heading-anchor" href="#attack-1-预测器的泛化性未被充分验证" aria-label="Link to attack-1-预测器的泛化性未被充分验证">#</a></h3>
+
+<p>PBKV 在 3 个 benchmark（HoVer+LangChain、SWE-bench+AutoGen、FinanceBench+CrewAI）上评估，预测器训练数据仅需 1K 轨迹 <a href="/papers/2605.06472/detail.html#实验与数据" class="ref-link" title="L2:2605.06472#实验与数据">[L2:2605.06472]</a>。但这 3 个 benchmark 的 agent 调用图都相对简单（3-10 节点）。在复杂 multi-agent 系统中（如 AutoGen 的多 agent 协作、CrewAI 的复杂流水线），调用图规模和动态性可能远超训练分布。GraphSAGE 的 2-hop 感受野对 5-10 节点图足够 <a href="/papers/2605.06472/detail.html#作者证明" class="ref-link" title="L2:2605.06472#作者证明">[L2:2605.06472]</a>，但对 50+ 节点的复杂拓扑可能不足。论文未做 OOD 工作流的 robustness 测试——对比 SideQuest 在 BrowseComp（OOD benchmark）上仍保持优势 <a href="/papers/2602.22603/detail.html#实验与数据" class="ref-link" title="L2:2602.22603#实验与数据">[L2:2602.22603]</a>。</p>
+
+<h3 id="attack-2-1-85×-加速的构成需要拆解">Attack 2: 1.85× 加速的构成需要拆解 <a class="heading-anchor" href="#attack-2-1-85×-加速的构成需要拆解" aria-label="Link to attack-2-1-85×-加速的构成需要拆解">#</a></h3>
+
+<p>PBKV 声称 1.85× 延迟降低 <a href="/papers/2605.06472/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.06472#q1-q2-q3">[L2:2605.06472]</a>，但基线是 LRU（SGLang 默认策略），而非更强的 agent-aware 策略。在静态工作流上对比 KVFlow 时，优势收窄至 1.26× <a href="/papers/2605.06472/detail.html#实验与数据" class="ref-link" title="L2:2605.06472#实验与数据">[L2:2605.06472]</a>。论文未与 Continuum 的 TTL 机制或 SAGA 的 WA-LRU 直接对比。考虑到 Continuum 在真实 SWE-agent 上达到 8.18× 加速 <a href="/papers/2511.02230/detail.html#实验与数据" class="ref-link" title="L2:2511.02230#实验与数据">[L2:2511.02230]</a>，而 SAGA 在 SWE-bench 上达到 3.01× <a href="/papers/2605.00528/detail.html#实验与数据" class="ref-link" title="L2:2605.00528#实验与数据">[L2:2605.00528]</a>，PBKV 的绝对数字优势不明确——虽然实验条件不同（模型、硬件、并发度），但缺乏受控对比使优劣难以判断。</p>
+
+<h3 id="attack-3-lipschitz-界的实际收紧程度不明">Attack 3: Lipschitz 界的实际收紧程度不明 <a class="heading-anchor" href="#attack-3-lipschitz-界的实际收紧程度不明" aria-label="Link to attack-3-lipschitz-界的实际收紧程度不明">#</a></h3>
+
+<p>Theorem 5.1 的遗憾界 $\leq \frac{1}{2(1-\gamma)} \sum \epsilon_c^{\gamma}$ 是一个存在性保证 <a href="/papers/2605.06472/detail.html#作者证明" class="ref-link" title="L2:2605.06472#作者证明">[L2:2605.06472]</a>。当 $\gamma=0.7$ 时常数为 $\frac{1}{0.6} \approx 1.67$，乘以对称差集中所有节点的折扣误差之和。但论文未报告实际遗憾值与界的比率——这类 algorithms-with-predictions 的上界通常非常松（SAGA 的竞争比理论界 20.5× vs 实际 1.31× <a href="/papers/2605.00528/detail.html#作者证明" class="ref-link" title="L2:2605.00528#作者证明">[L2:2605.00528]</a>）。形式化保证的工程价值可能有限。</p>
+
+<h3 id="attack-4-保守预取的收益上限很低">Attack 4: 保守预取的收益上限很低 <a class="heading-anchor" href="#attack-4-保守预取的收益上限很低" aria-label="Link to attack-4-保守预取的收益上限很低">#</a></h3>
+
+<p>保守预取在分层消融中仅贡献 ~3pp 命中率提升（66.01% → 69.10%）<a href="/papers/2605.06472/detail.html#实验与数据" class="ref-link" title="L2:2605.06472#实验与数据">[L2:2605.06472]</a>。这是因为"不淘汰活跃缓存为预取腾空间"的约束过于保守——空闲 GPU 空间在高负载下趋近于零。SAGA 的投机预取基于 CUDA stream 重叠，与 tool 执行并行 <a href="/papers/2605.00528/detail.html#实现-cross-reference" class="ref-link" title="L2:2605.00528#实现-cross-reference">[L2:2605.00528]</a>，理论上可在更多场景获益。PASTE 的投机工具执行则直接跳过了"预取缓存"这一步，在 LLM 思考阶段就完成了 tool 执行 <a href="/papers/2603.18897/detail.html#q1-q2-q3" class="ref-link" title="L2:2603.18897#q1-q2-q3">[L2:2603.18897]</a>——根本不需要预取。</p>
+
+<h3 id="attack-5-未建模-slo-约束">Attack 5: 未建模 SLO 约束 <a class="heading-anchor" href="#attack-5-未建模-slo-约束" aria-label="Link to attack-5-未建模-slo-约束">#</a></h3>
+
+<p>PBKV 优化的是聚合指标（总延迟、平均命中率），但 agent serving 的生产场景需要 SLO 保证（如 P95/P99 延迟）。Continuum 报告了 P90/P95 延迟 <a href="/papers/2511.02230/detail.html#实验与数据" class="ref-link" title="L2:2511.02230#实验与数据">[L2:2511.02230]</a>，SAGA 定义了 SLO attainment 指标（99.2%）<a href="/papers/2605.00528/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.00528#q1-q2-q3">[L2:2605.00528]</a>。PBKV 的论文未报告尾延迟分布——预测错误导致的 re-prefill 可能产生严重的延迟尖刺，而 Lipschitz 界是期望意义上的，不约束单次最差情况。</p>
+
+<hr>
+
+<h2 id="§4-生态位">§4 生态位 <a class="heading-anchor" href="#§4-生态位" aria-label="Link to §4-生态位">#</a></h2>
+
+<h3 id="定位：引擎级预测性缓存管理的理论锚点">定位：引擎级预测性缓存管理的理论锚点 <a class="heading-anchor" href="#定位：引擎级预测性缓存管理的理论锚点" aria-label="Link to 定位：引擎级预测性缓存管理的理论锚点">#</a></h3>
+
+<p>PBKV 在 agent serving 生态中占据一个独特位置：它是唯一提供预测误差 → 性能退化之间<strong>形式化定量关系</strong>的缓存管理方案。</p>
+
+<table>
+<tr><th>维度</th><th>PBKV</th><th>Continuum</th><th>SAGA</th><th>SideQuest</th></tr>
+<tr><td>抽象层</td><td>引擎级</td><td>引擎级</td><td>集群级</td><td>请求级</td></tr>
+<tr><td>预测方法</td><td>GraphSAGE K-step</td><td>工具时长统计</td><td>AEG 转移概率</td><td>LRM 语义推理</td></tr>
+<tr><td>退化保证</td><td>Lipschitz 形式化界</td><td>TTL 过期 = 驱逐</td><td>退化至 LRU</td><td>不执行 = 安全</td></tr>
+<tr><td>动态工作流</td><td>原生支持</td><td>N/A（单 turn）</td><td>需 re-inference</td><td>不涉及</td></tr>
+<tr><td>分布式</td><td>未支持</td><td>未支持</td><td>64 GPU 验证</td><td>单卡</td></tr>
+<tr><td>排队优化</td><td>不涉及</td><td>核心贡献</td><td>AFS 公平调度</td><td>不涉及</td></tr>
+<tr><td>代码开源</td><td>未公开</td><td>开源</td><td>未公开</td><td>未公开</td></tr>
+</table>
+
+<h3 id="范式转移证据">范式转移证据 <a class="heading-anchor" href="#范式转移证据" aria-label="Link to 范式转移证据">#</a></h3>
+
+<p>PBKV 标志着 agent KV cache 管理从<strong>启发式</strong>（LRU、固定 TTL）向<strong>学习驱动 + 形式化保证</strong>的转变。这个方向与 SAGA 的 AEG 预测 <a href="/papers/2605.00528/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.00528#q1-q2-q3">[L2:2605.00528]</a> 和 SideQuest 的 LRM 语义推理 <a href="/papers/2602.22603/detail.html#q1-q2-q3" class="ref-link" title="L2:2602.22603#q1-q2-q3">[L2:2602.22603]</a> 形成三个并行的演进路径——统计预测（SAGA）、神经预测（PBKV）、语义推理（SideQuest）——尚未收敛。</p>
+
+<h3 id="采用阻碍">采用阻碍 <a class="heading-anchor" href="#采用阻碍" aria-label="Link to 采用阻碍">#</a></h3>
+
+<ol>
+<li><strong>代码未公开</strong> <a href="/papers/2605.06472/detail.html#实现-cross-reference" class="ref-link" title="L2:2605.06472#实现-cross-reference">[L2:2605.06472]</a>——在 Continuum 已开源的竞争格局下 <a href="/papers/2511.02230/detail.html#实现-cross-reference" class="ref-link" title="L2:2511.02230#实现-cross-reference">[L2:2511.02230]</a>，缺乏可复现的实现是实际部署的主要障碍。</li>
+<li><strong>依赖 workload-specific 训练</strong>——预测器需按 workload 训练 1K 轨迹，而 Continuum 的 TTL 仅需运行时统计 <a href="/papers/2511.02230/detail.html#实现-cross-reference" class="ref-link" title="L2:2511.02230#实现-cross-reference">[L2:2511.02230]</a>，SAGA 的 AEG 可从 request pattern 自动推断（87% 准确率）<a href="/papers/2605.00528/detail.html#实验与数据" class="ref-link" title="L2:2605.00528#实验与数据">[L2:2605.00528]</a>。</li>
+<li><strong>单引擎评估</strong>——未验证多机场景，而 SAGA 已在 64 GPU 集群上证明可行 <a href="/papers/2605.00528/detail.html#实验与数据" class="ref-link" title="L2:2605.00528#实验与数据">[L2:2605.00528]</a>。</li>
+</ul>
+
+<h3 id="与-agent-生态的连接">与 agent 生态的连接 <a class="heading-anchor" href="#与-agent-生态的连接" aria-label="Link to 与-agent-生态的连接">#</a></h3>
+
+<p>CPU-Centric 的分析显示 CPU 工具执行占 E2E 延迟高达 88% <a href="/papers/2511.00739/detail.html#tl-dr" class="ref-link" title="L2:2511.00739#tl-dr">[L2:2511.00739]</a>，PASTE 则证明 tool 执行占 35-61% <a href="/papers/2603.18897/detail.html#tl-dr" class="ref-link" title="L2:2603.18897#tl-dr">[L2:2603.18897]</a>——两者都暗示<strong>GPU 侧 KV cache 管理的边际收益递减</strong>。PBKV 的价值窗口集中在"GPU 显存是瓶颈"的场景（高并发、大模型、长上下文），当 GPU 显存充裕时其收益空间会被压缩。Claude Code 架构分析揭示 93% 的工具调用被自动批准 <a href="/papers/2604.14228/detail.html#实验与数据" class="ref-link" title="L2:2604.14228#实验与数据">[L2:2604.14228]</a>，暗示生产 agent 的 tool-call 密度很高——这正是 PBKV 的 sweet spot。</p>
+
+<hr>
+
+<h2 id="§5-未探索方向">§5 未探索方向 <a class="heading-anchor" href="#§5-未探索方向" aria-label="Link to §5-未探索方向">#</a></h2>
+
+<h3 id="direction-1-预测驱动淘汰-ttl-排队优化的融合">Direction 1: 预测驱动淘汰 + TTL 排队优化的融合 <a class="heading-anchor" href="#direction-1-预测驱动淘汰-ttl-排队优化的融合" aria-label="Link to direction-1-预测驱动淘汰-ttl-排队优化的融合">#</a></h3>
+
+<p>PBKV 的分层淘汰解决"淘汰哪个缓存"，Continuum 的 TTL 解决"保留多久再进队列"——两个决策目前独立运行。一个统一框架可以用 PBKV 的 $K$-step 预测产出 agent 分布，同时驱动 (a) 淘汰优先级 (b) TTL 计算 (c) 排队调度优先级。Continuum 的 memoryfulness factor $\eta$ <a href="/papers/2511.02230/detail.html#作者证明" class="ref-link" title="L2:2511.02230#作者证明">[L2:2511.02230]</a> 可以被集成到 PBKV 的评分函数中，使评分同时反映缓存复用价值和排队延迟代价。</p>
+
+<h3 id="direction-2-跨抽象层的协同淘汰">Direction 2: 跨抽象层的协同淘汰 <a class="heading-anchor" href="#direction-2-跨抽象层的协同淘汰" aria-label="Link to direction-2-跨抽象层的协同淘汰">#</a></h3>
+
+<p>SideQuest 在请求内部用 LRM 做语义淘汰（intra-request）<a href="/papers/2602.22603/detail.html#q1-q2-q3" class="ref-link" title="L2:2602.22603#q1-q2-q3">[L2:2602.22603]</a>，PBKV 在引擎层做跨工作流淘汰（inter-workflow）<a href="/papers/2605.06472/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.06472#q1-q2-q3">[L2:2605.06472]</a>。两层淘汰目前互相不可见——SideQuest 缩小了单请求的 KV cache 占用，使引擎层有更多空间；PBKV 的全局评分可以指导 SideQuest 在哪些请求上更积极地淘汰。一个跨层协同框架可以将 SideQuest 的语义 staleness 信号作为 PBKV 评分函数的额外输入。</p>
+
+<h3 id="direction-3-自适应预测复杂度">Direction 3: 自适应预测复杂度 <a class="heading-anchor" href="#direction-3-自适应预测复杂度" aria-label="Link to direction-3-自适应预测复杂度">#</a></h3>
+
+<p>PBKV 固定使用 GraphSAGE（~350K 参数，1.18ms）做所有工作流的预测 <a href="/papers/2605.06472/detail.html#实验与数据" class="ref-link" title="L2:2605.06472#实验与数据">[L2:2605.06472]</a>。但不同工作流的可预测性差异很大——简单线性 pipeline 用 Markov 转移足矣（SAGA 的方式 <a href="/papers/2605.00528/detail.html#q1-q2-q3" class="ref-link" title="L2:2605.00528#q1-q2-q3">[L2:2605.00528]</a>），复杂动态工作流才需要 GNN。一个自适应方案可以用轻量检测器判断工作流复杂度，动态选择预测后端：转移概率表（<0.1ms）→ GraphSAGE（1.18ms）→ 小型 LRM（如 SideQuest 的方式，~10ms）。这与 PASTE 的 pattern confidence 分级 <a href="/papers/2603.18897/detail.html#q1-q2-q3" class="ref-link" title="L2:2603.18897#q1-q2-q3">[L2:2603.18897]</a> 思路一致——投入与预期收益成正比。</p>
+
+<h3 id="direction-4-生命周期感知淘汰的形式化与泛化">Direction 4: 生命周期感知淘汰的形式化与泛化 <a class="heading-anchor" href="#direction-4-生命周期感知淘汰的形式化与泛化" aria-label="Link to direction-4-生命周期感知淘汰的形式化与泛化">#</a></h3>
+
+<p>PBKV 的退役缓存淘汰（LAE）单独贡献 1.66× 命中率提升 <a href="/papers/2605.06472/detail.html#实验与数据" class="ref-link" title="L2:2605.06472#实验与数据">[L2:2605.06472]</a>，是全文性价比最高的机制——但论文对其缺乏形式化分析。一个有价值的理论方向：将工作流生命周期建模为连续时间马尔可夫链，在 SAGA 的 AFS <a href="/papers/2605.00528/detail.html#作者证明" class="ref-link" title="L2:2605.00528#作者证明">[L2:2605.00528]</a> 和 SGH 的 bounded termination <a href="/papers/2604.11378/detail.html#core-contribution" class="ref-link" title="L2:2604.11378#core-contribution">[L2:2604.11378]</a> 的理论框架下推导 LAE 的竞争比。这可以将 LAE 从"工程 trick"提升为有理论支撑的普适策略。</p>
+
+<h3 id="direction-5-cpu-gpu-联合优化">Direction 5: CPU-GPU 联合优化 <a class="heading-anchor" href="#direction-5-cpu-gpu-联合优化" aria-label="Link to direction-5-cpu-gpu-联合优化">#</a></h3>
+
+<p>CPU-Centric 揭示 GPU 越强则 CPU 瓶颈越突出 <a href="/papers/2511.00739/detail.html#tl-dr" class="ref-link" title="L2:2511.00739#tl-dr">[L2:2511.00739]</a>。PBKV 消除了 GPU 侧的 cache miss re-prefill 后，瓶颈将进一步转向 CPU 工具执行。一个联合优化可以将 PBKV 的 $K$-step agent 预测同时用于 (a) KV cache 淘汰（现有功能），(b) PASTE 式的投机工具执行（如果预测到下一个 agent 会调用某 tool，提前启动 tool 的 warm-up）<a href="/papers/2603.18897/detail.html#q1-q2-q3" class="ref-link" title="L2:2603.18897#q1-q2-q3">[L2:2603.18897]</a>，(c) COMB 式的 CPU-GPU 微批调度（根据预测的 tool 类型调整 $B_{cap}$）<a href="/papers/2511.00739/detail.html#core-contribution" class="ref-link" title="L2:2511.00739#core-contribution">[L2:2511.00739]</a>。PBKV 的预测器可以成为一个共享的"agent 行为预测基础设施"，服务多个下游优化。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2603.18897.html">2603.18897</a> (cites) 
+<a href="/papers/2601.22705.html">2601.22705</a> (cites) 
+<a href="/papers/2602.21548.html">2602.21548</a> (cites) 
+<a href="/papers/2509.02121.html">2509.02121</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

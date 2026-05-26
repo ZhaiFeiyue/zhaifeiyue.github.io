@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Latency-Optimal Load Balancing For Distributed MoE Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Latency-Optimal Load Balancing For Distributed MoE Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> moe-lb-interai25 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/moe-lb-interai25/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="l3-synthesis-moe-lb-interai25">L3 Synthesis: moe-lb-interai25 <a class="heading-anchor" href="#l3-synthesis-moe-lb-interai25" aria-label="Link to l3-synthesis-moe-lb-interai25">#</a></h1>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<table>
+<tr><th>Entity</th><th>Relation Type</th><th>Why Related</th></tr>
+<tr><td>2605.02960 (ZeRO-Prefill)</td><td>直接竞争/替代</td><td>同为 MoE inference 执行效率优化；ZeRO-Prefill 用 weight streaming 彻底消除 EP routing imbalance，而 moe-lb-interai25 在 EP 框架内做 placement 优化</td></tr>
+<tr><td>2603.17456 (MFS)</td><td>同层互补</td><td>MFS 优化 disaggregated MoE serving 中 EP AllToAll 的网络争用调度；moe-lb-interai25 优化 expert 放置以减少 straggler——二者分别解决 EP 的通信瓶颈和负载不均瓶颈</td></tr>
+<tr><td>2604.09107 (TensorHub)</td><td>类比机制</td><td>TensorHub 的 pipeline replication 用 RDMA DAG 优化大规模 weight 传输；moe-lb-interai25 的 expert migration 面临相同问题（expert weight 迁移开销），但未利用类似的传输优化技术</td></tr>
+<tr><td>2602.21548 (DualPath)</td><td>思路类比</td><td>DualPath 联合优化 I/O 带宽分配和调度降低 KV-cache 加载延迟；moe-lb-interai25 联合优化 load balance 和 data movement 降低 MoE 层延迟——同为"多目标联合优化"范式</td></tr>
+<tr><td>2604.15039 (PrfaaS)</td><td>调度哲学互补</td><td>PrfaaS 用长度阈值路由将请求分流到最优集群；moe-lb-interai25 通过 expert 重放置将负载分流到最优设备——一个路由请求，一个路由 expert</td></tr>
+<tr><td>2603.13358 (PPD)</td><td>设计哲学类比</td><td>PPD 通过 per-request routing 决策避免昂贵的 KV transfer；moe-lb-interai25 通过 per-batch placement 决策避免 straggler 等待——都是"动态决策避免固定代价"的实例</td></tr>
+<tr><td>tilert-speed-scaling-law (TileRT)</td><td>范式对比</td><td>TileRT 用 persistent kernel 彻底消除 inter-kernel overhead（含 AllToAll barrier），代表"消除问题"路径；moe-lb-interai25 代表"管理问题"路径</td></tr>
+<tr><td>kvserve (KVServe)</td><td>正交互补</td><td>KVServe 压缩 PD 间 KV 传输；moe-lb-interai25 优化 MoE 层内 expert 放置。二者解决不同阶段的通信瓶颈，可组合使用</td></tr>
+</table>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="核心-delta：联合优化-load-balance-migration-cost-的-ilp-形式化">核心 delta：联合优化 load balance + migration cost 的 ILP 形式化 <a class="heading-anchor" href="#核心-delta：联合优化-load-balance-migration-cost-的-ilp-形式化" aria-label="Link to 核心-delta：联合优化-load-balance-migration-cost-的-ilp-形式化">#</a></h3>
+
+<p>moe-lb-interai25 的独特贡献在于将 expert replication/reallocation 问题形式化为 ILP（min-max load + migration cost 联合目标），并提供多项式时间近似解 <a href="/papers/moe-lb-interai25/detail.html#core-contribution" class="ref-link" title="L2:moe-lb-interai25#core-contribution">[L2:moe-lb-interai25]</a>。这是增量而非范式突破——在已知的 dynamic expert placement 优化空间中增加了一个数学上更严谨的 formulation。</p>
+
+<p><strong>vs ZeRO-Prefill (2605.02960)</strong>: ZeRO-Prefill 从根本上消除了 routing imbalance 的影响——通过 AsyncEP 将 expert weight 流入本地 GPU，使所有 top-k dispatch 变为本地操作，不再有跨 GPU straggler <a href="/papers/2605.02960/detail.html#core-contribution" class="ref-link" title="L2:2605.02960#core-contribution">[L2:2605.02960]</a>。moe-lb-interai25 仍在同步 EP 框架内优化，试图通过更好的 expert 放置来缓解不均衡。这是"管理病因 vs 消除病根"的区别。ZeRO-Prefill 在 Qwen3-235B 上达到 1.35–1.37× 吞吐提升 <a href="/papers/2605.02960/detail.html#key-findings" class="ref-link" title="L2:2605.02960#key-findings">[L2:2605.02960]</a>，而 moe-lb-interai25 仅 12.5% over naive assignment <a href="/papers/moe-lb-interai25/detail.html#key-findings" class="ref-link" title="L2:moe-lb-interai25#key-findings">[L2:moe-lb-interai25]</a>。</p>
+
+<p><strong>vs MFS (2603.17456)</strong>: MFS 解决 EP 执行过程中三阶段通信的网络争用问题，通过 RMLQ 实现 Defer-and-Promote 调度使 TTFT SLO 达标率提升 1.2–2.4× <a href="/papers/2603.17456/detail.html#实验与数据" class="ref-link" title="L2:2603.17456#实验与数据">[L2:2603.17456]</a>。moe-lb-interai25 解决 expert 放置不均导致的计算 straggler 问题。二者是 EP 体系下不同瓶颈的优化——MFS 管通信调度，moe-lb-interai25 管计算均衡。但 MFS 的评估规模（32 GPU testbed + 大规模仿真）和实测数据远比 moe-lb-interai25（workshop, 概念性实验）更有说服力。</p>
+
+<p><strong>vs TensorHub (2604.09107)</strong>: TensorHub 证明了 pipeline replication 可以将 fan-out weight 传输从单源瓶颈转化为带宽放大 DAG，实现线性扩展 <a href="/papers/2604.09107/detail.html#实验与数据" class="ref-link" title="L2:2604.09107#实验与数据">[L2:2604.09107]</a>。moe-lb-interai25 的 expert migration 面临相同的"weight 搬运开销"问题，但只用了简单的点对点迁移模型。如果将 TensorHub 的 pipeline replication 思想应用于 expert reallocation（将 hot expert 通过 DAG 复制到多个设备），migration cost 可以显著降低。</p>
+
+<p><strong>vs DualPath (2602.21548)</strong>: DualPath 的联合优化思想（存储带宽 + 调度均衡）在方法论上与 moe-lb-interai25（load balance + migration cost）高度类似。但 DualPath 的工程深度（CNIC-centric data path, VL QoS 隔离, 1152 GPU 生产部署 <a href="/papers/2602.21548/detail.html#实验与数据" class="ref-link" title="L2:2602.21548#实验与数据">[L2:2602.21548]</a>）远超 moe-lb-interai25 的 7 页 workshop 论文。DualPath 展示了联合优化思想在生产级系统中的落地路径。</p>
+
+<p><strong>vs PrfaaS (2604.15039)</strong>: PrfaaS 的双时间尺度调度器（per-request routing + periodic role rebalancing <a href="/papers/2604.15039/detail.html#实验与数据" class="ref-link" title="L2:2604.15039#实验与数据">[L2:2604.15039]</a>）与 moe-lb-interai25 的 "periodic expert reallocation" 概念相似，但 PrfaaS 有完整的 throughput model（Eq.1–8）指导最优决策，而 moe-lb-interai25 的 ILP 虽提供理论最优但未给出何时、多频繁触发重均衡的指导。</p>
+
+<h3 id="增量-vs-基线的严格性问题">增量 vs 基线的严格性问题 <a class="heading-anchor" href="#增量-vs-基线的严格性问题" aria-label="Link to 增量-vs-基线的严格性问题">#</a></h3>
+
+<p>moe-lb-interai25 的 12.5% 改善是相对于 <strong>naive static assignment</strong>，而非相对于已有的 dynamic approaches（Libra, ExFlow, CRAFT）<a href="/papers/moe-lb-interai25/detail.html#limitations" class="ref-link" title="L2:moe-lb-interai25#limitations">[L2:moe-lb-interai25]</a>。这使得增量贡献难以准确定位——可能其它动态方案已在 12.5% 附近或更优。</p>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<h3 id="attack-1-弱-baseline-使-12-5-改善缺乏意义">Attack 1: 弱 baseline 使 12.5% 改善缺乏意义 <a class="heading-anchor" href="#attack-1-弱-baseline-使-12-5-改善缺乏意义" aria-label="Link to attack-1-弱-baseline-使-12-5-改善缺乏意义">#</a></h3>
+
+<p>12.5% 改善仅相对于 naive assignment（static round-robin），未与 SOTA dynamic 方案（Libra: 19.2% throughput improvement, CRAFT: 1.14× throughput <a href="/papers/moe-lb-interai25/detail.html#comparison-with-related-systems" class="ref-link" title="L2:moe-lb-interai25#comparison-with-related-systems">[L2:moe-lb-interai25]</a>）对比。如果 Libra 在相同条件下已达 19.2%，则 moe-lb-interai25 的 12.5% 可能是<strong>退步</strong>而非进步。Workshop paper 的缺失 baseline 是致命弱点。</p>
+
+<h3 id="attack-2-zero-prefill-使整个优化方向过时">Attack 2: ZeRO-Prefill 使整个优化方向过时 <a class="heading-anchor" href="#attack-2-zero-prefill-使整个优化方向过时" aria-label="Link to attack-2-zero-prefill-使整个优化方向过时">#</a></h3>
+
+<p>ZeRO-Prefill 证明了 prefill-only 工作负载下（占生产流量 65.3% <a href="/papers/2605.02960/detail.html#key-findings" class="ref-link" title="L2:2605.02960#key-findings">[L2:2605.02960]</a>），AsyncEP 可完全消除 routing imbalance 的影响（本地 dispatch, 无 straggler），MFU 从 <16% 提升到 29.8–36.2% <a href="/papers/2605.02960/detail.html#key-findings" class="ref-link" title="L2:2605.02960#key-findings">[L2:2605.02960]</a>。在这个范式下，expert placement optimization（moe-lb-interai25 的核心贡献）变得无关紧要——不均衡不再重要因为没有跨 GPU dispatch。对于 decode-heavy workloads（ZeRO-Prefill 不适用），moe-lb-interai25 仍有理论价值，但 decode 时的 per-token compute window 太短（μs 级 <a href="/papers/tilert-speed-scaling-law/detail.html#q1-痛点" class="ref-link" title="L2:tilert-speed-scaling-law#q1-痛点">[L2:tilert-speed-scaling-law]</a>），expert migration 的触发频率本身就受限。</p>
+
+<h3 id="attack-3-单节点-scale-up-假设限制适用性">Attack 3: 单节点 scale-up 假设限制适用性 <a class="heading-anchor" href="#attack-3-单节点-scale-up-假设限制适用性" aria-label="Link to attack-3-单节点-scale-up-假设限制适用性">#</a></h3>
+
+<p>moe-lb-interai25 仅设计为 scale-up 网络（intra-node NVLink/xGMI <a href="/papers/moe-lb-interai25/detail.html#key-findings" class="ref-link" title="L2:moe-lb-interai25#key-findings">[L2:moe-lb-interai25]</a>），但生产级 MoE serving 通常跨多节点。MFS 的实验在 32 GPU testbed 上显示跨节点网络争用才是 TTFT 的主要瓶颈 <a href="/papers/2603.17456/detail.html#实验与数据" class="ref-link" title="L2:2603.17456#实验与数据">[L2:2603.17456]</a>，DualPath 在 1152 GPU 上验证了跨节点场景 <a href="/papers/2602.21548/detail.html#实验与数据" class="ref-link" title="L2:2602.21548#实验与数据">[L2:2602.21548]</a>。scale-up only 的设计排除了最需要 load balancing 的场景——当 expert migration 需要跨节点传输（>10ms）时，migration cost 会远超 intra-node 场景，使 joint optimization 的 tradeoff 完全不同。</p>
+
+<h3 id="attack-4-静态-ilp-形式化忽略了-workload-动态性">Attack 4: 静态 ILP 形式化忽略了 workload 动态性 <a class="heading-anchor" href="#attack-4-静态-ilp-形式化忽略了-workload-动态性" aria-label="Link to attack-4-静态-ilp-形式化忽略了-workload-动态性">#</a></h3>
+
+<p>ILP 假设在决策点已知完整的 workload profile（per-expert token counts <a href="/papers/moe-lb-interai25/detail.html#scheduling-resource-management" class="ref-link" title="L2:moe-lb-interai25#scheduling-resource-management">[L2:moe-lb-interai25]</a>），但真实 serving 中 token routing 是逐 batch 变化的。PPD 的研究表明"无单一静态策略在所有 workload 组合中占优" <a href="/papers/2603.13358/detail.html#实验与数据" class="ref-link" title="L2:2603.13358#实验与数据">[L2:2603.13358]</a>，PrfaaS 需要双时间尺度调度器处理流量波动 <a href="/papers/2604.15039/detail.html#实验与数据" class="ref-link" title="L2:2604.15039#实验与数据">[L2:2604.15039]</a>。moe-lb-interai25 的 ILP/heuristic 缺乏对 workload volatility 的建模——如果 rebalancing 后 routing 分布立即变化，刚完成的 migration 可能已经过时。</p>
+
+<h3 id="attack-5-未考虑-expert-migration-与-kv-cache-的内存竞争">Attack 5: 未考虑 expert migration 与 KV-cache 的内存竞争 <a class="heading-anchor" href="#attack-5-未考虑-expert-migration-与-kv-cache-的内存竞争" aria-label="Link to attack-5-未考虑-expert-migration-与-kv-cache-的内存竞争">#</a></h3>
+
+<p>Expert replication 增加内存占用 <a href="/papers/moe-lb-interai25/detail.html#key-innovations" class="ref-link" title="L2:moe-lb-interai25#key-innovations">[L2:moe-lb-interai25]</a>，但在推理 serving 中 HBM 的主要消费者是 KV-cache。DualPath 的 layerwise prefill 下 PE HBM 仅持有当前层 KV <a href="/papers/2602.21548/detail.html#architecture-data-flow" class="ref-link" title="L2:2602.21548#architecture-data-flow">[L2:2602.21548]</a>，PrfaaS 使用 transfer-cache 传完即丢 <a href="/papers/2604.15039/detail.html#实验与数据" class="ref-link" title="L2:2604.15039#实验与数据">[L2:2604.15039]</a>——这些系统精心管理 HBM 以最大化 batch size。moe-lb-interai25 的 expert replication 会占用宝贵的 HBM 空间，可能反向降低 batch size 从而降低 GPU utilization。</p>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<h3 id="定位：ep-框架内的理论-formalization">定位：EP 框架内的理论 formalization <a class="heading-anchor" href="#定位：ep-框架内的理论-formalization" aria-label="Link to 定位：ep-框架内的理论-formalization">#</a></h3>
+
+<p>moe-lb-interai25 的生态位是为 "同步 EP 下的 dynamic expert placement" 提供一个数学上严谨的优化 formulation。它不是一个系统、不是一个产品，是一个<strong>算法贡献</strong>——ILP + heuristic。</p>
+
+<h3 id="范式定位">范式定位 <a class="heading-anchor" href="#范式定位" aria-label="Link to 范式定位">#</a></h3>
+
+<p>当前 MoE serving 优化存在三个范式：</p>
+<ol>
+<li><strong>管理 EP 内的不均衡</strong>（moe-lb-interai25, Libra, ExFlow, CRAFT）—— 在同步 EP 框架内优化 expert placement/routing</li>
+<li><strong>消除 EP 的同步约束</strong>（ZeRO-Prefill AsyncEP）—— 用 weight streaming 替代 AllToAll，使 routing imbalance 无关紧要</li>
+<li><strong>优化 EP 通信的网络调度</strong>（MFS）—— 保持 EP 但让网络层更高效地服务通信</li>
+</ul>
+
+<p>moe-lb-interai25 属于范式 1，而范式 2（ZeRO-Prefill）在 prefill-only 场景下严格优于范式 1。范式 1 的残余价值在于 <strong>decode-heavy 和 interactive serving</strong> 场景（compute window 太短无法 overlap weight AllGather），但 moe-lb-interai25 本身未针对这些场景优化。</p>
+
+<h3 id="采用证据">采用证据 <a class="heading-anchor" href="#采用证据" aria-label="Link to 采用证据">#</a></h3>
+
+<p>无。Workshop paper, 未开源, 未被后续工作引用为 baseline <a href="/papers/moe-lb-interai25/detail.html#adoption-maturity" class="ref-link" title="L2:moe-lb-interai25#adoption-maturity">[L2:moe-lb-interai25]</a>。ZeRO-Prefill 在其 related work 中提到 moe-lb-interai25 作为 "dynamic expert placement" 类别 <a href="/papers/2605.02960/detail.html#comparison-with-related-work" class="ref-link" title="L2:2605.02960#comparison-with-related-work">[L2:2605.02960]</a>，但将其定位为 ZeRO-Prefill 所替代的旧范式。</p>
+
+<h3 id="成熟度">成熟度 <a class="heading-anchor" href="#成熟度" aria-label="Link to 成熟度">#</a></h3>
+
+<p>早期学术探索阶段。与同 category 的 peer 对比：DualPath 已在 1152 GPU 生产部署 <a href="/papers/2602.21548/detail.html#adoption-ecosystem" class="ref-link" title="L2:2602.21548#adoption-ecosystem">[L2:2602.21548]</a>，TensorHub 在 ByteDance 生产 RL 训练中部署 <a href="/papers/2604.09107/detail.html#adoption-ecosystem" class="ref-link" title="L2:2604.09107#adoption-ecosystem">[L2:2604.09107]</a>，TileRT 驱动 GLM-5.1 生产服务 <a href="/papers/tilert-speed-scaling-law/detail.html#q3-结果" class="ref-link" title="L2:tilert-speed-scaling-law#q3-结果">[L2:tilert-speed-scaling-law]</a>。moe-lb-interai25 离生产还有多个量级的距离。</p>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<h3 id="5-1-asyncep-adaptive-expert-placement-混合架构">5.1 AsyncEP + Adaptive Expert Placement 混合架构 <a class="heading-anchor" href="#5-1-asyncep-adaptive-expert-placement-混合架构" aria-label="Link to 5-1-asyncep-adaptive-expert-placement-混合架构">#</a></h3>
+
+<p>ZeRO-Prefill 的 AsyncEP 在 prefill-only 场景下最优，但 decode 时 compute window 不足以 overlap weight AllGather。一个混合方案：prefill 用 AsyncEP（完全本地 dispatch），decode 用 moe-lb-interai25 风格的 dynamic placement（此时 batch 较大可摊薄 migration cost）。需要在 PD disaggregation 边界切换 EP 策略。</p>
+
+<h3 id="5-2-tensorhub-pipeline-replication-for-expert-migration">5.2 TensorHub Pipeline Replication for Expert Migration <a class="heading-anchor" href="#5-2-tensorhub-pipeline-replication-for-expert-migration" aria-label="Link to 5-2-tensorhub-pipeline-replication-for-expert-migration">#</a></h3>
+
+<p>moe-lb-interai25 的 migration cost 模型假设点对点传输。借鉴 TensorHub 的 pipeline replication <a href="/papers/2604.09107/detail.html#pipeline-replication" class="ref-link" title="L2:2604.09107#pipeline-replication">[L2:2604.09107]</a>——hot expert 复制时利用 RDMA 全双工构建 DAG，已接收的 worker 立即向下游提供，可将 N-way expert replication 的时间从 O(N) 降为 O(1)。这会根本改变 ILP 中 migration cost 项的量级，使更激进的 rebalancing 变为可行。</p>
+
+<h3 id="5-3-mfs-style-network-aware-expert-migration-scheduling">5.3 MFS-style Network-Aware Expert Migration Scheduling <a class="heading-anchor" href="#5-3-mfs-style-network-aware-expert-migration-scheduling" aria-label="Link to 5-3-mfs-style-network-aware-expert-migration-scheduling">#</a></h3>
+
+<p>Expert migration 是大 weight tensor 传输（数十~数百 MB），与 EP AllToAll 争用网络。将 MFS 的 Defer-and-Promote 原则 <a href="/papers/2603.17456/detail.html#核心三问" class="ref-link" title="L2:2603.17456#核心三问">[L2:2603.17456]</a> 应用于 expert migration：migration flow 初始低优先级，仅在 straggler 问题加剧（MLU 接近 1）时才 promote。这将 moe-lb-interai25 的 "何时迁移" 决策与 MFS 的 "何时传输" 调度统一。</p>
+
+<h3 id="5-4-service-aware-expert-placement（借鉴-kvserve-的-bandit-controller）">5.4 Service-Aware Expert Placement（借鉴 KVServe 的 Bandit Controller） <a class="heading-anchor" href="#5-4-service-aware-expert-placement（借鉴-kvserve-的-bandit-controller）" aria-label="Link to 5-4-service-aware-expert-placement（借鉴-kvserve-的-bandit-controller）">#</a></h3>
+
+<p>KVServe 的双层 controller（analytical model + ε-greedy bandit <a href="/papers/kvserve/detail.html#核心三问" class="ref-link" title="L2:kvserve#核心三问">[L2:kvserve]</a>）可迁移到 expert placement：Tier-1 用 ILP 的 relaxed LP 做快速粗筛，Tier-2 用 bandit 在线学习 "routing 分布的漂移模式" 决定 rebalancing 频率和激进度。将静态 ILP 转化为在线自适应系统。</p>
+
+<h3 id="5-5-跨-dc-expert-placement-with-cross-datacenter-kv-routing">5.5 跨 DC Expert Placement with Cross-Datacenter KV Routing <a class="heading-anchor" href="#5-5-跨-dc-expert-placement-with-cross-datacenter-kv-routing" aria-label="Link to 5-5-跨-dc-expert-placement-with-cross-datacenter-kv-routing">#</a></h3>
+
+<p>PrfaaS 证明了跨 DC 路由在 hybrid attention 模型下可行（egress 仅 13 Gbps <a href="/papers/2604.15039/detail.html#实验与数据" class="ref-link" title="L2:2604.15039#实验与数据">[L2:2604.15039]</a>）。将 expert placement 扩展到跨 DC 场景：热门 expert 复制到多个 DC 的 prefill 集群，冷门 expert 集中在少数节点。需要联合优化 expert placement（跨 DC）+ request routing（PrfaaS 的 $t$ 阈值），形成 co-optimization。当前无人探索 "跨 DC expert placement + 跨 DC KV routing" 的联合问题。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2412.19437.html">2412.19437</a> (related) 
+<a href="/papers/2504.09285.html">2504.09285</a> (related) 
+<a href="/papers/2603.18897.html">2603.18897</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
