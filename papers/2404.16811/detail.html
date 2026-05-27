@@ -196,482 +196,375 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Make Your LLM Fully Utilize the Context</h1>
-<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2404.16811</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">long-context</span><span class="tag">lost-in-the-middle</span><span class="tag">data-synthesis</span><span class="tag">instruction-tuning</span><span class="tag">RoPE</span><span class="tag">evaluation</span></div>
+<div class="card-meta"><span class="badge badge-model">model</span> 2404.16811</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">long-context</span><span class="tag">lost-in-the-middle</span><span class="tag">data-synthesis</span><span class="tag">instruction-tuning</span><span class="tag">RoPE</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/algorithm.html">← algorithm Survey</a>
+<a href="/papers/2404.16811.html">← Synthesis</a>
+<a href="/overview/model.html">← model Survey</a>
 <a href="https://arxiv.org/abs/2404.16811" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
-<h1 id="make-your-llm-fully-utilize-the-context-film-7b-in2-training">Make Your LLM Fully Utilize the Context (FilM-7B / IN2 Training) <a class="heading-anchor" href="#make-your-llm-fully-utilize-the-context-film-7b-in2-training" aria-label="Link to make-your-llm-fully-utilize-the-context-film-7b-in2-training">#</a></h1>
-<blockquote>
-Shengnan An, Zexiong Ma, Zeqi Lin, Nanning Zheng, Jian-Guang Lou (Microsoft / 西安交大 / 北大) | 2024-04 | https://arxiv.org/abs/2404.16811
-Category: algorithm | Tags: long-context, lost-in-the-middle, data-synthesis, instruction-tuning, RoPE, evaluation
-Read: 2026-04-19
-</blockquote>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<p><strong>用一个纯数据驱动的方案（IN2 训练）治好了 lost-in-the-middle 病</strong>：把 GPT-4 合成的"问题答案藏在长上下文中任意一个 128-token 段"的 1.75M 条 QA 数据，喂给 Mistral-7B-Instruct-v0.2 做 instruction tuning，得到 FilM-7B —— 在 32K 上下文中所有位置上的检索性能都接近平的，与 GPT-4-Turbo 同台竞争且不损害短上下文能力。</p>
+<p>纯数据驱动方案治愈 lost-in-the-middle：用 GPT-4 合成 1.75M 条"答案藏在 4K–32K 上下文任意位置"的 QA 数据做 instruction tuning，得到 FilM-7B——VaL Probing 均分 85.9 超 GPT-4-Turbo (79.0)，位置鲁棒性 Gap 仅 13.9 (vs 32.1)，不损短上下文能力。</p>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
 
-<p><strong>动机</strong>: 现代长上下文 LLM（Mistral、LongAlign、InternLM2 等）虽然训练窗口扩到 32K+，但普遍在"中间位置"的信息提取上失败 —— 即 <em>lost-in-the-middle</em>。作者提出一个反直觉的假设：这不是模型架构或注意力机制的锅，而是<strong>训练数据自身带有不可见的位置偏置</strong>。原因有二：(1) 自回归预训练的下一 token 损失被近距离 token 主导；(2) SFT/对齐阶段，system message 总是放在开头，让模型学到"重要信息在开头/结尾"。</p>
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
 
-<p><strong>方法</strong>: IN2 (Information-INtensive) 训练。从 C4 realnewslike 语料里，先把每篇文章切成 128-token 段（"最小信息单元"）；让 GPT-4-Turbo 针对单段（细粒度 awareness）或多段（多跳 reasoning）生成 QA pair；然后把"目标段(s)"+ 大量随机段拼成 4K~32K 的长上下文 Lᵢ，并通过 reject sampling 让长度均匀分布、目标段位置随机。最终数据集：1.1M 细粒度 + 0.3M 多跳 + 0.15M 短上下文 + 0.2M OpenOrca 混合 instruction tuning 数据，共 1.75M 条。Loss 只在 answer 部分；16 节点 ×8 张 A100 训练约 300 GPU-day。</p>
+<p>长上下文 LLM（Mistral、LongAlign、InternLM2）虽训练窗口达 32K+，但普遍在中间位置信息提取上失败——即 <em>lost-in-the-middle</em>。根因假设：训练数据自身带有不可见的位置偏置。(1) 自回归预训练的 next-token loss 被近距离 token 主导；(2) SFT 阶段 system message 始终在开头，让模型学到"重要信息在边缘"。现有 Needle-in-the-Haystack 评测在单一前向检索 + 自然语言上下文下给出近满分，严重高估了真实长上下文利用能力。</p>
 
-<p><strong>结果</strong>: 在作者新设计的 VaL Probing 上（涵盖文档/代码/结构化数据 × 前向/后向/双向检索 6 种组合），FilM-7B 平均分 85.9，超过 GPT-4-Turbo (79.0)，且 min-max gap 仅 13.9（GPT-4-Turbo 32.1）。在 9 个真实 LongBench 任务上从 30.6 → 39.9，NarrativeQA F1 从 23.5 → 26.9。短上下文 8 个 benchmark 平均仅有微小波动（MMLU 59.3 → 59.2）。论证了"合成长上下文数据可以泛化到真实任务，且不损害基础能力"。</p>
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
 
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
+<p><strong>Information-Intensive (IN2) Training</strong>——核心是把"信息位置"作为独立的随机化维度，强制写入训练数据：</p>
 
-<ul>
-<li><strong>Lost-in-the-middle 是数据问题，不是架构问题</strong> —— 仅靠数据 + instruction tuning 就能修复，不改注意力、不改 position encoding 即可（虽然 RoPE base 调到默认 10× 还能再增 ~5 分）。</li>
-<li><strong>128-token 是合适的"最小信息单元"</strong> —— 既小到可以在 32K 中藏成"针"，又大到能形成完整问答事实。</li>
-<li><strong>VaL Probing 揭示 Needle-in-the-Haystack 高估了模型</strong> —— LongAlign / InternLM2 在 NIH 上几乎满分，但在 VaL（特别是 backward / bi-directional 模式）上仍呈明显 U 形曲线。</li>
-<li><strong>Sliding window 与长上下文目标根本冲突</strong> —— 不论是预训练还是 IN2 阶段加 4K SW，超出窗口距离的信息检索精度直接归零（Fig. 6）。</li>
-<li><strong>训练时拉高信息密度需要更大的 RoPE base θ</strong> —— 在 IN2 训练中把 θ 从 1e6 提到 1e7（10×）能把 VaL avg 从 80.3 → 84.9。</li>
-<li><strong>合成数据 → 真实数据的迁移成立</strong> —— 训练数据全部由 GPT-4 + C4 生成，但真实 LongBench 任务（NarrativeQA、Qasper、HotpotQA 等）也获得 SOTA-级提升。</li>
+<ol>
+<li>从 C4 realnewslike 语料切 128-token 段作为最小信息单元</li>
+<li>GPT-4-Turbo 对单段（细粒度 awareness）或多段（多跳 reasoning）生成 QA pair</li>
+<li>目标段与大量随机段 shuffle 后拼成 4K–32K 长上下文，通过 reject sampling 保证长度均匀分布、目标段位置均匀分布</li>
+<li>数据配比：1.1M 细粒度 + 0.3M 多跳 + 0.15M 短 QA + 0.2M OpenOrca = 1.75M 条</li>
+<li>在 Mistral-7B-Instruct-v0.2 上标准 instruction tuning（answer-only loss），不改架构</li>
 </ul>
 
-<h2 id="system-diagram-drawio">System Diagram (drawio) <a class="heading-anchor" href="#system-diagram-drawio" aria-label="Link to system-diagram-drawio">#</a></h2>
+<p><strong>核心技术壁垒</strong>：将 gold segment position 的均匀分布作为显式监督信号——这不是简单的"长上下文数据"，而是从数据构造层面消除位置偏置的根本机制。prior work (LongAlign / Fu et al.) 解决了长度分布平衡，但从未控制过 <em>位置</em> 分布。</p>
 
-<p>End-to-end IN2 pipeline (data construction → training → evaluation):</p>
+<p><strong>VaL Probing</strong> 评估方案：3 种上下文风格（document / code / structured-data）× 3 种检索模式（forward / backward / bi-directional），暴露 Needle-in-the-Haystack 隐藏的 U 形缺陷。</p>
 
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
 
-<p><!-- Source: former drawio page "VaL-Probing" (15 nodes, 0 edges) --></p>
+<table>
+<tr><th>指标</th><th>FilM-7B</th><th>Backbone (Mistral-v0.2)</th><th>GPT-4-Turbo</th><th>提升</th></tr>
+<tr><td>VaL Probing Avg</td><td><strong>85.9</strong></td><td>47.3</td><td>79.0</td><td>+38.6 vs backbone</td></tr>
+<tr><td>VaL Probing Gap↓</td><td><strong>13.9</strong></td><td>56.2</td><td>32.1</td><td>−42.3 vs backbone</td></tr>
+<tr><td>LongBench 9-task Avg</td><td><strong>39.9</strong></td><td>30.6</td><td>44.7</td><td>+9.3 vs backbone</td></tr>
+<tr><td>MMLU (short-ctx)</td><td>59.2</td><td>59.3</td><td>—</td><td>−0.1 (maintained)</td></tr>
+<tr><td>训练成本</td><td>300 GPU-day (128×A100)</td><td>—</td><td>—</td><td>—</td></tr>
+</table>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2404.16811/fig2.png" alt="Figure 2: IN2 训练数据构造流程——细粒度 awareness (上) 与多跳 reasoning (下)"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "The data construction process for In2 training, aimed at enhancing the fine-grained information awareness (upper), and the integration and reasoning of information (lower).").</em></p>
+
+<p>上半部分展示从原文 $\mathcal{C}_i$ 中随机切出单个 128-token 段 $s_i$，GPT-4-Turbo 生成 $(q_i, a_i)$，然后 $s_i$ 与随机段 shuffle 后拼成长上下文 $\mathcal{L}_i$；下半部分展示原文切成多段 $[s_i]$，生成多跳 QA 后同样 shuffle 成长上下文。关键在于目标段在 $\mathcal{L}_i$ 中的位置是均匀随机的。</p>
+
+<p><img src="/assets/2404.16811/fig3.png" alt="Figure 3: VaL Probing 三种任务——文档双向检索、代码后向检索、数据库前向检索"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "Three tasks in VaL Probing. The retrieval patterns are determined by the relative positions between the retrieval keywords and the information to be retrieved.").</em></p>
+
+<p>三列分别展示 document sentence retrieval（需向前向后扩展找完整句）、code function retrieval（需向前找 <code>def</code> 行的函数名）、database entity retrieval（需向后找 label + description）。这个设计直接针对 Needle-in-the-Haystack 的单一"前向 + 自然语言"模式，暴露真实的位置偏置。</p>
+
+<p><strong>IN2 数据生成与训练 pipeline（Mermaid）</strong>：</p>
+
 <div class="mermaid">
 flowchart TB
-    title["VaL Probing — 3 Context Styles × 3 Retrieval Patterns"]
-    header1["Context Style →"]
-    h1["Document (NL sentences from arXiv abstracts)"]
-    h2["Code (Python functions from StarCoder)"]
-    h3["Database (Wikidata entities: ID, label, desc)"]
-    r1["Retrieval Pattern"]
-    d1["Bi-directional (query is a SNIPPET inside the sentence; need words both before AND after the snippet) Metric: word-level recall"]
-    d2["Backward (query is a line INSIDE function body; need function name which appears BEFORE the line) Metric: exact-match accuracy"]
-    d3["Forward (query is the ID; need label+description which follow it) Metric: relaxed exact-match (label OR desc)"]
-    ctx1["Context: ~32K tokens (~800 sentences) Examples per task: ~3K Position bins: every 50 sentences"]
-    ctx2["Context: ~32K tokens (~800 functions) Examples per task: ~3K Position bins: every 50 functions"]
-    ctx3["Context: ~32K tokens (~750 entities) Examples per task: ~3K Position bins: every 50 entities"]
-    comp["Comparison vs Needle-in-the-Haystack"]
-    nih["Needle-in-the-Haystack • Style: document (NL — familiar to LLMs) • Pattern: forward (induction-head copy is easy) • Example: best thing to do in SF → ‘eat a sandwich…’ • Result: most 32K models score ~100% ⇒ overestim..."]
-    val["VaL Probing • 3 styles × 3 patterns; structured + code added • Backward / bi-directional break induction-head shortcut • Two metrics: Avg (utilization) and Gap (robustness) ⇒ Mistral-v0.2/LongAlign/InternLM2 all show ..."]
+    subgraph DataConstruction["IN2 Data Construction"]
+        C4["C4 realnewslike corpus"]
+        seg["切 128-token 段"]
+        pathA["Path A: 单段 → GPT-4 生成 fine-grained QA"]
+        pathB["Path B: 多段 → GPT-4 生成 multi-hop QA"]
+        shuffle["目标段 + 随机段 shuffle → 长上下文 L_i (4K-32K)"]
+        reject["Reject sampling: 长度均匀 + 位置均匀"]
+    end
+    subgraph DataMix["Final Dataset (1.75M)"]
+        fg["1.1M 细粒度 (63%)"]
+        mh["0.3M 多跳 (17%)"]
+        short["0.15M 短 QA (9%)"]
+        orca["0.2M OpenOrca (11%)"]
+    end
+    subgraph Training["IN2 SFT"]
+        model["Mistral-7B-Instruct-v0.2"]
+        sft["Answer-only loss, bs=128, LR=1e-6"]
+        film["FilM-7B"]
+    end
+    C4 --> seg --> pathA & pathB
+    pathA & pathB --> shuffle --> reject
+    reject --> fg & mh
+    fg & mh & short & orca --> sft
+    model --> sft --> film
 </div>
 
-<p>VaL probing 任务设计与 NIH 对比：</p>
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
 
+<p>本文不含严格数学定理；核心等式是数据构造的形式化定义而非分析证明。</p>
 
-<p><!-- Source: former drawio page "Failure-Modes" (10 nodes, 4 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    title["Why Lost-in-the-Middle Happens — Position Bias from Training Data"]
-    cause1["Cause #1 — Pretraining bias (auto-regressive) Next-token loss is dominated by NEAR pre-tokens. ⇒ long-distance attention is under-trained"]
-    cause2["Cause #2 — SFT/alignment bias System message at the BEGINNING strongly steers the response. Important info repeatedly co-occurs at position 0. ⇒ model learns ‘information lives at the edges’"]
-    cause3["Cause #3 — Long-context SFT data scarcity Standard long-ctx SFT places gold answer near the start or end (chat / RAG style). ⇒ middle positions never get gradient"]
-    lim["Lost-in-the-Middle ‘U-shape’ accuracy curve"]
-    fix["IN2 fix: every 128-tok segment can hold the answer. Reject-sample to ensure UNIFORM gold-segment position over [0, L]. Loss is computed only on the answer aᵢ, so the gradient only rewards correctly attending to the go..."]
-    key["Key design constraints (why other approaches fail)"]
-    alt1["Alt A: Sliding-window attention (Mistral-v0.1 4K SW) Why fails: distance > window ⇒ 0 signal. Fig. 6 shows accuracy collapses past 4K. NOT a fix."]
-    alt2["Alt B: Just extend context (RoPE θ↑) without IN2 data Why fails: model can ATTEND to far tokens but still has the position-bias prior. FilM ablation shows IN2 DATA matters more than θ alone, but θ=10× helps too."]
-    alt3["Alt C: Train on real long-doc QA (e.g. NarrativeQA) Why fails: gold answer position is non-uniform AND data scale is small (~1k examples). IN2 synthesizes 1.4M examples with FORCED uniform position. ⇒ data-driven solu..."]
-    cause1 -->|" "| lim
-    cause2 -->|" "| lim
-    cause3 -->|" "| lim
-    lim -->|" "| fix
-</div>
+<p><strong>Notation table</strong>:</p>
 
-<p>为何 lost-in-the-middle 出现 + 为何替代方案都不行：</p>
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$\mathbb{D} = \{(\mathcal{L}_i, q_i, a_i)\}$</td><td>IN2 训练数据集</td></tr>
+<tr><td>$\mathcal{C}_i$</td><td>来自 C4 的原始文本</td></tr>
+<tr><td>$s_i$</td><td>128-token 段（最小信息单元）</td></tr>
+<tr><td>$[r_j]$</td><td>从 $\mathbb{C}$ 随机采样的 128-token 段（干扰项）</td></tr>
+<tr><td>$I_f, I_r$</td><td>细粒度 / 多跳 QA 生成 prompt</td></tr>
+<tr><td>$\oplus\{\cdot\}$</td><td>段拼接算子</td></tr>
+</table>
 
-<p>{{drawio:2404.16811_arch.drawio#page=3&height=520}}</p>
+<p><strong>方程物理意义</strong>:</p>
 
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
+<p>Eq.1 (细粒度): $(q_i, a_i) \sim \mathrm{Prompting}(s_i, I_f; \mathrm{LLM}), \quad \mathcal{L}_i = \oplus\{\mathrm{Shuffle}(s_i, [r_j])\}$</p>
 
-<h3 id="figure-1-film-7b-vs-mistral-7b-instruct-v0-2-vs-gpt-4-turbo-on-val-probing">Figure 1: FilM-7B vs Mistral-7B-Instruct-v0.2 vs GPT-4-Turbo on VaL Probing <a class="heading-anchor" href="#figure-1-film-7b-vs-mistral-7b-instruct-v0-2-vs-gpt-4-turbo-on-val-probing" aria-label="Link to figure-1-film-7b-vs-mistral-7b-instruct-v0-2-vs-gpt-4-turbo-on-val-probing">#</a></h3>
-<p><img src="/assets/2404.16811/fig1.png" alt="Figure 1"></p>
-<p><strong>What it shows</strong>: 三张曲线图（文档/代码/数据库 三个任务），横轴是关键信息在 ~32K 上下文中的相对位置（0~800 sentences/functions/entities）。橙色 FilM-7B 是几乎水平的高分曲线；灰色 Mistral-v0.2 在中间位置塌成深 U；蓝色 GPT-4-Turbo 在文档任务上类似 U 形，在数据库任务上比较平。</p>
-<p><strong>Why it matters</strong>: 论文的"金句图"——一目了然展示 IN2 训练彻底拉平了曲线，且在多数设定下超越 GPT-4-Turbo。</p>
-<p><strong>Detailed description</strong>: 左图 Document Sentence Retrieval（双向检索）FilM ~0.85 几乎平直；中图 Code Function Retrieval（后向）FilM 在 0.7~0.95 间波动，GPT-4-Turbo 在中间位置只到 0.4；右图 Database Entity Retrieval（前向）FilM 与 GPT-4 同水平 ~0.9；Mistral 三图都在中段塌到 0.05~0.4。</p>
+<p>物理意义：从单个 128-token 段生成高度 specific 的 QA，然后将该段藏入随机位置的长上下文中。梯度只在模型正确 attend 到目标段并生成正确答案时才有信号。</p>
 
-<h3 id="figure-2-in2-训练数据构造流程">Figure 2: IN2 训练数据构造流程 <a class="heading-anchor" href="#figure-2-in2-训练数据构造流程" aria-label="Link to figure-2-in2-训练数据构造流程">#</a></h3>
-<p><img src="/assets/2404.16811/fig2.png" alt="Figure 2"></p>
-<p><strong>What it shows</strong>: 上半部分（Fine-Grained Information Awareness）：原文 Cᵢ → 切出单个 128-token 段 sᵢ → GPT-4 生成 (qᵢ, aᵢ) → sᵢ 与随机段打乱后拼成长上下文。下半部分（Integration & Reasoning）：原文切出多个段 [sᵢ¹, sᵢ², sᵢ³] → GPT-4 生成多跳 QA → 多个段与随机段一起 shuffle。</p>
-<p><strong>Why it matters</strong>: 整个方法的灵魂图，用最少 4 个箭头讲清楚"如何强迫信息均匀分布到上下文任意位置"。</p>
-<p><strong>Detailed description</strong>: 蓝色 Cᵢ raw text 框 → 绿色 segment 框 → 橙色/紫色 QA 框 → 灰色 Long Context 框（高度示意 32K）。注意目标段的颜色绿色在 Long Context 中位置随机，与白底"random segment"块交错。</p>
+<p>Eq.2 (多跳): $(q_i, a_i) \sim \mathrm{Prompting}([s_i], I_r; \mathrm{LLM}), \quad \mathcal{L}_i = \oplus\{\mathrm{Shuffle}([s_i], [r_j])\}$</p>
 
-<h3 id="figure-3-val-probing-三任务-—-各异的上下文风格与检索模式">Figure 3: VaL Probing 三任务 — 各异的上下文风格与检索模式 <a class="heading-anchor" href="#figure-3-val-probing-三任务-—-各异的上下文风格与检索模式" aria-label="Link to figure-3-val-probing-三任务-—-各异的上下文风格与检索模式">#</a></h3>
-<p><img src="/assets/2404.16811/fig3.png" alt="Figure 3"></p>
-<p><strong>What it shows</strong>: 三列分别展示文档检索（双向）、代码函数检索（后向）、数据库实体检索（前向）的输入示例：上方是 ~32K 的灰色上下文（含一条蓝色高亮行 = 答案行），下方是 instruction（含黄色高亮的查询关键词）。</p>
-<p><strong>Why it matters</strong>: 解释为什么 NIH 单一的"前向 + 自然语言"模式不够 —— 必须扩展到结构化数据 + 后向检索才能真正暴露模型的位置偏置。</p>
-<p><strong>Detailed description</strong>: Document 列查询是句子片段，需向前向后扩展找完整句子；Code 列查询是函数体内一行代码，需向前找到 <code>def</code> 行的函数名；Database 列查询是 ID，需向后找到 label 与 description。</p>
+<p>物理意义：多段 QA 要求模型在长上下文中找到散落在不同位置的多个目标段并整合推理，训练多跳 attention path。</p>
 
-<h3 id="figure-4-a-film-7b-与-mistral-instruct-v0-1-v0-2-对比">Figure 4(a): FilM-7B 与 Mistral-Instruct-v0.1 / v0.2 对比 <a class="heading-anchor" href="#figure-4-a-film-7b-与-mistral-instruct-v0-1-v0-2-对比" aria-label="Link to figure-4-a-film-7b-与-mistral-instruct-v0-1-v0-2-对比">#</a></h3>
-<p><img src="/assets/2404.16811/fig4a.png" alt="Figure 4a"></p>
-<p><strong>What it shows</strong>: 同样三任务 × 位置曲线。Mistral-v0.1（带 4K SW）在所有 3 任务上几乎全程 0；Mistral-v0.2（无 SW）在两端高、中间塌；FilM-7B 全程平坦在 0.8~0.9。</p>
-<p><strong>Why it matters</strong>: 双层证据：(a) sliding window 的灾难性副作用；(b) IN2 训练消除 U 形。</p>
+<p><strong>6 Minimum checks</strong>:</p>
 
-<h3 id="figure-6-sliding-window-消融实验">Figure 6: Sliding Window 消融实验 <a class="heading-anchor" href="#figure-6-sliding-window-消融实验" aria-label="Link to figure-6-sliding-window-消融实验">#</a></h3>
-<p><img src="/assets/2404.16811/fig6.png" alt="Figure 6"></p>
-<p><strong>What it shows</strong>: 在 IN2 训练中加入 4K 滑窗（无论 PT-IN2 还是 IN2-only）后，距离超过 4K 的检索精度急剧下降到接近 0；不加滑窗的 FilM-7B (20%) 全程保持。</p>
-<p><strong>Why it matters</strong>: 直接证明 sliding window 与长上下文目标不可调和。即便有 IN2 数据，硬件上把信息流截断仍然让模型完全失能。</p>
+<table>
+<tr><th>#</th><th>Check</th><th>结果</th></tr>
+<tr><td>1</td><td>方程 well-defined</td><td>✓ — Eq.1/2 的所有变量在 §2.1 中有明确定义</td></tr>
+<tr><td>2</td><td>假设合理性</td><td>⚠ — 假设 GPT-4 生成的 QA "highly specific to segment"，但无 quality control 报告</td></tr>
+<tr><td>3</td><td>量纲/类型一致性</td><td>✓ — 输入为 token 序列，输出为 (question, answer) 文本对</td></tr>
+<tr><td>4</td><td>边界条件</td><td>⚠ — 当 $</td><td>\mathcal{L}_i</td><td>= 128$ (极短) 时退化为无干扰段 = 短上下文 QA，论文用短 QA 子集处理</td></tr>
+<tr><td>5</td><td>与实验匹配</td><td>✓ — 数据配比 (63%/17%/9%/11%) 与实验 setup 一致</td></tr>
+<tr><td>6</td><td>可复现性</td><td>⚠ — 数据集未开源，需 1.4M GPT-4-Turbo 调用 (~$50K-$100K)</td></tr>
+</table>
 
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
 
-<h3 id="table-1-val-probing-量化对比">Table 1: VaL Probing 量化对比 <a class="heading-anchor" href="#table-1-val-probing-量化对比" aria-label="Link to table-1-val-probing-量化对比">#</a></h3>
+<h3 id="主要结果：val-probing">主要结果：VaL Probing <a class="heading-anchor" href="#主要结果：val-probing" aria-label="Link to 主要结果：val-probing">#</a></h3>
+
+<p><img src="/assets/2404.16811/fig1.png" alt="Figure 1: FilM-7B vs Mistral-v0.2 vs GPT-4-Turbo 在 VaL Probing 上的位置-性能曲线"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "Performance of FilM-7B, Mistral-7B-Instruct-v0.2, and GPT4-Turbo on our three probing tasks. FilM-7B significantly overcomes the problem of information loss in the middle of the context.").</em></p>
+
+<p>三个面板对应 Document / Code / Database 任务。FilM-7B（橙色）在所有位置上近乎水平（~85%），Mistral-v0.2（灰色）呈深 U 形（中间位置塌到 5%–40%），GPT-4-Turbo（蓝色）在 Document 和 Code 上也有明显中间衰减。这是论文的"金句图"——一目了然展示 IN2 彻底拉平了 U 形曲线。</p>
+
 <table>
 <tr><th>Model</th><th>Doc Avg</th><th>Doc Gap↓</th><th>Code Avg</th><th>Code Gap↓</th><th>DB Avg</th><th>DB Gap↓</th><th>All Avg</th><th>All Gap↓</th></tr>
-<tr><td>Mistral-7B-Instruct-v0.1</td><td>44.8</td><td>29.9</td><td>6.8</td><td>53.2</td><td>8.8</td><td>74.5</td><td>20.1</td><td>52.5</td></tr>
 <tr><td>Mistral-7B-Instruct-v0.2</td><td>74.2</td><td>32.1</td><td>20.3</td><td>59.5</td><td>47.5</td><td>77.0</td><td>47.3</td><td>56.2</td></tr>
 <tr><td>LongAlign-7B-64K</td><td>65.3</td><td>16.9</td><td>39.3</td><td>56.0</td><td>55.0</td><td>36.2</td><td>53.2</td><td>36.4</td></tr>
-<tr><td>LongAlign-13B-64K</td><td>71.7</td><td>13.4</td><td>50.8</td><td>40.8</td><td>82.9</td><td>27.0</td><td>68.5</td><td>27.1</td></tr>
 <tr><td>InternLM2-chat-7B</td><td>68.8</td><td>18.7</td><td>50.2</td><td>44.1</td><td>61.2</td><td>57.1</td><td>60.1</td><td>40.0</td></tr>
-<tr><td>InternLM2-chat-20B</td><td>66.4</td><td>27.2</td><td>63.4</td><td>45.5</td><td>74.9</td><td>57.2</td><td>68.2</td><td>43.3</td></tr>
 <tr><td>GPT-4-Turbo</td><td>81.3</td><td>31.7</td><td>66.1</td><td>46.5</td><td><strong>89.6</strong></td><td>18.0</td><td>79.0</td><td>32.1</td></tr>
-<tr><td><strong>FilM-7B (ours)</strong></td><td><strong>85.4</strong></td><td><strong>6.1</strong></td><td><strong>83.3</strong></td><td><strong>18.7</strong></td><td>89.0</td><td><strong>16.8</strong></td><td><strong>85.9</strong></td><td><strong>13.9</strong></td></tr>
+<tr><td><strong>FilM-7B</strong></td><td><strong>85.4</strong></td><td><strong>6.1</strong></td><td><strong>83.3</strong></td><td><strong>18.7</strong></td><td>89.0</td><td><strong>16.8</strong></td><td><strong>85.9</strong></td><td><strong>13.9</strong></td></tr>
 </table>
-<p><strong>Takeaway</strong>: FilM-7B 在 4 个 Avg 中 3 个最高、4 个 Gap 全部最低。Gap 13.9 比第二名（LongAlign-13B 27.1）几乎再砍半，说明 IN2 训练带来的不只是"更高均值"，更是"更小方差"——也就是真正的"任意位置都能用"。</p>
 
-<h3 id="table-2-9-个-longbench-真实长上下文任务">Table 2: 9 个 LongBench 真实长上下文任务 <a class="heading-anchor" href="#table-2-9-个-longbench-真实长上下文任务" aria-label="Link to table-2-9-个-longbench-真实长上下文任务">#</a></h3>
+<p>FilM-7B 在 All Avg 上超 GPT-4-Turbo 6.9 分，Gap 从 32.1 压到 13.9——不仅均值更高，方差更小，即"真正的任意位置都能用"。</p>
+
+<h3 id="对比实验：揭示其他模型的-u-形缺陷">对比实验：揭示其他模型的 U 形缺陷 <a class="heading-anchor" href="#对比实验：揭示其他模型的-u-形缺陷" aria-label="Link to 对比实验：揭示其他模型的-u-形缺陷">#</a></h3>
+
+<p><img src="/assets/2404.16811/fig4a.png" alt="Figure 4a: FilM-7B vs Mistral-v0.1 (sliding window) vs v0.2——sliding window 的灾难性影响"></p>
+
+<p><em>Paper's Figure 4a, verbatim (caption: "Performance of FilM-7B, Mistral-7B-Instruct-v0.1, and Mistral-7B-Instruct-v0.2.").</em></p>
+
+<p>Mistral-v0.1 (4K sliding window) 在 Code 和 Database 任务上全程接近 0%——sliding window 直接截断了长距离信息流。v0.2 (无 SW) 呈经典 U 形，FilM-7B 全程平坦。</p>
+
+<h3 id="sliding-window-消融">Sliding Window 消融 <a class="heading-anchor" href="#sliding-window-消融" aria-label="Link to sliding-window-消融">#</a></h3>
+
+<p><img src="/assets/2404.16811/fig6.png" alt="Figure 6: Sliding window 消融——距离超过 4K 后精度急剧归零"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "Performance of FilM-7B with a 4K sliding window (SW). PT-In2: apply the sliding window in both pre-training and In2 training. In2: apply the sliding window only in In2 training.").</em></p>
+
+<p>无论是 PT+IN2 还是仅 IN2 阶段加 4K 滑窗，距离超过 4K 的检索精度急剧下降到接近 0。这直接证明 sliding window 与长上下文目标不可调和——即便有 IN2 数据，硬件上截断信息流仍让模型完全失能。</p>
+
+<h3 id="rope-base-θ-消融">RoPE base θ 消融 <a class="heading-anchor" href="#rope-base-θ-消融" aria-label="Link to rope-base-θ-消融">#</a></h3>
+
+<table>
+<tr><th>RoPE base θ</th><th>All Avg</th><th>All Gap↓</th></tr>
+<tr><td>$1.0 \times 10^6$ (default)</td><td>80.3</td><td>23.6</td></tr>
+<tr><td>$2.0 \times 10^6$</td><td>83.8</td><td>16.5</td></tr>
+<tr><td>$1.0 \times 10^7$ (10× recommended)</td><td><strong>84.9</strong></td><td><strong>14.3</strong></td></tr>
+<tr><td>$1.0 \times 10^8$</td><td>84.6</td><td>14.0</td></tr>
+</table>
+
+<p>关键发现：不同于以往"上下文延长才需要更大 θ"的直觉，IN2 训练中信息密度增加也需要更大 θ。收益在 $10^7$ 后饱和。</p>
+
+<h3 id="longbench-真实任务">LongBench 真实任务 <a class="heading-anchor" href="#longbench-真实任务" aria-label="Link to longbench-真实任务">#</a></h3>
+
 <table>
 <tr><th>Model</th><th>NarrQA</th><th>Qasper</th><th>MultiFQA</th><th>HotpotQA</th><th>2WikiMQA</th><th>MuSiQue</th><th>GovRep</th><th>QMSum</th><th>MultiNews</th><th>Avg</th></tr>
 <tr><td>GPT-4-Turbo</td><td>33.0</td><td><strong>50.7</strong></td><td>52.7</td><td><strong>68.5</strong></td><td><strong>64.3</strong></td><td><strong>49.1</strong></td><td>33.9</td><td><strong>25.4</strong></td><td>24.9</td><td><strong>44.7</strong></td></tr>
-<tr><td>Mistral-7B-Instruct-v0.2 (backbone)</td><td>23.5</td><td>33.8</td><td>45.9</td><td>42.4</td><td>24.3</td><td>20.8</td><td>33.3</td><td>24.8</td><td>26.8</td><td>30.6</td></tr>
-<tr><td>InternLM2-7B-LongWanjuan</td><td>29.9</td><td>39.6</td><td>50.2</td><td>53.7</td><td>42.3</td><td>32.1</td><td>33.0</td><td>25.5</td><td>27.8</td><td>37.1</td></tr>
-<tr><td><strong>FilM-7B (ours)</strong></td><td>26.9</td><td>42.2</td><td><strong>56.0</strong></td><td>62.1</td><td>47.0</td><td><strong>39.0</strong></td><td>33.8</td><td>25.1</td><td>26.9</td><td><strong>39.9</strong></td></tr>
+<tr><td>Mistral-7B-v0.2 (backbone)</td><td>23.5</td><td>33.8</td><td>45.9</td><td>42.4</td><td>24.3</td><td>20.8</td><td>33.3</td><td>24.8</td><td>26.8</td><td>30.6</td></tr>
+<tr><td><strong>FilM-7B</strong></td><td>26.9</td><td>42.2</td><td><strong>56.0</strong></td><td>62.1</td><td>47.0</td><td>39.0</td><td>33.8</td><td>25.1</td><td>26.9</td><td><strong>39.9</strong></td></tr>
 </table>
-<p><strong>Takeaway</strong>: 对 backbone Mistral 提升 +9.3 点（30.6→39.9），是同级 ~7B 开源模型最高，缩小与 GPT-4-Turbo 的差距到 4.8 点；尤其多跳推理任务 HotpotQA/2WikiMQA/MuSiQue 上提升 ≥18 点，说明 IN2 的"多跳 QA path"真起到了作用。</p>
 
-<h3 id="table-3-rope-base-θ-消融">Table 3: RoPE base θ 消融 <a class="heading-anchor" href="#table-3-rope-base-θ-消融" aria-label="Link to table-3-rope-base-θ-消融">#</a></h3>
-<table>
-<tr><th>RoPE base θ</th><th>All Avg</th><th>All Gap↓</th></tr>
-<tr><td>1.0×10⁶ (default)</td><td>80.3</td><td>23.6</td></tr>
-<tr><td>2.0×10⁶</td><td>83.8</td><td>16.5</td></tr>
-<tr><td><strong>1.0×10⁷ (10× recommended)</strong></td><td><strong>84.9</strong></td><td><strong>14.3</strong></td></tr>
-<tr><td>1.0×10⁸</td><td>84.6</td><td>14.0</td></tr>
-</table>
-<p><strong>Takeaway</strong>: 不同于以往"上下文延长才需要更大 θ"的直觉，本文发现"信息密度增加"也需要更大 θ；但收益在 1e7 后基本饱和。</p>
+<p>合成数据到真实任务的迁移成功：+9.3 pp over backbone (30.6→39.9)。多跳推理任务提升最大 (HotpotQA +19.7, MuSiQue +18.2)，证明 IN2 的多跳 QA path 确实起作用。</p>
 
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
+<h3 id="短上下文保持">短上下文保持 <a class="heading-anchor" href="#短上下文保持" aria-label="Link to 短上下文保持">#</a></h3>
 
-<p>每条 limitation 显式标注它攻击 §3.0 论证链的哪一步 (per-critique chain anchor 强制规则):</p>
+<p><img src="/assets/2404.16811/fig5.png" alt="Figure 5: FilM-7B 与 backbone 在 8 个短上下文任务上的对比"></p>
 
-<ul>
-<li><strong>依赖 GPT-4-Turbo 生成数据</strong> [攻击 step 4 premise]：数据成本高且开源不友好；更关键的是论文未做 QA quality control 报告 — 如果 GPT-4 生成的 (q, a) 没有 highly specific 到对应 segment, IN2 就在训"错误 alignment", 整个 step 4 的"仅靠数据即可修"会被悄悄削弱。如果 backbone 已经接近 GPT-4 水平，IN2 数据可能会给 backbone 带来"distillation 上限"。</li>
-<li><strong>只在 32K 长度内验证</strong> [攻击 step 5 premise]：没有展示 64K/128K 表现，"IN2 能泛化到真实长任务"的 conclusion 在 32K 之外是未验证的；能否外推到更长仍是开放问题。</li>
-<li><strong>C4 realnewslike 单一数据源</strong> [攻击 step 4 premise]：所有合成数据来自新闻类文本，对代码/数学/对话风格上下文的 IN2 数据多样性不够；VaL 上的 code/database 任务也是用合成上下文，与真实代码长仓库 Q&A 的分布差距可能仍大 — 这弱化了"数据驱动方案"的普适性论点。</li>
-<li><strong>未报告训练曲线 / loss spike</strong> [范围外]：论文几乎没披露训练稳定性细节，复现者要踩多少坑无从评估；这是工程复现性问题, 不直接攻击论证链。</li>
-<li><strong>Reject sampling 把长度强制做成均匀分布</strong> [攻击 step 5 premise]：真实工作负载（聊天、RAG）的长度分布是长尾，模型在极短样本上可能会有次优行为（论文未做相关分析）— 这意味着 step 5 的"不损害 base capability" conclusion 在长尾负载下可能站不住。</li>
-<li><strong>VaL 仍是合成上下文的"造句子"</strong> [攻击 step 5 premise]：文档任务从 arXiv abstract 抽句、代码任务从 StarCoder 抽函数，仍属"针在草堆"的简化版本，离真实多文档推理还有距离 — 这意味着 VaL 上的 +6.9pp over GPT-4-Turbo 这个"超越"数字含金量受限, step 5 的论证强度被削弱。</li>
-<li><strong>短上下文回归被 understate</strong> [攻击 step 5 conclusion]：HellaSwag -4.5 / ARC-C -3.4 (Table §6b) 已经不是论文宣称的 "minor variance" — 这两项是常识/推理类标准 benchmark, 4-5pp 是显著退化。step 5 的"不损害 base capability"在常识推理这一类目下其实<strong>不成立</strong>, 论文的 framing 偏乐观。</li>
-<li><strong>1.75M 数据规模无 scale ablation</strong> [攻击 step 4 premise]：作者给出 1.75M 条这一数字, 但没做"用 0.5M / 1M 是否够"的消融 — 数据驱动方案的最小必要规模未知, 这弱化了"数据是关键"的精确性 (究竟是"数据"还是"足够多的数据"才是关键)。</li>
-<li><strong>复现成本对学术 lab 是不小的门槛</strong> [范围外]：~\$60K-\$120K (GPT-4 调用 + 128×A100×56h) 是工程依赖, 不直接攻击论证链 (step 4 的 GPT-4 可被其他 strong LLM 替代是论证可塑性, 但论文未做)。</li>
-</ul>
+<p><em>Paper's Figure 5, verbatim (caption: "Performances of FilM-7B and the backbone model on short-context tasks.").</em></p>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
+<p>整体近乎一致：MMLU 59.3→59.2, BoolQ +2.3, GSM8K +4.1。但 HellaSwag −4.5 / ARC-C −3.4 已不算论文宣称的 "minor variance"——这是 catastrophic forgetting 的痕迹，OpenOrca anchor 未完全兜住常识推理类。</p>
 
-<ul>
-<li><strong>Algorithm</strong>: 提供了"修复 lost-in-the-middle 的标准 recipe"——后续 long-context SFT 都可以参考 IN2 的"reject sampling 让 gold position 均匀"+"细粒度+多跳 QA 二分"的设计。</li>
-<li><strong>Kernel</strong>: N/A — 不引入新的算子。</li>
-<li><strong>Framework</strong>: N/A — 标准 instruction tuning + FSDP；但提示训练框架在 reject sampling 阶段对长度均衡的 batching/packing 需求会变高。</li>
-<li><strong>LLM</strong>: 不改架构。提示后续 LLM 在 SFT 阶段把 system prompt 偶尔放到 context 中间也许有助于削弱位置偏置（论文未做但隐含建议）。</li>
-<li><strong>Agent</strong>: 直接利好长上下文 agent 应用 —— 让 LLM 真正能"读完整段历史"再决策，而不是只看末几条 message。</li>
-<li><strong>Code</strong>: 微软已开源 https://github.com/microsoft/FILM 包含数据生成代码、VaL 数据集与评估脚本。</li>
-</ul>
-
-<hr>
-
-<h2 id="deep-analysis-algorithm">Deep Analysis (algorithm) <a class="heading-anchor" href="#deep-analysis-algorithm" aria-label="Link to deep-analysis-algorithm">#</a></h2>
-
-<h3 id="0-argument-chain-reconstruction-论证链重构">0. Argument Chain Reconstruction (论证链重构) <a class="heading-anchor" href="#0-argument-chain-reconstruction-论证链重构" aria-label="Link to 0-argument-chain-reconstruction-论证链重构">#</a></h3>
-
-<p>在做 1-9 节展开之前先把作者的论证链拆成 explicit 步骤, 这样后续 Limitations / Open Questions 才能精确锚定到 step k, 而不是攻击我自己脑补的简化版:</p>
+<h2 id="§5-training-recipe-model-specific">§5 Training Recipe (model-specific) <a class="heading-anchor" href="#§5-training-recipe-model-specific" aria-label="Link to §5-training-recipe-model-specific">#</a></h2>
 
 <table>
-<tr><th>Step</th><th>Premise (引用)</th><th>Conclusion</th><th>Load-bearing?</th></tr>
-<tr><td>1</td><td>Long-context LLM 普遍在中段位置丢信息 (Liu et al. 2024 NIH curve, MPT/Llama-2/longlora 等) (§1, Fig. 1 灰色 Mistral 曲线)</td><td>"Lost-in-the-middle" 是真实存在的现象</td><td>load-bearing 但已是公认前提, 论文不在此攻防</td></tr>
-<tr><td>2</td><td>已有归因把 LITM 算到 RoPE / causal mask / sliding window 等架构因素上 (Liu et al. 假设, §2 相关工作综述)</td><td>解决方案应该改架构 → 但作者要否定这个 framing</td><td><strong>load-bearing</strong> (作者必须先打掉"架构问题"这个 framing 才能立"数据问题"的论点)</td></tr>
-<tr><td>3</td><td>训练数据本身有不可见的位置偏置: (a) 自回归 next-token loss 被近距离 token 主导, (b) SFT 阶段 system message 始终在开头 → 模型学到"重要信息在开头/结尾" (§3 motivation)</td><td>LITM 是<strong>数据问题, 不是架构问题</strong></td><td><strong>load-bearing</strong>, 整个 IN2 论点的存活基石</td></tr>
-<tr><td>4</td><td>用 GPT-4 合成"目标段藏在长 ctx 任意位置"的 1.75M 条 IN2 数据, 标准 SFT (no arch change) (§3 method, Fig. 2, Table of data composition)</td><td>仅靠数据 + instruction tuning 即可修 LITM</td><td><strong>load-bearing</strong>, 方法论核心</td></tr>
-<tr><td>5</td><td>FilM-7B 在 VaL Probing avg=85.9 (超过 GPT-4-Turbo 79.0), Gap=13.9 (vs 32.1); LongBench +9.3pp (30.6→39.9); 短上下文 8 个 benchmark 几乎无回归 (Table 1, Table 2, §6b)</td><td>IN2 训练成功泛化到真实任务且不损害 base capability</td><td>decorative — 案例验证, 不是论证基础</td></tr>
+<tr><th>Stage</th><th>Goal</th><th>Data (tokens + mix)</th><th>LR schedule</th><th>Context</th><th>Techniques</th></tr>
+<tr><td>Pre-training</td><td>通用语言建模</td><td>[论文未披露] (继承 Mistral-7B)</td><td>—</td><td>32K (v0.2)</td><td>标准自回归</td></tr>
+<tr><td>Mistral-Instruct SFT</td><td>指令跟随</td><td>[论文未披露] (继承 v0.2 ckpt)</td><td>—</td><td>32K</td><td>标准 SFT</td></tr>
+<tr><td><strong>IN2 SFT</strong></td><td>消除位置偏置</td><td>1.75M 条 (1.1M FG + 0.3M MH + 0.15M short + 0.2M OpenOrca)</td><td>cosine decay, max LR=1e-6, 3% warmup</td><td>4K–32K</td><td>answer-only loss, FSDP full-shard + CPU offload</td></tr>
+<tr><td>Post-training (RLHF/DPO)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>[论文未应用]</td></tr>
+<tr><td>Quantization-aware</td><td>—</td><td>—</td><td>—</td><td>—</td><td>[论文未应用]</td></tr>
 </table>
 
-<p><strong>论证链已经被论文自身预先封堵的常见反对</strong>:</p>
-<ul>
-<li>"RoPE base 不够大?" → §IN2 ablation Table 3 显示从 1e6 → 1e7 仅再增 ~5pp, 不是主要因素</li>
-<li>"需要更大模型?" → FilM-7B 7B 已超 GPT-4-Turbo, 不需要 scale up</li>
-<li>"Sliding window 能救?" → §Fig 6 直接证否, SW 与长 ctx 完全冲突</li>
-</ul>
+<p><strong>Training infra</strong>: 16 nodes × 8×80GB A100 = 128 GPUs, ~14K steps (1 epoch), ~300 GPU-day (~56h wall-clock)</p>
 
-<p><strong>真正可攻击的位置</strong> (后续 Limitations / Open Questions 必须锚定到这些 step):</p>
-<ul>
-<li>step 4 的 premise: GPT-4 合成的 QA 是否真的 "highly specific to the target segment" (若 GPT-4 错则训出错的 alignment, 但论文未做 quality control 报告)</li>
-<li>step 4 的 premise: 1.75M 数据规模是否最小必要 (没做 scale ablation)</li>
-<li>step 5 的 premise: 32K 之外能否外推 (论文未在 64K/128K 验证)</li>
-<li>step 5 的 premise: 短上下文回归 HellaSwag -4.5 / ARC-C -3.4 已经不是 minor variance (论文宣称 minor 但数字本身不支持)</li>
-</ul>
+<p><strong>单一最难复现训练技巧</strong>: reject sampling 保证 gold segment position 在 [0, L] 上均匀分布——这不是标准 data loader 能实现的，需要在 data generation pipeline 中预计算目标长度 bin 并反复采样直到每个 bin 填满。</p>
 
-<p><strong>不应攻击的位置</strong> (脑补稻草人):</p>
-<ul>
-<li>❌ "若 architecture 真是问题怎么办" — step 3 已用数据 + 实证否定了这个 framing</li>
-<li>❌ "若 GPT-4 不可用" — 这是工程依赖不是论证依赖, 可换成其他 strong LLM (Llama-3 70B / DeepSeek V3 等)</li>
-</ul>
-
-<h3 id="1-model-architecture-design">1. Model Architecture & Design <a class="heading-anchor" href="#1-model-architecture-design" aria-label="Link to 1-model-architecture-design">#</a></h3>
-
-<h4 id="1a-architecture-overview">1a. Architecture Overview <a class="heading-anchor" href="#1a-architecture-overview" aria-label="Link to 1a-architecture-overview">#</a></h4>
-
-<p>FilM-7B <strong>没有改架构</strong>，完全继承 Mistral-7B-Instruct-v0.2：</p>
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
 
 <table>
-<tr><th>Component</th><th>FilM-7B</th><th>标准 Transformer</th><th>设计理由</th></tr>
-<tr><td>Attention</td><td>GQA, 32 query heads / 8 KV heads, head_dim=128</td><td>MHA</td><td>继承 Mistral；GQA 在 32K 推理时能省 4× KV cache</td></tr>
-<tr><td>FFN</td><td>SwiGLU, hidden 14336 (~3.5×)</td><td>ReLU 4×</td><td>继承 Mistral</td></tr>
-<tr><td>Normalization</td><td>RMSNorm pre-norm, ε=1e-5</td><td>LayerNorm post</td><td>继承 Mistral</td></tr>
-<tr><td>Position encoding</td><td>RoPE base θ=1e6（默认），消融建议 1e7</td><td>sinusoidal</td><td>默认值跟 backbone；消融实验显示 IN2 训练时建议放大 10×</td></tr>
-<tr><td>Activation</td><td>SiLU + gating (SwiGLU)</td><td>GELU</td><td>继承</td></tr>
-<tr><td>Vocab & tokenizer</td><td>32K BPE (Mistral tokenizer)</td><td>32K BPE</td><td>继承</td></tr>
-<tr><td>MoE</td><td>dense (无 MoE)</td><td>dense</td><td>继承</td></tr>
-<tr><td>Sliding window</td><td><strong>关闭</strong></td><td>n/a</td><td>v0.2 已经关闭；论文 Fig. 6 进一步证明 SW 与长上下文目标冲突</td></tr>
+<tr><th>Step</th><th>Premise</th><th>Conclusion</th><th>Load-bearing?</th></tr>
+<tr><td>1</td><td>长上下文 LLM 普遍在中段位置丢信息 (Liu et al. 2024 U-shape curve; 本文 Fig.1 Mistral 灰线)</td><td>Lost-in-the-middle 是真实存在的现象</td><td>✓ (公认前提)</td></tr>
+<tr><td>2</td><td>已有归因指向 RoPE / causal mask / sliding window 等架构因素</td><td>解法应改架构——作者需否定此 framing</td><td>✓ (必须打掉才能立数据论点)</td></tr>
+<tr><td>3</td><td>训练数据本身有位置偏置: (a) 自回归 loss 近距离主导, (b) system message 始终在开头 → 模型学到"信息在边缘"</td><td>LITM 是数据问题, 不是架构问题</td><td>✓ (全文存活基石)</td></tr>
+<tr><td>4</td><td>用 GPT-4 合成 1.75M 条 IN2 数据 (位置均匀 + 细粒度/多跳两路), 标准 SFT 不改架构</td><td>仅靠数据 + instruction tuning 即可修 LITM</td><td>✓ (方法论核心)</td></tr>
+<tr><td>5</td><td>FilM-7B VaL Avg=85.9 超 GPT-4-Turbo (79.0), Gap=13.9; LongBench +9.3; 短 ctx 基本无回归</td><td>IN2 训练成功泛化到真实任务且保持 base capability</td><td>✓ (实证验证)</td></tr>
+<tr><td>6</td><td>Sliding window 实验 (Fig.6): 距离 > 4K 时精度归零</td><td>SW 与长上下文目标根本冲突, 进一步否定架构修补路线</td><td>辅助 (加强 step 3)</td></tr>
+<tr><td>7</td><td>RoPE θ 消融 (Table 3): 10× θ 额外提升 ~5pp</td><td>信息密度增加需要更大 θ, 但数据仍是主因</td><td>辅助 (不改变核心结论)</td></tr>
 </table>
 
-<h4 id="1b-model-size-variants">1b. Model Size Variants <a class="heading-anchor" href="#1b-model-size-variants" aria-label="Link to 1b-model-size-variants">#</a></h4>
+<p><strong>论证封堵</strong>: step 6 预封"sliding window 能救吗"；step 7 预封"RoPE 不够大吗"——两者都是辅助证据否定替代方案。</p>
 
-<p>只有一个 size：</p>
+<p><strong>可攻击点</strong>: step 4 (GPT-4 QA 质量无审计; 数据量无 scale ablation); step 5 (仅 32K 验证; HellaSwag/ARC-C 退化被 understate)。</p>
 
-<table>
-<tr><th>Variant</th><th>Total</th><th>Active</th><th>Layers</th><th>Hidden</th><th>Heads</th><th>KV Heads</th><th>Context</th></tr>
-<tr><td>FilM-7B</td><td>7.24B</td><td>7.24B</td><td>32</td><td>4096</td><td>32</td><td>8</td><td>32K</td></tr>
-</table>
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
 
-<h4 id="1c-design-decisions-vs-competitors">1c. Design Decisions vs. Competitors <a class="heading-anchor" href="#1c-design-decisions-vs-competitors" aria-label="Link to 1c-design-decisions-vs-competitors">#</a></h4>
+<p><strong>代码仓库</strong>: https://github.com/microsoft/FILM</p>
 
-<table>
-<tr><th>Choice</th><th>FilM-7B</th><th>Llama 3 8B</th><th>Qwen 2.5 7B</th><th>LongAlign 7B</th><th>InternLM2 7B</th></tr>
-<tr><td>Attention</td><td>GQA 32/8</td><td>GQA 32/8</td><td>GQA 28/4</td><td>GQA</td><td>GQA</td></tr>
-<tr><td>Position</td><td>RoPE θ=1e6（建议 1e7）</td><td>RoPE θ=500K</td><td>RoPE θ=1e6</td><td>RoPE θ=1e7</td><td>RoPE θ=5e7</td></tr>
-<tr><td>Context</td><td>32K</td><td>8K (later 128K)</td><td>32K</td><td>64K</td><td>32K</td></tr>
-<tr><td>Long-ctx SFT data</td><td><strong>IN2 1.4M synth + 350K real</strong></td><td>标准 SFT</td><td>LongAlpaca, etc.</td><td>LongAlign 10K real</td><td>InternLM2 long SFT mix</td></tr>
-<tr><td>Sliding window</td><td>none</td><td>none</td><td>none</td><td>none</td><td>none</td></tr>
-</table>
+<p><strong>模型权重</strong>: https://huggingface.co/In2Training/FILM-7B-32K</p>
 
-<p>这个表的核心 insight：<strong>FilM 与同级模型的差异 ENTIRELY 在 SFT 数据</strong>——不在架构、不在 RoPE 范围、不在窗口大小。证明 lost-in-the-middle 在数据层就可解决。</p>
+<p><strong>关键实现细节</strong>:</p>
 
-<h3 id="2-problem-formulation">2. Problem Formulation <a class="heading-anchor" href="#2-problem-formulation" aria-label="Link to 2-problem-formulation">#</a></h3>
-
-<p><strong>目标函数</strong>（标准 instruction tuning + answer-only loss）：</p>
-
-<p>$$\mathcal{L}_{\text{IN2}} = -\mathbb{E}_{(\mathcal{L}_i, q_i, a_i) \sim \mathbb{D}} \sum_{t=1}^{|a_i|} \log p_\theta\big(a_{i,t} \mid \mathcal{L}_i, q_i, a_{i,<t}\big)$$</p>
-
-<p>其中 $\mathbb{D}$ 是 IN2 数据集，$\mathcal{L}_i$ 是 4K-32K 长上下文，$q_i$ 是问题，$a_i$ 是答案。<strong>关键的隐式约束</strong> 由数据构造保证：</p>
-
-<p>$$\Pr[\text{position}(s_i) \in [k, k+\Delta] \mid |\mathcal{L}_i| = L] = \frac{\Delta}{L}, \quad \forall k \in [0, L-\Delta]$$</p>
-
-<p>即"目标段位置在长上下文中近似均匀"。这是 IN2 的核心<strong>显式监督</strong>，也是和普通 long-context SFT 的根本区别。</p>
-
-<p><strong>假设</strong>: (a) GPT-4 生成的 QA 对真的 highly specific 到对应 segment（如果 GPT-4 出错，IN2 就训出"错误 alignment"）；(b) 短上下文能力不会被 catastrophic forgetting 抹掉（用 9% 短 QA + 11% OpenOrca 做"防遗忘 anchor"）；(c) 合成数据可以泛化到真实长文档（结果验证了这个假设）。</p>
-
-<p><strong>改进自</strong>: 隐式上对比 LongAlign（用真实长指令数据）、Fu et al. 2024（用 data engineering 平衡长度分布）。前者样本量小且 gold 位置非均匀；后者只解决长度分布、不解决位置分布。</p>
-
-<h3 id="3-method-core">3. Method Core <a class="heading-anchor" href="#3-method-core" aria-label="Link to 3-method-core">#</a></h3>
-
-<pre><code>
-# IN2 数据生成（pseudo-code）
-def build_in2_dataset(C, target_count, length_bins=[4K..32K, step=4K]):
-    D = []
-    bin_counters = {b: 0 for b in length_bins}
-    while sum(bin_counters.values()) &lt; target_count:
-        Ci = sample(C)  # raw text from C4 realnewslike
-        if 10gram_overlap(Ci, eval_set):  continue   # data contamination filter
-
-        # Path A: fine-grained
-        si = random_segment(Ci, n_tokens=128)
-        qi, ai = gpt4_turbo(prompt=I_f, segment=si)
-
-        # Path B: multi-hop
-        segs = split(Ci, 128_tokens)
-        qi, ai = gpt4_turbo(prompt=I_r, segments=segs)
-
-        # 拼长度并 reject sample 让长度均衡
-        L_target = pick_underrepresented_bin(bin_counters)
-        rj_pool = sample_random_segments(C, n=L_target/128 - len(target_segs))
-        Li = shuffle_concat(target_segs + rj_pool)
-        if len(Li) ≈ L_target:
-            D.append((Li, qi, ai)); bin_counters[L_target] += 1
-    return D
-
-# Training (standard SFT)
-for batch in DataLoader(D ∪ ShortQA ∪ OpenOrca):
-    L, q, a = batch
-    logits = model(format(&quot;[INST] {L} {q} [/INST]&quot;))
-    loss = ce(logits[answer_mask], a[answer_mask])  # answer-only loss
-    backward(); step()
-</code></pre>
-
-<p><strong>Key insight 与 prior work 的区别</strong>:</p>
-<ul>
-<li><strong>prior</strong>: 把长上下文 SFT 数据直接拿去训，gold 位置受文章结构影响（往往集中在前/后）。</li>
-<li><strong>this</strong>: 把"信息位置"作为一个独立的 randomization 维度，硬塞进数据生成 pipeline。</li>
-</ul>
-
-<p><strong>敏感超参</strong>:</p>
-<ul>
-<li><strong>128-token segment size</strong>: 太小 → GPT-4 没法生成有意义 QA；太大 → 长上下文里"针"太显眼。</li>
-<li><strong>比例 (63% 单段 + 17% 多段 + 9% 短 + 11% 通用)</strong>: 多段太多则 single-segment 检索退化，反之亦然。</li>
-<li><strong>RoPE base θ</strong>: 默认 1e6 → IN2 推荐 1e7（10×）。</li>
-</ul>
-
-<p><strong>复杂度</strong>: 训练阶段就是普通 SFT，O(L²) attention，单步 ~32K tokens × bs128。<strong>数据生成</strong>是大头：1.4M 条 GPT-4-Turbo 调用，按 2024 价格 (~\$0.01/1K input) 估算光 LLM 调用费 \$50K-\$100K 量级。</p>
-
-<h3 id="4-training-recipe-scale">4. Training Recipe & Scale <a class="heading-anchor" href="#4-training-recipe-scale" aria-label="Link to 4-training-recipe-scale">#</a></h3>
-
-<table>
-<tr><th>阶段</th><th>数据</th><th>规模</th><th>LR / Optim</th><th>备注</th></tr>
-<tr><td>Pretraining (继承)</td><td>Mistral 预训练数据</td><td>[论文未披露]</td><td>—</td><td>直接用 Mistral-7B-Instruct-v0.2 ckpt</td></tr>
-<tr><td><strong>IN2 SFT</strong></td><td>1.1M FG + 0.3M MH + 0.15M ShortQA + 0.2M OpenOrca = <strong>1.75M</strong></td><td>1 epoch ≈ 14K steps</td><td>cosine decay, max LR 1e-6, 3% warmup</td><td>bs=128 global</td></tr>
-<tr><td>Post-training</td><td>—</td><td>—</td><td>—</td><td>没有额外 RLHF/DPO</td></tr>
-</table>
-
-<p><strong>Parallelism</strong>:</p>
-<ul>
-<li><strong>FSDP</strong> 全 sharding + CPU offload（PyTorch FSDP, Zhao et al. 2023）</li>
-<li>16 节点 × 8×80GB A100 = <strong>128 张 A100</strong></li>
-<li>~300 GPU-day = 大约 56 小时墙钟时间</li>
-</ul>
-
-<p><strong>为什么 LR 这么小（1e-6）</strong>: 因为是在已经 instruct-tuned 的 v0.2 ckpt 上继续微调，过大 LR 会破坏对齐。</p>
-
-<p><strong>稳定性技巧</strong>: [论文未披露] —— 没有提 loss spike、gradient clipping、bf16/fp32 mixed 的具体值；这是一个 reproducibility 黑洞，建议复现者从 grad clip = 1.0、bf16 + fp32 master weights 开始。</p>
-
-<h3 id="5-convergence-stability">5. Convergence & Stability <a class="heading-anchor" href="#5-convergence-stability" aria-label="Link to 5-convergence-stability">#</a></h3>
-
-<ul>
-<li><strong>收敛保证</strong>: 标准 SFT，无任何 convergence theory。</li>
-<li><strong>学习率 / batch size 行为</strong>: 论文给定 LR 1e-6 + bs=128，没有扫描；从经验上 bs 拉到 256/512 应该可以减少 noise。</li>
-<li><strong>失败模式</strong>: (a) 如果 forget 短上下文能力 → 论文用 9% 短 QA + 11% OpenOrca 兜底；(b) 如果 GPT-4 生成的 QA 答案错了 → 模型学到错的 alignment（论文没有 quality control 报告）。</li>
-<li><strong>Curriculum / warmup</strong>: cosine + 3% warmup，未做 length curriculum（直接混合 4K~32K）。</li>
-</ul>
-
-<h3 id="6-dataset-analysis">6. Dataset Analysis <a class="heading-anchor" href="#6-dataset-analysis" aria-label="Link to 6-dataset-analysis">#</a></h3>
-
-<h4 id="6a-training-data">6a. Training Data <a class="heading-anchor" href="#6a-training-data" aria-label="Link to 6a-training-data">#</a></h4>
-
-<table>
-<tr><th>组分</th><th>数量</th><th>来源</th><th>处理</th></tr>
-<tr><td>Fine-grained long QA</td><td>~1.1M (63%)</td><td>C4 realnewslike + GPT-4-Turbo</td><td>切 128-tok 段，单段 QA，长度 reject sample 到 4K-32K</td></tr>
-<tr><td>Multi-hop long QA</td><td>~0.3M (17%)</td><td>C4 realnewslike + GPT-4-Turbo</td><td>切多段，多跳 QA，shuffle 后随机分布</td></tr>
-<tr><td>Short QA</td><td>~0.15M (9%)</td><td>同 C4，但保留原文长度</td><td>防短上下文遗忘</td></tr>
-<tr><td>OpenOrca general SFT</td><td>~0.2M (11%)</td><td>OpenOrca</td><td>通用 instruction following anchor</td></tr>
-<tr><td><strong>Total</strong></td><td><strong>1.75M</strong></td><td></td><td>10-gram dedup vs 所有评估集</td></tr>
-</table>
-
-<p><strong>Length 分布</strong>: 通过 reject sampling on <code>[r_j]</code> 强制 4K~32K 内均匀分布。</p>
-
-<p><strong>Filtering</strong>: 10-gram overlap with eval — 包括 VaL（arXiv abstracts、StarCoder、Wikidata）、LongBench、所有短上下文 benchmarks。这是非常严格的 contamination 防护。</p>
-
-<h4 id="6b-benchmark-results-—-granular-breakdown">6b. Benchmark Results — Granular Breakdown <a class="heading-anchor" href="#6b-benchmark-results-—-granular-breakdown" aria-label="Link to 6b-benchmark-results-—-granular-breakdown">#</a></h4>
-
-<table>
-<tr><th>Benchmark</th><th>类别</th><th>FilM-7B</th><th>同级 Best</th><th>Gap</th><th>评估</th></tr>
-<tr><td>MMLU</td><td>通用</td><td>59.2</td><td>59.3 (Mistral)</td><td>-0.1</td><td>Par</td></tr>
-<tr><td>BoolQ</td><td>通用</td><td>87.7</td><td>85.4 (Mistral)</td><td>+2.3</td><td>Strong</td></tr>
-<tr><td>RACE-H</td><td>reading</td><td>45.6</td><td>46.0</td><td>-0.4</td><td>Par</td></tr>
-<tr><td>CSQA</td><td>常识</td><td>75.3</td><td>70.0</td><td>+5.3</td><td>Strong</td></tr>
-<tr><td>ARC-C</td><td>推理</td><td>52.5</td><td>55.9</td><td>-3.4</td><td>Weak</td></tr>
-<tr><td>HellaSwag</td><td>常识</td><td>79.1</td><td>83.6</td><td>-4.5</td><td>Weak</td></tr>
-<tr><td>GSM8K</td><td>数学</td><td>44.5</td><td>40.4</td><td>+4.1</td><td>Strong</td></tr>
-<tr><td>MATH</td><td>数学</td><td>11.3</td><td>8.7</td><td>+2.6</td><td>Strong</td></tr>
-<tr><td><strong>LongBench Avg</strong></td><td>长上下文</td><td>39.9</td><td>37.1 (LongWanjuan)</td><td>+2.8</td><td>SOTA</td></tr>
-<tr><td><strong>VaL Avg</strong></td><td>长上下文 probing</td><td>85.9</td><td>79.0 (GPT-4-Turbo)</td><td>+6.9</td><td>超 GPT-4-Turbo</td></tr>
-</table>
-
-<h4 id="6c-strength-weakness">6c. Strength & Weakness <a class="heading-anchor" href="#6c-strength-weakness" aria-label="Link to 6c-strength-weakness">#</a></h4>
-
-<p><strong>Strengths</strong>:</p>
-<ul>
-<li>长上下文检索（VaL/Long-Bench）压倒性提升，归功于 IN2 数据。</li>
-<li>数学 (GSM8K +4.1, MATH +2.6) 反而上升 —— 推测是 multi-hop QA 训练带来的通用推理增强。</li>
-</ul>
-
-<p><strong>Weaknesses</strong>:</p>
-<ul>
-<li>常识/推理类 (HellaSwag -4.5, ARC-C -3.4) 略降 —— 这是 catastrophic forgetting 的痕迹，OpenOrca anchor 没完全兜住。论文承认 "almost comparable with minor variances"，但这两项 -4.5 / -3.4 已经不算 minor。</li>
-<li>总结类任务 (GovRep, QMSum, MultiNews) 几乎无提升 —— IN2 数据是 QA 风格，对长文摘要的格式 transfer 有限。</li>
-</ul>
-
-<p><strong>Suspicious / 缺失</strong>:</p>
-<ul>
-<li>没有 IFEval（instruction following 现代标准）—— 短上下文能力评估不全。</li>
-<li>没有 GPQA / MMLU-Pro —— 高难推理类没覆盖。</li>
-<li>VaL 任务用 word-level recall（doc）+ exact-match（code/db），评估标准较宽松；如果换成 BLEU/ROUGE 可能差距会缩小。</li>
-<li>没有 Chinese / 多语种长上下文评估。</li>
-</ul>
-
-<h3 id="7-infrastructure-impact">7. Infrastructure Impact <a class="heading-anchor" href="#7-infrastructure-impact" aria-label="Link to 7-infrastructure-impact">#</a></h3>
-
-<table>
-<tr><th>Layer</th><th>Question / Answer</th></tr>
-<tr><td>Kernel</td><td>不需要新 CUDA/HIP 算子；标准 attention 即可。如果工程上接 FlashAttention2/3，需要确认其 RoPE θ=1e7 实现正确（一些 fused kernel 把 θ 写死）。</td></tr>
-<tr><td>Framework</td><td>标准 FSDP；但 reject-sampling-by-length 对训练框架的 batch packing 是个轻量需求（PyTorch DataLoader + collate_fn 即可）。SGLang/vLLM 推理时需要支持 32K 长上下文 + RoPE θ=1e7。</td></tr>
-<tr><td>LLM</td><td>不改架构；提示后续 LLM 在 SFT 阶段也应该把 IN2-style 数据加进去，避免 system-prompt-at-front 的位置偏置。</td></tr>
-<tr><td>Agent</td><td>直接利好 —— ReAct / 多轮 agent 在长 tool 历史中能更稳定 retrieval。</td></tr>
-<tr><td>Hardware</td><td>不改变 compute/memory ratio；32K context 推理时 KV cache 仍是 bottleneck（GQA 帮了 4×）。</td></tr>
-</table>
-
-<h3 id="8-reproducibility">8. Reproducibility <a class="heading-anchor" href="#8-reproducibility" aria-label="Link to 8-reproducibility">#</a></h3>
-
-<ul>
-<li><strong>代码</strong>: https://github.com/microsoft/FILM —— 包含数据生成 prompt、VaL 评估脚本、训练脚本。</li>
-<li><strong>模型权重</strong>: 论文未明确说放出 checkpoint 链接（写作时点）；GitHub repo 实际放出了 https://huggingface.co/In2Training/FILM-7B-32K</li>
-<li><strong>数据</strong>: 完整 1.75M 条数据 <strong>未</strong> 开源（论文未提供）；只放了构造代码和 VaL probing 数据集。</li>
-<li><strong>复现成本</strong>:</li>
-<li><strong>数据生成</strong>: 1.4M 条 GPT-4-Turbo 调用 ≈ \$50K-\$100K（按 2024 价格估算）。</li>
-<li><strong>训练</strong>: 128×A100×56h ≈ 7K GPU-hour，按 AWS 按需 \$2/hr 计 = \$14K。</li>
-<li>总成本 ~\$60K-\$120K，<strong>对学术 lab 是不小的门槛</strong>。</li>
-<li><strong>替代路径</strong>: 用更便宜的 LLM（Llama 3 70B / DeepSeek V2/V3）替代 GPT-4-Turbo 做 QA 生成可能可行，但论文未做 ablation。</li>
-</ul>
-
-<h3 id="9-position-in-research-landscape">9. Position in Research Landscape <a class="heading-anchor" href="#9-position-in-research-landscape" aria-label="Link to 9-position-in-research-landscape">#</a></h3>
-
-<p><strong>最相关的 5 篇前作</strong>:</p>
 <ol>
-<li><strong>Lost in the Middle (Liu et al. 2024, TACL)</strong> —— 第一个 systematic 揭示 U 形位置偏置；本文是 follow-up 的 fix。</li>
-<li><strong>Mistral-7B (Jiang et al. 2023)</strong> —— backbone，IN2 没改架构。</li>
-<li><strong>LongAlign (Bai et al. 2024)</strong> —— 同样关注长上下文 SFT，但用真实数据；本文证明 synthetic + 强位置随机化 > real but biased。</li>
-<li><strong>Data engineering for 128K context (Fu et al. 2024)</strong> —— 解决长度分布平衡；本文进一步解决 <em>位置</em> 分布平衡。</li>
-<li><strong>Needle-in-the-Haystack (Kamradt 2023)</strong> —— 本文 VaL probing 直接对标并扩展。</li>
+<li><strong>Position-uniform reject sampling</strong>: 数据生成时对每个 length bin (4K, 8K, 12K, ..., 32K) 维护计数器，反复采样随机段直到 bin 填满。这保证了训练数据中 gold segment position 是均匀的——标准 DataLoader + random packing 无法实现，需在 offline data generation 阶段预处理。</li>
 </ul>
 
-<p><strong>下一步 enables</strong>:</p>
+<ol>
+<li><strong>10-gram contamination filter</strong>: 在采样 $\mathcal{C}_i$ 时，若与任何评估数据有 10-gram overlap 则丢弃——包括 VaL probing (arXiv abstracts, StarCoder, Wikidata)、LongBench、所有短上下文 benchmarks。这是非常严格的 decontamination。</li>
+</ul>
+
+<p><strong>核心技术壁垒 (§2 Q2 展开)</strong>:</p>
+
+<p>"Gold position uniformity" 是整个方案的 load-bearing insight。prior work (LongAlign 用真实长上下文数据、Fu et al. 做长度分布平衡) 都没有显式控制 <em>信息位置</em> 的分布。IN2 的关键是把位置均匀性从"希望模型自己学到"变成"数据构造层面强制保证"——这改变了梯度的信号分布：每个位置都有等概率被问到 → 每个位置都获得等量的 attention 训练信号 → 位置偏置被消除。</p>
+
+<h2 id="§8-serving-deployment-considerations">§8 Serving deployment considerations <a class="heading-anchor" href="#§8-serving-deployment-considerations" aria-label="Link to §8-serving-deployment-considerations">#</a></h2>
+
+<table>
+<tr><th>配置</th><th>VRAM 需求</th><th>备注</th></tr>
+<tr><td>FP16/BF16</td><td>~14.5 GB (weights) + KV cache</td><td>单卡 A100-80G / H100-80G 可服务 32K</td></tr>
+<tr><td>FP8 (W8A8)</td><td>~7.3 GB + KV cache</td><td>[论文未讨论]</td></tr>
+<tr><td>INT4 (GPTQ/AWQ)</td><td>~3.6 GB + KV cache</td><td>[论文未讨论]</td></tr>
+</table>
+
+<p><strong>KV cache per token</strong> (GQA 8 KV heads × 128 head_dim × 32 layers):</p>
 <ul>
-<li><strong>更长 context (128K, 1M)</strong>: 原 IN2 框架天然可以扩展，只要 reject sampling 把 bin 拉到 128K/1M。</li>
-<li><strong>多模态长上下文</strong>: 把 segment 换成 image patch / audio chunk，IN2 思路天然适用 video / long-audio LLM。</li>
-<li><strong>Agent 长 trajectory training</strong>: agent 历史天然就是"段拼接"，IN2 可以直接迁移训练 agent 的"长 trace 内任意位置 retrieval"。</li>
-<li><strong>后续工作</strong>: NVIDIA RULER (2024)、DeepSeek-V2/V3 的长上下文 SFT 都借鉴了类似思路。</li>
+<li>BF16: $8 \times 128 \times 32 \times 2 \times 2 = 1.05\text{ MB/token}$ (K+V)</li>
+<li>32K context: ~33.6 GB KV cache (BF16)</li>
 </ul>
 
-<p><strong>遗留 open problems</strong> (展开见下方 ## Open Questions):</p>
+<p><strong>推理特点</strong>:</p>
 <ul>
-<li>单一 GPT-4-Turbo 数据源是否引入了风格 bias？</li>
-<li>64K/128K 是否需要重做 IN2 数据，还是 32K 训练能直接外推？</li>
-<li>Multi-hop 比例 17% 是不是最优？为什么不是 50/50？</li>
+<li>架构完全继承 Mistral-7B: 无 MoE 路由开销，适合 continuous batching</li>
+<li>GQA 8 KV heads 对 KV cache 友好 (vs MHA 32 heads 省 4×)</li>
+<li>无 sliding window: decode 阶段每 step attend 全部 32K KV——prefill 是 compute-bound, decode 是 memory-bound</li>
+<li>Prefix caching 友好: VaL-style 任务中多 query 共享同一长上下文</li>
 </ul>
 
-<hr>
-
-<h2 id="open-questions">Open Questions <a class="heading-anchor" href="#open-questions" aria-label="Link to open-questions">#</a></h2>
-
-<p>每条 open question 标注它对应论证链的哪一步:</p>
+<h2 id="§9-open-questions">§9 Open questions <a class="heading-anchor" href="#§9-open-questions" aria-label="Link to §9-open-questions">#</a></h2>
 
 <ul>
-<li>[step 4 premise] 单一 GPT-4-Turbo 数据源是否引入了风格 bias？同样的 IN2 pipeline 换成 Llama-3 70B 或 DeepSeek V3 生成 QA, 还能保持 VaL 85.9 / Gap 13.9 这个数字吗? 如果能, step 4 的"GPT-4 不是 essential, IN2 框架本身才是 key" 论点才彻底成立。</li>
-<li>[step 5 premise] 64K/128K 是否需要重做 IN2 数据，还是 32K 训练能直接外推？这是论文最大的未验证空间, 直接决定 step 5 的"泛化"边界。</li>
-<li>[step 4 premise] Multi-hop 比例 17% 是不是最优？为什么不是 50/50？没有比例 ablation, IN2 数据组合的"必要 vs 充分"边界不明确。</li>
-<li>[step 4 premise] 1.75M 是不是最小必要规模？用 0.5M / 1M 是否够？如果 0.5M 就够, 那 step 4 的成本论点 (\$50K-\$100K GPT-4 调用) 可大幅降低; 如果不够, 那"数据驱动"的真实门槛比论文呈现的高。</li>
-<li>[step 5 conclusion] HellaSwag -4.5 / ARC-C -3.4 不是 "minor variance" — 是不是 OpenOrca 11% anchor 不够? 加到 20% 是否能保住常识推理? 论文未给该敏感性。</li>
-<li>[step 3 premise] 论文把 LITM 归因于"训练数据位置偏置"两个机制 (next-token loss 近距离主导 + system message 开头放置), 但没做 controlled study 单独验证哪个机制贡献更大。如果只修一个 (比如随机化 system message 位置) 是否就够? 这能进一步精确化 step 3 的 attribution。</li>
-<li>[范围外] 工程依赖: 把 GPT-4-Turbo 替换成开源 strong LLM (Llama-3 70B / DeepSeek V3 / Qwen 2.5 72B) 的成本/质量曲线是什么样? 这是工程化必答题, 不直接削弱论证链。</li>
-<li>[范围外] IN2 数据集本身是否会被开源? 论文只放了构造代码和 VaL probing 数据集 (§8 Reproducibility), 1.75M 数据未公开 — 这是社区复现门槛, 不构成对论证链的攻击。</li>
-<li>[step 5 conclusion 的边界] 在 chat / RAG 等长度长尾的真实负载下, "均匀长度分布的 IN2 训练"是否仍 dominant? 论文未做 ShareGPT / 真实 RAG 流量评估, 这是 step 5 conclusion 的一个未覆盖盲区。</li>
+<li>64K/128K 外推能力未知：IN2 数据仅覆盖 4K–32K。能否通过简单扩展 reject sampling bin 到 128K + YaRN/NTK-aware scaling 实现更长上下文？</li>
+<li>GPT-4 替代品的 quality-cost 曲线：用 Llama-3 70B / DeepSeek V3 替代 GPT-4-Turbo 生成 QA，质量下降多少？成本能否从 $50K 降到 $5K？</li>
+<li>数据规模最小必要量：1.75M 是论文选择，但缺 scale ablation。0.5M 够吗？</li>
+<li>Multi-hop 17% 比例的 sensitivity：提高到 30%/50% 对多跳任务是否有更大增益？</li>
+<li>常识推理退化根因：HellaSwag −4.5 / ARC-C −3.4 是 OpenOrca anchor 不够还是 IN2 数据本身引入了某种 bias？</li>
+<li>多模态迁移：把 128-token 段换成 image patch / audio chunk，IN2 思路能否训练 video/audio LLM 的长上下文能力？</li>
+<li>硬件亲和性：FP8/FP4 量化是否会破坏 IN2 训练习得的位置均匀 attention pattern？</li>
 </ul>
+
+<h2 id="appendix-模型架构细节图">Appendix: 模型架构细节图 <a class="heading-anchor" href="#appendix-模型架构细节图" aria-label="Link to appendix-模型架构细节图">#</a></h2>
+
+<blockquote>
+代码来源：https://huggingface.co/In2Training/FILM-7B-32K (继承 Mistral-7B-Instruct-v0.2 架构)
+</blockquote>
+
+<p>FilM-7B 不改变 Mistral-7B 架构，仅通过 IN2 SFT 修改权重。以下为继承的架构图。</p>
+
+<h3 id="a1-top-level">A1 Top-Level <a class="heading-anchor" href="#a1-top-level" aria-label="Link to a1-top-level">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    subgraph FilM7B["FilM-7B (= Mistral-7B-Instruct-v0.2 + IN2 SFT)"]
+        tok["Tokenizer (32K BPE vocab)"]
+        emb["Embedding (32000 × 4096)"]
+        blocks["32 × MistralDecoderLayer"]
+        norm["RMSNorm (4096)"]
+        head["lm_head (4096 → 32000)"]
+    end
+    tok --> emb --> blocks --> norm --> head
+</div>
+
+<h3 id="a2-block-单层-transformer-block">A2 Block (单层 Transformer Block) <a class="heading-anchor" href="#a2-block-单层-transformer-block" aria-label="Link to a2-block-单层-transformer-block">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Block["MistralDecoderLayer"]
+        x_in["x_in (bs, seq, 4096)"]
+        ln1["input_layernorm: RMSNorm"]
+        attn["MistralAttention (GQA 32Q/8KV, head_dim=128)"]
+        res1["x_in + attn_out (residual)"]
+        ln2["post_attention_layernorm: RMSNorm"]
+        ffn["MistralMLP (SwiGLU, 4096→14336→4096)"]
+        res2["res1 + ffn_out (residual)"]
+    end
+    x_in --> ln1 --> attn --> res1
+    x_in -.-> res1
+    res1 --> ln2 --> ffn --> res2
+    res1 -.-> res2
+</div>
+
+<h3 id="a3-attention-变体-gqa">A3 Attention 变体 (GQA) <a class="heading-anchor" href="#a3-attention-变体-gqa" aria-label="Link to a3-attention-变体-gqa">#</a></h3>
+
+<div class="mermaid">
+flowchart LR
+    subgraph GQA["MistralAttention (GQA)"]
+        x["hidden (4096)"]
+        qproj["q_proj: Linear(4096 → 4096)\n= 32 heads × 128 dim"]
+        kproj["k_proj: Linear(4096 → 1024)\n= 8 KV heads × 128 dim"]
+        vproj["v_proj: Linear(4096 → 1024)\n= 8 KV heads × 128 dim"]
+        rope["RoPE (θ=1e6, recommend 1e7 for IN2)"]
+        repeat["repeat_kv: 8→32 (expand KV heads)"]
+        sdpa["scaled_dot_product_attention\nno sliding window (v0.2)"]
+        oproj["o_proj: Linear(4096 → 4096)"]
+    end
+    x --> qproj & kproj & vproj
+    qproj --> rope
+    kproj --> rope
+    rope --> repeat
+    vproj --> repeat
+    repeat --> sdpa --> oproj
+</div>
+
+<h3 id="a4-辅-attention-变体">A4 辅 Attention 变体 <a class="heading-anchor" href="#a4-辅-attention-变体" aria-label="Link to a4-辅-attention-变体">#</a></h3>
+
+<p>N/A — FilM-7B / Mistral-7B 仅使用单一 GQA attention，无辅 attention 机制。</p>
+
+<h3 id="a5-选择-索引机制">A5 选择/索引机制 <a class="heading-anchor" href="#a5-选择-索引机制" aria-label="Link to a5-选择-索引机制">#</a></h3>
+
+<p>N/A — Dense 模型，无 MoE routing / gating / indexer。</p>
+
+<h3 id="a6-残差-连接机制">A6 残差/连接机制 <a class="heading-anchor" href="#a6-残差-连接机制" aria-label="Link to a6-残差-连接机制">#</a></h3>
+
+<p>标准 pre-norm residual connection: $x_{l+1} = x_l + \text{Attn}(\text{RMSNorm}(x_l))$, $x_{l+1}' = x_{l+1} + \text{FFN}(\text{RMSNorm}(x_{l+1}))$。无非标准残差。</p>
+
+<h3 id="代码-图对照表">代码-图对照表 <a class="heading-anchor" href="#代码-图对照表" aria-label="Link to 代码-图对照表">#</a></h3>
+
+<table>
+<tr><th>代码构件</th><th>对应图</th><th>关键实现细节</th></tr>
+<tr><td><code>MistralForCausalLM</code></td><td>A1</td><td>embed_tokens + 32 layers + norm + lm_head</td></tr>
+<tr><td><code>MistralDecoderLayer</code></td><td>A2</td><td>pre-norm residual × 2</td></tr>
+<tr><td><code>MistralAttention</code> (q/k/v/o_proj)</td><td>A3</td><td>GQA 32/8, RoPE applied to Q and K</td></tr>
+<tr><td><code>MistralMLP</code> (gate_proj, up_proj, down_proj)</td><td>A2 FFN</td><td>SwiGLU: gate×up then down, hidden=14336</td></tr>
+<tr><td><code>MistralRMSNorm</code></td><td>A2 ln1/ln2</td><td>ε=1e-5</td></tr>
+<tr><td><code>rotary_emb</code></td><td>A3 RoPE</td><td>θ=1e6 default; IN2 推荐训练时用 1e7</td></tr>
+</table>
 
 </div>
 </div>

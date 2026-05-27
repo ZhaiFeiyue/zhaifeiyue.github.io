@@ -197,353 +197,503 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">HipKittens: Fast and Furious AMD Kernels</h1>
 <div class="card-meta"><span class="badge badge-kernel">kernel</span> 2511.08083</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">AMD GPU</span><span class="tag">tile-based DSL</span><span class="tag">CDNA4</span><span class="tag">GEMM</span><span class="tag">attention kernel</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">AMD GPU</span><span class="tag">tile-based DSL</span><span class="tag">CDNA4</span><span class="tag">MFMA</span><span class="tag">GEMM</span><span class="tag">attention kernel</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2511.08083.html">← Synthesis</a>
 <a href="/overview/kernel.html">← kernel Survey</a>
 <a href="https://arxiv.org/abs/2511.08083" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
-<h1 id="hipkittens-fast-and-furious-amd-kernels">HipKittens: Fast and Furious AMD Kernels <a class="heading-anchor" href="#hipkittens-fast-and-furious-amd-kernels" aria-label="Link to hipkittens-fast-and-furious-amd-kernels">#</a></h1>
+
+<h1 id="hipkittens-fast-and-furious-amd-kernels-—-l2">HipKittens: Fast and Furious AMD Kernels — L2 <a class="heading-anchor" href="#hipkittens-fast-and-furious-amd-kernels-—-l2" aria-label="Link to hipkittens-fast-and-furious-amd-kernels-—-l2">#</a></h1>
+
 <blockquote>
 William Hu, Drew Wadsworth, Sean Siddens, Stanley Winata, Daniel Y. Fu, Ryan Swann, Muhammad Osama, Christopher Ré, Simran Arora | 2025-11 | https://arxiv.org/abs/2511.08083
-Category: kernel | Tags: AMD GPU, tile-based DSL, CDNA4, GEMM, attention kernel
-Read: 2026-04-16
+Category: <strong>kernel</strong> | Tags: AMD GPU, tile-based DSL, CDNA4, MFMA, GEMM, attention kernel, chiplet scheduling, register pinning, wave scheduling
 </blockquote>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-<p>HipKittens (HK) is the first systematic C++ embedded tile-based programming framework for AMD GPUs, providing reusable primitives (explicit register scheduling, bank-conflict-free swizzles, 8-wave ping-pong scheduling, chiplet-aware cache optimization) that match or outperform AMD's hand-optimized assembly kernels across GEMM, attention, and memory-bound workloads on CDNA3/CDNA4 hardware.</p>
+<hr>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
-<p>AMD GPUs offer competitive peak compute (MI355X: 2.5 PFLOPs BF16, 5.0 PFLOPs FP8) and memory bandwidth (8 TB/s) versus NVIDIA B200, but peak-performance AMD kernels require raw assembly—an approach that doesn't scale across the breadth of AI workloads. The "CUDA moat" persists not due to hardware deficiency but due to the lack of mature, reusable programming abstractions for AMD. Compilers like Triton on AMD struggle with register lifetime tracking and fail to lower to the most performant intrinsics, while existing C++ DSLs (ThunderKittens, CuTe DSL, Gluon) only target NVIDIA hardware.</p>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<p>HipKittens addresses this gap by extending the tile-based programming paradigm from ThunderKittens to AMD GPUs. The key insight is that the tile abstractions (typed tiles in register/shared/global memory, PyTorch-style bulk operators like <code>mma</code>, <code>exp</code>, <code>add</code>) are general across vendors, but the <strong>algorithms instantiating those abstractions</strong> must be fundamentally rethought for AMD. HK introduces: (1) developer-controlled register scheduling that bypasses HIPCC's limitations on AGPR usage, (2) heterogeneous swizzle strategies for AMD's non-compositional matrix instruction layouts, (3) an 8-wave ping-pong scheduling pattern (and a 4-wave interleave variant) that replaces NVIDIA's wave-specialization paradigm, and (4) a chiplet-aware XCD grid scheduling algorithm (Algorithm 1) that jointly optimizes L2 and LLC cache reuse.</p>
+<p>HipKittens: C++ tile-based DSL for AMD GPUs. Replaces NVIDIA's wave specialization with 8-wave ping-pong; bypasses HIPCC via pinned registers for AGPR→MFMA input; introduces chiplet-aware XCD grid scheduling for joint L2+LLC reuse. Matches AMD hand-tuned assembly on GEMM/attn fwd, 1.8–2.5× faster on GQA bwd.</p>
 
-<p>Validated on MI325X (CDNA3) and MI355X (CDNA4), HK kernels compete with AMD's hand-optimized assembly (AITER) on BF16/FP8 GEMM and attention forward, while outperforming all baselines by 1.2–2.4× on workloads where assembly support is incomplete (d=64 attention, GQA backwards, memory-bound kernels). HK consistently outperforms Triton by 1.3–3.0× on GEMM and 2× on attention. Correctness is validated by matching perplexity when pretraining Llama 1B and BERT 110M.</p>
+<hr>
 
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
-<ul>
-<li>Wave specialization (producer-consumer) underperforms on AMD: achieves only 80% of peak BF16 GEMM performance due to static register allocation—producer waves waste registers without contributing computation, limiting output tile size and arithmetic intensity</li>
-<li>8-wave ping-pong schedule (2 waves/SIMD alternating compute/memory roles) suffices to match assembly-level performance for BF16 GEMM, FP8 GEMM, and attention forward — remarkably simple yet effective</li>
-<li>Explicit register pinning (bypassing HIPCC to directly use AGPRs as MFMA inputs) closes the gap with assembly kernels on attention backward — 855→1024 TFLOPS improvement</li>
-<li>AMD matrix instruction layouts lack NVIDIA's compositional structure (no single core matrix building block), requiring per-instruction swizzle strategies with undocumented phase orderings</li>
-<li>Chiplet-aware XCD scheduling (Algorithm 1) improves GEMM performance by up to 19% over naive row-major by jointly optimizing L2 (75-79% hit rate) and LLC (55-93% hit rate) cache reuse</li>
-<li>HK outperforms all AMD baselines on GQA backwards by 1.8–2.5× — a workload where assembly doesn't scale</li>
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+
+<p>AMD MI355X offers competitive peak compute (2.5 PFLOPs BF16, 5.0 PFLOPs FP8, 8 TB/s HBM) versus NVIDIA B200, but peak-performance kernels require hand-tuned raw assembly (AITER library) that cannot scale to the breadth of AI workloads. The "CUDA moat" persists due to three AMD-specific architectural obstacles:</p>
+
+<ol>
+<li><strong>Static register allocation kills wave specialization.</strong> AMD hardware statically partitions 512 registers/SIMD across co-resident waves. The dominant NVIDIA producer-consumer wave specialization pattern wastes registers on non-compute producers, capping output tile size and arithmetic intensity. Result: wave specialization achieves only 80% of peak BF16 GEMM on MI355X (Tab. 2: 4P/8C = 893 TFLOPS vs 0P/8C = 1610 TFLOPS).</li>
 </ul>
 
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
-
-<h3 id="figure-1-hipkittens-overview-—-8-wave-ping-pong-schedule">Figure 1: HipKittens Overview — 8-Wave Ping-Pong Schedule <a class="heading-anchor" href="#figure-1-hipkittens-overview-—-8-wave-ping-pong-schedule" aria-label="Link to figure-1-hipkittens-overview-—-8-wave-ping-pong-schedule">#</a></h3>
-<p><img src="/assets/2511.08083/fig1-title-overview.png" alt="Figure 1: HipKittens Overview"></p>
-<p><strong>What it shows</strong>: The core scheduling innovation of HipKittens — an 8-wave ping-pong pattern where pairs of waves on each SIMD alternate between compute (MFMA) and memory roles, contrasted with NVIDIA's producer-consumer wave specialization.</p>
-<p><strong>Why it matters</strong>: This is the paper's central contribution — a simple, general scheduling pattern that achieves peak AMD performance without raw assembly.</p>
-<p><strong>Detailed description</strong>: The figure shows the HK programming model with three pillars: (1) tile-based primitives for programmable memory with developer-controlled register allocation, (2) the 8-wave ping-pong schedule where Wave A and Wave B on each SIMD alternate — when A does compute, B does memory, then they swap via a conditional barrier, and (3) chiplet-aware non-programmable memory scheduling. The bottom shows how these primitives compose to build a suite of AMD AI kernels (GEMM, attention, memory-bound ops).</p>
-
-<h3 id="figure-2-amd-mi355x-hardware-architecture">Figure 2: AMD MI355X Hardware Architecture <a class="heading-anchor" href="#figure-2-amd-mi355x-hardware-architecture" aria-label="Link to figure-2-amd-mi355x-hardware-architecture">#</a></h3>
-<p><img src="/assets/2511.08083/fig2-hardware.jpg" alt="Figure 2: Hardware Architecture"></p>
-<p><strong>What it shows</strong>: The hierarchical architecture of AMD MI355X — 8 XCDs (chiplets), each with 32 CUs, per-XCD L2 cache, shared LLC, and HBM. Alongside, a spec comparison with NVIDIA B200.</p>
-<p><strong>Why it matters</strong>: Understanding the chiplet topology is essential for comprehending why XCD-aware scheduling matters and why the memory hierarchy differs from NVIDIA's monolithic design.</p>
-<p><strong>Detailed description</strong>: Left side shows a table comparing MI355X vs B200 specs (BF16: 2.5 vs 2.2 PFLOPs, FP8: 5.0 vs 4.5 PFLOPs, memory: 288 vs 180 GB, bandwidth: both 8 TB/s). Right side illustrates the software/hardware hierarchy: Grid → Thread Blocks → Waves → Threads mapping to GPU → XCDs (8) → CUs (32/XCD) → SIMDs (4/CU), with memory hierarchy: registers (512/SIMD) → LDS (per-CU) → L2 (per-XCD, 4MB) → LLC (shared) → HBM.</p>
-
-<h3 id="figure-6-gemm-performance-results">Figure 6: GEMM Performance Results <a class="heading-anchor" href="#figure-6-gemm-performance-results" aria-label="Link to figure-6-gemm-performance-results">#</a></h3>
-<p><img src="/assets/2511.08083/fig6-bf16-gemm.png" alt="Figure 6: GEMM Results"></p>
-<p><strong>What it shows</strong>: BF16 GEMM performance comparison on MI355X across matrix sizes (M=N=K from 1024 to 14592) — HK vs AITER (assembly), HipBLASLT, CK, Triton, and PyTorch.</p>
-<p><strong>Why it matters</strong>: Demonstrates HK competes with hand-optimized assembly using a single reusable 8-wave schedule, while outperforming Triton by 1.3–3.0×.</p>
-<p><strong>Detailed description</strong>: Bar chart with multiple groups showing TFLOPS for each matrix size. HK (blue) consistently matches or approaches AITER/HipBLASLT at large sizes (>8K), while substantially outperforming Triton at all sizes. At M=N=K=8192, HK achieves ~1610 TFLOPS. The gap with assembly narrows as problem sizes increase and arithmetic intensity grows.</p>
-
-<h3 id="figure-8-attention-backwards-performance">Figure 8: Attention Backwards Performance <a class="heading-anchor" href="#figure-8-attention-backwards-performance" aria-label="Link to figure-8-attention-backwards-performance">#</a></h3>
-<p><img src="/assets/2511.08083/fig8-gqa-bwd.png" alt="Figure 8: Attention Backwards"></p>
-<p><strong>What it shows</strong>: GQA causal backwards attention performance across sequence lengths — HK dramatically outperforms all baselines including AITER assembly.</p>
-<p><strong>Why it matters</strong>: This is HK's strongest result — 1.8–2.5× over all baselines — demonstrating the value of tile-based abstractions on workloads where assembly doesn't scale.</p>
-<p><strong>Detailed description</strong>: Bar chart showing TFLOPS for GQA causal backward at different sequence lengths (1K-8K) with batch=16, heads=64, kv_heads=8, d=128. HK (8-wave and 4-wave variants) substantially outperforms PyTorch SDPA (~259 TFLOPS), AITER (~272-384 TFLOPS), and CK. The 4-wave interleave variant achieves the highest performance, leveraging explicit register pinning and mixed MFMA shapes (16×16×32 and 32×32×16).</p>
-
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
-
-<h3 id="table-2-producer-consumer-analysis">Table 2: Producer-Consumer Analysis <a class="heading-anchor" href="#table-2-producer-consumer-analysis" aria-label="Link to table-2-producer-consumer-analysis">#</a></h3>
-<table>
-<tr><th># P / # C</th><th>MFMA Shape</th><th>Output Tile</th><th>TFLOPS</th></tr>
-<tr><td>HK 4/8</td><td>16×16×32</td><td>128×256</td><td>893</td></tr>
-<tr><td>HK 4/12</td><td>16×16×32</td><td>192×256</td><td>1278</td></tr>
-<tr><td><strong>HK 0/8</strong></td><td><strong>16×16×32</strong></td><td><strong>192×256</strong></td><td><strong>1281</strong></td></tr>
-<tr><td><strong>HK 0/8</strong></td><td><strong>16×16×32</strong></td><td><strong>256×256</strong></td><td><strong>1610</strong></td></tr>
-<tr><td>TK (B200)</td><td>256×256×16</td><td>256×256</td><td>1538</td></tr>
-<tr><td>CUTLASS (B200)</td><td>256×256×16</td><td>256×256</td><td>1570</td></tr>
-</table>
-<p><strong>Takeaway</strong>: Zero producers (no wave specialization) + large output tile achieves the best AMD performance. Static register allocation means producer waves waste registers, limiting output tile size and arithmetic intensity. HK with 0 producers and 256×256 output tile (1610 TFLOPS) matches NVIDIA B200 TK/CUTLASS performance.</p>
-
-<h3 id="table-3-scheduling-pattern-comparison">Table 3: Scheduling Pattern Comparison <a class="heading-anchor" href="#table-3-scheduling-pattern-comparison" aria-label="Link to table-3-scheduling-pattern-comparison">#</a></h3>
-<table>
-<tr><th>Kernel</th><th>Pattern</th><th>LoC</th><th>TFLOPS</th></tr>
-<tr><td>FP8 GEMM</td><td>8-wave</td><td>48</td><td>3222</td></tr>
-<tr><td>FP8 GEMM</td><td>4-wave</td><td>183</td><td>3327</td></tr>
-<tr><td>MHA backwards</td><td>8-wave</td><td>331</td><td>894</td></tr>
-<tr><td>MHA backwards</td><td>4-wave</td><td>989</td><td>1091</td></tr>
-</table>
-<p><strong>Takeaway</strong>: 8-wave ping-pong offers 3.8× less code than 4-wave interleave with only modest performance loss (3-18%). For most workloads, the simpler 8-wave pattern provides sufficient performance.</p>
-
-<h3 id="table-4-chiplet-cache-scheduling">Table 4: Chiplet Cache Scheduling <a class="heading-anchor" href="#table-4-chiplet-cache-scheduling" aria-label="Link to table-4-chiplet-cache-scheduling">#</a></h3>
-<table>
-<tr><th>Block Order</th><th>L2%</th><th>LLC%</th><th>Mem BW</th><th>TFLOPS</th></tr>
-<tr><td>Row-major</td><td>55%</td><td>95%</td><td>15.1 TB/s</td><td>1113</td></tr>
-<tr><td>XCD (W7/C216)</td><td>79%</td><td>24%</td><td>14.9 TB/s</td><td>991</td></tr>
-<tr><td><strong>XCD (W5/C25)</strong></td><td><strong>75%</strong></td><td><strong>93%</strong></td><td><strong>18.3 TB/s</strong></td><td><strong>1145</strong></td></tr>
-</table>
-<p><strong>Takeaway</strong>: Optimizing for L2 alone (79% L2, 24% LLC) degrades LLC and overall performance. Joint L2+LLC optimization (75% L2, 93% LLC) achieves the best bandwidth (18.3 TB/s) and 19% speedup over naive row-major.</p>
-
-<h3 id="table-1-register-pinning-impact">Table 1: Register Pinning Impact <a class="heading-anchor" href="#table-1-register-pinning-impact" aria-label="Link to table-1-register-pinning-impact">#</a></h3>
-<table>
-<tr><th>Method</th><th>Seq. Length</th><th>TFLOPS</th></tr>
-<tr><td>HK</td><td>4096</td><td>855</td></tr>
-<tr><td><strong>HK + Pinned Registers</strong></td><td><strong>4096</strong></td><td><strong>1024</strong></td></tr>
-<tr><td>AITER (Assembly)</td><td>4096</td><td>1018</td></tr>
-<tr><td>HK</td><td>8192</td><td>909</td></tr>
-<tr><td><strong>HK + Pinned Registers</strong></td><td><strong>8192</strong></td><td><strong>1091</strong></td></tr>
-<tr><td>AITER (Assembly)</td><td>8192</td><td>1169</td></tr>
-</table>
-<p><strong>Takeaway</strong>: Explicit register pinning yields 20% improvement by enabling AGPRs as MFMA inputs, matching hand-optimized assembly performance on attention backwards.</p>
-
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-<ul>
-<li>Only validated on AMD CDNA3 (MI325X) and CDNA4 (MI355X); no RDNA or other architectures</li>
-<li>4-wave interleave pattern significantly increases code complexity (4× more LoC) for modest performance gains</li>
-<li>No end-to-end inference or training throughput benchmarks — only kernel microbenchmarks</li>
-<li>Chiplet scheduling algorithm requires manual tuning of W and C parameters per problem size</li>
-<li>FP6 support is preliminary (Appendix F case study only)</li>
-<li>No comparison with NVIDIA on identical model architectures at system level</li>
-<li>Register pinning mechanism bypasses compiler safety checks — may be fragile across ROCm versions</li>
+<ol>
+<li><strong>Non-compositional MFMA layouts prevent unified swizzles.</strong> NVIDIA matrix instructions share a compositional $16 \times 16$ core building block enabling a single swizzle strategy. Each AMD MFMA instruction uses an entirely different thread-element mapping with undocumented phase orderings (e.g., <code>ds_read_b128</code> uses 4 phases across 64 banks; <code>ds_read_b96</code> uses 8 phases across 32 banks). No single swizzle pattern eliminates bank conflicts for all co-occurring access patterns — proven formally in Appendix D.1.</li>
 </ul>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
+<ol>
+<li><strong>Chiplet memory hierarchy requires joint L2+LLC optimization.</strong> MI355X has 8 XCDs (chiplets), each with private 4 MB L2. Naive row-major grid scheduling yields 36–55% L2 hit rate. Optimizing solely for L2 can degrade LLC from 95% to 24%, worsening overall bandwidth (Tab. 4: L2-only optimization = 991 TFLOPS, worse than naive row-major = 1113 TFLOPS).</li>
+</ul>
+
+<p>Existing compilers fail to close the gap: Triton struggles with register lifetime tracking and intrinsic lowering; HIPCC prevents AGPR usage as MFMA inputs despite hardware support, inserting redundant <code>v_accvgpr_read</code> moves; Mojo's attention kernel suffers 50% performance loss from bank conflicts.</p>
+
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
+
+<p>HipKittens provides three pillars of AMD-specific primitives wrapped in the same tile-based front-end API as ThunderKittens (NVIDIA):</p>
+
+<p><strong>Pillar 1 — Programmable memory (§3.2).</strong> Developer-controlled register tiles bypass HIPCC limitations. Pinned register ranges (e.g., <code>split_many_t<type_list<range<24, 39>>, 4></code>) let developers assign specific VGPR/AGPR registers to tiles, enabling AGPRs as direct MFMA inputs. Per-instruction swizzle patterns handle heterogeneous LDS banking: XOR-based address rewriting applied at the HBM address level (not LDS address like NVIDIA). Direct HBM→LDS async loads via <code>buffer_load_dword</code> bypass the register file.</p>
+
+<p><strong>Pillar 2 — Scheduling (§3.3).</strong> Two patterns replace wave specialization:</p>
+
 <ul>
-<li>Algorithm: Enables rapid prototyping of new AI algorithms on AMD hardware by providing familiar tile-based abstractions; attention backward support unlocks full training pipelines on AMD</li>
-<li>Kernel: Establishes the first systematic set of AMD-specific kernel optimization principles (8-wave scheduling, chiplet-aware cache, register pinning) that can serve as the foundation for future AMD kernel libraries</li>
-<li>Framework: HK kernels can be integrated into PyTorch via Python bindings, potentially replacing suboptimal SDPA/Triton backends for AMD; paves the way for vendor-agnostic framework backends</li>
-<li>LLM: Competitive GEMM and attention performance on MI355X means LLM training/inference workloads can achieve near-peak hardware utilization on AMD, reducing the CUDA moat</li>
-<li>Agent: Lower kernel latency on AMD could enable real-time agent inference on AMD hardware, though this is not directly demonstrated</li>
-<li>Cluster: Chiplet-aware scheduling insights apply to multi-GPU AMD clusters where hierarchical cache behavior impacts collective communication patterns</li>
+<li><em>8-wave ping-pong</em> (balanced workloads): 8 waves per thread block, 2 per SIMD, split into two groups of 4. On each SIMD, paired waves alternate — one issues MFMA compute at priority 3 (<code>s_setprio</code>), the other issues memory loads, then they swap via conditional barrier. Sufficient for GEMM and attention forward.</li>
+<li><em>4-wave interleave</em> (imbalanced workloads): 1 wave per SIMD, each wave issues both compute and memory in staggered sequence using compiler scheduling hints (<code>sched_group_barrier</code>). Needed for peak attention backward performance.</li>
+</ul>
+
+<p><strong>Pillar 3 — Non-programmable cache (§3.4).</strong> Algorithm 1 remaps grid block IDs in two steps: (a) XCD grouping assigns chunks of $C$ consecutive blocks to the same XCD for L2 locality; (b) windowed traversal of height $W$ folds the grid into rectangular L2 tiles, controlling LLC footprint across XCDs. The cost model $\text{BW} = \text{LLC\_BW} \times \text{LLC\_hit\%} + \text{L2\_BW} \times \text{L2\_hit\%}$ guides the $W$/$C$ tradeoff, leveraging the fact that L2 bandwidth $\approx 3\times$ LLC bandwidth on MI355X.</p>
+
+<p><strong>核心技术壁垒</strong>: The 8-wave ping-pong scheduling insight — recognizing that AMD's static register partition makes wave specialization fundamentally counterproductive (every producer wave halves effective register budget per compute wave, reducing achievable output tile size and arithmetic intensity) and that a simple alternating pattern with priority hints and conditional barriers suffices to fully overlap compute and memory at peak utilization, without assembly-level instruction interleaving. Replicating this requires deep understanding of the interaction between AMD's static register file, MFMA scheduling latencies, and memory pipeline occupancy — knowledge not present in public ISA documentation.</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<table>
+<tr><th>Workload</th><th>HK best (TFLOPS)</th><th>Best baseline</th><th>HK speedup</th></tr>
+<tr><td>BF16 GEMM ($M{=}N{=}K{=}8192$)</td><td>1610</td><td>AITER/HipBLASLT ~1600</td><td>~1.0×</td></tr>
+<tr><td>FP8 GEMM (4-wave)</td><td>3327</td><td>Assembly baselines</td><td>~1.0×</td></tr>
+<tr><td>GQA fwd ($D{=}128$, various $S$)</td><td>varies</td><td>AITER</td><td>1.0–2.1×</td></tr>
+<tr><td>GQA bwd (causal + non-causal)</td><td>up to 1091</td><td>All baselines (best: AITER 384)</td><td><strong>1.8–2.5×</strong></td></tr>
+<tr><td>Fused dropout-residual-LN</td><td>varies</td><td>AITER / PyTorch compiled</td><td>1.1–2.2×</td></tr>
+<tr><td>vs Triton (all GEMMs)</td><td>—</td><td>Triton</td><td>1.3–3.0×</td></tr>
+</table>
+
+<p>Correctness validated by pretraining Llama 1B and BERT 110M on Slim Pajama — matching perplexity of PyTorch/AITER baselines after 10B tokens.</p>
+
+<hr>
+
+<h2 id="§3-架構-方法図">§3 架構 / 方法図 <a class="heading-anchor" href="#§3-架構-方法図" aria-label="Link to §3-架構-方法図">#</a></h2>
+
+<h3 id="architecture-overview">Architecture overview <a class="heading-anchor" href="#architecture-overview" aria-label="Link to architecture-overview">#</a></h3>
+
+<p><img src="/assets/2511.08083/fig1-title-overview.png" alt="Figure 1: HipKittens overview — three-pillar architecture with 8-wave ping-pong scheduling"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "We study whether existing tile based programming primitives suffice for AMD kernels, or whether entirely new primitives are needed. Our study led to HipKittens...").</em></p>
+
+<p>The left panel shows tile-based programmable memory management with developer-controlled register allocation (VGPR/AGPR pinning) and per-instruction swizzle patterns. The center panel illustrates the 8-wave ping-pong schedule — the paper's central innovation — where Wave A and Wave B on each SIMD alternate between compute (MFMA, high priority) and memory roles, synchronized by conditional barriers, replacing NVIDIA's producer-consumer wave specialization. The right panel shows chiplet-aware non-programmable memory scheduling (Algorithm 1) that remaps block IDs for joint L2+LLC cache reuse across 8 XCDs. The bottom demonstrates how these primitives compose to produce a suite of AMD AI kernels (GEMM, attention, memory-bound ops).</p>
+
+<h3 id="swizzle-mechanism">Swizzle mechanism <a class="heading-anchor" href="#swizzle-mechanism" aria-label="Link to swizzle-mechanism">#</a></h3>
+
+<p><img src="/assets/2511.08083/fig4-swizzle.png" alt="Figure 4: Bank-conflict-free swizzle pattern for 16×32 BF16 shared memory tile"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "Swizzle pattern for a 16x32 tile of BF16s. Shared memory on AMD CDNA4 GPUs have different banking behavior depending on the instruction...").</em></p>
+
+<p>The left panel shows an unswizzled layout suffering from 2-way bank conflicts under <code>ds_read_b128</code>. The right panel applies an XOR-based swizzle: starting from row 8, the first 8 columns and last 8 columns are swapped. This simultaneously eliminates bank conflicts for both <code>ds_read_b128</code> (row-major, 64 banks × 4 phases) and <code>ds_read_b64_tr_b16</code> (column-major transpose), allowing the same LDS region to serve both access patterns. This dual-pattern bank-conflict freedom is critical for attention backward where mixed MFMA shapes ($16 \times 16 \times 32$ and $32 \times 32 \times 16$) require both row and column register tile layouts from the same shared memory.</p>
+
+<h3 id="target-operation">Target operation <a class="heading-anchor" href="#target-operation" aria-label="Link to target-operation">#</a></h3>
+
+<table>
+<tr><th>Operation</th><th>Input shape</th><th>Output shape</th><th>Input dtype</th><th>Acc dtype</th><th>Output dtype</th></tr>
+<tr><td>BF16 GEMM</td><td>A: $[M, K]$, B: $[K, N]$</td><td>C: $[M, N]$</td><td>BF16</td><td>FP32</td><td>BF16</td></tr>
+<tr><td>FP8 GEMM</td><td>A: $[M, K]$, B: $[K, N]$</td><td>C: $[M, N]$</td><td>MXFP8</td><td>FP32</td><td>FP8/BF16</td></tr>
+<tr><td>MHA fwd</td><td>Q,K,V: $[B, H, S, D]$</td><td>O: $[B, H, S, D]$</td><td>BF16</td><td>FP32</td><td>BF16</td></tr>
+<tr><td>GQA fwd</td><td>Q: $[B, H_q, S, D]$, K,V: $[B, H_{kv}, S, D]$</td><td>O: $[B, H_q, S, D]$</td><td>BF16</td><td>FP32</td><td>BF16</td></tr>
+<tr><td>MHA/GQA bwd</td><td>dO, Q, K, V, O</td><td>dQ, dK, dV</td><td>BF16</td><td>FP32</td><td>BF16</td></tr>
+<tr><td>Fused dropout-res-LN</td><td>$[B, H, D]$</td><td>$[B, H, D]$</td><td>BF16</td><td>FP32</td><td>BF16</td></tr>
+<tr><td>RoPE</td><td>$[B, H, S, D]$</td><td>$[B, H, S, D]$</td><td>BF16</td><td>—</td><td>BF16</td></tr>
+</table>
+
+<p><strong>Evaluated regimes:</strong> Batch 16; heads 16 or 64 (query) / 8 (KV for GQA); $D \in \{64, 128\}$; $S \in \{1024, 2048, 4096, 8192\}$; GEMM $M{=}N{=}K \in \{1024, \ldots, 14592\}$. All prefill-regime (large batch × $S^2$ attention, compute-bound). Causal and non-causal masks for attention. No structured sparsity.</p>
+
+<h3 id="hardware-model">Hardware model <a class="heading-anchor" href="#hardware-model" aria-label="Link to hardware-model">#</a></h3>
+
+<p><strong>Primary target: AMD MI355X (CDNA4, gfx950)</strong></p>
+
+<table>
+<tr><th>Resource</th><th>Value</th></tr>
+<tr><td>CUs</td><td>256 (8 XCDs × 32 CUs/XCD)</td></tr>
+<tr><td>SIMDs per CU</td><td>4</td></tr>
+<tr><td>Waves per SIMD (HK)</td><td>2 (8-wave) or 1 (4-wave)</td></tr>
+<tr><td>Registers per SIMD</td><td>512 (split: 256 VGPR + 256 AGPR at 1 wave/SIMD; 128+128 each at 2 waves/SIMD)</td></tr>
+<tr><td>BF16 matrix core peak</td><td>2.5 PFLOPs</td></tr>
+<tr><td>MXFP8 matrix core peak</td><td>5.0 PFLOPs</td></tr>
+<tr><td>MXFP6 / MXFP4 peak</td><td>10.1 PFLOPs</td></tr>
+<tr><td>HBM capacity / bandwidth</td><td>288 GB / 8.0 TB/s</td></tr>
+<tr><td>L2 cache</td><td>4 MB per XCD (32 MB total, not shared across XCDs)</td></tr>
+<tr><td>LLC</td><td>Shared across all XCDs, between L2 and HBM</td></tr>
+<tr><td>L2 miss penalty</td><td>~300 ns worst case</td></tr>
+<tr><td>LLC miss penalty</td><td>~500 ns worst case</td></tr>
+</table>
+
+<p><strong>Secondary target: AMD MI325X (CDNA3, gfx942)</strong> — 38 CUs/XCD, 65 KB LDS per CU (smaller than MI355X). 8-wave pattern adapted: double-buffers in register file instead of LDS due to LDS size constraint.</p>
+
+<p><strong>MFMA instructions used:</strong></p>
+
+<ul>
+<li>$16 \times 16 \times 32$ (BF16): default for GEMM and attention — finest scheduling granularity</li>
+<li>$32 \times 32 \times 16$ (BF16): attention backward only — larger output per instruction, reduces register pressure on dK/dV accumulation</li>
+<li>$16 \times 16 \times 128$ (FP6): FP6 GEMM (Appendix F, preliminary)</li>
+</ul>
+
+<p><strong>Launch config (BF16 GEMM):</strong> Output tile $256 \times 256$, $K_{\text{step}} = 64$, grid $\lceil M/256 \rceil \times \lceil N/256 \rceil$, 8 waves × 64 threads = 512 threads/block, WARPS_M=2, WARPS_N=4, DOT_SLICE=32.</p>
+
+<hr>
+
+<h2 id="§4-作者証明">§4 作者証明 <a class="heading-anchor" href="#§4-作者証明" aria-label="Link to §4-作者証明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$M, N, K$</td><td>GEMM dimensions</td></tr>
+<tr><td>$B, H, S, D$</td><td>Batch, heads, sequence length, head dimension</td></tr>
+<tr><td>$H_q, H_{kv}$</td><td>Query heads, KV heads (GQA)</td></tr>
+<tr><td>$W$</td><td>Window height in Algorithm 1 (controls L2 tile shape)</td></tr>
+<tr><td>$C$</td><td>Chunk size in Algorithm 1 (consecutive blocks per XCD)</td></tr>
+<tr><td>$P / C_w$</td><td>Producer / consumer wave count in wave specialization</td></tr>
+<tr><td>VGPR / AGPR</td><td>Vector general-purpose / accumulator registers</td></tr>
+<tr><td>XCD</td><td>Accelerator complex die (AMD chiplet)</td></tr>
+<tr><td>CU / SIMD</td><td>Compute unit / SIMD execution unit within CU</td></tr>
+<tr><td>LDS</td><td>Local data share (AMD shared memory)</td></tr>
+</table>
+
+<h3 id="方程物理意義">方程物理意義 <a class="heading-anchor" href="#方程物理意義" aria-label="Link to 方程物理意義">#</a></h3>
+
+<p>The paper has one explicit equation — the cache bandwidth cost model:</p>
+
+<p>$$\text{BW} = \text{LLC\_BW} \times \text{LLC\_hit\%} + \text{L2\_BW} \times \text{L2\_hit\%}$$</p>
+
+<p>Effective memory bandwidth is the weighted sum of L2 contributions (fast, per-XCD, ~3× higher bandwidth) and LLC contributions (slower, shared across chiplets). The model reveals a non-obvious coupling: L2 and LLC hit rates are not independent. Grouping many blocks per XCD (large $C$) improves L2 hit rate but causes cross-XCD LLC thrashing when different XCDs access disjoint regions. The parameters $W$ (window height) and $C$ (chunk size) in Algorithm 1 provide the control knobs: $W$ determines the shape of the L2 tile (tall window → more row reuse), while $C$ determines how many blocks share an XCD (larger $C$ → better L2, risk of worse LLC).</p>
+
+<h3 id="roofline-placement">Roofline placement <a class="heading-anchor" href="#roofline-placement" aria-label="Link to roofline-placement">#</a></h3>
+
+<table>
+<tr><th>Operation</th><th>AI (FLOPs/byte)</th><th>Roofline knee (MI355X)</th><th>Regime</th></tr>
+<tr><td>BF16 GEMM ($8192^3$)</td><td>$\approx 2731$</td><td>~312</td><td>Compute-bound</td></tr>
+<tr><td>FP8 GEMM ($8192^3$)</td><td>$\approx 5461$</td><td>~625</td><td>Compute-bound</td></tr>
+<tr><td>Attn fwd ($S{=}4096, D{=}128$)</td><td>$\approx 32$</td><td>~312</td><td>Compute-bound</td></tr>
+<tr><td>LayerNorm / RoPE</td><td>$< 10$</td><td>~312</td><td><strong>Memory-bound</strong></td></tr>
+</table>
+
+<p>Roofline knee: $\text{peak FLOPs} / \text{peak BW} = 2500 \times 10^{12} / 8.0 \times 10^{12} \approx 312$ FLOPs/byte (BF16). GEMM and attention sit deeply in the compute-bound regime. Memory-bound kernels (LayerNorm, RoPE) are bandwidth-limited — here HK's advantage comes from correct buffer load instruction selection (HBM→LDS direct, better L2 hit rates) rather than compute scheduling.</p>
+
+<h3 id="peak-derivation">% peak derivation <a class="heading-anchor" href="#peak-derivation" aria-label="Link to peak-derivation">#</a></h3>
+
+<p><strong>BF16 GEMM ($M{=}N{=}K{=}8192$):</strong> 1610 TFLOPS / 2500 TFLOPS = <strong>64.4%</strong> of theoretical peak.</p>
+
+<p>From launch config: 8 waves × 64 threads = 512 threads/block, output tile $256 \times 256$, $K_{\text{step}} = 64$. Each step performs $2 \times 256 \times 256 \times 64 = 8.39 \times 10^6$ FLOPs. With MFMA $16 \times 16 \times 32$, each wave performs $\text{WARPS\_M} \times \text{WARPS\_N} = 8$ MFMA instructions per DOT_SLICE step. Pipeline utilization depends on MFMA latency vs memory latency; at 2 waves/SIMD, the ping-pong hides memory behind partner wave's compute. The 64.4% figure aligns with NVIDIA TK on B200 (1538/2200 = 69.9%), suggesting tile-based DSLs achieve similar hardware efficiency across vendors.</p>
+
+<p><strong>FP8 GEMM:</strong> 3327 / 5000 = <strong>66.5%</strong> (4-wave interleave); 3222 / 5000 = <strong>64.4%</strong> (8-wave).</p>
+
+<h3 id="tile-launch-optimality">Tile / launch optimality <a class="heading-anchor" href="#tile-launch-optimality" aria-label="Link to tile-launch-optimality">#</a></h3>
+
+<p><strong>Why $256 \times 256$ and not larger?</strong> At 2 waves/SIMD: 128 AGPRs per wave. With WARPS_M=2, WARPS_N=4, each wave accumulates a $(256/2) \times (256/4) = 128 \times 64$ sub-tile = 8192 BF16 elements. In the MFMA accumulator (FP32), that requires $8192 \times 2 = 16384$ bytes → 256 32-bit AGPRs — exactly exhausting the 128 AGPR budget at 2 waves/SIMD (since accumulator elements pack 2 per register in the accumulation layout). A $320 \times 256$ tile would require $10240 \times 2 / 4 = 5120$ bytes = 160 AGPRs per wave → overflow.</p>
+
+<p><strong>Why not smaller?</strong> Arithmetic intensity scales with tile dimension. Tab. 2: $128 \times 256$ (4P/8C) = 893 TFLOPS; $192 \times 256$ (0P/8C) = 1281 TFLOPS; $256 \times 256$ (0P/8C) = 1610 TFLOPS. The 25% tile dimension reduction from $256$ to $192$ costs 20% performance.</p>
+
+<p><strong>Why $16 \times 16 \times 32$ MFMA default?</strong> Finer granularity → more MFMA instructions per K-step → better interleaving with memory ops within compute clusters. Attention backward uses mixed shapes ($16 \times 16 \times 32$ + $32 \times 32 \times 16$) because the $Q \cdot K^T$ and $(dS) \cdot V$ matmuls have different register pressure profiles.</p>
+
+<h3 id="design-space-constraint-derivation">Design space & constraint derivation <a class="heading-anchor" href="#design-space-constraint-derivation" aria-label="Link to design-space-constraint-derivation">#</a></h3>
+
+<table>
+<tr><th>Axis</th><th>Value chosen</th><th>Rejected alternatives</th><th>Blocking constraint</th></tr>
+<tr><td>Schedule (GEMM, attn fwd)</td><td>8-wave ping-pong</td><td>Wave specialization</td><td>Static register partition: 4P/8C = 893 vs 0P/8C = 1610 TFLOPS</td></tr>
+<tr><td>Schedule (attn bwd)</td><td>4-wave interleave</td><td>8-wave ping-pong</td><td>Compute/memory imbalance: 4-wave = 1091 vs 8-wave = 894 TFLOPS</td></tr>
+<tr><td>MFMA shape (default)</td><td>$16 \times 16 \times 32$</td><td>$32 \times 32 \times 16$ alone</td><td>Finer scheduling granularity; $32 \times 32$ used only in bwd for register pressure</td></tr>
+<tr><td>Output tile</td><td>$256 \times 256$</td><td>Larger</td><td>AGPR budget at 2 waves/SIMD: exactly saturated at $256 \times 256$</td></tr>
+<tr><td>Register mgmt (attn bwd)</td><td>Pinned registers</td><td>HIPCC-managed</td><td>HIPCC inserts <code>v_accvgpr_read</code>: pinned 1024 vs unpinned 855 TFLOPS</td></tr>
+<tr><td>Swizzle</td><td>Per-instruction XOR</td><td>Single unified swizzle</td><td>Formally impossible: <code>ds_write_b64</code> 64-bit chunks conflict with <code>ds_read_b128</code> 128-bit contiguous</td></tr>
+<tr><td>Cache scheduling</td><td>Joint L2+LLC via $W$, $C$</td><td>L2-only</td><td>L2-only (79% L2, 24% LLC) = 991 < row-major (55% L2, 95% LLC) = 1113 TFLOPS</td></tr>
+<tr><td>Sync mechanism</td><td>LDS atomics</td><td>mbarrier</td><td>AMD lacks mbarrier HW; atomics overhead negligible (1281 vs 1278 TFLOPS)</td></tr>
+<tr><td>Pipeline depth</td><td>2-deep (LDS double buffer)</td><td>Deeper</td><td>LDS ~40% smaller than NVIDIA SMEM per-processor</td></tr>
+<tr><td>Global→LDS</td><td><code>buffer_load_dword</code> (async)</td><td>Register-mediated</td><td>Avoids register pressure; analogous to NVIDIA TMA</td></tr>
+</table>
+
+<h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Hidden assumptions.</strong> 8-wave ping-pong assumes balanced compute and memory durations per tile step. When imbalanced (attention backward), it underperforms and 4-wave interleave is needed. Explicitly acknowledged in §3.3.2 with quantified comparison (Tab. 3).</li>
+</ul>
+
+<ol>
+<li><strong>Edge cases.</strong> Algorithm 1 has worst-case behavior when grid tiles mod 8 is problematic (57 tiles for $M{=}N{=}K{=}14592$). The paper documents this case (Tab. 4) and shows the algorithm still provides 19% improvement via $W$/$C$ tuning.</li>
+</ul>
+
+<ol>
+<li><strong>Bandwidth model linearity.</strong> Equation 1 assumes L2 and LLC contributions are additive. In practice L2 misses become LLC accesses, creating a sequential dependency. The model holds approximately because L2 and LLC latencies dominate different pipeline stages — validated empirically (Tab. 4 predictions match measured TFLOPS ordering).</li>
+</ul>
+
+<ol>
+<li><strong>Compiler interaction.</strong> Pinned registers bypass HIPCC's optimization passes for affected code regions, losing automatic instruction reordering. Mitigated via explicit <code>sched_barrier</code> and <code>sched_group_barrier</code> hints (§D.4). Potential fragility across ROCm versions acknowledged implicitly.</li>
+</ul>
+
+<ol>
+<li><strong>Generational portability.</strong> Phase-bank table (Tab. 5) is reverse-engineered for CDNA3/CDNA4 via custom solver (§D.2). No guarantee these orderings persist in future CDNA generations. Validated on two generations, but per-generation adaptation of swizzle patterns and LDS double-buffering strategies is required.</li>
+</ul>
+
+<ol>
+<li><strong>Correctness validation.</strong> End-to-end via pretraining perplexity match (Llama 1B + BERT 110M, 10B tokens). No formal kernel-level numerical error bounds (max abs diff, mean rel diff) reported. No discussion of overflow/underflow/subnormal handling.</li>
 </ul>
 
 <hr>
 
-<h2 id="deep-analysis-kernel">Deep Analysis (kernel) <a class="heading-anchor" href="#deep-analysis-kernel" aria-label="Link to deep-analysis-kernel">#</a></h2>
+<h2 id="§5-実験与数据">§5 実験与数据 <a class="heading-anchor" href="#§5-実験与数据" aria-label="Link to §5-実験与数据">#</a></h2>
 
-<h3 id="1-target-operation">1. Target Operation <a class="heading-anchor" href="#1-target-operation" aria-label="Link to 1-target-operation">#</a></h3>
+<h3 id="gemm">GEMM <a class="heading-anchor" href="#gemm" aria-label="Link to gemm">#</a></h3>
 
-<p>HipKittens targets the core computational primitives of modern AI workloads:</p>
+<p><img src="/assets/2511.08083/fig6-bf16-gemm.png" alt="Figure 6a: BF16 GEMM performance on MI355X"></p>
 
-<p><strong>Primary operations:</strong></p>
-<ul>
-<li><strong>GEMM</strong> (General Matrix Multiplication): BF16 and FP8, square matrices M=N=K from 1024 to 14592</li>
-<li><strong>Attention</strong> (forward and backward): Multi-head (MHA) and Group-query (GQA), causal and non-causal, head dimensions 64 and 128, sequence lengths 1024-8192</li>
-<li><strong>Memory-bound kernels</strong>: Fused dropout-residual-LayerNorm, Rotary Positional Encoding (RoPE)</li>
-</ul>
+<p><em>Paper's Figure 6 (left), verbatim (caption: "GEMM. We compare HK BF16 and FP8 GEMMs to the strongest available baselines.").</em></p>
 
-<p><strong>Data types</strong>: BF16, FP8 (MXFP8), FP6 (preliminary), FP32 accumulators</p>
+<p>HK competes with AITER/HipBLASLT (hand-optimized assembly) across all square GEMM sizes on MI355X. At $M{=}N{=}K{=}8192$, HK achieves ~1610 TFLOPS, matching assembly. The gap with Triton is dramatic: 1.3–3.0× across all sizes, demonstrating that LLVM-based compilation on AMD cannot close the performance gap without framework-level scheduling and memory abstractions. A single 8-wave kernel schedule generalizes across all problem sizes without per-size tuning.</p>
 
-<p><strong>Theoretical arithmetic intensity:</strong></p>
-<ul>
-<li>BF16 GEMM (M=N=K=8192): ~4096 FLOPs/byte — deeply compute-bound</li>
-<li>FP8 GEMM: ~8192 FLOPs/byte — even more compute-bound</li>
-<li>Attention forward (d=128, seq=4096): ~256 FLOPs/byte — compute-bound</li>
-<li>Attention backward: highly register-intensive, requires mixed MFMA shapes</li>
-<li>LayerNorm/RoPE: memory-bound (arithmetic intensity < 10)</li>
-</ul>
+<p><img src="/assets/2511.08083/fig6-fp8-gemm.png" alt="Figure 6b: FP8 GEMM performance on MI355X"></p>
 
-<p><strong>Roofline position:</strong></p>
-<ul>
-<li>GEMM and attention sit firmly in the compute-bound regime on MI355X (2.5 PFLOPs BF16 peak, 8 TB/s bandwidth)</li>
-<li>Memory-bound kernels (LayerNorm, RoPE) are bandwidth-limited</li>
-</ul>
+<p><em>Paper's Figure 6 (right), verbatim (caption: "GEMM. We compare HK BF16 and FP8 GEMMs to the strongest available baselines.").</em></p>
 
-<h3 id="2-hardware-model">2. Hardware Model <a class="heading-anchor" href="#2-hardware-model" aria-label="Link to 2-hardware-model">#</a></h3>
+<p>FP8 GEMM shows a similar pattern: HK achieves 3222 TFLOPS (8-wave) and 3327 TFLOPS (4-wave), competitive with assembly baselines. The 4-wave interleave provides a modest 3% improvement over 8-wave at the cost of 3.8× more code (183 vs 48 LoC, Tab. 3), suggesting the simpler 8-wave pattern is the better default.</p>
 
-<p><strong>Target architectures:</strong></p>
-<ul>
-<li>AMD CDNA4 (MI355X, gfx950): 256 CUs, 8 XCDs (chiplets), 4 SIMDs/CU, 512 registers/SIMD</li>
-<li>AMD CDNA3 (MI325X, gfx942): similar organization with 38 CUs/XCD</li>
-</ul>
+<h3 id="attention-forward">Attention forward <a class="heading-anchor" href="#attention-forward" aria-label="Link to attention-forward">#</a></h3>
 
-<p><strong>Hardware units exploited:</strong></p>
-<ul>
-<li><strong>Matrix Cores (MFMA)</strong>: 16×16×32 (BF16), 32×32×16 — primary compute unit</li>
-<li><strong>Vector ALU (VALU)</strong>: for online softmax operations (max, exp2, accumulate) in attention</li>
-<li><strong>LDS (Local Data Share)</strong>: shared memory per CU, used for tile staging</li>
-<li><strong>Direct HBM→LDS loads</strong> (<code>buffer_load_dword</code>): bypass register file, analogous to NVIDIA TMA</li>
-</ul>
+<p><img src="/assets/2511.08083/fig7-gqa-fwd.png" alt="Figure 7: GQA forward attention on MI355X"></p>
 
-<p><strong>Memory hierarchy exploitation:</strong></p>
-<ul>
-<li><strong>Registers</strong>: 512 per SIMD, split into 256 VGPRs + 256 AGPRs (single wave/SIMD). HK enables explicit pinning to control which tiles live where</li>
-<li><strong>LDS (shared memory)</strong>: Per-CU, with 64 banks (4-byte wide for ds_read_b128). HK provides per-instruction swizzle patterns to avoid bank conflicts</li>
-<li><strong>L2 cache</strong>: Per-XCD (4MB per XCD), not shared across chiplets. XCD scheduling (Algorithm 1) maximizes reuse</li>
-<li><strong>LLC</strong>: Shared across all XCDs, sits between L2 and HBM. Joint L2+LLC optimization needed</li>
-<li><strong>HBM</strong>: 288 GB, 8 TB/s bandwidth</li>
-</ul>
+<p><em>Paper's Figure 7, verbatim (caption: "Attention forwards. We compare HipKittens GQA ... to the strongest available baselines. We use batch 16, query heads 64, key value heads 8, head dim 64 and 128.").</em></p>
 
-<p><strong>Theoretical peak throughput (MI355X):</strong></p>
-<ul>
-<li>BF16: 2.5 PFLOPs</li>
-<li>FP8: 5.0 PFLOPs</li>
-<li>FP6/FP4: 10.1 PFLOPs</li>
-<li>Memory bandwidth: 8.0 TB/s</li>
-</ul>
+<p>GQA forward (batch 16, 64 query heads, 8 KV heads) shows HK outperforming AITER assembly by 1.0–2.1×, PyTorch SDPA by 1.3–4.5×, CK by 1.0–1.4×, and Triton by 1.2–4.5×. The 8-wave ping-pong schedule is sufficient — online-softmax vector operations (<code>col_max</code>, <code>exp2</code>, <code>col_sum</code>) are interleaved with MFMA instructions within the compute cluster, filling pipeline bubbles. At $D{=}64$, the advantage is largest because no existing baseline is tuned for this head dimension.</p>
 
-<h3 id="3-optimization-techniques">3. Optimization Techniques <a class="heading-anchor" href="#3-optimization-techniques" aria-label="Link to 3-optimization-techniques">#</a></h3>
+<h3 id="attention-backward">Attention backward <a class="heading-anchor" href="#attention-backward" aria-label="Link to attention-backward">#</a></h3>
 
-<h3 id="figure-1-hipkittens-overview-—-8-wave-ping-pong-schedule-2">Figure 1: HipKittens Overview — 8-Wave Ping-Pong Schedule <a class="heading-anchor" href="#figure-1-hipkittens-overview-—-8-wave-ping-pong-schedule-2" aria-label="Link to figure-1-hipkittens-overview-—-8-wave-ping-pong-schedule-2">#</a></h3>
-<p><img src="/assets/2511.08083/fig1-title-overview.png" alt="Figure 1: HipKittens Overview"></p>
-<p><strong>解读</strong>: 此图展示了HipKittens的核心架构——三大编程原语。左侧是tile-based的可编程内存管理（寄存器pinning、swizzle），中间是8-wave ping-pong调度模式（Wave A和B在每个SIMD上交替执行compute和memory），右侧是chiplet感知的grid调度（Algorithm 1）。这三个层次从底层寄存器到顶层cache调度，形成了完整的AMD kernel优化栈。图中8-wave部分最为关键——它展示了一种不需要wave specialization的替代方案，通过两波交替而非生产者-消费者模式实现计算和访存的重叠。</p>
+<p><img src="/assets/2511.08083/fig8-gqa-bwd.png" alt="Figure 8: GQA backward attention on MI355X"></p>
+
+<p><em>Paper's Figure 8, verbatim (caption: "Attention backwards. We compare HipKittens GQA ... to the strongest available baselines. We use batch 16, query heads 64, key value heads 8, and head dim 128.").</em></p>
+
+<p>GQA backward is HK's strongest result: <strong>1.8–2.5× over all baselines</strong> including AITER assembly. All three pillars contribute simultaneously: mixed MFMA shapes ($16 \times 16 \times 32$ + $32 \times 32 \times 16$) require per-instruction swizzle; explicit register pinning enables AGPRs as MFMA inputs; and the 4-wave interleave pattern handles the imbalanced compute/memory ratio. AITER achieves only 272–384 TFLOPS (causal/non-causal, seq 8192) while HK reaches 1091 TFLOPS — a gap that demonstrates raw assembly does not scale to complex kernels with multiple MFMA shapes and register pressure requirements.</p>
+
+<h3 id="memory-bound-kernels">Memory-bound kernels <a class="heading-anchor" href="#memory-bound-kernels" aria-label="Link to memory-bound-kernels">#</a></h3>
+
+<p><img src="/assets/2511.08083/fig9-membound-norm.png" alt="Figure 9: Fused dropout-residual-layernorm and RoPE on MI355X"></p>
+
+<p><em>Paper's Figure 9, verbatim (caption: "Memory bound. We compare HipKittens fused dropout-residual-layernorm and rotary kernels to the strongest available baselines at batch 16, heads 16, and head dim 128.").</em></p>
+
+<p>Fused dropout-residual-LayerNorm and RoPE are memory-bandwidth limited. HK outperforms AITER and PyTorch compiled kernels by 1.1–2.2× across settings. The advantage comes from HK's correct use of <code>buffer_load</code> instructions (which PyTorch's torch.compile does not emit on AMD) and better L2 hit rates — torch-compiled LayerNorm exhibits 23% lower L2 hit rate than HK.</p>
+
+<h3 id="key-tables">Key tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h3>
+
+<p><strong>Table 2 — Wave specialization analysis (BF16 GEMM, $M{=}N{=}K{=}8192$, MI355X):</strong></p>
 
 <table>
-<tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
-<tr><td>Tiling / blocking</td><td><strong>Yes</strong></td><td>Core abstraction. Tiles parameterized by dtype, rows, cols, layout. Row/col multiples of MFMA shape. Register tiles default to smallest MFMA (16×16×32) for maximal scheduling flexibility</td></tr>
-<tr><td>Software pipelining</td><td><strong>Yes</strong></td><td>8-wave ping-pong achieves pipelining through wave alternation rather than explicit pipeline stages. Direct HBM→LDS loads (<code>buffer_load_dword</code>) overlap with MFMA execution on paired waves. <code>vmcnt</code>/<code>lgmkcnt</code> used to manage async load completion</td></tr>
-<tr><td>Warp/wavefront specialization</td><td><strong>Rejected for AMD</strong></td><td>Wave specialization (producer-consumer) achieves only 80% peak on AMD due to static register allocation. Replaced by 8-wave ping-pong (balanced) and 4-wave interleave (imbalanced)</td></tr>
-<tr><td>Vectorized memory access</td><td><strong>Yes</strong></td><td><code>ds_read_b128</code> (16 bytes), <code>ds_read_b96</code> (12 bytes), <code>ds_read_b64</code> (8 bytes), <code>ds_read_b64_tr_b16</code> (column-major transpose). <code>buffer_load_dwordx4</code> (16 bytes) for HBM→LDS</td></tr>
-<tr><td>Shared memory / LDS optimization</td><td><strong>Yes</strong></td><td>Per-instruction bank conflict avoidance with custom swizzle patterns. Phase-bank table (Table 5) documents undocumented instruction behavior. Swizzle applied via HBM address rewriting (not LDS address swizzling like NVIDIA)</td></tr>
-<tr><td>Register pressure management</td><td><strong>Yes</strong></td><td>Explicit register pinning bypasses HIPCC to use AGPRs as MFMA inputs. Mixed MFMA shapes (16×16×32 + 32×32×16) in attention backward. Developer controls register allocation and lifetimes</td></tr>
-<tr><td>Asynchronous operations</td><td><strong>Yes</strong></td><td>Direct HBM→LDS async loads (<code>buffer_load_dword</code>), <code>vmcnt(x)</code> for global memory fence, <code>lgmkcnt(x)</code> for shared-to-register fence. Conditional barriers for wave synchronization in ping-pong</td></tr>
-<tr><td>Kernel fusion</td><td><strong>Yes</strong></td><td>Fused dropout-residual-LayerNorm kernel, online softmax fused with MFMA in attention forward</td></tr>
+<tr><th>Config</th><th>MFMA Shape</th><th>Output Tile</th><th>TFLOPS</th></tr>
+<tr><td>HK 4P/8C</td><td>$16 \times 16 \times 32$</td><td>$128 \times 256$</td><td>893</td></tr>
+<tr><td>HK 4P/12C</td><td>$16 \times 16 \times 32$</td><td>$192 \times 256$</td><td>1278</td></tr>
+<tr><td>HK 0P/8C</td><td>$16 \times 16 \times 32$</td><td>$192 \times 256$</td><td>1281</td></tr>
+<tr><td><strong>HK 0P/8C</strong></td><td>$16 \times 16 \times 32$</td><td>$256 \times 256$</td><td><strong>1610</strong></td></tr>
+<tr><td>TK (B200)</td><td>$256 \times 256 \times 16$</td><td>$256 \times 256$</td><td>1538</td></tr>
+<tr><td>CUTLASS (B200)</td><td>$256 \times 256 \times 16$</td><td>$256 \times 256$</td><td>1570</td></tr>
 </table>
 
-<p><strong>Unique AMD-specific techniques:</strong></p>
+<p>Zero producers + maximal output tile is optimal. 4P/8C wastes 4/8 of register file on non-compute waves, shrinking the achievable tile from $256 \times 256$ to $128 \times 256$ and halving arithmetic intensity.</p>
+
+<p><strong>Table 1 — Register pinning impact (MHA bwd, batch 16, heads 16, $D{=}128$, MI355X):</strong></p>
+
+<table>
+<tr><th>Method</th><th>Seq Length</th><th>TFLOPS</th></tr>
+<tr><td>HK (compiler-managed)</td><td>4096</td><td>855</td></tr>
+<tr><td>HK + pinned registers</td><td>4096</td><td>1024</td></tr>
+<tr><td>AITER (assembly)</td><td>4096</td><td>1018</td></tr>
+<tr><td>HK (compiler-managed)</td><td>8192</td><td>909</td></tr>
+<tr><td>HK + pinned registers</td><td>8192</td><td>1091</td></tr>
+<tr><td>AITER (assembly)</td><td>8192</td><td>1169</td></tr>
+</table>
+
+<p>Pinned registers yield 20% improvement by enabling AGPRs as MFMA A/B inputs, matching or approaching assembly performance.</p>
+
+<p><strong>Table 4 — Chiplet cache scheduling (BF16 GEMM, MI355X):</strong></p>
+
+<table>
+<tr><th>Block Order</th><th>L2%</th><th>LLC%</th><th>Mem BW</th><th>TFLOPS</th></tr>
+<tr><td>Row-major ($M{=}N{=}K{=}9216$)</td><td>55%</td><td>95%</td><td>15.1 TB/s</td><td>1113</td></tr>
+<tr><td>XCD W7/C216</td><td>79%</td><td>24%</td><td>14.9 TB/s</td><td>991</td></tr>
+<tr><td><strong>XCD W5/C25</strong></td><td><strong>75%</strong></td><td><strong>93%</strong></td><td><strong>18.3 TB/s</strong></td><td><strong>1145</strong></td></tr>
+<tr><td>Row-major ($M{=}N{=}K{=}14592$)</td><td>36%</td><td>76%</td><td>10.7 TB/s</td><td>900</td></tr>
+<tr><td>XCD W8/C542</td><td>79%</td><td>7%</td><td>13.9 TB/s</td><td>980</td></tr>
+<tr><td><strong>XCD W8/C64</strong></td><td><strong>78%</strong></td><td><strong>55%</strong></td><td><strong>16.6 TB/s</strong></td><td><strong>1068</strong></td></tr>
+</table>
+
+<p>The $M{=}N{=}K{=}14592$ case is especially sensitive: 57 tiles across 8 XCDs causes worst-case L2 reuse under row-major. Algorithm 1 provides up to 19% improvement via joint L2+LLC optimization.</p>
+
+<h3 id="optimization-techniques-inventory">Optimization techniques inventory <a class="heading-anchor" href="#optimization-techniques-inventory" aria-label="Link to optimization-techniques-inventory">#</a></h3>
+
+<table>
+<tr><th>Technique</th><th>Target bottleneck</th><th>HW primitive</th><th>Measured contribution</th></tr>
+<tr><td>8-wave ping-pong</td><td>Compute-memory overlap</td><td><code>s_setprio</code>, conditional barrier</td><td>0P/8C = 1610 vs 4P/8C = 893 TFLOPS (Tab. 2)</td></tr>
+<tr><td>4-wave interleave</td><td>Imbalanced pipeline</td><td><code>sched_group_barrier</code></td><td>4w = 1091 vs 8w = 894 TFLOPS on MHA bwd (Tab. 3)</td></tr>
+<tr><td>Pinned registers</td><td>HIPCC AGPR restriction</td><td>Inline asm register ranges</td><td>1024 vs 855 TFLOPS on MHA bwd (Tab. 1)</td></tr>
+<tr><td>Per-instruction swizzle</td><td>LDS bank conflicts</td><td><code>ds_read_b128</code> / <code>ds_read_b64_tr_b16</code></td><td>0 conflicts vs 2-way conflicts (Fig. 4)</td></tr>
+<tr><td>XCD swizzle</td><td>Cache thrashing across chiplets</td><td>Block ID integer remapping</td><td>1145 vs 1113 TFLOPS (Tab. 4, +19% on 14592)</td></tr>
+<tr><td>Direct HBM→LDS loads</td><td>Register pressure from staging</td><td><code>buffer_load_dword</code> variants</td><td>Qualitative: removes register-file bottleneck</td></tr>
+<tr><td>Compiler sched hints</td><td>Instruction ordering within clusters</td><td><code>sched_barrier</code>, <code>sched_group_barrier</code></td><td>Qualitative: enables cluster-level control (§D.4)</td></tr>
+<tr><td>Online softmax interleaving</td><td>Softmax-MFMA pipeline bubble</td><td><code>col_max</code>/<code>exp2</code> interleaved with <code>mma_AtB</code></td><td>Qualitative: VALU ops fill MFMA latency gaps</td></tr>
+</table>
+
+<h3 id="numerical-considerations">Numerical considerations <a class="heading-anchor" href="#numerical-considerations" aria-label="Link to numerical-considerations">#</a></h3>
+
 <ul>
-<li><strong>Compiler hint intrinsics</strong>: <code>sched_barrier</code>, <code>sched_group_barrier</code>, <code>s_setprio</code> for fine-grained instruction ordering control that augments HIP-level scheduling</li>
-<li><strong>Chiplet-aware XCD scheduling</strong> (Algorithm 1): Two-level hierarchy — XCD grouping (chunks of C consecutive blocks on same XCD) + windowed traversal (height W) for joint L2+LLC reuse</li>
+<li><strong>Accumulator precision</strong>: FP32 for all BF16 and FP8 kernels — standard practice for numerical stability.</li>
+<li><strong>Online softmax</strong>: Max-subtract → $\exp_2$ → accumulate with proper rescaling per tile step. Temperature: $\sqrt{1/D} \cdot \log_2(e)$ (= 0.08839 × 1.44270 for $D{=}128$).</li>
+<li><strong>End-to-end validation</strong>: Pretraining convergence match (Llama 1B + BERT 110M, 10B tokens). Statistical equivalence suffices; bit-exact agreement not required.</li>
+<li><strong>No formal error bounds</strong>: Max absolute difference and mean relative difference against reference implementations are not reported. No overflow/underflow/subnormal discussion.</li>
+<li><strong>FP6 (preliminary)</strong>: <code>ds_read_b96</code> loads 12 bytes per instruction. HIPCC-compiled FP6 GEMM at size 16384 spills 54 registers to scratch, producing slow and incorrect output. HK's pinned registers eliminate all spills. Manual 8-cycle <code>v_nop</code> required between <code>v_mov_b32_e32</code> and dependent MFMA to satisfy hardware timing constraint.</li>
 </ul>
 
-<h3 id="4-performance-analysis">4. Performance Analysis <a class="heading-anchor" href="#4-performance-analysis" aria-label="Link to 4-performance-analysis">#</a></h3>
+<hr>
 
-<h3 id="figure-6-bf16-gemm-performance-on-mi355x">Figure 6: BF16 GEMM Performance on MI355X <a class="heading-anchor" href="#figure-6-bf16-gemm-performance-on-mi355x" aria-label="Link to figure-6-bf16-gemm-performance-on-mi355x">#</a></h3>
-<p><img src="/assets/2511.08083/fig6-bf16-gemm.png" alt="Figure 6: GEMM"></p>
-<p><strong>解读</strong>: BF16 GEMM是最基础也最被优化的kernel，此图证明HK用单一的8-wave调度即可匹配AMD手写汇编。在小尺寸（1024-4096）时HK已超过大部分baseline，在大尺寸（≥8192）时接近AITER/HipBLASLT。Triton在所有尺寸上都被HK大幅超越（1.3-3.0×），说明编译器方法在AMD上的局限性。</p>
+<h2 id="§6-論証鎖">§6 論証鎖 <a class="heading-anchor" href="#§6-論証鎖" aria-label="Link to §6-論証鎖">#</a></h2>
 
-<p><strong>% of theoretical peak:</strong></p>
-<ul>
-<li>BF16 GEMM (M=N=K=8192): 1610 TFLOPS / 2500 TFLOPS = <strong>64.4% of peak</strong> — competitive with NVIDIA TK (1538/2200 = 69.9% on B200)</li>
-<li>FP8 GEMM: 3327 TFLOPS / 5000 TFLOPS = <strong>66.5% of peak</strong> (4-wave interleave)</li>
-<li>Attention forward (MHA, d=128): competitive with FlashAttention-3 under comparable settings</li>
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
+<tr><td>1</td><td>AMD's static register partition makes wave specialization counterproductive</td><td>Tab. 2: 4P/8C = 893 TFLOPS (tile $128 \times 256$) vs 0P/8C = 1610 TFLOPS (tile $256 \times 256$). Each producer wave consumes 1/8 of SIMD registers without contributing compute output, forcing smaller tiles and lower arithmetic intensity</td><td>Arch fact: AMD statically divides 512 regs across co-resident waves</td></tr>
+<tr><td>2</td><td>8-wave ping-pong achieves compute-memory overlap without dedicated producers</td><td>Tab. 2: 0P/8C at 1610 TFLOPS; Tab. 3: 8-wave FP8 GEMM = 3222 TFLOPS. Two waves on same SIMD alternate roles via conditional barrier — MFMA units never idle during partner's memory phase</td><td>Step 1 (producers are wasteful → remove them)</td></tr>
+<tr><td>3</td><td>AMD's heterogeneous MFMA layouts require per-instruction swizzle patterns</td><td>Appendix D.1: formal proof that <code>ds_write_b64</code> (64-bit chunk granularity) and <code>ds_read_b128</code> (128-bit contiguous requirement) cannot share a single XOR swizzle. Fig. 4: demonstrates dual-pattern swizzle for $16 \times 32$ tile</td><td>Arch fact: each MFMA instruction has unique thread-element mapping</td></tr>
+<tr><td>4</td><td>Pinned registers close the gap with assembly on attention backward</td><td>Tab. 1: pinned = 1024 vs unpinned = 855 TFLOPS (seq 4096), matching AITER assembly (1018 TFLOPS). Bypass enables direct AGPR→MFMA input, eliminating <code>v_accvgpr_read</code> overhead</td><td>Step 3 (mixed MFMA shapes in bwd amplify register pressure)</td></tr>
+<tr><td>5</td><td>Chiplet-aware grid scheduling requires joint L2+LLC optimization</td><td>Tab. 4: L2-only optimization (79% L2, 24% LLC) = 991 TFLOPS < row-major (55% L2, 95% LLC) = 1113 TFLOPS. Joint (75% L2, 93% LLC) = 1145 TFLOPS. Eq. 1 explains: L2 BW $\approx 3\times$ LLC BW makes LLC drops costly</td><td>Arch fact: 8-XCD chiplet with per-XCD L2 and shared LLC</td></tr>
+<tr><td>6</td><td>All three pillars compose to produce kernels matching or exceeding hand-optimized assembly</td><td>§4 full results: GEMMs match AITER; attn fwd 1.0–2.1× AITER; GQA bwd <strong>1.8–2.5×</strong> all baselines; memory-bound 1.1–2.2×. Correctness validated via pretraining convergence (Llama 1B, BERT 110M)</td><td>Steps 2 + 4 + 5</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§7-実現-cross-reference">§7 実現 cross-reference <a class="heading-anchor" href="#§7-実現-cross-reference" aria-label="Link to §7-実現-cross-reference">#</a></h2>
+
+<p><strong>Repository</strong>: https://github.com/HazyResearch/HipKittens (public, C++/HIP + Python bindings, Apache-2.0)</p>
+
+<h3 id="code-citations-from-paper-appendix-e-listings">Code citations (from paper Appendix E listings) <a class="heading-anchor" href="#code-citations-from-paper-appendix-e-listings" aria-label="Link to code-citations-from-paper-appendix-e-listings">#</a></h3>
+
+<ol>
+<li><strong>GEMM kernel launcher</strong> (Paper Fig. 21, lines 1–63): Defines output tile <code>BLOCK_SIZE=256</code>, <code>K_STEP=64</code>, <code>WARPS_M=2</code>, <code>WARPS_N=4</code>. Prologue pre-loads A/B tiles from HBM to LDS via <code>buffer_load_dword</code>. Conditional barrier (<code>if (warpId < 4) barrier.wait()</code>) staggers wave group B behind group A, establishing initial ping-pong offset.</li>
 </ul>
 
-<p><strong>Performance vs. vendor libraries:</strong></p>
-<ul>
-<li>vs. AITER (assembly): Matches on GEMM and attention forward; <strong>1.8–2.5× faster</strong> on GQA backwards</li>
-<li>vs. HipBLASLT: Competitive on GEMM (within 5-10% at large sizes)</li>
-<li>vs. CK: 1.0–1.4× faster on attention forward</li>
-<li>vs. Triton: <strong>1.3–3.0× faster</strong> on GEMM, <strong>up to 2×</strong> on attention</li>
-<li>vs. Mojo: <strong>~2× faster</strong> on MHA forward</li>
+<ol>
+<li><strong>GEMM inner loop</strong> (Paper Fig. 22, lines 1–50): 8-wave ping-pong hot loop. Compute cluster: <code>s_setprio(3)</code> → <code>mma_ABt(acc, a_tile, b_tile)</code> × DOT_SLICE iterations → <code>s_setprio(0)</code>. Memory cluster: <code>load(smem_a, gmem_a_next)</code> → <code>vmcnt(0)</code> fence. Barrier swap between groups. Cache scheduling via <code>chiplet_transform_chunked</code> for XCD-aware block remapping. MI325X variant uses register-file double buffering instead of LDS double buffering.</li>
 </ul>
 
-<p><strong>Scaling behavior:</strong></p>
-<ul>
-<li>GEMM performance scales well with problem size, approaching peak utilization at M=N=K≥8192</li>
-<li>Attention performance improves with sequence length due to increased arithmetic intensity</li>
-<li>Memory-bound kernels (LayerNorm, RoPE) achieve 1.1–2.2× over baselines, limited by HBM bandwidth</li>
+<ol>
+<li><strong>Attention forward inner loop</strong> (Paper Fig. 23): 8-wave ping-pong with online-softmax interleaving. Compute cluster chains: <code>mma_AtB</code> ($Q \cdot K^T$) → <code>col_max</code> → <code>sub_col</code> → <code>exp2</code> → <code>col_sum</code> → <code>mma_ABt</code> (softmax $\cdot V$). Uses <code>sched_barrier_pairs</code> and <code>sched_barrier_exp_pairs</code> template helpers for VALU-MFMA instruction ordering. Epilogue: transpose output tile, store to HBM, compute LSE for backward pass.</li>
 </ul>
 
-<h3 id="5-numerical-considerations">5. Numerical Considerations <a class="heading-anchor" href="#5-numerical-considerations" aria-label="Link to 5-numerical-considerations">#</a></h3>
-
-<ul>
-<li>Uses FP32 accumulators for BF16 and FP8 GEMM — standard for numerical stability</li>
-<li>Online softmax in attention forward with proper rescaling (max-subtract, exp2, accumulate)</li>
-<li>Validates correctness by pretraining Llama 1B and BERT 110M to matching perplexity over 10B tokens</li>
-<li>No special handling of NaN/Inf/subnormals discussed</li>
-<li>FP6 support uses <code>ds_read_b96</code> instruction, which has different banking behavior than BF16 instructions</li>
+<ol>
+<li><strong>Register pinning API</strong> (Appendix D.3): <code>rt<bf16, 16, 128, row_l, rt_16x32_s, Q_ranges></code> with <code>Q_ranges = split_many_t<type_list<range<24, 39>>, 4></code> pins registers v[24:39] to the Q tile. Enables AGPR as MFMA A/B input without <code>v_accvgpr_read</code>.</li>
 </ul>
 
-<h3 id="6-portability">6. Portability <a class="heading-anchor" href="#6-portability" aria-label="Link to 6-portability">#</a></h3>
+<ol>
+<li><strong>XCD swizzle</strong> (Algorithm 1, §3.4): 24-line pseudocode. Flatten 2D grid → cycle-aligned boundaries ($\text{nXCD} \times C$) → de-interleave round-robin → windowed traversal of height $W$ → remapped $(b.x', b.y', b.z)$. Purely integer arithmetic per thread block, negligible overhead.</li>
+</ul>
+
+<h3 id="関鍵実現細節">関鍵実現細節 <a class="heading-anchor" href="#関鍵実現細節" aria-label="Link to 関鍵実現細節">#</a></h3>
+
+<ol>
+<li><strong>Shared memory phase orderings are undocumented in AMD's ISA.</strong> The thread-to-phase assignment for LDS instructions (<code>ds_read_b128</code>: 4 phases, <code>ds_read_b96</code>: 8 phases, <code>ds_write_b64</code>: 4 phases, <code>ds_read_b64</code>: 2 phases) is absent from all public CDNA references. The authors created a solver (§D.2) that iterates over thread pairs, performs shared memory instructions on the same bank, and infers phase membership from observed bank conflicts. Without this reverse-engineering, designing bank-conflict-free swizzles for AMD is impossible. Tab. 5 documents the complete phase-bank table — the first public documentation of this behavior.</li>
+</ul>
+
+<ol>
+<li><strong>HIPCC silently miscompiles FP6 register shuffles.</strong> At GEMM size $16384^3$, HIPCC-compiled FP6 kernels spill 54 registers to scratch memory, producing both slow and incorrect output (§F). Root cause: <code>ds_read_b96</code> places data at non-contiguous register positions, requiring three <code>v_mov_b32_e32</code> shuffles that HIPCC cannot schedule correctly. HK's pinned registers eliminate all spills. An additional 8-cycle latency between <code>v_mov_b32_e32</code> and dependent MFMA must be enforced via manual <code>v_nop</code> insertion — another timing constraint the compiler fails to handle.</li>
+</ul>
+
+<h3 id="portability-analysis">Portability analysis <a class="heading-anchor" href="#portability-analysis" aria-label="Link to portability-analysis">#</a></h3>
 
 <table>
 <tr><th>Dimension</th><th>Assessment</th></tr>
-<tr><td>Cross-GPU within vendor</td><td>Validated on CDNA3 (MI325X) and CDNA4 (MI355X). Different phase orderings and bank structures between generations require per-generation tuning. No RDNA support</td></tr>
-<tr><td>Cross-vendor</td><td>The tile abstraction interface is identical to ThunderKittens (NVIDIA). However, the underlying scheduling (8-wave vs wave-spec), memory patterns (swizzles), and cache scheduling (Algorithm 1) are AMD-specific. A unified front-end with vendor-specific backends is the vision</td></tr>
-<tr><td>Integration</td><td>C++ embedded DSL with Python bindings via PyTorch. Can be called from standard PyTorch training loops</td></tr>
-<tr><td>Compiler dependency</td><td>Requires ROCm 7.0+, HIPCC compiler. Uses inline assembly for register pinning and some instructions. Compiler hint intrinsics (<code>sched_barrier</code>, <code>sched_group_barrier</code>) are LLVM-dependent</td></tr>
+<tr><td>CDNA3 → CDNA4</td><td>Validated on MI325X and MI355X. Different LDS sizes force different double-buffering strategies (register-file on MI325X, LDS on MI355X). Different CU counts per XCD (38 vs 32) require Algorithm 1 re-tuning. Phase orderings appear consistent across generations but are not guaranteed</td></tr>
+<tr><td>AMD → NVIDIA</td><td>Front-end tile API mirrors ThunderKittens intentionally. Backend is entirely different: MFMA vs wgmma, LDS vs SMEM, <code>buffer_load</code> vs TMA, <code>sched_barrier</code> vs mbarrier, <code>s_setprio</code> vs no equivalent. A unified front-end with vendor-specific backends is the stated architectural vision</td></tr>
+<tr><td>HIP C++ → Triton</td><td>Triton lacks register lifetime control and does not default to <code>buffer_load</code> on AMD. Inline assembly in Triton is possible but defeats the abstraction. HK is complementary to, not a replacement for, compiler approaches</td></tr>
+<tr><td>HIP C++ → CK/CUTLASS</td><td>CK uses deeply nested C++ templates with high complexity. HK is explicitly simpler (48 LoC FP8 GEMM vs CK's template hierarchy) while matching performance</td></tr>
+<tr><td>gfx950 → future CDNA</td><td>Phase orderings may change. Register file size/partitioning may evolve. Algorithm 1 parameters need per-generation re-tuning. Pinned register approach bypasses compiler → fragile across ROCm versions</td></tr>
 </table>
 
-<h3 id="7-source-code-repository">7. Source Code & Repository <a class="heading-anchor" href="#7-source-code-repository" aria-label="Link to 7-source-code-repository">#</a></h3>
+<hr>
 
-<ul>
-<li><strong>Repository</strong>: https://github.com/HazyResearch/HipKittens</li>
-<li><strong>Language</strong>: C++ embedded DSL (HIP), with inline assembly for register pinning</li>
-<li><strong>Build requirements</strong>: ROCm 7.0+, AMD Docker container (<code>rocm/7.0-preview:rocm7.0_preview_pytorch_training_mi35x_beta</code>)</li>
-<li><strong>Hardware</strong>: AMD MI325X (CDNA3) or MI355X (CDNA4)</li>
-<li><strong>Benchmark scripts</strong>: Python bindings for kernel benchmarking, 500 warmup + 100 measured iterations</li>
+<h2 id="§8-deployment-context">§8 Deployment context <a class="heading-anchor" href="#§8-deployment-context" aria-label="Link to §8-deployment-context">#</a></h2>
+
+<p><strong>Serving stack integration.</strong> HK kernels provide attention (MHA/GQA forward and backward) and GEMM operators with Python bindings for PyTorch integration. They can replace the existing SDPA backend on AMD (259 TFLOPS for Llama GQA backward on MI355X — 24% of HK's throughput) or the AITER assembly kernels. Not yet integrated into vLLM, SGLang, or DeepSpeed-Inference, but the operator interface (C++ kernel + Python binding) is compatible with custom operator registration paths in these frameworks.</p>
+
+<p><strong>Regime specialization.</strong> All benchmarked configurations are prefill-regime: large batch ($B{=}16$) × full sequence attention. The paper does not evaluate decode-regime (batch=1, single-token, memory-BW-bound) workloads. The tuned configurations target $(S \in [1024, 8192], B{=}16, D \in \{64, 128\})$. Production inference at lower batch sizes, longer sequences, or with paged KV cache is not tested.</p>
+
+<p><strong>Prefill / decode split.</strong> All attention kernels are prefill kernels ($B \times S^2$ compute). No specialized decode kernel is provided. The 8-wave ping-pong pattern assumes compute-memory balance, which breaks down in decode where memory bandwidth dominates and the roofline regime shifts.</p>
+
+<p><strong>Fusion scope.</strong> Attention forward fuses $Q K^T$ + softmax + $O V$ into one kernel. Memory-bound kernel fuses dropout + residual add + LayerNorm. No cross-layer fusion (e.g., attention + MLP), no RoPE fusion into attention, no QKV projection fusion.</p>
+
+<p><strong>Launch shape.</strong> GEMM: $\lceil M/256 \rceil \times \lceil N/256 \rceil$ grid × 512 threads. Attention: one thread block per $(batch, head)$ pair. These match the tuned configurations.</p>
+
+<hr>
+
+<h2 id="§9-source-walkthrough">§9 Source walkthrough <a class="heading-anchor" href="#§9-source-walkthrough" aria-label="Link to §9-source-walkthrough">#</a></h2>
+
+<p>Code is public at https://github.com/HazyResearch/HipKittens. The paper provides detailed kernel listings in Appendix E (Figures 21–23). Analysis of the critical code paths:</p>
+
+<h3 id="9-1-gemm-kernel-entry-paper-fig-21">9.1 GEMM kernel entry (Paper Fig. 21) <a class="heading-anchor" href="#9-1-gemm-kernel-entry-paper-fig-21" aria-label="Link to 9-1-gemm-kernel-entry-paper-fig-21">#</a></h3>
+
+<p>The launcher sets up the tile decomposition and memory layout. The prologue has two phases:</p>
+
+<ol>
+<li><strong>Collaborative load</strong>: All 8 waves cooperatively load the first A and B tiles from HBM to LDS using <code>buffer_load_dword</code> (direct async, bypasses register file). Each wave loads a portion proportional to its share of the $256 \times 256$ output tile.</li>
 </ul>
 
-<h3 id="8-key-source-code-walkthrough">8. Key Source Code Walkthrough <a class="heading-anchor" href="#8-key-source-code-walkthrough" aria-label="Link to 8-key-source-code-walkthrough">#</a></h3>
-
-<h4 id="8a-core-kernel-source-analysis">8a. Core Kernel Source Analysis <a class="heading-anchor" href="#8a-core-kernel-source-analysis" aria-label="Link to 8a-core-kernel-source-analysis">#</a></h4>
-
-<p>The paper provides code listings in Appendix E for the GEMM and attention forward kernels. The key architectural pattern is the 8-wave ping-pong:</p>
-
-<pre><code>
-// 8-wave ping-pong GEMM hot loop (conceptual, from paper):
-// Each SIMD has 2 waves. Waves alternate compute/memory roles.
-
-// Wave group A (waves 0-3, one per SIMD):
-if (wave_in_group_A) {
-    __builtin_amdgcn_s_setprio(3);  // high priority for compute
-    hk::mma(acc, a_tile, b_tile);    // bulk MFMA over tiles
-    barrier.arrive_and_wait();        // swap roles
-    __builtin_amdgcn_s_setprio(0);
-    hk::load(smem_a, gmem_a_next);   // prefetch next tiles
-    hk::load(smem_b, gmem_b_next);
-    barrier.arrive_and_wait();        // swap back
-}
-</code></pre>
-
-<p>The key insight: only 48 lines of code for the FP8 GEMM hot loop (Table 3), compared to 183 lines for 4-wave interleave.</p>
-
-<h4 id="8b-pseudocode-annotation-—-algorithm-1-xcd-swizzle">8b. Pseudocode Annotation — Algorithm 1 (XCD Swizzle) <a class="heading-anchor" href="#8b-pseudocode-annotation-—-algorithm-1-xcd-swizzle" aria-label="Link to 8b-pseudocode-annotation-—-algorithm-1-xcd-swizzle">#</a></h4>
-
-<p><strong>Grid level</strong> (entire GPU):</p>
-<ul>
-<li>Lines 3-6: Flatten 2D grid → linear block ID. Compute full cycle boundaries (<code>nXCD × C</code> aligned)</li>
-<li>Lines 10-14: <strong>XCD grouping</strong> — de-interleave round-robin assignment to group C consecutive blocks per XCD. This is a register-level computation per thread block. Memory level: purely index computation, no memory access.</li>
-<li>Lines 15-23: <strong>Windowed traversal</strong> — map linear block IDs to 2D (row, col) using windows of height W. Row = fast index (within window), Col = slow index. This controls L2 locality (blocks in same window share rows of A matrix).</li>
+<ol>
+<li><strong>Staggered start</strong>: A conditional barrier (<code>if (warpId < 4) barrier.wait()</code>) delays wave group B by one iteration behind wave group A. This establishes the initial ping-pong offset — when group A enters its first compute cluster, group B is still completing its first memory cluster, and the SIMD hardware overlaps their instruction streams.</li>
 </ul>
 
-<p><strong>Synchronization</strong>: None — purely a remapping of block IDs, computed independently per thread block.</p>
+<h3 id="9-2-gemm-inner-loop-paper-fig-22">9.2 GEMM inner loop (Paper Fig. 22) <a class="heading-anchor" href="#9-2-gemm-inner-loop-paper-fig-22" aria-label="Link to 9-2-gemm-inner-loop-paper-fig-22">#</a></h3>
 
-<p><strong>Compute vs. memory</strong>: Entirely compute (integer arithmetic), negligible cost. The optimization impact is on subsequent GEMM tile loads.</p>
+<p>The hot loop is the 8-wave ping-pong at its simplest — 48 lines for FP8 GEMM (Tab. 3). Each iteration:</p>
 
-<h4 id="8c-data-layout-memory-access-patterns">8c. Data Layout & Memory Access Patterns <a class="heading-anchor" href="#8c-data-layout-memory-access-patterns" aria-label="Link to 8c-data-layout-memory-access-patterns">#</a></h4>
-
-<p><strong>Register tiles:</strong></p>
-<ul>
-<li>Default: smallest MFMA shape (16×16×32 for BF16) for maximal scheduling control</li>
-<li>Each thread owns elements in a pattern dictated by the MFMA instruction (Figure 3) — unlike NVIDIA, AMD has no compositional core matrix structure</li>
-<li>Row-major vs column-major layout determines which MFMA instruction is used for loading</li>
+<ol>
+<li><strong>Compute cluster</strong>: <code>s_setprio(3)</code> raises wave priority → <code>load(a_reg, smem_a)</code> + <code>load(b_reg, smem_b)</code> from LDS to registers → <code>mma_ABt(acc, a_reg, b_reg)</code> × DOT_SLICE iterations → <code>s_setprio(0)</code> lowers priority. The <code>s_setprio(3)</code> ensures the computing wave group wins arbitration for shared execution units over the memory-issuing partner wave.</li>
 </ul>
 
-<p><strong>Shared memory (LDS):</strong></p>
-<ul>
-<li>64 banks (4-byte wide) for <code>ds_read_b128</code></li>
-<li>Per-instruction phase orderings (Table 5): <code>ds_read_b128</code> = 4 phases × 16 threads, <code>ds_read_b96</code> = 8 phases × 8 threads, <code>ds_write_b64</code> = 4 phases × 16 threads</li>
-<li>Swizzle strategy: XOR-based (<code>offset ^= ((offset % 512) >> 7) << 3</code>) applied to HBM addresses (not LDS addresses like NVIDIA)</li>
-<li>No single universal swizzle — different instructions require different patterns. HK identifies commonly co-occurring layouts and provides joint swizzles</li>
+<ol>
+<li><strong>Memory cluster</strong>: <code>load(smem_a_next, gmem_a)</code> + <code>load(smem_b_next, gmem_b)</code> issues HBM→LDS async loads → <code>__builtin_amdgcn_s_waitcnt(vmcnt(0))</code> drains all pending global loads.</li>
 </ul>
 
-<h3 id="figure-4-bank-conflict-free-swizzle-pattern">Figure 4: Bank-Conflict-Free Swizzle Pattern <a class="heading-anchor" href="#figure-4-bank-conflict-free-swizzle-pattern" aria-label="Link to figure-4-bank-conflict-free-swizzle-pattern">#</a></h3>
-<p><img src="/assets/2511.08083/fig4-swizzle.png" alt="Figure 4: Swizzle"></p>
-<p><strong>解读</strong>: 此图展示了16×32 BF16 shared memory tile的swizzle策略。左侧是未swizzle的布局，存在2-way bank conflict（同一phase的线程访问同一bank）。右侧是swizzle后的布局——从第8行开始，前8列和后8列交换，消除了ds_read_b128的bank conflict。关键在于，同一个swizzle同时也消除了ds_read_b64_tr_b16（列major读取）的bank conflict，这使得同一块shared memory可以同时服务于行和列两种register layout的读取——这对attention backwards这类需要混合MFMA形状的kernel至关重要。</p>
-
-<p><strong>Register allocation:</strong></p>
-<ul>
-<li>512 registers/SIMD, split 256 VGPR + 256 AGPR at single occupancy (1 wave/SIMD)</li>
-<li>With 2 waves/SIMD (8-wave pattern): 128 VGPR + 128 AGPR per wave</li>
-<li>Attention backward uses pinned registers to bypass HIPCC's restriction on AGPR→MFMA input</li>
+<ol>
+<li><strong>Barrier swap</strong>: <code>barrier.arrive_and_wait()</code> synchronizes both wave groups, then they swap roles. Pointer swap alternates between double-buffered LDS regions.</li>
 </ul>
 
-<h3 id="9-infrastructure-impact">9. Infrastructure Impact <a class="heading-anchor" href="#9-infrastructure-impact" aria-label="Link to 9-infrastructure-impact">#</a></h3>
+<p>XCD-aware scheduling: <code>chiplet_transform_chunked</code> remaps block coordinates before the loop begins, using Algorithm 1's integer arithmetic to assign consecutive chunks to the same XCD.</p>
 
-<table>
-<tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>HK's familiar tile interface (PyTorch-like <code>mma</code>, <code>exp</code>, <code>add</code>) enables algorithm researchers to implement custom kernels on AMD without learning assembly. Attention backward support means full training loop support.</td></tr>
-<tr><td>Framework</td><td>Python bindings integrate directly into PyTorch. Could replace suboptimal SDPA/Triton backends. The unified tile API across TK (NVIDIA) and HK (AMD) moves toward vendor-agnostic framework backends.</td></tr>
-<tr><td>LLM</td><td>Competitive GEMM + attention forward performance means LLM inference on MI355X can approach peak hardware utilization. GQA support (both forward and backward) directly enables efficient LLM training with modern architectures (Llama, etc.).</td></tr>
-<tr><td>Agent</td><td>Not directly demonstrated, but faster attention kernels reduce per-token latency, which matters for interactive agent workloads on AMD hardware.</td></tr>
-</table>
+<h3 id="9-3-attention-forward-paper-fig-23">9.3 Attention forward (Paper Fig. 23) <a class="heading-anchor" href="#9-3-attention-forward-paper-fig-23" aria-label="Link to 9-3-attention-forward-paper-fig-23">#</a></h3>
+
+<p>The attention kernel extends the GEMM pattern with online-softmax interleaving:</p>
+
+<ol>
+<li><strong>Prologue</strong>: 8 waves collaboratively load first K/V tiles to shared memory. Each wave loads its personal Q tile ($32 \times 128$ per wave per head/batch). Initial $Q \cdot K^T$ matmul + first half of softmax (col_max, subtract, exp2).</li>
+</ul>
+
+<ol>
+<li><strong>Compute cluster</strong>: Chains MFMA with VALU: <code>mma_AtB</code> ($Q \cdot K^T$) → <code>col_max</code> → <code>sub_col</code> → <code>exp2</code> → <code>col_sum</code> → rescale previous accumulator → <code>mma_ABt</code> (softmax weights $\cdot V$). The template helpers <code>sched_barrier_pairs</code> and <code>sched_barrier_exp_pairs</code> interleave VALU softmax ops into MFMA latency gaps.</li>
+</ul>
+
+<ol>
+<li><strong>Epilogue</strong>: Final online-softmax rescaling (multiply $O$ by $1/\ell$), transpose from MFMA accumulator layout to row-major, store to HBM, compute and store LSE for backward pass.</li>
+</ul>
+
+<hr>
+
+<h2 id="§10-software-→-hardware-reverse-implication">§10 Software → Hardware reverse implication <a class="heading-anchor" href="#§10-software-→-hardware-reverse-implication" aria-label="Link to §10-software-→-hardware-reverse-implication">#</a></h2>
+
+<p>What HipKittens' optimizations reveal about desirable future AMD hardware capabilities:</p>
+
+<p><strong>1. Dynamic register partitioning.</strong> The entire 8-wave ping-pong exists to work around AMD's static register division across co-resident waves. If future CDNA supported dynamic register reallocation — allowing producer waves to cede unused registers to consumer waves at runtime — wave specialization would become viable on AMD, eliminating the current tradeoff between scheduling simplicity and register efficiency. The 8-wave pattern + the 4-wave interleave variant together represent ~50% of HK's novelty; dynamic partitioning would make both unnecessary.</p>
+
+<p><strong>2. Compiler-accessible AGPR paths.</strong> HIPCC prevents AGPRs as MFMA A/B operands despite hardware support. The pinned register workaround bypasses the compiler entirely, losing all optimization passes for affected code regions. If HIPCC (or LLVM's AMDGPU backend) exposed AGPR→MFMA input paths as a first-class compiler feature, attention backward performance would improve without requiring dangerous inline assembly. Current situation forces a choice between compiler safety and hardware utilization.</p>
+
+<p><strong>3. Compositional matrix instruction layouts.</strong> The per-instruction swizzle explosion stems from each MFMA shape using a unique thread-element mapping. If future CDNA defined a compositional core matrix building block (analogous to NVIDIA's $16 \times 16$ structure), a single swizzle strategy would suffice for all instruction shapes — reducing the swizzle codepath from $O(n_{\text{instructions}})$ to $O(1)$ and eliminating the need for reverse-engineered phase tables.</p>
+
+<p><strong>4. Documented LDS phase orderings.</strong> The phase-bank behavior of LDS instructions is undocumented, requiring reverse-engineering via a custom solver (§D.2). If AMD published phase orderings in the ISA manual, bank-conflict-free swizzle design would be a straightforward lookup rather than an empirical discovery. This is a documentation debt, not a hardware limitation — but it creates a significant barrier to kernel development.</p>
+
+<p><strong>5. Larger per-CU scratchpad.</strong> MI355X has ~40% less per-processor shared memory than NVIDIA B200. This limits pipeline depth to double buffering and forces MI325X to double-buffer in the register file (consuming half the register budget for non-compute storage). Larger LDS would enable deeper software pipelines without register budget sacrifice.</p>
+
+<p><strong>6. Hardware synchronization primitives.</strong> AMD lacks <code>mbarrier</code>-equivalent hardware. Shared memory atomics work with negligible overhead for the 2-stage ping-pong (Tab. 2: 1281 vs 1278 TFLOPS), but hardware barriers could enable more complex multi-stage pipelines without atomic contention risk.</p>
+
+<p><strong>Concrete proposal</strong>: If CDNA5 added (a) dynamic register partitioning and (b) compositional MFMA layouts, HipKittens could replace its 8-wave ping-pong with standard wave specialization and its per-instruction swizzle infrastructure with a single unified pattern — shedding ~40% of framework complexity while potentially improving performance through deeper pipelines with dedicated producer waves.</p>
 
 </div>
 </div>

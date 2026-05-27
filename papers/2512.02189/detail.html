@@ -197,178 +197,162 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">Microbenchmarking NVIDIA's Blackwell Architecture: An in-depth Architectural Analysis</h1>
 <div class="card-meta"><span class="badge badge-hardware">hardware</span> 2512.02189</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">kernel</span><span class="tag">framework</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">gpu-microarchitecture</span><span class="tag">tensor-core</span><span class="tag">microbenchmark</span><span class="tag">blackwell</span><span class="tag">fp4</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2512.02189.html">← Synthesis</a>
 <a href="/overview/hardware.html">← hardware Survey</a>
 <a href="https://arxiv.org/abs/2512.02189" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
-<h1 id="microbenchmarking-nvidia-s-blackwell-architecture-an-in-depth-architectural-analysis">Microbenchmarking NVIDIA's Blackwell Architecture: An in-depth Architectural Analysis <a class="heading-anchor" href="#microbenchmarking-nvidia-s-blackwell-architecture-an-in-depth-architectural-analysis" aria-label="Link to microbenchmarking-nvidia-s-blackwell-architecture-an-in-depth-architectural-analysis">#</a></h1>
+
+<h1 id="microbenchmarking-nvidia-s-blackwell-architecture-—-l2">Microbenchmarking NVIDIA's Blackwell Architecture — L2 <a class="heading-anchor" href="#microbenchmarking-nvidia-s-blackwell-architecture-—-l2" aria-label="Link to microbenchmarking-nvidia-s-blackwell-architecture-—-l2">#</a></h1>
+
 <blockquote>
-Aaron Jarmusch, Sunita Chandrasekaran | 2025-12 | https://arxiv.org/abs/2512.02189
-Category: hardware | Tags: kernel, framework
-Read: 2026-04-16
+Jarmusch & Chandrasekaran, 2025-12 | cs.AR | <https://arxiv.org/abs/2512.02189>
 </blockquote>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-<p>首篇对 NVIDIA Blackwell B200 GPU 的系统性微架构实测分析，使用自研 PTX 微基准测试套件量化了三大新增架构特性——Tensor Memory (TMEM)、硬件解压引擎 (DE)、第五代 Tensor Core (tcgen05 指令集)——以及 FP4/FP6 新精度格式的性能特征。</p>
+<hr>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<p>GPU 架构迭代速度远超社区的深度理解——NVIDIA 发布 Blackwell 架构后，除了官方 whitepaper 的高层描述外，关键的微架构参数（指令延迟、新内存层次带宽、pipeline 行为）完全未知。本文作者开发了一套基于 NVIDIA PTX（Parallel Thread Execution）的开源微基准测试套件，系统性地测量了 Blackwell B200 的三大架构创新：专用张量内存 TMEM、硬件解压引擎 DE、以及从 warp-group 级降至 warp 级执行的第五代 Tensor Core (tcgen05 指令集)。</p>
+<p>首篇 Blackwell B200 PTX 微基准实测：TMEM 降低 58% 延迟 (420 vs 1000 cycle)；tcgen05 空间阵列设计实现 ~11 cycle 恒定 MMA 延迟 (Hopper wgmma 线性增长 32→128)；FP4 达 7700 TFLOPS (96% 峰值)；端到端推理 1.6–2×、训练 1.55×、能效 +32%。</p>
 
-<p>核心发现：(1) TMEM 实现 cache-miss 场景下 420 cycle 访存延迟，比 Hopper 的 1000 cycle 降低 58%，提供每 SM 16 TB/s 读取带宽；(2) 第五代 Tensor Core 的 tcgen05.mma 单指令延迟仅 11.0-11.4 cycles，比 Hopper 的 wgmma 降低 2.9-11.6x，且延迟几乎不随 tile size 变化，表明 Blackwell 采用空间阵列设计而非时域流水线；(3) FP4 达到 7702.5 TFLOPS（理论峰值的 96.3%），FP6 达到 5134.8 TFLOPS；(4) 硬件解压引擎在 Bitcomp 格式下达到 462.4 GB/s 输出吞吐。</p>
+<hr>
 
-<p>端到端实测表明 B200 在 LLM 推理上比 H200 快 1.57-1.59x，混合精度训练快 1.56x 且能效提升 42%，FP64 科学计算快 1.92x。</p>
+<h2 id="§2-q1-痛点-q2-方法-q3-结果">§2 Q1 痛点 / Q2 方法 / Q3 结果 <a class="heading-anchor" href="#§2-q1-痛点-q2-方法-q3-结果" aria-label="Link to §2-q1-痛点-q2-方法-q3-结果">#</a></h2>
 
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>GPU 架构迭代远超社区深度理解。Blackwell 引入三大架构创新——Tensor Memory (TMEM)、第五代 Tensor Core (<code>tcgen05</code> 指令)、硬件解压引擎 (DE)——但 NVIDIA 仅发布高层 whitepaper，指令延迟、TMEM 带宽、DE 吞吐等关键微架构参数完全未知。现有方法均无法填补空白：</p>
+
 <ul>
-<li>TMEM cache-miss 延迟 420 cycles，比 Hopper 全局内存延迟 1000 cycles 降低 58%</li>
-<li>tcgen05.mma 单指令延迟 11.0-11.4 cycles，近乎恒定不随 tile size 变化（Hopper wgmma 随 tile 宽度线性增长 32-128 cycles）</li>
-<li>FP32 accumulator 使 Tensor Core 吞吐减半（1929.2 → 964.6 TFLOPS），accumulator datapath 是吞吐瓶颈而非乘法单元</li>
-<li>FP4 推理吞吐 7702.5 TFLOPS（96.3% 峰值利用率），但 perplexity 退化 +7.7-9.1%</li>
-<li>硬件解压引擎输出吞吐稳定在 160-220 GB/s，呈现 decompression-throughput bounded 特征而非 input-bandwidth bounded</li>
-<li>B200 在所有精度上达到 96-99% 理论峰值利用率，说明 Tensor Core 不是瓶颈，内存带宽和 kernel launch overhead 才是</li>
-<li>训练场景 B200 比 H200 快 1.54-1.56x，能效提升 42%（尽管功耗高 14%）</li>
+<li><strong>Application profiler</strong> (nvprof/nsight)：粒度不足，无法区分 TMEM 访问与 L2 cache 延迟</li>
+<li><strong>Roofline model</strong>：无法捕捉 TMEM、DE 等新硬件单元的行为</li>
+<li><strong>模拟器</strong> (Accel-Sim, GCoM)：需要微架构参数作为输入——正是本文要测量的东西</li>
 </ul>
 
-<h2 id="核心三问">核心三问 <a class="heading-anchor" href="#核心三问" aria-label="Link to 核心三问">#</a></h2>
+<p><strong>核心技术壁垒</strong>：对 PTX→SASS 翻译的逆向映射理解。<code>tcgen05.mma</code> 根据精度编译成不同 SASS 指令——FP16/FP32→HMMA，FP8→QMMA，<strong>FP4/FP6→OMMA (全新)</strong>，INT→IMMA，FP64→DMMA (独立路径)。其中 OMMA 是 Blackwell 首创的 octal-byte MMA 指令，专为 sub-byte 格式设计。不理解这个映射就无法设计正确的 dependency chain 来隔离单指令延迟。</p>
 
-<p><strong>Q1: 这篇论文试图解决什么核心痛点/问题？</strong></p>
-<p>GPU 架构迭代越来越快，但 NVIDIA 只发布高层 whitepaper，微架构级别的实测数据（指令延迟、TMEM 带宽、解压引擎吞吐）严重缺失，导致开发者和研究者无法做出 informed 的性能建模和 kernel 优化决策。</p>
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
 
-<p><strong>Q2: 作者提出了什么新的"杀手锏"方法/架构？</strong></p>
-<p>开发了首个 Blackwell B200 的 PTX 微基准测试套件，通过 dependency chain 隔离测量特定硬件单元（TMEM、DE、Tensor Core）的延迟和吞吐，并验证 PTX-to-SASS 翻译映射以确保测量准确性。与传统 profiling 不同，微基准直接操作 PTX 指令，绕过编译器优化干扰。</p>
-
-<p><strong>Q3: 最终效果/结论如何？</strong></p>
-<p>量化了三大架构创新的性能增益：TMEM 延迟降低 58%，tcgen05 单指令延迟降低 2.9-11.6x，FP4 达到 7702.5 TFLOPS（96.3% 峰值）。端到端 LLM 推理提升 1.57-1.59x，训练提升 1.56x 且能效提升 42%。</p>
-
-<h2 id="逻辑故事还原">逻辑故事还原 <a class="heading-anchor" href="#逻辑故事还原" aria-label="Link to 逻辑故事还原">#</a></h2>
-
-<h3 id="时代定位">时代定位 <a class="heading-anchor" href="#时代定位" aria-label="Link to 时代定位">#</a></h3>
-
-<p>2024-2025年，GPU 架构设计从"训练优先"转向"推理优先"的关键转折点。Hopper (H100/H200) 已经将训练性能推到很高水平，但 LLM 推理的爆发式增长使推理效率成为新的核心诉求。Blackwell 是 NVIDIA 首个明确以 <strong>post-training 和 inference efficiency</strong> 为设计重心的数据中心 GPU 架构——这不是渐进式改良，而是架构哲学的转变。</p>
-
-<p>然而 NVIDIA 只发布高层 whitepaper，关键微架构参数完全未知。这篇论文做的是<strong>硬件考古</strong>——用微基准测试"逆向工程"出 Blackwell 的实际微架构参数，为整个社区提供优化指导。</p>
-
-<h3 id="背景">背景 <a class="heading-anchor" href="#背景" aria-label="Link to 背景">#</a></h3>
-
-<p>现有的 GPU 性能理解方法有三大局限：</p>
+<p>自研 PTX 微基准测试套件，三个核心测量技术：</p>
 
 <ol>
-<li><strong>Application profiling</strong> (nvprof/nsight)：有 overhead，只看运行时 metrics，看不到微架构内部行为</li>
-<li><strong>Roofline model</strong>：过度简化，无法捕捉 TMEM、DE 这类新硬件单元的行为</li>
-<li><strong>模拟器</strong> (Accel-Sim, GCoM)：需要微架构参数作为输入——但这些参数正是未知的（鸡生蛋问题）</li>
+<li><strong>Dependency chain 隔离延迟</strong>——每条 MMA 的 accumulator $\mathbf{D}$ 作为下一条 MMA 的输入，阻止 pipeline overlap，测真单指令延迟</li>
+<li><strong>Back-to-back issuing 测吞吐</strong>——独立 MMA 指令饱和 tensor core pipeline，测峰值吞吐</li>
+<li><strong>Pointer-chase 测 TMEM/cache 延迟</strong>——依赖型 load 阻止预取和 pipeline 重叠</li>
 </ul>
 
-<h3 id="约束推导">约束推导 <a class="heading-anchor" href="#约束推导" aria-label="Link to 约束推导">#</a></h3>
+<p>所有测量在 B200 和 H200 上对照执行，1000 次迭代取平均 (100 次 warmup)。通过 CUTLASS disassembly 验证 PTX→SASS 编译无意外优化。</p>
 
-<blockquote>
-<strong>为何不可用 nvprof/nsight 直接测？</strong> profiling 工具的粒度不够细，且有测量 overhead。TMEM 的 420 cycle 延迟需要用 pointer-chase 微基准隔离才能测准——profiler 报告的是聚合指标，无法区分 TMEM 访问和 L2 cache 访问的延迟差异。
-</blockquote>
-
-<blockquote>
-<strong>为何不可用模拟器？</strong> Accel-Sim 等模拟器需要微架构参数（cache 行为、pipeline 深度、延迟表）作为输入配置，而这些参数正是本文要测量的东西——经典的循环依赖。
-</blockquote>
-
-<blockquote>
-<strong>为何必须用 PTX 而非 CUDA？</strong> CUDA 编译器会做指令重排、register 分配、指令融合等优化，导致无法隔离特定硬件行为。PTX 提供对寄存器和内存操作的显式控制，是唯一能精确测量单条指令延迟的途径。
-</blockquote>
-
-<blockquote>
-<strong>为何 tcgen05 代表架构范式转变？</strong> Hopper 的 wgmma 是 warp-group 级指令（128 线程同步执行），Blackwell 的 tcgen05.mma 是 warp 级指令（32 线程）。这不仅是粒度降低，更意味着调度自由度的质变——每个 warp 可以独立发射 MMA 操作，消除了 warp-group 同步的空闲周期。
-</blockquote>
-
-<h3 id="破局">破局 <a class="heading-anchor" href="#破局" aria-label="Link to 破局">#</a></h3>
-
-<p>作者的核心洞察：<strong>用精心设计的 PTX dependency chain 隔离硬件单元延迟，用并发度扫描测吞吐饱和点</strong>。具体来说：</p>
-
-<blockquote>
-就像用"回声测距"原理——你发出一个声音（发射指令），等回声回来（结果写回寄存器），记录时间差（cycle count），就知道距离（延迟）。但如果声音太密集（pipeline overlap），你就分不清哪个回声对应哪个声音。所以必须制造"依赖链"——每一条指令必须等上一条的结果才能执行——来确保测的是真正的单指令延迟。
-</blockquote>
-
-<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
-
-<p>本文的核心壁垒在于<strong>对 PTX-to-SASS 翻译的深度逆向理解</strong>。作者发现 tcgen05.mma 根据不同精度编译成完全不同的 SASS 指令：</p>
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
 
 <table>
-<tr><th>精度</th><th>tcgen05.mma → SASS</th><th>Hopper wgmma → SASS</th></tr>
-<tr><td>FP64</td><td>DMMA</td><td>DMMA</td></tr>
-<tr><td>FP32</td><td>HMMA</td><td>HGMMA</td></tr>
-<tr><td>FP4</td><td><strong>OMMA (新!)</strong></td><td>N/A</td></tr>
-<tr><td>FP8</td><td>QMMA</td><td>QGMMA</td></tr>
-<tr><td>INT4/INT8</td><td>IMMA</td><td>IGMMA</td></tr>
+<tr><th>维度</th><th>关键数据</th></tr>
+<tr><td>TMEM 延迟</td><td>420 cycle cache-miss (−58% vs Hopper 1000 cycle)</td></tr>
+<tr><td>TMEM 带宽</td><td>16 TB/s read, 8 TB/s write per SM</td></tr>
+<tr><td>tcgen05 延迟</td><td>11.0–11.4 cycle 恒定 (空间阵列)；Hopper wgmma 32–128 cycle (时域流水线)</td></tr>
+<tr><td>FP4 吞吐</td><td>7700.2 TFLOPS (96.2% peak)</td></tr>
+<tr><td>FP6 吞吐</td><td>5134.4 TFLOPS (96.0% peak)</td></tr>
+<tr><td>DE 吞吐</td><td>Bitcomp 462 GB/s, LZ4 173 GB/s, output-bandwidth-bounded</td></tr>
+<tr><td>LLM 推理</td><td>Mistral-7B FP16: 1.97×, FP8: 1.16×; Mixtral-8x7B FP16: 1.71×</td></tr>
+<tr><td>训练</td><td>ResNet-50 1.85×, GPT-1.3B 1.55×, 能效 +32%</td></tr>
 </table>
 
-<p>其中 <strong>OMMA（octal-byte MMA）是 Blackwell 全新的指令</strong>，专为 FP4/FP6 格式设计。这种 ISA 层面的逆向工程能力是整个测量方法可信的基础——如果不理解 PTX 和 SASS 的映射关系，就无法设计正确的微基准。</p>
+<hr>
 
-<h3 id="质疑假设">质疑假设 <a class="heading-anchor" href="#质疑假设" aria-label="Link to 质疑假设">#</a></h3>
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
 
-<ol>
-<li><strong>单 GPU 实测的外推性</strong>：所有测量都在单 SM 或单 GPU 上进行，多 GPU 场景下 NV-HBI dual-die 通信的干扰未被系统考虑</li>
-<li><strong>Cache-miss 延迟的代表性</strong>：TMEM 的 420 cycle 延迟是 cache-miss 场景测量值，实际 workload 中 cache hit 比例和混合延迟未给出</li>
-<li><strong>FP4 退化的层级分布</strong>：perplexity +7.7-9.1% 是模型级平均值，但实际 per-layer 退化分布未分析——"some layers tolerate FP4 while others need FP8" 这个关键信息只在 Discussion 中一笔带过</li>
-<li><strong>CUDA 13.0 preliminary support</strong>：作者明确指出 TMEM/CTA 的软件支持是初步的，FP6 硬件支持但缺乏软件工具链，测量结果可能只反映硬件上限而非实际可达性能</li>
-</ul>
+<h3 id="b200-双-die-拓扑">B200 双 Die 拓扑 <a class="heading-anchor" href="#b200-双-die-拓扑" aria-label="Link to b200-双-die-拓扑">#</a></h3>
 
-<h3 id="设计绑定批判">设计绑定批判 <a class="heading-anchor" href="#设计绑定批判" aria-label="Link to 设计绑定批判">#</a></h3>
+<p><img src="/assets/2512.02189/fig1.png" alt="Figure 1: NVIDIA Blackwell B200 dual-die layout — Chip Die #1 and #2 each contain GPCs and L2 Cache, interconnected via NV-HBI"></p>
 
-<p>本文的结论<strong>强制绑定了以下前提</strong>：</p>
-<ul>
-<li><strong>CUDA 13.0 软件栈</strong>——TMEM 的性能优势依赖新的 tcgen05 指令族，现有 kernel 必须重写才能利用</li>
-<li><strong>单精度 accumulator 选择</strong>——FP32 accumulator 使吞吐减半的发现意味着精度-性能 trade-off 是二元的，没有中间方案</li>
-<li><strong>B200 dual-die 一致性</strong>——论文假设 NV-HBI 使双 die 对软件完全透明，但实际的 NUMA-like 效应未被探索</li>
-<li><strong>weight-only quantization</strong>——FP4 测试使用 E2M1 weight-only + FP8 activation，全量化场景未覆盖</li>
-</ul>
+<p><em>Paper's Figure 1, verbatim (caption: "NVIDIA Blackwell GPU dual-die design interconnected via NV-HBI").</em></p>
 
-<h3 id="拆解-—-input-to-output">拆解 — Input to Output <a class="heading-anchor" href="#拆解-—-input-to-output" aria-label="Link to 拆解-—-input-to-output">#</a></h3>
+<p>B200 是 NVIDIA 首款数据中心 dual-die GPU：两个 GPU die 共 208B 晶体管、148 SM、8 GPC，通过 NV-HBI 高带宽接口互联为统一设备。每个 die 拥有独立的 L2 cache 分区（共 4 个，Hopper 的 2 倍）和 HBM3e 内存堆栈（共 8 个，192 GB）。NV-HBI 使双 die 对软件完全透明——统一内存空间、无显式 NUMA 管理。图中可见两个 die 呈对称布局，中间由 NV-HBI 桥接，每个 die 内部的 4 个 GPC 块均匀排列。</p>
 
-<ol>
-<li>编写 PTX 级微基准，使用 dependency chain 隔离特定硬件单元</li>
-<li>编译 PTX → SASS，验证编译器没有引入意外优化</li>
-<li>在 B200 和 H200 上分别运行，1000 次迭代取平均（100 次 warmup）</li>
-<li>测量延迟（pointer-chase）、吞吐（back-to-back issuing）、带宽饱和点</li>
-<li>跑端到端 workload（LLM 推理、训练、科学计算）验证微基准结论</li>
-<li>将微架构数据与端到端性能关联，给出优化指导</li>
-</ul>
+<h3 id="tensor-core-指令-pipeline-演进">Tensor Core 指令 Pipeline 演进 <a class="heading-anchor" href="#tensor-core-指令-pipeline-演进" aria-label="Link to tensor-core-指令-pipeline-演进">#</a></h3>
 
-<h3 id="实践上下文">实践上下文 <a class="heading-anchor" href="#实践上下文" aria-label="Link to 实践上下文">#</a></h3>
+<p><img src="/assets/2512.02189/fig2.png" alt="Figure 2: Three-generation Tensor Core pipeline — Volta/Ampere (mma.sync via RF), Hopper (wgmma via SMEM+RMEM), Blackwell (tcgen05.mma via SMEM+TMEM)"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "Tensor Core instruction pipeline for tcgen05, wgmma, and Volta/Ampere architectures").</em></p>
+
+<p>三代演进的核心数据通路变化清晰可见：</p>
 
 <ul>
-<li><strong>LLM 推理</strong>：FP4 在 Mistral-7B 上实现 2.5x 吞吐提升，perplexity 退化 8.2%——适合对精度容忍度较高的在线服务场景</li>
-<li><strong>科学计算</strong>：FP64 性能 1.92x 提升主要来自 TMEM 降低 L2 thrashing——HPC 用户可以直接受益而无需重写 kernel</li>
-<li><strong>训练</strong>：1.56x 提升来自 SM 增量 (1.09x) × CTA pairing (1.27x) × TMEM (1.26x) 的乘法效应</li>
-<li><strong>适用 GPU</strong>：结论特定于 B200，B100 等其他 Blackwell SKU 的参数可能不同</li>
-<li><strong>框架适配</strong>：vLLM、TRT-LLM 等需要显式适配 tcgen05 指令和 TMEM，当前适配进度未知</li>
+<li><strong>Volta/Ampere</strong> (左列)：<code>mma.sync</code> warp-synchronous，8 线程 (Volta) 或 1 warp (Ampere) 锁步执行，操作数全部经由 SMEM→RF→Tensor Core→RF</li>
+<li><strong>Hopper</strong> (中列)：<code>wgmma</code> warp-group 级 (×4 warps = 128 线程)，operand B 从 SMEM 直读，operand A 从 RMEM，accumulator D 写回 RF</li>
+<li><strong>Blackwell</strong> (右列)：<code>tcgen05.mma</code> 单线程发射，<strong>TMEM 替代 RF 作为 accumulator 存储</strong>——operand A 从 TMEM，operand B 从 SMEM，结果 D 写回 TMEM</li>
 </ul>
 
-<h3 id="生态影响追踪">生态影响追踪 <a class="heading-anchor" href="#生态影响追踪" aria-label="Link to 生态影响追踪">#</a></h3>
+<p>这一变化不仅降低执行粒度 (128→32 线程)，更关键的是 TMEM 使 accumulator 驻留在专用片上内存中，消除了 chained MMA 场景下中间结果经 RF 到全局内存的回写。</p>
+
+<h3 id="微基准测量方法论">微基准测量方法论 <a class="heading-anchor" href="#微基准测量方法论" aria-label="Link to 微基准测量方法论">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    subgraph latency["延迟测量 — Dependency Chain"]
+        L1["tcgen05.mma #1<br/>D₁ = A×B + C"] --> L2["tcgen05.mma #2<br/>D₂ = A'×B' + D₁"]
+        L2 --> LN["tcgen05.mma #N<br/>Dₙ = ...+ Dₙ₋₁"]
+        LN --> LR["Δclock / N = SI-LAT"]
+    end
+    subgraph throughput["吞吐测量 — Independent Issue"]
+        T1["tcgen05.mma"] ~~~ T2["tcgen05.mma"]
+        T2 ~~~ TN["tcgen05.mma ×N"]
+        TN --> TR["total ops / time = TFLOPS"]
+    end
+    subgraph tmem["TMEM 延迟 — Pointer Chase"]
+        M1["tcgen05.ld addr₀ → addr₁"] --> M2["tcgen05.ld addr₁ → addr₂"]
+        M2 --> MN["...addr_N"]
+        MN --> MR["Δclock / N = access latency"]
+    end
+</div>
+
+<h3 id="ptx→sass-指令映射-table-iv">PTX→SASS 指令映射 (Table IV) <a class="heading-anchor" href="#ptx→sass-指令映射-table-iv" aria-label="Link to ptx→sass-指令映射-table-iv">#</a></h3>
+
+<table>
+<tr><th>精度</th><th>PTX (tcgen05.mma)</th><th>SASS</th><th>Hopper wgmma SASS</th></tr>
+<tr><td>FP16, BF16</td><td><code>kind::f16</code></td><td>HMMA</td><td>HGMMA</td></tr>
+<tr><td>FP32, TF32</td><td><code>kind::tf32</code></td><td>HMMA</td><td>HGMMA</td></tr>
+<tr><td>FP8</td><td><code>kind::mxf8 / f8f6f4</code></td><td>QMMA</td><td>QGMMA</td></tr>
+<tr><td>FP6</td><td><code>kind::mxf6</code></td><td>QMMA</td><td>N/A</td></tr>
+<tr><td>FP4</td><td><code>kind::mxf4 / mxf4nvf4</code></td><td><strong>OMMA</strong></td><td>N/A</td></tr>
+<tr><td>INT4, INT8</td><td><code>kind::i8</code></td><td>IMMA</td><td>IGMMA</td></tr>
+<tr><td>FP64</td><td>不支持 tcgen05</td><td>—</td><td>DMMA</td></tr>
+</table>
+
+<p>OMMA 是 Blackwell 全新指令，专为 FP4/FP6 设计。FP64 不走 tcgen05 路径，使用独立的翻倍 FP64 单元 (DMMA)。</p>
+
+<hr>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p><strong>无形式化数学证明 — 仅实证。</strong> 以下为 6 项实证一致性检查：</p>
+
+<table>
+<tr><th>#</th><th>检查项</th><th>论文声称</th><th>验证方式</th><th>判定</th></tr>
+<tr><td>1</td><td>TMEM 延迟</td><td>420 cycle cache-miss，−58% vs Hopper</td><td>Pointer-chase 微基准 (§IV-A1)，dependent load 阻止 pipeline overlap</td><td>✓ 降低来自 TMEM 绕过 L2 分区竞争的专用仲裁逻辑</td></tr>
+<tr><td>2</td><td>tcgen05 恒定延迟</td><td>11.0–11.4 cycle (tile 64→256)</td><td>Accumulator dependency chain (§IV-A3)，三种 tile size 对照</td><td>✓ 0.4 cycle 方差支持空间阵列假说；Hopper 对照组线性增长 (32→128) 排除测量伪影</td></tr>
+<tr><td>3</td><td>FP4 峰值利用率</td><td>7700.2 TFLOPS = 96.2% peak</td><td>Back-to-back issuing vs NVIDIA 官方 spec 8000 TFLOPS</td><td>✓ 96% 利用率与其他精度 (96.0–99.6%) 一致</td></tr>
+<tr><td>4</td><td>DE output-bounded</td><td>170–220 GB/s output 不随压缩率变化</td><td>4 种数据模式 (1×→245×) 对比 (Table II)：input 随 $1/C$ 下降，output 稳定</td><td>✓ $1/C$ 趋势清晰</td></tr>
+<tr><td>5</td><td>1.27× 一致加速比</td><td>B200/H200 共享精度 (FP8–INT8)</td><td>Table VII 六种精度全部 1.27×</td><td>✓ 一致性极强，推测为 SM 数量 × 频率乘积</td></tr>
+<tr><td>6</td><td>训练加速分解</td><td>$1.09 \times 1.27 \times 1.26 \approx 1.75$</td><td>但实测仅 1.55× (Table XI)</td><td>⚠ 因子非独立——乘积超出实测 13%，存在未量化的 diminishing returns</td></tr>
+</table>
+
+<p><strong>额外可疑点</strong>：</p>
 
 <ul>
-<li>本文发表于 2025 年 12 月，是学术界首篇 Blackwell 微架构实测论文</li>
-<li>为 Accel-Sim 等模拟器提供了急需的微架构参数，可能催生 Blackwell 模拟器版本</li>
-<li>tcgen05 指令分析为 Triton、CK 等 kernel 编译框架的 Blackwell 后端适配提供了基础数据</li>
-<li>FP4/FP6 的实测精度-性能 trade-off 数据对 GPTQ、AWQ 等量化方法的精度选择有直接参考价值</li>
-<li>尚未被主流框架（vLLM、SGLang、TRT-LLM）直接引用，但微架构参数已经在 HPC 社区流传</li>
+<li>Mistral-7B FP8 加速仅 1.16× (Table VIII)，远低于 FP16 的 1.97×——H200 的 FP8 路径已被深度优化，Blackwell 在 FP8 上的增量优势被压缩</li>
+<li>STREAM Triad 小工作集 (4–16 GB) B200 仅达 52% 峰值 BW，低于 H200 的 60%——论文归因于"H200 更适配小工作集"但未给出具体机理</li>
+<li>TMEM 15% 功耗节省在小矩阵上反转为 3–5% 功耗增加，crossover 矩阵尺寸未精确量化</li>
 </ul>
 
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
+<hr>
 
-<h3 id="figure-1-nvidia-blackwell-gpu-dual-die-design-nv-hbi">Figure 1: NVIDIA Blackwell GPU dual-die design (NV-HBI) <a class="heading-anchor" href="#figure-1-nvidia-blackwell-gpu-dual-die-design-nv-hbi" aria-label="Link to figure-1-nvidia-blackwell-gpu-dual-die-design-nv-hbi">#</a></h3>
-<p><img src="/assets/2512.02189/fig1-dual-die.jpg" alt="Figure 1: NVIDIA Blackwell GPU dual-die design"></p>
-<p><strong>What it shows</strong>: B200 GPU 的双 die 设计总览，两个 GPU die 通过 NV-HBI（高带宽接口）互联，共享 192GB HBM3e 统一内存空间。</p>
-<p><strong>Why it matters</strong>: 这是 NVIDIA 首次在单 GPU 产品中采用 dual-die 架构——208B 晶体管、148 SMs、8 个 HBM3e 堆栈、4 个 L2 cache 分区（Hopper 的 2 倍）。虽然物理上是两个 die，但通过 NV-HBI 对软件呈现为统一设备，这是理解 Blackwell 架构哲学的基础。</p>
-<p><strong>Detailed description</strong>: 图中展示了两个 GPU die 的对称布局，每个 die 包含多个 GPC（Graphics Processing Cluster），每个 GPC 内含若干 TPC（Texture Processing Cluster）/SM。两个 die 之间由 NV-HBI 高速互联桥接。图的外围展示了 HBM3e 内存堆栈的分布，以及 L2 cache 分区的位置。整体布局强调了双 die 对称性和统一内存空间的设计理念。</p>
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
 
-<h3 id="figure-2-tensor-core-instruction-pipeline-evolution">Figure 2: Tensor Core instruction pipeline evolution <a class="heading-anchor" href="#figure-2-tensor-core-instruction-pipeline-evolution" aria-label="Link to figure-2-tensor-core-instruction-pipeline-evolution">#</a></h3>
-<p><img src="/assets/2512.02189/fig2-tc-pipeline.jpg" alt="Figure 2: Tensor Core instruction pipeline"></p>
-<p><strong>What it shows</strong>: 从 Volta/Ampere 到 Hopper (wgmma) 再到 Blackwell (tcgen05) 的 Tensor Core 指令 pipeline 演进。</p>
-<p><strong>Why it matters</strong>: 直观展示了 Blackwell 最重要的架构变化——从 warp-group 同步执行（128 线程锁步）到单 warp 独立发射（32 线程），以及新增 TMEM 作为操作数来源的数据通路。这张图是理解 tcgen05 为何能实现 2.9-11.6x 延迟降低的关键。</p>
-<p><strong>Detailed description</strong>: 图分为三列，左列展示 Volta/Ampere 的 mma.sync 模型（全部 32 线程 warp 同步），中列展示 Hopper 的 wgmma 模型（4 个 warp 组成 warp-group 同步执行，操作数来自 SMEM + RF），右列展示 Blackwell 的 tcgen05 模型（单 warp 独立发射，操作数来自 SMEM + TMEM，accumulator 驻留在 TMEM）。箭头标注了数据流方向：Blackwell 新增了 TMEM → Tensor Core 和 Tensor Core → TMEM 的直接数据通路，消除了经过 RF 的间接路径。</p>
+<h3 id="5-1-tensor-core-单指令延迟-—-空间阵列-vs-时域流水线-table-v">5.1 Tensor Core 单指令延迟 — 空间阵列 vs 时域流水线 (Table V) <a class="heading-anchor" href="#5-1-tensor-core-单指令延迟-—-空间阵列-vs-时域流水线-table-v" aria-label="Link to 5-1-tensor-core-单指令延迟-—-空间阵列-vs-时域流水线-table-v">#</a></h3>
 
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
-
-<h3 id="table-v-tcgen05-vs-wgmma-单指令延迟对比">Table V: tcgen05 vs wgmma 单指令延迟对比 <a class="heading-anchor" href="#table-v-tcgen05-vs-wgmma-单指令延迟对比" aria-label="Link to table-v-tcgen05-vs-wgmma-单指令延迟对比">#</a></h3>
 <table>
 <tr><th>Instruction</th><th>Tile Shape</th><th>Scope</th><th>SI-LAT (cycles)</th></tr>
 <tr><td>wgmma</td><td>m64n64k16</td><td>Warp-group</td><td>32.0</td></tr>
@@ -379,399 +363,183 @@ Read: 2026-04-16
 <tr><td>tcgen05.mma</td><td>m256n256k16</td><td>Warp</td><td><strong>11.4</strong></td></tr>
 </table>
 
-<p><strong>Takeaway</strong>: Blackwell tcgen05 延迟近乎恒定（11.0-11.4 cycles），不随 tile size 变化；Hopper wgmma 延迟随 tile 宽度线性增长。这证明 Blackwell 采用<strong>空间阵列设计</strong>（tile size 影响吞吐而非延迟），而 Hopper 是<strong>时域流水线设计</strong>。</p>
+<p>本文最重要的微架构发现：Hopper wgmma 延迟随 tile 宽度线性增长 (32→128 cycle)，Blackwell tcgen05 恒定 ~11 cycle。<strong>Tile size 影响吞吐而非延迟</strong>——证明 Blackwell tensor core 采用空间展开的计算阵列，不同于 Hopper 的时序流水线复用。</p>
 
-<h3 id="table-vii-各精度-tensor-core-吞吐对比">Table VII: 各精度 Tensor Core 吞吐对比 <a class="heading-anchor" href="#table-vii-各精度-tensor-core-吞吐对比" aria-label="Link to table-vii-各精度-tensor-core-吞吐对比">#</a></h3>
+<h3 id="5-2-多精度-tensor-core-吞吐-table-vii">5.2 多精度 Tensor Core 吞吐 (Table VII) <a class="heading-anchor" href="#5-2-多精度-tensor-core-吞吐-table-vii" aria-label="Link to 5-2-多精度-tensor-core-吞吐-table-vii">#</a></h3>
+
 <table>
 <tr><th>Precision</th><th>B200 (TFLOPS)</th><th>% Peak</th><th>H200 (TFLOPS)</th><th>Speedup</th></tr>
-<tr><td>FP64</td><td>44.8</td><td>99.6%</td><td>34.0</td><td>1.32x</td></tr>
-<tr><td>FP32</td><td>481.2</td><td>96.2%</td><td>378.4</td><td>1.27x</td></tr>
-<tr><td>TF32</td><td>964.5</td><td>96.5%</td><td>756.9</td><td>1.27x</td></tr>
-<tr><td>BF16</td><td>1926.8</td><td>96.3%</td><td>1513.5</td><td>1.27x</td></tr>
-<tr><td>FP16</td><td>1929.2</td><td>96.5%</td><td>1515.2</td><td>1.27x</td></tr>
-<tr><td>FP8</td><td>3851.4</td><td>96.3%</td><td>3026.9</td><td>1.27x</td></tr>
-<tr><td>FP6</td><td>5134.8</td><td>95.8%</td><td>N/A</td><td><strong>New</strong></td></tr>
-<tr><td>FP4</td><td><strong>7702.5</strong></td><td>96.3%</td><td>N/A</td><td><strong>New</strong></td></tr>
-<tr><td>INT8</td><td>3927.1</td><td>98.2%</td><td>3088.4</td><td>1.27x</td></tr>
+<tr><td>FP64</td><td>44.8</td><td>99.6%</td><td>34.0</td><td>1.32×</td></tr>
+<tr><td>FP32</td><td>482.0</td><td>96.4%</td><td>378.4</td><td>1.27×</td></tr>
+<tr><td>TF32</td><td>964.5</td><td>96.5%</td><td>756.9</td><td>1.27×</td></tr>
+<tr><td>BF16</td><td>1926.4</td><td>96.3%</td><td>1513.5</td><td>1.27×</td></tr>
+<tr><td>FP16</td><td>1929.6</td><td>96.5%</td><td>1515.2</td><td>1.27×</td></tr>
+<tr><td>FP8</td><td>3850.6</td><td>96.3%</td><td>3026.9</td><td>1.27×</td></tr>
+<tr><td>FP6</td><td>5134.4</td><td>96.0%</td><td>N/A</td><td>New</td></tr>
+<tr><td>FP4</td><td>7700.2</td><td>96.2%</td><td>N/A</td><td>New</td></tr>
+<tr><td>INT8</td><td>3928.5</td><td>98.2%</td><td>3088.4</td><td>1.27×</td></tr>
 </table>
 
-<p><strong>Takeaway</strong>: 所有精度均达到 96-99% 理论峰值利用率，Tensor Core 本身不是瓶颈。FP4/FP6 是 Blackwell 独有的新能力，FP4 达到 7.7 PFLOPS。共享格式 (FP64-INT8) 的 B200/H200 加速比稳定在 1.27x。</p>
+<p>三个关键观察：(1) 所有精度均达 96–99% 峰值利用率——tensor core 不是 workload 瓶颈；(2) 共享精度一致 1.27× 加速比，FP64 例外为 1.32× (FP64 单元翻倍)；(3) FP4→FP64 吞吐差 177× 但延迟仅差 1.27× (11.2→14.2 cycle)，证明吞吐提升来自更宽数据通路而非更深 pipeline。</p>
 
-<h3 id="table-viii-llm-推理性能（bs32-seqlen2048）">Table VIII: LLM 推理性能（BS=32, SeqLen=2048） <a class="heading-anchor" href="#table-viii-llm-推理性能（bs32-seqlen2048）" aria-label="Link to table-viii-llm-推理性能（bs32-seqlen2048）">#</a></h3>
+<h3 id="5-3-逐精度-tensor-core-特性-table-vi">5.3 逐精度 Tensor Core 特性 (Table VI) <a class="heading-anchor" href="#5-3-逐精度-tensor-core-特性-table-vi" aria-label="Link to 5-3-逐精度-tensor-core-特性-table-vi">#</a></h3>
+
+<table>
+<tr><th>Input (A/B)</th><th>Accum (C/D)</th><th>Latency (cycles)</th><th>Throughput (TFLOPS)</th><th>SASS</th></tr>
+<tr><td>FP16</td><td>FP16</td><td>11.2</td><td>964.8</td><td>HMMA</td></tr>
+<tr><td>FP16</td><td>FP32</td><td>11.5</td><td>482.4</td><td>HMMA</td></tr>
+<tr><td>BF16</td><td>FP32</td><td>11.4</td><td>481.6</td><td>HMMA</td></tr>
+<tr><td>FP8</td><td>FP16</td><td>11.8</td><td>1925.3</td><td>QMMA</td></tr>
+<tr><td>FP8</td><td>FP32</td><td>12.1</td><td>1912.8</td><td>QMMA</td></tr>
+<tr><td>FP6</td><td>FP16</td><td>12.3</td><td>2567.2</td><td>QMMA</td></tr>
+<tr><td>FP4</td><td>FP16</td><td>12.6</td><td>3850.1</td><td>OMMA</td></tr>
+<tr><td>INT8</td><td>INT32</td><td>11.9</td><td>3928.5</td><td>IMMA</td></tr>
+</table>
+
+<p><strong>FP32 accumulator 瓶颈</strong>：FP16→FP16 吞吐 964.8 TFLOPS，切换到 FP16→FP32 直接减半至 482.4 TFLOPS。瓶颈在 accumulator datapath 而非乘法单元——推理应优先 FP16 accumulator，训练无法回避 FP32 的吞吐代价。</p>
+
+<h3 id="5-4-llm-推理性能-table-viii">5.4 LLM 推理性能 (Table VIII) <a class="heading-anchor" href="#5-4-llm-推理性能-table-viii" aria-label="Link to 5-4-llm-推理性能-table-viii">#</a></h3>
+
 <table>
 <tr><th>Model</th><th>Precision</th><th>B200 tok/s</th><th>H200 tok/s</th><th>Speedup</th><th>Perplexity</th><th>ΔPPL</th></tr>
-<tr><td>Mistral-7B</td><td>FP16</td><td>45,200</td><td>28,500</td><td>1.59x</td><td>6.82</td><td>—</td></tr>
-<tr><td></td><td>FP8</td><td>78,400</td><td>49,200</td><td>1.59x</td><td>6.95</td><td>+1.9%</td></tr>
-<tr><td></td><td>FP4</td><td><strong>112,800</strong></td><td>N/A</td><td>N/A</td><td>7.38</td><td>+8.2%</td></tr>
-<tr><td>Mixtral-8x7B</td><td>FP16</td><td>28,600</td><td>18,100</td><td>1.58x</td><td>5.94</td><td>—</td></tr>
-<tr><td></td><td>FP8</td><td>51,200</td><td>32,400</td><td>1.58x</td><td>6.08</td><td>+2.4%</td></tr>
-<tr><td></td><td>FP4</td><td><strong>76,900</strong></td><td>N/A</td><td>N/A</td><td>6.48</td><td>+9.1%</td></tr>
+<tr><td>Mistral-7B</td><td>FP16</td><td>56,028</td><td>28,500</td><td>1.97×</td><td>6.82</td><td>—</td></tr>
+<tr><td>Mistral-7B</td><td>FP8</td><td>57,125</td><td>49,200</td><td>1.16×</td><td>6.95</td><td>+1.9%</td></tr>
+<tr><td>Mistral-7B</td><td>FP4</td><td>112,800</td><td>N/A</td><td>N/A</td><td>7.38</td><td>+8.2%</td></tr>
+<tr><td>Mixtral-8x7B</td><td>FP16</td><td>31,033</td><td>18,100</td><td>1.71×</td><td>5.94</td><td>—</td></tr>
+<tr><td>Mixtral-8x7B</td><td>FP8</td><td>51,200</td><td>32,400</td><td>1.58×</td><td>6.08</td><td>+2.4%</td></tr>
+<tr><td>Mixtral-8x7B</td><td>FP4</td><td>76,900</td><td>N/A</td><td>N/A</td><td>6.48</td><td>+9.1%</td></tr>
 </table>
 
-<p><strong>Takeaway</strong>: FP4 在 Mistral-7B 上实现 2.5x 吞吐提升（vs FP16），代价是 perplexity +8.2%。MoE 模型从量化中获益更大（Mixtral-8x7B FP4 达 2.69x）。B200 vs H200 在相同精度下稳定 1.57-1.59x 加速。</p>
+<p>FP4 在 Mistral-7B 上实现 2.01× 吞吐提升 (vs FP16 baseline)，代价是 perplexity +8.2%。BW utilization 从 FP16 的 67–76% 降至 FP4 的 47–49%——量化使 workload 从 memory-bound 向 compute-bound 迁移。注意 FP8 推理的 B200/H200 加速仅 1.16×——H200 的 FP8 路径已被充分优化，Blackwell 在 FP8 上的增量优势极小。</p>
 
-<h3 id="table-x-跨-workload-性能汇总">Table X: 跨 Workload 性能汇总 <a class="heading-anchor" href="#table-x-跨-workload-性能汇总" aria-label="Link to table-x-跨-workload-性能汇总">#</a></h3>
+<h3 id="5-5-latency-vs-batch-size-table-ix">5.5 Latency vs Batch Size (Table IX) <a class="heading-anchor" href="#5-5-latency-vs-batch-size-table-ix" aria-label="Link to 5-5-latency-vs-batch-size-table-ix">#</a></h3>
+
 <table>
-<tr><th>Workload</th><th>Metric</th><th>B200</th><th>H200</th><th>Improvement</th><th>Key Feature</th></tr>
-<tr><td>LLM Inf. (7B, FP4)</td><td>tok/s</td><td>112,800</td><td>N/A</td><td>2.50x vs FP16</td><td>FP4 Tensor Cores</td></tr>
-<tr><td>LLM Inf. (8x7B, FP8)</td><td>tok/s</td><td>51,200</td><td>32,400</td><td>1.58x</td><td>5th Gen TC, TMEM</td></tr>
-<tr><td>HPC DGEMM (FP64)</td><td>TFLOPS</td><td>36.3</td><td>18.9</td><td><strong>1.92x</strong></td><td>Doubled FP64 units</td></tr>
-<tr><td>STREAM Triad</td><td>BW (TB/s)</td><td>7.48</td><td>4.38</td><td>1.71x</td><td>HBM3e</td></tr>
-<tr><td>SpMV (compressed)</td><td>GFLOPS</td><td>5.04</td><td>3.2</td><td>1.58x</td><td>Decomp engine</td></tr>
-<tr><td>GPT Training (1.3B)</td><td>tok/s</td><td>14,397</td><td>9,240</td><td>1.56x</td><td>CTA pairs, TMEM, TC</td></tr>
-<tr><td>Energy Eff. (Training)</td><td>tok/s/W</td><td>22.2</td><td>15.6</td><td>1.42x</td><td>Process, efficiency</td></tr>
+<tr><th>Batch Size</th><th>B200 (ms)</th><th>H200 (ms)</th><th>Ratio</th><th>B200 tok/s</th></tr>
+<tr><td>1</td><td>12.3</td><td>18.7</td><td>1.52×</td><td>166,504</td></tr>
+<tr><td>2</td><td>14.8</td><td>22.1</td><td>1.49×</td><td>276,757</td></tr>
+<tr><td>4</td><td>19.2</td><td>28.4</td><td>1.48×</td><td>426,667</td></tr>
+<tr><td>8</td><td>28.6</td><td>41.3</td><td>1.44×</td><td>572,727</td></tr>
+<tr><td>16</td><td>47.1</td><td>67.8</td><td>1.44×</td><td>696,178</td></tr>
+<tr><td>32</td><td>89.3</td><td>128.4</td><td>1.44×</td><td>734,264</td></tr>
 </table>
 
-<p><strong>Takeaway</strong>: B200 的优势因 workload 类型而异——FP64 科学计算获益最大 (1.92x)，这得益于 FP64 单元翻倍和 TMEM 降低 L2 thrashing；LLM 推理获益约 1.58x；训练获益 1.56x。能效提升 42% 尽管功耗高 14%。</p>
+<p>小 batch 延迟优势 (1.48–1.52×) 超出纯计算比——论文推测 Blackwell 自动 pipeline 重配置将处理阶段从 ~20 缩减至 8–10。尾延迟 p99/median 从 H200 的 1.23–1.38 改善至 B200 的 1.12–1.14。</p>
 
-<h2 id="关键细节与启示">关键细节与启示 <a class="heading-anchor" href="#关键细节与启示" aria-label="Link to 关键细节与启示">#</a></h2>
+<h3 id="5-6-端到端训练-table-xi">5.6 端到端训练 (Table XI) <a class="heading-anchor" href="#5-6-端到端训练-table-xi" aria-label="Link to 5-6-端到端训练-table-xi">#</a></h3>
 
-<p><strong>技术细节补充</strong>:</p>
-<ol>
-<li>TMEM 最优 tile size 是 64×64（对 FP8 为 4KB），这与 Hopper 的 32×32 最优 tile 有显著差异——所有迁移到 Blackwell 的 kernel 都需要调整 tiling 策略</li>
-<li>FP32 accumulator 使吞吐减半的发现意味着推理用 FP16 accumulator、训练用 FP32 accumulator 是明确的最佳实践——这个 2x 差距是硬件设计决定的，无法通过软件绕过</li>
-</ul>
+<table>
+<tr><th>Model</th><th>B200</th><th>H200</th><th>Ratio</th><th>B200 Energy Eff</th></tr>
+<tr><td>ResNet-50</td><td>2,928 img/s</td><td>1,580 img/s</td><td>1.85×</td><td>5.09 img/s/W</td></tr>
+<tr><td>GPT-1.3B (BS=128)</td><td>14,363 tok/s</td><td>9,240 tok/s</td><td>1.55×</td><td>20.63 tok/s/W</td></tr>
+<tr><td>GPT-1.3B (BS=64)</td><td>14,121 tok/s</td><td>9,070 tok/s</td><td>1.55×</td><td>20.27 tok/s/W</td></tr>
+</table>
 
-<p><strong>一句话总结</strong>: Blackwell B200 通过 TMEM（-58% 延迟）、tcgen05（2.9-11.6x 低延迟）和 FP4/FP6 新精度，实现了从"训练专用"到"推理优化"的架构范式转换，端到端带来 1.5-2.5x 性能提升和 42% 能效改善。</p>
+<p>训练加速分解为三个因子：SM 增量 (1.09×) × CTA pairing (1.27×) × TMEM (1.26×)。能效提升 32% 尽管功耗高 ~14%，主要得益于 TMEM 减少 L2 thrashing 降低动态功耗。</p>
 
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-<ul>
-<li>所有微基准在单 GPU 上测量，dual-die NV-HBI 通信开销未被量化</li>
-<li>CUDA 13.0 对 TMEM/CTA 支持是 preliminary 的，实际框架能达到的性能可能显著低于微基准</li>
-<li>FP6 虽有硬件支持但缺乏软件工具链，无法实际使用</li>
-<li>FP4 perplexity 退化是模型级平均值，per-layer 退化分布未分析</li>
-<li>未与 AMD MI300X/MI355X 进行横向对比</li>
-<li>端到端 benchmark 只用了 Mistral 系列模型，未测试 Llama/Qwen 等更广泛的模型</li>
-</ul>
+<h3 id="5-7-de-格式吞吐-table-i">5.7 DE 格式吞吐 (Table I) <a class="heading-anchor" href="#5-7-de-格式吞吐-table-i" aria-label="Link to 5-7-de-格式吞吐-table-i">#</a></h3>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-<ul>
-<li><strong>Algorithm</strong>: FP4 的 +8.2% perplexity 退化要求量化算法必须做 per-layer precision selection，不能一刀切；FP32 accumulator 吞吐减半的硬件约束影响混合精度训练策略设计</li>
-<li><strong>Kernel</strong>: TMEM 最优 tile 从 32×32 变为 64×64，所有 GEMM/Attention kernel 需要重新 tune tile size；tcgen05 的 warp-level 执行使 kernel 调度策略从 warp-group 粒度降至 warp 粒度</li>
-<li><strong>Framework</strong>: vLLM/TRT-LLM 需要适配 tcgen05 指令和 TMEM 数据通路；FP4 weight-only quantization 需要框架层面的 per-layer precision selection 支持</li>
-<li><strong>LLM</strong>: FP4 使 70B 模型可以在单 B200 上运行推理，模型架构设计可以更大胆地增加参数量；MoE 模型从量化中获益更大（2.69x vs 2.50x），鼓励 MoE 架构设计</li>
-<li><strong>Agent</strong>: 单请求延迟 12.3ms（BS=1, FP8）对实时 agent 应用有重要意义；P99/median 延迟比从 1.23-1.38 (H200) 改善到 1.12-1.14 (B200)，尾延迟更可控</li>
-</ul>
+<table>
+<tr><th>Format</th><th>Comp. Ratio</th><th>Output (GB/s)</th><th>Latency (ms)</th><th>用途</th></tr>
+<tr><td>LZ4</td><td>1.00×</td><td>172.55</td><td>0.608</td><td>通用基线</td></tr>
+<tr><td>Snappy</td><td>1.91×</td><td>117.24</td><td>0.894</td><td>实时场景</td></tr>
+<tr><td>Zstd</td><td>2.00×</td><td>154.94</td><td>0.677</td><td>通用最优</td></tr>
+<tr><td>GZIP</td><td>2.00×</td><td>83.83</td><td>1.251</td><td>旧系统兼容</td></tr>
+<tr><td>Bitcomp</td><td>3.00×</td><td>462.37</td><td>0.227</td><td>科学计算</td></tr>
+<tr><td>ANS</td><td>N/A</td><td>539.21</td><td>0.194</td><td>熵编码</td></tr>
+</table>
+
+<p>所有格式 sub-millisecond 延迟。Bitcomp/ANS 输出吞吐远超其他格式 (462–539 vs 84–173 GB/s)，推测有专用整数/熵编码硬件路径。</p>
+
+<h3 id="5-8-de-压缩率敏感性-table-ii">5.8 DE 压缩率敏感性 (Table II) <a class="heading-anchor" href="#5-8-de-压缩率敏感性-table-ii" aria-label="Link to 5-8-de-压缩率敏感性-table-ii">#</a></h3>
+
+<table>
+<tr><th>Data Pattern</th><th>Comp. Ratio</th><th>Input (GB/s)</th><th>Output (GB/s)</th><th>Latency (ms)</th></tr>
+<tr><td>Random</td><td>1.00×</td><td>173.23</td><td>172.55</td><td>0.608</td></tr>
+<tr><td>Mixed</td><td>1.98×</td><td>80.11</td><td>158.94</td><td>0.660</td></tr>
+<tr><td>Repetitive</td><td>15.02×</td><td>14.63</td><td>219.80</td><td>0.477</td></tr>
+<tr><td>Zeros</td><td>245.45×</td><td>0.85</td><td>209.83</td><td>0.500</td></tr>
+</table>
+
+<p>输出吞吐稳定在 170–220 GB/s 不随压缩率变化，输入吞吐从 173→0.85 GB/s 随 $1/C$ 下降。DE 是 output-bandwidth-bounded 设计——对不可压缩数据充当 pass-through，对高压缩率数据内部解压不是瓶颈。</p>
+
+<h3 id="5-9-跨-workload-汇总-table-x">5.9 跨 Workload 汇总 (Table X) <a class="heading-anchor" href="#5-9-跨-workload-汇总-table-x" aria-label="Link to 5-9-跨-workload-汇总-table-x">#</a></h3>
+
+<table>
+<tr><th>Workload</th><th>Metric</th><th>B200</th><th>H200</th><th>Speedup</th><th>Key Enabler</th></tr>
+<tr><td>Attention Block</td><td>Latency (μs)</td><td>284</td><td>468</td><td>1.65×</td><td>TMEM</td></tr>
+<tr><td>HPC DGEMM (FP64)</td><td>TFLOPS</td><td>36.3</td><td>18.9</td><td>1.92×</td><td>Doubled FP64 units</td></tr>
+<tr><td>STREAM Triad (4–16 GB)</td><td>BW (TB/s)</td><td>4.14</td><td>—</td><td>—</td><td>HBM3e</td></tr>
+<tr><td>SpMV (compressed)</td><td>GFLOPS</td><td>5.08</td><td>3.2</td><td>1.58×</td><td>Decomp engine</td></tr>
+<tr><td>GPT Training (1.3B)</td><td>tok/s</td><td>14,363</td><td>9,240</td><td>1.55×</td><td>CTA pairs + TMEM + TC</td></tr>
+<tr><td>ResNet Training</td><td>img/s</td><td>2,928</td><td>1,580</td><td>1.85×</td><td>5th Gen TC + mem BW</td></tr>
+<tr><td>Energy Eff. (Training)</td><td>tok/s/W</td><td>20.63</td><td>15.6</td><td>1.32×</td><td>Process + TMEM</td></tr>
+</table>
 
 <hr>
 
-<h2 id="deep-analysis-hardware">Deep Analysis (hardware) <a class="heading-anchor" href="#deep-analysis-hardware" aria-label="Link to deep-analysis-hardware">#</a></h2>
-
-<h3 id="1-architecture-overview-naming">1. Architecture Overview & Naming <a class="heading-anchor" href="#1-architecture-overview-naming" aria-label="Link to 1-architecture-overview-naming">#</a></h3>
-
-<ul>
-<li><strong>产品名称 / 代号 / 架构名</strong>: NVIDIA B200 / GB200 / Blackwell Architecture</li>
-<li><strong>工艺节点</strong>: TSMC custom process (未在论文中明确，推测 N4P)</li>
-<li><strong>Die 面积与晶体管数</strong>: 208B 晶体管 (dual-die, vs Hopper 180B)，die 面积未明确</li>
-<li><strong>封装方式</strong>: Dual-die，两个 GPU die 通过 NV-HBI（NVIDIA High-Bandwidth Interface）互联</li>
-<li><strong>目标市场</strong>: Datacenter training + inference（论文强调 Blackwell 设计重心从训练转向推理）</li>
-</ul>
-
-<h3 id="2-generational-delta-—-增-删-改-增强">2. Generational Delta — 增/删/改/增强 <a class="heading-anchor" href="#2-generational-delta-—-增-删-改-增强" aria-label="Link to 2-generational-delta-—-增-删-改-增强">#</a></h3>
-
-<h4 id="2a-新增单元-added">2a. 新增单元 (Added) <a class="heading-anchor" href="#2a-新增单元-added" aria-label="Link to 2a-新增单元-added">#</a></h4>
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
 
 <table>
-<tr><th>New Unit / Feature</th><th>Description</th><th>Why it matters for AI</th></tr>
-<tr><td><strong>Tensor Memory (TMEM)</strong></td><td>每 SM 256KB 专用片上内存，2D 阵列 (512 列 × 128 lanes × 32-bit)，专供 Tensor Core</td><td>16 TB/s 读 / 8 TB/s 写带宽，独立于 L1/SMEM，消除中间结果的全局内存回写</td></tr>
-<tr><td><strong>Decompression Engine (DE)</strong></td><td>硬件解压单元，支持 LZ4/Snappy/Zstd/GZIP/Cascaded/Bitcomp/ANS</td><td>最高 462 GB/s 输出吞吐，使压缩模型权重可以在 HBM 中存储并透明解压</td></tr>
-<tr><td><strong>tcgen05.mma 指令</strong></td><td>单 warp 级 Tensor Core 指令，替代 Hopper 的 wgmma</td><td>降低调度粒度从 128 线程到 32 线程，消除 warp-group 同步</td></tr>
-<tr><td><strong>OMMA SASS 指令</strong></td><td>专为 FP4/FP6 设计的 octal-byte MMA 指令</td><td>原生 4-bit/6-bit 矩阵乘法硬件支持</td></tr>
-<tr><td><strong>CTA Pair Execution</strong></td><td>两个相邻 CTA 共享操作数，通过 TPC 内通信网络</td><td>减少冗余数据搬运</td></tr>
-<tr><td><strong>NV-HBI</strong></td><td>双 die 间高带宽一致性互联</td><td>使双 die 对软件呈现为统一设备</td></tr>
-<tr><td><strong>Convolution Collector Buffer</strong></td><td>Tensor Core 内建 weight-stationary dataflow 的 collector buffer</td><td>缓存并复用 Matrix B（权重张量），优化卷积 kernel</td></tr>
+<tr><th>Step</th><th>论据</th><th>来源</th><th>结论</th></tr>
+<tr><td>1</td><td>Blackwell 引入 TMEM (256KB/SM)、tcgen05 (warp-level MMA)、DE (硬件解压) 三大创新，微架构参数全部未知；profiler/Roofline/模拟器均无法覆盖</td><td>§I, §II, §III</td><td>需要 PTX 级微基准来填补参数空白</td></tr>
+<tr><td>2</td><td>PTX dependency chain (accumulator 传递) 隔离单指令延迟，pointer-chase 隔离 TMEM 访存延迟，back-to-back issuing 饱和 pipeline——CUTLASS disassembly 验证 PTX→SASS 正确性</td><td>§IV</td><td>测量方法可信地隔离单硬件单元行为</td></tr>
+<tr><td>3</td><td>TMEM cache-miss 420 cycle (−58% vs Hopper)，16 TB/s 读带宽；chained GEMM $\mathbf{D} = (\mathbf{A} \times \mathbf{B}) \times \mathbf{C}$ 中间结果驻留消除每 SM ~12 TB/s 全局内存回写</td><td>§V-A</td><td>TMEM 对矩阵密集 workload 提供显著延迟+带宽优势</td></tr>
+<tr><td>4</td><td>tcgen05 延迟恒定 11.0–11.4 cycle 不随 tile 从 m64→m256 变化；Hopper wgmma 线性增长 32→128 cycle</td><td>§VI-A, Table V</td><td>空间阵列设计确认（tile size 影响吞吐不影响延迟），区别于 Hopper 时域流水线</td></tr>
+<tr><td>5</td><td>所有精度均达 96–99% 峰值利用率；FP4 (7700 TFLOPS) vs FP64 (44.8 TFLOPS) 吞吐差 177× 但延迟仅差 1.27×</td><td>§VI-A, Table VI–VII</td><td>吞吐提升来自更宽数据通路（更高并行度），tensor core 本身不是瓶颈——内存带宽和 kernel launch overhead 才是</td></tr>
+<tr><td>6</td><td>端到端验证：推理 1.58–1.97×, 训练 1.55–1.85×, 能效 +32%；加速可分解为 SM (1.09×) × CTA (1.27×) × TMEM (1.26×)，但乘积 1.75 > 实测 1.55——因子非独立</td><td>§VII, Table X–XI</td><td>微基准结论在真实 workload 中得到验证；三大创新的贡献可近似独立量化，但存在 diminishing returns</td></tr>
 </table>
 
-<h4 id="2b-删除-移除-removed">2b. 删除/移除 (Removed) <a class="heading-anchor" href="#2b-删除-移除-removed" aria-label="Link to 2b-删除-移除-removed">#</a></h4>
+<hr>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> — 论文声称开发了开源 PTX 微基准测试套件，但因审稿限制未发布代码：</p>
+
+<blockquote>
+"unable to share the code at this time due to double-blind" (§I)
+</blockquote>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>PTX→SASS 验证是可信性基础</strong>：所有微基准通过 CUTLASS disassembly 验证 PTX 编译到预期 SASS 指令 (Table IV)。<code>tcgen05.mma</code> 的 <code>kind::mxf4nvf4</code> 映射到 OMMA 而非 QMMA——精度参数错误会导致编译到完全不同的硬件单元，整个测量无效。复现时必须在 SASS 层面验证指令映射。</li>
+</ul>
+
+<ol>
+<li><strong>TMEM 最优 tile 64×64</strong>：TMEM 的 2D 结构 (512 列 × 128 lanes × 32-bit cells) 在 $64 \times 64$ tile (对 FP8 为 4KB) 时完全利用 1024-bit 接口宽度。Tiles $< 32 \times 32$ 接口利用率不足；tiles $> 128 \times 128$ 触发多阶段传输。所有迁移到 Blackwell 的 GEMM/Attention kernel 都应将 tiling 策略从 Hopper 的 $32 \times 32$ 调整为 $64 \times 64$。</li>
+</ul>
+
+<h3 id="tmem-内存层次定位">TMEM 内存层次定位 <a class="heading-anchor" href="#tmem-内存层次定位" aria-label="Link to tmem-内存层次定位">#</a></h3>
 
 <table>
-<tr><th>Removed Unit / Feature</th><th>Reason</th><th>Impact</th></tr>
-<tr><td>wgmma (warp-group MMA)</td><td>被 tcgen05 替代（Hopper 遗留指令）</td><td>需要重写所有 Tensor Core kernel</td></tr>
-<tr><td>传统 SMEM→RF→TC 数据通路 (as only path)</td><td>TMEM 提供直接通路</td><td>传统 ldmatrix/wmma.load 无法访问 TMEM</td></tr>
+<tr><th>层级</th><th>容量/SM</th><th>带宽</th><th>延迟</th><th>用途</th></tr>
+<tr><td>Register File</td><td>~256KB</td><td>—</td><td>0–1 cycle</td><td>通用</td></tr>
+<tr><td>L1 / SMEM</td><td>256KB</td><td>—</td><td>~30 cycle</td><td>通用 + TC operand B</td></tr>
+<tr><td><strong>TMEM</strong></td><td><strong>256KB</strong></td><td><strong>16 TB/s R, 8 TB/s W</strong></td><td><strong>420 cycle (miss)</strong></td><td><strong>TC 专用 (accumulator + operand A)</strong></td></tr>
+<tr><td>L2</td><td>~100MB (4 分区)</td><td>—</td><td>—</td><td>共享</td></tr>
+<tr><td>HBM3e</td><td>192 GB</td><td>8.0 TB/s</td><td>~1000 cycle</td><td>全局</td></tr>
 </table>
 
-<h4 id="2c-增强-升级-enhanced">2c. 增强/升级 (Enhanced) <a class="heading-anchor" href="#2c-增强-升级-enhanced" aria-label="Link to 2c-增强-升级-enhanced">#</a></h4>
+<h3 id="算力-带宽比">算力-带宽比 <a class="heading-anchor" href="#算力-带宽比" aria-label="Link to 算力-带宽比">#</a></h3>
 
-<table>
-<tr><th>Enhanced Unit</th><th>Previous Gen (H200)</th><th>This Gen (B200)</th><th>Improvement</th><th>How measured</th></tr>
-<tr><td>Tensor Core (gen)</td><td>4th gen (wgmma)</td><td>5th gen (tcgen05)</td><td>2.9-11.6x 延迟降低</td><td>PTX dependency chain</td></tr>
-<tr><td>FP8 TFLOPS</td><td>3026.9</td><td>3851.4</td><td>1.27x</td><td>Sustained throughput</td></tr>
-<tr><td>FP16 TFLOPS</td><td>1515.2</td><td>1929.2</td><td>1.27x</td><td>Sustained throughput</td></tr>
-<tr><td>FP64 TFLOPS</td><td>34.0</td><td>44.8</td><td>1.32x</td><td>DGEMM benchmark</td></tr>
-<tr><td>SM Count</td><td>~132 (est.)</td><td>148</td><td>1.09x (est.)</td><td>Spec</td></tr>
-<tr><td>HBM Type</td><td>HBM3e</td><td>HBM3e (8 stacks)</td><td>8.0 TB/s (vs 4.8) = 1.67x</td><td>STREAM Triad</td></tr>
-<tr><td>HBM Capacity</td><td>141 GB</td><td>192 GB</td><td>1.36x</td><td>Spec</td></tr>
-<tr><td>L2 Cache Partitions</td><td>2</td><td>4</td><td>2x</td><td>Spec</td></tr>
-</table>
+<p>$$\text{FP16: } 1930 \text{ TFLOPS} / 8.0 \text{ TB/s} = 241 \text{ Ops/Byte}$$</p>
 
-<h4 id="2d-架构级变更">2d. 架构级变更 <a class="heading-anchor" href="#2d-架构级变更" aria-label="Link to 2d-架构级变更">#</a></h4>
+<p>$$\text{FP8: } 3851 \text{ TFLOPS} / 8.0 \text{ TB/s} = 481 \text{ Ops/Byte}$$</p>
+
+<p>$$\text{FP4: } 7700 \text{ TFLOPS} / 8.0 \text{ TB/s} = 963 \text{ Ops/Byte}$$</p>
+
+<p>更低精度使更多 workload 从 memory-bound 转向 compute-bound。实测验证：FP16 推理的 BW utilization 为 67.3% (memory-bound)，FP4 降至 47.6% (转向 compute-bound)。</p>
+
+<h3 id="架构设计约束">架构设计约束 <a class="heading-anchor" href="#架构设计约束" aria-label="Link to 架构设计约束">#</a></h3>
 
 <ul>
-<li><strong>Pipeline 范式</strong>: 从时域流水线（wgmma 延迟随 tile 线性增长）到空间阵列（tcgen05 延迟恒定 ~11 cycles）</li>
-<li><strong>执行粒度</strong>: Warp-group (128 threads) → Warp (32 threads)</li>
-<li><strong>数据通路</strong>: 新增 TMEM ↔ Tensor Core 直接通路，accumulator 驻留在 TMEM</li>
-<li><strong>缓存层次</strong>: L2 分区从 2 → 4，TMEM 新增为张量专用内存层</li>
-<li><strong>指令集</strong>: tcgen05.* 全新指令族（cp, ld, st, mma），新 SASS 指令 OMMA</li>
+<li><strong>TMEM 需要 kernel 重写</strong>：传统 <code>ldmatrix</code>/<code>wmma.load</code> 无法访问 TMEM，必须使用 <code>tcgen05.cp</code>/<code>tcgen05.ld</code>/<code>tcgen05.st</code> 全新指令族</li>
+<li><strong>FP64 不走 TMEM/tcgen05 路径</strong>：FP64 DGEMM 使用独立的翻倍 FP64 单元 (DMMA)，TMEM 不改善科学计算</li>
+<li><strong>DE 是 output-bounded 设计</strong>：高压缩率数据的 compressed input 吞吐随 $1/C$ 下降——DE 最适合中等压缩率场景 (2–4×)</li>
+<li><strong>CTA Pair 执行</strong>：两个相邻 CTA 共享操作数通过 TPC 内通信网络，减少冗余数据搬运——这是 1.27× 训练加速的关键因子之一</li>
+<li><strong>FP32 accumulator 使吞吐减半</strong>：硬件设计决定，无法通过软件绕过——推理用 FP16 accumulator，训练被迫承受 2× 吞吐损失</li>
 </ul>
-
-<h3 id="3-compute-unit-deep-dive">3. Compute Unit Deep Dive <a class="heading-anchor" href="#3-compute-unit-deep-dive" aria-label="Link to 3-compute-unit-deep-dive">#</a></h3>
-
-<h4 id="3a-sm-结构（基于微基准推断）">3a. SM 结构（基于微基准推断） <a class="heading-anchor" href="#3a-sm-结构（基于微基准推断）" aria-label="Link to 3a-sm-结构（基于微基准推断）">#</a></h4>
-
-<p>论文未给出完整 SM 内部框图，但通过微基准推断：</p>
-<ul>
-<li><strong>Tensor Core</strong>: 第五代，每 SM 至少 1 个（推测 4 个，基于 throughput/SM 推算）</li>
-<li><strong>TMEM</strong>: 每 SM 256KB，2D: 512 cols × 128 lanes × 32-bit cells</li>
-<li><strong>SMEM</strong>: 每 SM 256KB（沿用 Hopper 规格）</li>
-<li><strong>Warp Scheduler</strong>: 支持 warp 级独立 MMA 发射，scheduler stall 降低 18-23%</li>
-</ul>
-
-<h4 id="3b-tensor-core-各精度性能">3b. Tensor Core 各精度性能 <a class="heading-anchor" href="#3b-tensor-core-各精度性能" aria-label="Link to 3b-tensor-core-各精度性能">#</a></h4>
-
-<table>
-<tr><th>Data Type</th><th>Input→Output</th><th>Latency (cycles)</th><th>Throughput (TFLOPS)</th><th>SASS Instruction</th></tr>
-<tr><td>FP64</td><td>FP64→FP64</td><td>~14.2</td><td>44.8</td><td>DMMA</td></tr>
-<tr><td>FP32</td><td>FP16→FP32</td><td>11.5</td><td>482.4</td><td>HMMA</td></tr>
-<tr><td>FP16</td><td>FP16→FP16</td><td>11.2</td><td><strong>964.8</strong></td><td>HMMA</td></tr>
-<tr><td>BF16</td><td>BF16→FP32</td><td>11.4</td><td>481.6</td><td>HMMA</td></tr>
-<tr><td>FP8</td><td>FP8→FP16</td><td>11.8</td><td>1925.3</td><td>QMMA</td></tr>
-<tr><td>FP8</td><td>FP8→FP32</td><td>12.1</td><td>1912.8</td><td>QMMA</td></tr>
-<tr><td>FP6</td><td>FP6→FP16</td><td>12.3</td><td>2567.2</td><td>OMMA</td></tr>
-<tr><td>FP4</td><td>FP4→FP16</td><td>12.6</td><td>3850.1</td><td>OMMA</td></tr>
-<tr><td>INT8</td><td>INT8→INT32</td><td>11.9</td><td>3928.5</td><td>IMMA</td></tr>
-</table>
-
-<p><strong>关键发现</strong>: 延迟仅变化 1.27x（11.2-14.2 cycles），而吞吐变化 177x（FP64 44.8 → FP4 7702.5）。这证明吞吐提升来自<strong>更宽的数据通路（更高并行度）</strong>而非更深的 pipeline。</p>
-
-<p><strong>FP32 accumulator 瓶颈</strong>: FP16→FP16 吞吐 964.8 TFLOPS，FP16→FP32 仅 482.4 TFLOPS——accumulator datapath 是瓶颈，不是乘法单元。</p>
-
-<h3 id="4-peak-performance-derivation">4. Peak Performance Derivation <a class="heading-anchor" href="#4-peak-performance-derivation" aria-label="Link to 4-peak-performance-derivation">#</a></h3>
-
-<p>论文提供了实测值与理论峰值的对比，但未给出完整的推导过程。基于公开信息重构：</p>
-
-<table>
-<tr><th>Parameter</th><th>Value</th><th>Source</th></tr>
-<tr><td>SMs</td><td>148</td><td>Whitepaper</td></tr>
-<tr><td>Boost Clock</td><td>~2.1 GHz (estimated)</td><td>Not explicitly stated</td></tr>
-<tr><td>FP4 Peak (spec)</td><td>8000 TFLOPS</td><td>NVIDIA datasheet</td></tr>
-<tr><td>FP4 Peak (measured)</td><td>7702.5 TFLOPS</td><td>Paper Table VII</td></tr>
-<tr><td>Utilization</td><td>96.3%</td><td>7702.5/8000</td></tr>
-</table>
-
-<h4 id="4d-与-h200-对比">4d. 与 H200 对比 <a class="heading-anchor" href="#4d-与-h200-对比" aria-label="Link to 4d-与-h200-对比">#</a></h4>
-
-<table>
-<tr><th>Metric</th><th>H200</th><th>B200</th><th>Ratio</th><th>Source of improvement</th></tr>
-<tr><td>FP16 TFLOPS</td><td>1515.2</td><td>1929.2</td><td>1.27x</td><td>More SMs + higher freq</td></tr>
-<tr><td>FP8 TFLOPS</td><td>3026.9</td><td>3851.4</td><td>1.27x</td><td>Same ratio, linear scaling</td></tr>
-<tr><td>FP64 TFLOPS</td><td>34.0</td><td>44.8</td><td>1.32x</td><td>Doubled FP64 units</td></tr>
-<tr><td>FP4 TFLOPS</td><td>N/A</td><td>7702.5</td><td>New</td><td>New OMMA instruction</td></tr>
-<tr><td>FP6 TFLOPS</td><td>N/A</td><td>5134.8</td><td>New</td><td>New OMMA instruction</td></tr>
-</table>
-
-<p><strong>1.27x 一致加速比分析</strong>: 对于共享精度（FP8-INT8），B200/H200 加速比稳定在 1.27x，推测来源为 SM 数量增加 (148/132≈1.12x) × 频率提升 (~1.13x) ≈ 1.27x。</p>
-
-<h3 id="5-memory-subsystem">5. Memory Subsystem <a class="heading-anchor" href="#5-memory-subsystem" aria-label="Link to 5-memory-subsystem">#</a></h3>
-
-<h4 id="5a-hbm-规格">5a. HBM 规格 <a class="heading-anchor" href="#5a-hbm-规格" aria-label="Link to 5a-hbm-规格">#</a></h4>
-
-<table>
-<tr><th>Parameter</th><th>B200</th><th>H200</th></tr>
-<tr><td>Memory Type</td><td>HBM3e</td><td>HBM3e</td></tr>
-<tr><td>Capacity</td><td>192 GB</td><td>141 GB</td></tr>
-<tr><td>Stacks</td><td>8</td><td>6</td></tr>
-<tr><td>Peak Bandwidth</td><td>8.0 TB/s</td><td>4.8 TB/s</td></tr>
-<tr><td>Measured BW (STREAM)</td><td>7.48 TB/s (93.5%)</td><td>4.38 TB/s (91.3%)</td></tr>
-</table>
-
-<h4 id="5b-cache-hierarchy-基于微基准推断">5b. Cache Hierarchy (基于微基准推断) <a class="heading-anchor" href="#5b-cache-hierarchy-基于微基准推断" aria-label="Link to 5b-cache-hierarchy-基于微基准推断">#</a></h4>
-
-<table>
-<tr><th>Level</th><th>Size</th><th>Bandwidth</th><th>Latency</th><th>Notes</th></tr>
-<tr><td>Register File</td><td>~256KB/SM</td><td>-</td><td>0-1 cycle</td><td>标准</td></tr>
-<tr><td>L1 / SMEM</td><td>256KB/SM</td><td>-</td><td>~30 cycles (est.)</td><td>可配置比例</td></tr>
-<tr><td><strong>TMEM</strong></td><td><strong>256KB/SM</strong></td><td><strong>16 TB/s read, 8 TB/s write</strong></td><td><strong>~420 cycles (cache-miss)</strong></td><td><strong>Blackwell 新增</strong></td></tr>
-<tr><td>L2</td><td>~100MB (4 partitions)</td><td>-</td><td>-</td><td>Hopper 的 2x 分区</td></tr>
-<tr><td>HBM3e</td><td>192 GB</td><td>8.0 TB/s</td><td>~1000 cycles</td><td>8 stacks</td></tr>
-</table>
-
-<p><strong>关键发现</strong>: TMEM 的 420 cycle cache-miss 延迟比传统 global memory 路径（~1000 cycles on Hopper）低 58%。但 TMEM 是<strong>专用于 Tensor Core 的</strong>——通用计算无法使用它。</p>
-
-<h4 id="5c-算力-带宽比">5c. 算力-带宽比 <a class="heading-anchor" href="#5c-算力-带宽比" aria-label="Link to 5c-算力-带宽比">#</a></h4>
-
-<pre><code>
-FP16: 1929.2 TFLOPS / 8.0 TB/s = 241 Ops/Byte
-FP8:  3851.4 TFLOPS / 8.0 TB/s = 481 Ops/Byte
-FP4:  7702.5 TFLOPS / 8.0 TB/s = 963 Ops/Byte
-</code></pre>
-
-<p>随着精度降低，Ops:Byte 比急剧升高，意味着<strong>更低精度使更多 workload 从 memory-bound 转向 compute-bound</strong>。论文数据验证了这一点：FP16 推理的 BW utilization 为 67.3%（memory-bound），FP4 降至 47.6%（转向 compute-bound）。</p>
-
-<h3 id="6-decompression-engine-深度分析">6. Decompression Engine 深度分析 <a class="heading-anchor" href="#6-decompression-engine-深度分析" aria-label="Link to 6-decompression-engine-深度分析">#</a></h3>
-
-<p>硬件 DE 是 Blackwell 独特的架构创新（Hopper 只有 software decompression）：</p>
-
-<p><strong>Format 性能差异巨大</strong>:</p>
-<ul>
-<li>Bitcomp: 462.4 GB/s 输出——针对整数/科学数据有专用硬件优化路径</li>
-<li>ANS: 539.2 GB/s 输出——用于熵编码的最高吞吐</li>
-<li>LZ4: 172.6 GB/s 输出——通用格式的 baseline</li>
-<li>GZIP: 83.8 GB/s 输出——最慢但兼容旧系统</li>
-</ul>
-
-<p><strong>核心架构特征</strong>: 输出吞吐稳定在 160-220 GB/s，不随压缩率变化（Table II），而输入吞吐从 173.23 GB/s (1x) 降到 0.85 GB/s (245x)。这证明 DE 是 <strong>decompression-throughput bounded</strong> 设计，内部有 ~200 GB/s 的解压吞吐天花板。</p>
-
-<p><strong>Pipeline 并行度</strong>: 32KB chunk 最优 16 路并发，256KB chunk 最优 4 路并发——更大 chunk 消耗更多硬件资源，迫使降低并行度。</p>
-
-<h3 id="7-power-thermal-efficiency">7. Power, Thermal & Efficiency <a class="heading-anchor" href="#7-power-thermal-efficiency" aria-label="Link to 7-power-thermal-efficiency">#</a></h3>
-
-<table>
-<tr><th>Metric</th><th>B200</th><th>H200</th><th>Ratio</th></tr>
-<tr><td>Board Power (est.)</td><td>~1000W</td><td>~700W</td><td>1.43x</td></tr>
-<tr><td>Training Efficiency (GPT-1.3B)</td><td>22.2 tok/s/W</td><td>15.6 tok/s/W</td><td><strong>1.42x</strong></td></tr>
-<tr><td>ResNet Training Efficiency</td><td>3.77 img/s/W</td><td>~2.26 img/s/W (est.)</td><td>~1.67x</td></tr>
-</table>
-
-<p><strong>能效分析</strong>: 尽管功耗高 14%，但性能提升 56%，净能效提升 42%。TMEM 驻留中间结果对能效贡献显著——减少 L2 thrashing 和 DRAM 访问直接降低动态功耗。</p>
-
-<h3 id="8-software-isa-impact">8. Software & ISA Impact <a class="heading-anchor" href="#8-software-isa-impact" aria-label="Link to 8-software-isa-impact">#</a></h3>
-
-<h4 id="8a-isa-changes">8a. ISA Changes <a class="heading-anchor" href="#8a-isa-changes" aria-label="Link to 8a-isa-changes">#</a></h4>
-
-<p><strong>新增指令</strong>:</p>
-<ul>
-<li><code>tcgen05.mma</code> — warp-level Tensor Core MMA（替代 wgmma）</li>
-<li><code>tcgen05.cp</code> — 异步 TMEM 数据传输</li>
-<li><code>tcgen05.ld</code> / <code>tcgen05.st</code> — TMEM 与 RF/SMEM 间的专用 load/store</li>
-<li>TMEM alloc/dealloc 指令 — 显式 TMEM 内存管理</li>
-</ul>
-
-<p><strong>新 SASS 指令</strong>:</p>
-<ul>
-<li><strong>OMMA</strong> — Blackwell 专有，用于 FP4/FP6 精度</li>
-<li>HMMA (FP32), QMMA (FP8), IMMA (INT), DMMA (FP64) — 命名变化但功能延续</li>
-</ul>
-
-<p><strong>废弃指令</strong>: <code>wgmma</code> 系列（Hopper 独有），<code>ldmatrix</code>, <code>wmma.load</code> 无法访问 TMEM</p>
-
-<h4 id="8b-软件栈影响">8b. 软件栈影响 <a class="heading-anchor" href="#8b-软件栈影响" aria-label="Link to 8b-软件栈影响">#</a></h4>
-
-<ul>
-<li><strong>CUDA 13.0</strong>: 提供 preliminary TMEM/CTA 支持</li>
-<li><strong>FP6 软件缺失</strong>: 硬件支持存在但缺乏框架工具链</li>
-<li><strong>Kernel 重写要求</strong>: 所有使用 wgmma 的 kernel 必须迁移到 tcgen05 指令族</li>
-<li><strong>Tiling 策略变化</strong>: 最优 tile 从 32×32 变为 64×64</li>
-</ul>
-
-<h4 id="8c-编程模型变化">8c. 编程模型变化 <a class="heading-anchor" href="#8c-编程模型变化" aria-label="Link to 8c-编程模型变化">#</a></h4>
-
-<ul>
-<li>执行粒度: Warp-group (128 threads) → Warp (32 threads)</li>
-<li>内存模型: 新增 TMEM 作为显式管理的片上内存层（类似 SMEM 但专用于 Tensor Core）</li>
-<li>异步模型: tcgen05.cp 替代 cp.async.bulk.tensor.2d，支持 TMEM 双缓冲</li>
-</ul>
-
-<h3 id="9-ai-workload-impact-analysis">9. AI Workload Impact Analysis <a class="heading-anchor" href="#9-ai-workload-impact-analysis" aria-label="Link to 9-ai-workload-impact-analysis">#</a></h3>
-
-<h4 id="9a-gemm">9a. GEMM <a class="heading-anchor" href="#9a-gemm" aria-label="Link to 9a-gemm">#</a></h4>
-
-<ul>
-<li>FP4 GEMM 达到 7702.5 TFLOPS (96.3% 峰值)——Tensor Core 不是瓶颈</li>
-<li>TMEM 最优 tile 64×64 → 大矩阵 GEMM 可以充分利用 TMEM 双缓冲</li>
-<li>Chained MMA (D=(A×B)×C) 保持中间结果在 TMEM 中，消除每秒 ~12 TB 的不必要数据搬运</li>
-</ul>
-
-<h4 id="9b-attention">9b. Attention <a class="heading-anchor" href="#9b-attention" aria-label="Link to 9b-attention">#</a></h4>
-
-<ul>
-<li>Attention block 延迟 284μs (B200) vs 468μs (H200) = <strong>1.65x 提升</strong></li>
-<li>QK^T 结果可以驻留在 TMEM 中直接传递给 softmax 和 V 乘法</li>
-<li>长序列场景受益于 L2 分区翻倍（4 partitions vs 2）减少 cache thrashing</li>
-</ul>
-
-<h4 id="9c-moe">9c. MoE <a class="heading-anchor" href="#9c-moe" aria-label="Link to 9c-moe">#</a></h4>
-
-<ul>
-<li>Mixtral-8x7B FP4 实现 2.69x 吞吐提升（vs FP16 baseline）</li>
-<li>量化使更多 expert weights 可以缓存在 L2 中，降低 expert switching 的内存开销</li>
-<li>DE 可以透明解压存储在 HBM 中的压缩 expert weights</li>
-</ul>
-
-<h4 id="9d-training-vs-inference">9d. Training vs Inference <a class="heading-anchor" href="#9d-training-vs-inference" aria-label="Link to 9d-training-vs-inference">#</a></h4>
-
-<p><strong>推理侧收益更大</strong>:</p>
-<ul>
-<li>FP4/FP6 新精度专为推理量化设计</li>
-<li>DE 主要服务于推理时的压缩模型加载</li>
-<li>tcgen05 低延迟对小 batch 推理的延迟优化尤为关键（BS=1 延迟 12.3ms）</li>
-</ul>
-
-<p><strong>训练侧</strong>:</p>
-<ul>
-<li>1.56x 训练加速来自 SM 增量 × CTA pairing × TMEM 的乘法效应</li>
-<li>FP32 accumulator 吞吐减半是训练的主要约束</li>
-<li>能效提升 42% 对大规模训练的 TCO 有显著影响</li>
-</ul>
-
-<h3 id="10-competitive-positioning">10. Competitive Positioning <a class="heading-anchor" href="#10-competitive-positioning" aria-label="Link to 10-competitive-positioning">#</a></h3>
-
-<p>论文未做横向竞品对比。基于公开信息补充：</p>
-
-<table>
-<tr><th>Metric</th><th>B200</th><th>H200</th><th>MI300X</th><th>MI355X (est.)</th></tr>
-<tr><td>Process</td><td>N4P (est.)</td><td>N4</td><td>N5+N6</td><td>N5</td></tr>
-<tr><td>Transistors</td><td>208B</td><td>80B</td><td>153B</td><td>~300B (est.)</td></tr>
-<tr><td>FP16 TFLOPS</td><td>1929.2</td><td>1515.2</td><td>1307.4</td><td>~2300 (est.)</td></tr>
-<tr><td>FP8 TFLOPS</td><td>3851.4</td><td>3026.9</td><td>2614.9</td><td>~4600 (est.)</td></tr>
-<tr><td>HBM Capacity</td><td>192 GB</td><td>141 GB</td><td>192 GB</td><td>288 GB</td></tr>
-<tr><td>HBM BW</td><td>8.0 TB/s</td><td>4.8 TB/s</td><td>5.3 TB/s</td><td>8.0 TB/s</td></tr>
-<tr><td>TDP</td><td>~1000W</td><td>~700W</td><td>750W</td><td>~500W (est.)</td></tr>
-</table>
-
-<h3 id="11-comprehensive-spec-sheet">11. Comprehensive Spec Sheet <a class="heading-anchor" href="#11-comprehensive-spec-sheet" aria-label="Link to 11-comprehensive-spec-sheet">#</a></h3>
-
-<table>
-<tr><th>Category</th><th>Parameter</th><th>Value</th></tr>
-<tr><td><strong>Architecture</strong></td><td>Architecture Name</td><td>Blackwell</td></tr>
-<tr><td></td><td>GPU Code Name</td><td>B200</td></tr>
-<tr><td></td><td>Process Node</td><td>N4P (estimated)</td></tr>
-<tr><td></td><td>Transistors</td><td>208 billion (dual-die)</td></tr>
-<tr><td></td><td>Die Configuration</td><td>Dual-die via NV-HBI</td></tr>
-<tr><td><strong>Compute</strong></td><td>SMs</td><td>148</td></tr>
-<tr><td></td><td>GPCs</td><td>8</td></tr>
-<tr><td></td><td>Tensor Core Gen</td><td>5th Generation</td></tr>
-<tr><td></td><td>Boost Clock</td><td>~2.1 GHz (estimated)</td></tr>
-<tr><td><strong>Performance</strong></td><td>FP64 Peak</td><td>44.8 TFLOPS (measured)</td></tr>
-<tr><td></td><td>FP32 Peak</td><td>481.2 TFLOPS</td></tr>
-<tr><td></td><td>TF32 Peak</td><td>964.5 TFLOPS</td></tr>
-<tr><td></td><td>BF16 Peak</td><td>1926.8 TFLOPS</td></tr>
-<tr><td></td><td>FP16 Peak</td><td>1929.2 TFLOPS</td></tr>
-<tr><td></td><td>FP8 Peak</td><td>3851.4 TFLOPS</td></tr>
-<tr><td></td><td>FP6 Peak</td><td>5134.8 TFLOPS</td></tr>
-<tr><td></td><td>FP4 Peak</td><td>7702.5 TFLOPS</td></tr>
-<tr><td></td><td>INT8 Peak</td><td>3927.1 TOPS</td></tr>
-<tr><td><strong>Memory</strong></td><td>HBM Type</td><td>HBM3e</td></tr>
-<tr><td></td><td>HBM Capacity</td><td>192 GB</td></tr>
-<tr><td></td><td>HBM Stacks</td><td>8</td></tr>
-<tr><td></td><td>HBM Bandwidth</td><td>8.0 TB/s</td></tr>
-<tr><td></td><td>TMEM per SM</td><td>256 KB</td></tr>
-<tr><td></td><td>L2 Partitions</td><td>4</td></tr>
-<tr><td><strong>Interconnect</strong></td><td>Die-to-Die</td><td>NV-HBI</td></tr>
-<tr><td><strong>Power</strong></td><td>TDP (est.)</td><td>~1000W</td></tr>
-<tr><td></td><td>Training Efficiency</td><td>22.2 tok/s/W</td></tr>
-</table>
-
-<h3 id="12-infrastructure-impact">12. Infrastructure Impact <a class="heading-anchor" href="#12-infrastructure-impact" aria-label="Link to 12-infrastructure-impact">#</a></h3>
-
-<table>
-<tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>FP4 的 +8.2% perplexity 退化要求量化算法做 per-layer precision selection；FP32 accumulator 吞吐减半影响混合精度训练策略</td></tr>
-<tr><td>Kernel</td><td>TMEM 最优 tile 从 32×32→64×64 需要重新 tune；tcgen05 warp-level 执行改变 kernel 调度策略；OMMA 新指令需要 kernel 编译器支持</td></tr>
-<tr><td>Framework</td><td>vLLM/TRT-LLM 需适配 tcgen05 + TMEM 数据通路；DE 需要框架层集成压缩模型加载；FP6 缺乏软件工具链是当前最大 gap</td></tr>
-<tr><td>LLM</td><td>FP4 使 70B 模型可单卡推理；MoE 从量化获益更大（2.69x vs 2.50x）；192GB HBM3e 提升可服务模型规模</td></tr>
-<tr><td>Agent</td><td>BS=1 延迟 12.3ms 对实时 agent 交互有意义；P99/median = 1.12-1.14 使尾延迟更可控</td></tr>
-<tr><td>Cluster</td><td>8.0 TB/s HBM BW + NV-HBI 双 die 改变了节点内的通信模式；DE 支持压缩权重存储可降低跨节点数据传输量</td></tr>
-</table>
 
 </div>
 </div>

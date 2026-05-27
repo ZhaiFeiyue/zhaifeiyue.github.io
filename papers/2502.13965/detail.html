@@ -196,10 +196,11 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Autellix: An Efficient Serving Engine for LLM Agents as General Programs</h1>
-<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2502.13965</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">scheduling</span><span class="tag">llm-serving</span><span class="tag">agentic-programs</span><span class="tag">preemption</span><span class="tag">attained-service</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2502.13965</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-serving</span><span class="tag">program-scheduling</span><span class="tag">attained-service</span><span class="tag">kv-cache-locality</span><span class="tag">preemption</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/algorithm.html">← algorithm Survey</a>
+<a href="/papers/2502.13965.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2502.13965" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
@@ -208,7 +209,15 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<p>LLM serving引擎对agentic program存在program-level head-of-line blocking。Autellix将OS的Least Attained Service调度提升到program级别（PLAS/ATLAS），按program累计服务时间排优先级，配合反饥饿和locality-aware load balancing，在相同延迟下实现4-15×吞吐提升。</p>
+<p>现有LLM serving引擎将agentic program的每次LLM call视为独立请求调度，导致program-level head-of-line blocking。Autellix将OS的Least Attained Service调度提升到program级别（PLAS/ATLAS），按program累计服务时间排优先级，配合anti-starvation和locality-aware load balancing，在相同延迟下实现4-15×吞吐提升。</p>
+
+<h3 id="agent-scope">Agent scope <a class="heading-anchor" href="#agent-scope" aria-label="Link to agent-scope">#</a></h3>
+
+<ul>
+<li><strong>Task class</strong>: 通用agent serving基础设施——覆盖single-turn chatbot、multi-step ReAct、parallel Map-Reduce、tree-search MCTS等所有DAG模式的agentic program。不限定具体task domain。</li>
+<li><strong>Interaction pattern</strong>: 多轮sequential（chatbot/ReAct）和高并行multi-threaded（MCTS数十到数百并行线程）混合。Program结构仅在运行时逐步揭露。</li>
+<li><strong>Autonomy</strong>: Autellix本身是serving层，不参与agent决策。所服务program从human-in-the-loop（chatbot）到fully autonomous（MCTS search）全覆盖。系统对program结构zero knowledge——non-clairvoyant设计。</li>
+</ul>
 
 <hr>
 
@@ -216,38 +225,28 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
 
-<p>现有LLM serving系统（vLLM、SGLang）将每个LLM call视为独立请求调度，忽略同一agentic program内call之间的依赖关系。这导致两层head-of-line (HoL) blocking：</p>
+<p>现有LLM serving系统（vLLM、SGLang）将每次LLM call视为独立请求调度，完全忽略同一agentic program内call之间的依赖和program-level统计。这导致两层HoL blocking：</p>
 
 <ol>
-<li><strong>Call-level HoL blocking</strong>：长decode的call阻塞短call——已知问题，MLFQ可缓解。</li>
-<li><strong>Program-level HoL blocking</strong>：长program（含多个call）的新call在MLFQ中被放入最高优先级队列，持续阻塞短program——MLFQ在program级别反而可能比FCFS更差。</li>
+<li><strong>Call-level HoL blocking</strong>：长decode call阻塞短call——已知问题，MLFQ preemption可缓解。</li>
+<li><strong>Program-level HoL blocking</strong>：更隐蔽且更致命。长program（如100-call MCTS）每完成一个call就提交新call，新call在MLFQ中被放入最高优先级队列，反复挤占短program（如2-call chatbot）。实测中MLFQ在program级别的表现 ≈ FCFS甚至更差。</li>
 </ul>
-
-<p>实测表明，中等负载下program大部分时间花在等待（Fig. 5），短program的等待/执行时间比显著高于长program（Fig. 6）。</p>
 
 <p><img src="/assets/2502.13965/fig5.png" alt="Figure 5: Program execution and wait times"></p>
 
-<p><em>Paper's Figure 5, verbatim (caption: "Program execution and wait times, over different programs and system loads. With moderate loads, programs spend the most time waiting.").</em></p>
+<p><em>Paper's Figure 5 (caption: "Program execution and wait times, over different programs and system loads. With moderate loads, programs spend the most time waiting.").</em></p>
 
-<p>Fig. 5直观展示了在Chatbot、ReAct、MCTS三类workload下，wait time随负载增加而迅速主导program总延迟。这是Autellix设计的核心motivation：减少wait time既降低延迟又提升吞吐（完成更快→后续call更早到达→稳态并发更高）。</p>
+<p>Fig. 5展示了在Chatbot、ReAct、MCTS三类workload下，wait time随负载增加迅速主导program总延迟。中等负载下program等待时间已超过执行时间数倍。减少wait time既降低延迟，又通过加速program完成提高后续call的到达率，形成正反馈循环提升GPU utilization。</p>
 
 <h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
 
-<p><strong>Problem formulation.</strong> 给定 $N$ 个program以未知模式到达serving系统，每个program $i$ 是一个动态DAG，由LLM call和external interrupt（tool call/human input）交替组成。DAG结构仅在运行时逐步揭露。系统目标：</p>
+<p><strong>Problem formulation.</strong> 给定 $N$ 个program以未知模式到达serving系统，每个program $i$ 是一个动态DAG，由LLM call和external interrupt（tool call/human input）交替组成。DAG结构仅在运行时逐步揭露（non-clairvoyant）。目标：</p>
 
 <p>$$\min \frac{1}{N}\sum_{i=1}^{N} W_i$$</p>
 
-<p>其中 $W_i$ 是program $i$ 所有LLM call的累计等待时间。系统同时追求GPU利用率最大化和公平性（p95/p99延迟可控）。</p>
+<p>其中 $W_i$ 是program $i$ 所有LLM call的累计等待时间。同时追求GPU利用率最大化和公平性（p95/p99延迟可控）。</p>
 
-<p><strong>假设</strong>：Non-clairvoyant——不知道program到达模式、DAG结构、call时长分布。Programs是dynamic（不同prompt产生不同执行模式）、non-deterministic（何时终止未知）、distributed（可并行fork/join）。</p>
-
-<p><strong>Inputs/outputs of one scheduling step</strong>：</p>
-<ul>
-<li>Input：新到达的LLM call $c_j$，附带 $c_j.\text{pid}$（program ID）；全局process table中该program的累计service time</li>
-<li>Output：$c_j$ 在MLFQ中的队列分配（即优先级）</li>
-</ul>
-
-<p><strong>Method core — 单一核心机制</strong>：将Least Attained Service (LAS) 从per-request提升到per-program。新call的初始优先级不是最高，而是继承program已消耗的累计服务时间。</p>
+<p><strong>核心机制</strong>：将Least Attained Service (LAS) 从per-request提升到per-program。新call的初始优先级继承program已消耗的累计服务时间，而非从最高优先级开始。</p>
 
 <table>
 <tr><th>Aspect</th><th>Before: LAS/MLFQ per-request</th><th>After: PLAS/ATLAS per-program</th></tr>
@@ -261,28 +260,30 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <p>$$p(c_j) = \sum_{k < j,\; c_k.\text{id} = c_j.\text{id}} t_k$$</p>
 
-<p>物理意义：program消耗的总服务越少，优先级越高——偏好短/新program。</p>
+<p>物理意义：program消耗的总服务越少，优先级越高——偏好短/新program。在DHR分布（Pareto/log-normal）下，LAS最小化mean response time。</p>
 
 <p><strong>ATLAS</strong>（多线程program）：</p>
 
 <p>$$p(c_j) = \max_{T_i \in \text{program}(c_j)} s_i$$</p>
 
-<p>物理意义：以critical path（最长线程）的累计服务作为program优先级；同时在program内部优先调度critical path上的call以缩短makespan。</p>
+<p>物理意义：以critical path（最长线程）的累计服务作为program优先级。用max而非sum避免高并行度program（MCTS数十线程）的priority被过度膨胀。同时在program内部优先调度critical path上的call以缩短makespan。</p>
 
-<p><strong>Anti-starvation</strong>：当program的等待/服务比超过阈值 $\beta$，call被提升到 $Q_1$：</p>
+<p><strong>Anti-starvation</strong>：当program的wait/service ratio超过阈值 $\beta$，call被提升到 $Q_1$：</p>
 
 <p>$$\frac{W_{\text{total}}}{S_{\text{total}}} \geq \beta \implies \text{promote to } Q_1$$</p>
 
-<p><strong>核心技术壁垒</strong>：将LAS理论从单请求扩展到program级需要两个非trivial的insight：(1) 新call必须继承program累计service而非从零开始——这打破了传统MLFQ的基本假设；(2) 多线程program的priority必须用critical-path max而非sum——sum会过度惩罚高并行度program。这两个选择的组合使得ATLAS在MCTS等高并行workload上获得了15×的吞吐提升，而naive扩展（如对所有线程sum）无法达到同样效果。</p>
+<p>Promote后reset wait和service，防止oscillation。</p>
+
+<p><strong>核心技术壁垒</strong>：将LAS从单请求扩展到program级需要两个非trivial insight的组合：(1) 新call必须继承program累计service而非从零开始——打破传统MLFQ的基本假设（新请求享受最高优先级）；(2) 多线程program的priority必须用critical-path max而非sum——sum会使MCTS等高并行program被过度惩罚。这两个选择的正确组合使ATLAS在MCTS上获得15×吞吐提升，而naive扩展无法达到。</p>
 
 <h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
 
 <ul>
-<li><strong>Single-engine throughput</strong>：在相同median latency下，Autellix vs vLLM FCFS = 4-15×（Chatbot ~4×, ReAct ~4-5×, MapReduce ~6×, MCTS ~15×）。</li>
-<li><strong>Multi-engine throughput</strong>：locality-aware load balancer vs round-robin = up to 1.5×。</li>
-<li><strong>KV-cache swap优化</strong>：batched transfer vs vLLM default = 18× fewer swap operations, 3-7× swap time reduction, ~1.3× throughput。</li>
-<li><strong>Tail latency</strong>：anti-starvation机制使p95/p99可控，无starvation。</li>
-<li><strong>ATLAS vs PLAS on multi-threaded</strong>：ATLAS在MapReduce和MCTS上优于PLAS，验证critical-path优先级设计。</li>
+<li><strong>Single-engine throughput</strong>：相同median latency下 Autellix vs vLLM FCFS = 4-15×（Chatbot ~4×, ReAct ~4-5×, MapReduce ~6×, MCTS ~15×）</li>
+<li><strong>Multi-engine throughput</strong>：locality-aware load balancer vs round-robin = up to 1.5×</li>
+<li><strong>KV-cache swap优化</strong>：batched transfer减少18× swap operations, 3-7× swap time, ~1.3× throughput</li>
+<li><strong>Tail latency</strong>：anti-starvation机制使p95/p99可控，无starvation</li>
+<li><strong>ATLAS vs PLAS</strong>：在MapReduce和MCTS上ATLAS优于PLAS，验证critical-path设计</li>
 </ul>
 
 <hr>
@@ -291,21 +292,65 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <p><img src="/assets/2502.13965/fig8.png" alt="Figure 8: Autellix system architecture"></p>
 
-<p><em>Paper's Figure 8, verbatim (caption: "Autellix's system architecture. Users run their programs locally, which initiates a stateful session and submits LLM calls to Autellix's backend. Autellix leverages a global process table to track sessions and better inform its custom load-balancer and scheduler.").</em></p>
+<p><em>Paper's Figure 8 (caption: "Autellix's system architecture. Users run their programs locally, which initiates a stateful session and submits LLM calls to Autellix's backend. Autellix leverages a global process table to track sessions and better inform its custom load-balancer and scheduler.").</em></p>
 
-<p>Autellix的核心架构：用户端program通过stateful session API与Autellix后端通信。后端维护global process table，记录每个program的累计service time、线程元数据、等待时间等。Load balancer根据input length将call路由到合适的engine（长call → program's primary engine保持locality，短call → least-loaded engine均衡负载）。每个engine内的scheduler使用MLFQ + program-level priority进行调度。</p>
+<p>Autellix在vLLM之上增加一层program-aware serving层。用户端program通过stateful session API与后端通信，每个session对应一个program在global process table中的entry。Backend包含两个核心组件：(1) Load balancer根据input length将call路由到合适engine（长call → program's primary engine保持KV-cache locality，短call → least-loaded engine均衡负载）；(2) 每个engine内的scheduler使用MLFQ + program-level priority调度。</p>
 
 <p><img src="/assets/2502.13965/fig1.png" alt="Figure 1: Agentic program DAG workflows"></p>
 
-<p><em>Paper's Figure 1, verbatim (caption: "Execution workflows for Agentic Programs. Agentic programs are highly dynamic execution workflows that follow a directed acyclic graph (DAG). It consists of LLM calls from one or more LLM agents and external interrupts (i.e. tool calls, humans).").</em></p>
+<p><em>Paper's Figure 1 (caption: "Execution workflows for Agentic Programs. Agentic programs are highly dynamic execution workflows that follow a directed acyclic graph (DAG). It consists of LLM calls from one or more LLM agents and external interrupts (i.e. tool calls, humans).").</em></p>
 
-<p>Fig. 1展示了四类代表性agentic program的DAG结构：(a) Chatbot是最简单的线性链，(b) ReAct在LLM call和tool call之间交替，(c) Map-Reduce在某步fork出并行线程后join，(d) MCTS形成树状结构，包含大量并行expand/evaluate/backpropagate操作。这些DAG的dynamic和non-deterministic特性是non-clairvoyant scheduling的根本原因。</p>
+<p>Fig. 1展示了四类代表性program的DAG结构：(a) Chatbot为线性链，(b) ReAct在LLM call和tool call之间交替，(c) Map-Reduce在某步fork出并行线程后join，(d) MCTS形成树状结构（expand/evaluate/backpropagate）。DAG的dynamic和non-deterministic特性使scheduling必须是non-clairvoyant的。</p>
+
+<h3 id="agent-loop-—-请求生命周期">Agent loop — 请求生命周期 <a class="heading-anchor" href="#agent-loop-—-请求生命周期" aria-label="Link to agent-loop-—-请求生命周期">#</a></h3>
+
+<div class="mermaid">
+sequenceDiagram
+    participant P as Agentic Program
+    participant A as Autellix Backend
+    participant PT as Process Table
+    participant LB as Load Balancer
+    participant E as vLLM Engine(s)
+
+    P->>A: establish_session(program_id)
+    A->>PT: create entry (service=0, wait=0)
+
+    loop Each LLM call in program DAG
+        P->>A: llm_call(session_id, prompt)
+        A->>PT: lookup program cumulative service
+        A->>LB: route(long→primary engine, short→least-loaded)
+        LB->>E: enqueue with priority = f(program_service)
+        Note over E: MLFQ demotion within engine
+        Note over E: Anti-starvation: wait/service ≥ β → promote
+        E-->>A: response tokens
+        A->>PT: service ← max(service, thread_service + model_time)
+        A-->>P: return response
+        opt External interrupt
+            P->>P: tool call / human input (outside Autellix)
+        end
+    end
+
+    P->>A: end_session
+    A->>PT: remove entry
+</div>
+
+<h3 id="planning-reasoning（被服务的program侧）">Planning & reasoning（被服务的program侧） <a class="heading-anchor" href="#planning-reasoning（被服务的program侧）" aria-label="Link to planning-reasoning（被服务的program侧）">#</a></h3>
+
+<p>Autellix本身不执行planning——它是serving基础设施。但其调度算法的设计充分考虑了不同planning模式产生的serving压力特征：</p>
+
+<ul>
+<li><strong>ReAct (think-then-act loop)</strong>：单线程sequential call链，call长度高度可变。PLAS通过累计service自动将长conversation deprioritize。</li>
+<li><strong>MCTS (tree search)</strong>：最高并行度，单engine仅能处理 ~0.2 programs/sec。ATLAS通过critical-path max精确追踪program进度，避免对并行线程数的惩罚。</li>
+<li><strong>Map-Reduce</strong>：fork-join模式，critical path取决于最慢线程。ATLAS优先调度critical path上的call减少idle等待。</li>
+</ul>
+
+<p>Autellix不限制program的decomposition方式、搜索深度、backtracking策略——这些均由program层（LangChain/AutoGen等）决定。</p>
 
 <p><img src="/assets/2502.13965/fig9.png" alt="Figure 9: Critical path for multi-threaded programs"></p>
 
-<p><em>Paper's Figure 9, verbatim (caption: "Critical path for multi-threaded programs. (Left) Example of a critical path through a DAG. (Right) Best-case scenario makespan, 14 units, is achieved by prioritizing calls on the critical path.").</em></p>
+<p><em>Paper's Figure 9 (caption: "Critical path for multi-threaded programs. (Left) Example of a critical path through a DAG. (Right) Best-case scenario makespan, 14 units, is achieved by prioritizing calls on the critical path.").</em></p>
 
-<p>Fig. 9说明ATLAS的critical-path逻辑：多线程program的makespan取决于最长线程（critical path）。ATLAS通过 $\max s_i$ 识别critical path，并在program内部优先调度该path上的call，从而在不增加total compute的情况下缩短program完成时间。右图展示了最优调度（14 units）vs 非critical-path-aware调度的对比。</p>
+<p>Fig. 9说明ATLAS的critical-path逻辑。多线程program的makespan取决于最长线程。ATLAS通过 $\max s_i$ 识别critical path，在program内部优先调度该path上的call。右图对比：critical-path-aware调度达到最优makespan 14 units，而非critical-path-aware调度的makespan更长。</p>
 
 <hr>
 
@@ -316,63 +361,64 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <table>
 <tr><th>Symbol</th><th>Meaning</th></tr>
 <tr><td>$c_j$</td><td>第 $j$ 个到达的LLM call</td></tr>
-<tr><td>$c_j.\text{id}$ / $c_j.\text{pid}$</td><td>Call $c_j$ 所属program的ID</td></tr>
-<tr><td>$t_k$</td><td>已完成call $c_k$ 的执行时间（decode steps）</td></tr>
-<tr><td>$p(c_j)$</td><td>Call $c_j$ 的优先级（值越小优先级越高）</td></tr>
-<tr><td>$T_i$</td><td>多线程program中的第 $i$ 个线程</td></tr>
+<tr><td>$c_j.\text{id}$ / $c_j.\text{pid}$</td><td>Call所属program的ID</td></tr>
+<tr><td>$t_k$</td><td>已完成call $c_k$ 的执行时间</td></tr>
+<tr><td>$p(c_j)$</td><td>Call的优先级（值越小优先级越高）</td></tr>
+<tr><td>$T_i$</td><td>多线程program中第 $i$ 个线程</td></tr>
 <tr><td>$s_i$</td><td>线程 $T_i$ 的累计服务时间 $= \sum_{c_k \in T_i} t_k$</td></tr>
-<tr><td>$Q_1, ..., Q_K$</td><td>MLFQ的 $K$ 个优先级队列，$Q_1$ 最高</td></tr>
+<tr><td>$Q_1, \ldots, Q_K$</td><td>MLFQ的 $K$ 个优先级队列，$Q_1$ 最高</td></tr>
 <tr><td>$\beta$</td><td>Anti-starvation阈值（wait/service ratio）</td></tr>
 <tr><td>$W_i$</td><td>Program $i$ 所有call的累计等待时间</td></tr>
 </table>
 
 <h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
 
-<p><strong>PLAS priority</strong>:</p>
+<p><strong>PLAS priority</strong>: $p(c_j) = \sum_{k < j,\; c_k.\text{id} = c_j.\text{id}} t_k$</p>
 
-<p>$$p(c_j) = \sum_{k < j,\; c_k.\text{id} = c_j.\text{id}} t_k$$</p>
+<p>累计已消耗服务越多优先级越低。借鉴OS的LAS调度，但作用域从单个job扩展到program（多个sequential calls）。在DHR分布下LAS最小化mean response time（Rai et al. 2003）。</p>
 
-<p>累计已消耗的服务越多，优先级越低。这直接借鉴了OS中的Least Attained Service (LAS) 调度，但作用域从单个job扩展到了program（多个sequential calls）。在DHR (Decreasing Hazard Rate) 分布下（如Pareto/log-normal），LAS最小化mean response time。</p>
+<p><strong>ATLAS priority</strong>: $p(c_j) = \max_{T_i \in \text{program}(c_j)} s_i$</p>
 
-<p><strong>ATLAS priority</strong>:</p>
+<p>用program中最长线程的累计服务作为优先级。Max准确捕捉program进度——critical path决定completion time；sum会使高并行program被过度惩罚。</p>
 
-<p>$$p(c_j) = \max_{T_i \in \text{program}(c_j)} s_i$$</p>
+<p><strong>Process table update</strong>: $\text{pd.service} \leftarrow \max(\text{pd.service},\; c.\text{service} + c.\text{model\_time})$</p>
 
-<p>用program中最长线程的累计服务作为优先级。如果用sum代替max，高并行度program（如MCTS有数十线程）的priority会被过度膨胀，导致不公平。Max准确捕捉了program的"进度"——critical path决定completion time。</p>
+<p>对单线程退化为简单累加；对多线程取max追踪critical path。</p>
 
-<p><strong>Process table update</strong>:</p>
+<p><strong>Anti-starvation condition</strong>: $W_{\text{total}} / S_{\text{total}} \geq \beta \implies \text{promote to } Q_1$</p>
 
-<p>$$\text{pd.service} \leftarrow \max(\text{pd.service},\; c.\text{service} + c.\text{model\_time})$$</p>
+<p>其中 $W_{\text{total}} = \text{pt}[c.\text{pid}].\text{wait} + c.\text{wait}$，$S_{\text{total}} = \text{pt}[c.\text{pid}].\text{service} + c.\text{model\_time}$。Promote后reset wait和service——不reset则service归零后立即再次被promote → oscillation。</p>
 
-<p>对单线程program退化为简单累加；对多线程program取max以追踪critical path。</p>
-
-<p><strong>Anti-starvation condition</strong>:</p>
-
-<p>$$\frac{W_{\text{total}}}{S_{\text{total}}} \geq \beta \implies \text{promote to } Q_1$$</p>
-
-<p>其中 $W_{\text{total}} = \text{pt}[c.\text{pid}].\text{wait} + c.\text{wait}$，$S_{\text{total}} = \text{pt}[c.\text{pid}].\text{service} + c.\text{model\_time}$。Promote后reset wait和service，防止反复promote。</p>
-
-<h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+<h3 id="6-base-checks">6 base checks <a class="heading-anchor" href="#6-base-checks" aria-label="Link to 6-base-checks">#</a></h3>
 
 <ol>
 <li><strong>PLAS定义一致性</strong>：§4.2.1定义的 $p(c_j)$ 与Algorithm 1中queue assignment一致——新call被放入对应program累计service的queue，而非 $Q_1$。✓</li>
-<li><strong>ATLAS max vs sum</strong>：§4.2.1明确说明用max（critical path），Algorithm 1 line 4中 <code>pd.service = max(pd.service, c.service + c.model_time)</code> 确认实现一致。✓</li>
-<li><strong>Anti-starvation不破坏correctness</strong>：promote到 $Q_1$ 后reset service/wait（Algorithm 1 lines 29-30），避免一次promote后永久高优先级。✓</li>
-<li><strong>MLFQ demotion与program priority正交</strong>：call在queue内按MLFQ quantum demotion处理call-level HoL，跨queue的初始assignment处理program-level HoL——两层机制互不干扰。✓</li>
+<li><strong>ATLAS max vs sum</strong>：§4.2.1说明用max（critical path），Algorithm 1 line 4中 <code>pd.service = max(...)</code> 确认。✓</li>
+<li><strong>Anti-starvation不破坏correctness</strong>：promote后reset service/wait（Algorithm 1 lines 29-30），避免永久高优先级。✓</li>
+<li><strong>MLFQ demotion与program priority正交</strong>：call在queue内按quantum demotion处理call-level HoL，跨queue的初始assignment处理program-level HoL——两层机制互不干扰。✓</li>
 <li><strong>Load balancer threshold无循环依赖</strong>：input token count是call自身属性，不依赖scheduler状态。✓</li>
-<li><strong>Non-clairvoyant假设一致性</strong>：所有scheduling决策仅依赖已完成call的runtime（past），不使用任何future预测。✓</li>
+<li><strong>Non-clairvoyant假设一致性</strong>：所有scheduling决策仅依赖已完成call的runtime（past），不使用future预测。✓</li>
+</ul>
+
+<h3 id="agent-specific-checks">Agent-specific checks <a class="heading-anchor" href="#agent-specific-checks" aria-label="Link to agent-specific-checks">#</a></h3>
+
+<ol>
+<li><strong>Success-rate model</strong>：论文不测量task success rate（如SWE-bench resolve rate），仅测量serving层指标（throughput/latency）。Autellix作为serving基础设施不改变program的output质量，仅改变完成速度——scope界定合理。但无法排除极端preemption导致cache eviction进而影响output的edge case。</li>
+<li><strong>Latency budget per turn</strong>：Fig. 5提供wait time vs execution time vs interrupt time分解。Wait time在中等负载下主导（>50% of total）。Per-turn absolute latency未给出，通过throughput-latency Pareto curves间接展示。论文未声称"interactive latency"。</li>
+<li><strong>Failure mode classification</strong>：识别三类failure mode——(a) call-level HoL blocking（已知，MLFQ解）, (b) program-level HoL blocking（本文发现，PLAS/ATLAS解）, (c) long-program starvation（anti-starvation机制解）。方法精确针对(b)，(a)(c)作为辅助机制覆盖。</li>
+<li><strong>无形式化作者证明 — 仅实证</strong>。LAS在DHR分布下的optimality是已知结果；program-level LAS的formal competitive ratio未证明。可被bounded的metric：在特定分布假设下program-level mean response time的competitive ratio相对于clairvoyant SRPT。</li>
 </ul>
 
 <h3 id="理论连接">理论连接 <a class="heading-anchor" href="#理论连接" aria-label="Link to 理论连接">#</a></h3>
 
-<p><strong>无独立新定理</strong>——Autellix不证明新的optimality result。但其理论基础来自已知结果：</p>
+<p>Autellix不证明新的optimality theorem。理论基础来自已知结果：</p>
 
 <ul>
-<li>Rai et al. (2003): LAS在DHR分布下最小化mean response time（non-clairvoyant optimal）。</li>
-<li>Kim et al. (HPCA 2010, ATLAS): per-thread attained service用于DRAM调度——Autellix的ATLAS命名和max-across-threads思路直接受此启发。</li>
+<li>Rai et al. (2003): LAS在DHR分布下non-clairvoyant optimal for mean response time。</li>
+<li>Kim et al. (HPCA 2010, ATLAS): per-thread attained service用于DRAM scheduling——ATLAS命名和max-across-threads思路直接受此启发。</li>
 </ul>
 
-<p><strong>期望但缺失的理论保证</strong>：(1) program-level LAS（跨sequential calls）的formal optimality条件——当call数量也服从DHR时是否仍optimal？(2) ATLAS在DAG调度下的competitive ratio。Paper选择了纯实证路线。</p>
+<p><strong>期望但缺失的理论保证</strong>：(1) program-level LAS跨sequential calls的formal optimality条件——当call数量也服从DHR时是否仍optimal？(2) ATLAS在DAG调度下的competitive ratio vs SRPT。Fig. 18的simulation对比量化了non-clairvoyance的代价。</p>
 
 <hr>
 
@@ -382,31 +428,41 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <ul>
 <li><strong>Hardware</strong>：NVIDIA A100-80GB GPU</li>
-<li><strong>Models</strong>：LLaMA-3.1-8B（单卡），LLaMA-3.1-70B（多卡）</li>
+<li><strong>Models</strong>：LLaMA-3.1-8B（单卡），LLaMA-3.1-70B（多卡tensor parallel）</li>
 <li><strong>Baselines</strong>：vLLM FCFS, vLLM + MLFQ (FastServe-style), round-robin load balancer</li>
-<li><strong>Workloads</strong>：Chatbot（单线程，多轮对话）, ReAct（单线程，tool call交替）, Map-Reduce（多线程fork-join）, MCTS（多线程树搜索）</li>
-<li><strong>Metrics</strong>：program-level throughput（相同latency下完成program数/单位时间）, end-to-end latency (median/p95/p99), wait time breakdown</li>
+<li><strong>Workloads</strong>：Chatbot（多轮对话）, ReAct（tool call交替）, Map-Reduce（fork-join）, MCTS（树搜索）</li>
+<li><strong>Metrics</strong>：program-level throughput, end-to-end latency (median/p95/p99), wait time breakdown</li>
 </ul>
 
 <h3 id="hol-blocking实证">HoL blocking实证 <a class="heading-anchor" href="#hol-blocking实证" aria-label="Link to hol-blocking实证">#</a></h3>
 
 <p><img src="/assets/2502.13965/fig6.png" alt="Figure 6: Ratio of waiting to execution time"></p>
 
-<p><em>Paper's Figure 6, verbatim (caption: "Ratio of Waiting to Execution Time for LLM Calls and Programs. Head-of-line blocking occurs when short LLM calls and programs wait significantly longer than their execution times.").</em></p>
+<p><em>Paper's Figure 6 (caption: "Ratio of Waiting to Execution Time for LLM Calls and Programs. Head-of-line blocking occurs when short LLM calls and programs wait significantly longer than their execution times.").</em></p>
 
-<p>Fig. 6是论文最重要的diagnostic figure之一。横轴按decode steps（call级）或LLM call数（program级）分组，纵轴是wait/exec ratio。关键观察：(a)(c) MLFQ在call级别改善了HoL（短call ratio下降），但 (b)(d) 在program级别MLFQ ≈ FCFS甚至更差——短program仍然被长program的高优先级新call阻塞。这直接证明了program-level scheduling的必要性。</p>
+<p>Fig. 6是论文最重要的diagnostic figure。横轴按decode steps（call级）或LLM call数（program级）分组，纵轴是wait/exec ratio。关键观察：(a)(c) MLFQ在call级改善了HoL（短call ratio下降），但 (b)(d) 在program级MLFQ ≈ FCFS甚至更差——短program仍被长program的高优先级新call阻塞。这直接证明了program-level scheduling的必要性。</p>
 
 <h3 id="data-locality">Data locality <a class="heading-anchor" href="#data-locality" aria-label="Link to data-locality">#</a></h3>
 
 <p><img src="/assets/2502.13965/fig7.png" alt="Figure 7: Prefix cache hit rates"></p>
 
-<p><em>Paper's Figure 7, verbatim (caption: "Prefix cache hit rates for LLM calls within and across programs. LLM calls within the same program often share KV cache, whereas LLM calls across programs typically do not.").</em></p>
+<p><em>Paper's Figure 7 (caption: "Prefix cache hit rates for LLM calls within and across programs. LLM calls within the same program often share KV cache, whereas LLM calls across programs typically do not.").</em></p>
 
-<p>Fig. 7验证了load balancer设计的前提假设：intra-program cache hit rate在各input length下均>90%（call共享conversation history），而inter-program hit rate随input length指数衰减。这解释了为什么长call应路由到program's primary engine（高cache hit），短call可分散（主要是system prompt，hit rate对engine选择不敏感）。</p>
+<p>Intra-program cache hit rate在各input length下均 >90%，inter-program hit rate随input length指数衰减。这验证了load balancer设计的前提：长call应路由到primary engine（高cache reuse），短call可分散（仅system prompt，routing不敏感）。</p>
 
 <h3 id="主要吞吐结果">主要吞吐结果 <a class="heading-anchor" href="#主要吞吐结果" aria-label="Link to 主要吞吐结果">#</a></h3>
 
-<p>核心结果：Autellix在相同median latency下的throughput improvement。</p>
+<p><img src="/assets/2502.13965/fig12.png" alt="Figure 12: Single-engine results for Chatbot and ReAct"></p>
+
+<p><em>Paper's Figure 12: single-engine throughput-latency Pareto curves — Autellix (PLAS/ATLAS) vs vLLM (FCFS) vs MLFQ across Chatbot and ReAct workloads on LLaMA-3.1-8B, A100-80GB.</em></p>
+
+<p>Fig. 12展示了单engine下Chatbot和ReAct的throughput-latency Pareto curves。Autellix的Pareto frontier在所有latency target下显著优于FCFS和MLFQ。MLFQ因program-level blocking几乎无法改善甚至劣于FCFS。</p>
+
+<p><img src="/assets/2502.13965/fig13.png" alt="Figure 13: Single-engine results for MCTS and Map-Reduce"></p>
+
+<p><em>Paper's Figure 13: single-engine throughput-latency curves for MCTS and Map-Reduce workloads, showing 10-15× improvement for MCTS.</em></p>
+
+<p>Fig. 13展示了MCTS和Map-Reduce的结果。MCTS获得最大提升（~15×），因为单engine仅能处理 ~0.2 programs/sec，program-level blocking极其严重，每个program含数十到数百个call。</p>
 
 <table>
 <tr><th>Workload</th><th>Autellix vs FCFS</th><th>Autellix vs MLFQ</th><th>ATLAS vs PLAS</th></tr>
@@ -416,27 +472,38 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <tr><td>MCTS</td><td>~15×</td><td>~15×</td><td>ATLAS > PLAS</td></tr>
 </table>
 
-<p>MCTS获得最大提升因为：(1) 单engine仅能处理~0.2 programs/sec，program-level blocking极其严重；(2) 每个program含数十到数百个call，长program的新call反复挤占短program。</p>
+<h3 id="comparison-to-optimal-policy">Comparison to optimal policy <a class="heading-anchor" href="#comparison-to-optimal-policy" aria-label="Link to comparison-to-optimal-policy">#</a></h3>
 
-<h3 id="ablation">Ablation <a class="heading-anchor" href="#ablation" aria-label="Link to ablation">#</a></h3>
+<p><img src="/assets/2502.13965/fig18.png" alt="Figure 18: Comparison to optimal scheduling policy"></p>
 
-<p><img src="/assets/2502.13965/fig19.png" alt="Figure 19: KV-cache swap optimization"></p>
+<p><em>Paper's Figure 18 (caption: "Comparison to optimal scheduling policy. In simulation, Autellix outperforms other scheduling policies; however, there remains a visible gap relative to the optimal policy (SRPT).").</em></p>
 
-<p><em>Paper's Figure 19, verbatim (caption: "KV-cache swap optimization results showing Autellix's batched transfer vs vLLM's kernel.").</em></p>
+<p>Fig. 18在simulation中对比Autellix与clairvoyant最优策略SRPT。Autellix优于所有non-clairvoyant baseline，但与SRPT存在明显gap——量化了non-clairvoyance的fundamental cost，指明进一步优化方向（如partial workload prediction）。</p>
 
-<p>Preemptive scheduling导致频繁KV-cache swap。Autellix通过batching parallel block transfers将swap operations减少18×、swap time减少3-7×。这是使preemptive scheduling实际可行的关键实现优化——没有此优化，preemption的overhead可能抵消scheduling收益。</p>
-
-<p><strong>Anti-starvation threshold $\beta$ 敏感性</strong>：$\beta$ 过低→频繁promote→退化为FCFS；$\beta$ 过高→长program被无限期饿死。经验有效范围：wait/service ratio 3-7。</p>
-
-<p><strong>MLFQ队列数 $K$</strong>：更多queue提供更细粒度preemption，$K=8\text{-}16$ 后收益递减。</p>
-
-<h3 id="steady-state行为">Steady-state行为 <a class="heading-anchor" href="#steady-state行为" aria-label="Link to steady-state行为">#</a></h3>
+<h3 id="steady-state与ablation">Steady-state与ablation <a class="heading-anchor" href="#steady-state与ablation" aria-label="Link to steady-state与ablation">#</a></h3>
 
 <p><img src="/assets/2502.13965/fig4.png" alt="Figure 4: Steady-state LLM calls"></p>
 
-<p><em>Paper's Figure 4, verbatim (caption: "Number of LLM calls in serving engine during steady state over 1 hour. Optimizing programs' wait times increases the volume of LLM calls at steady state.").</em></p>
+<p><em>Paper's Figure 4 (caption: "Number of LLM calls in serving engine during steady state over 1 hour. Optimizing programs' wait times increases the volume of LLM calls at steady state.").</em></p>
 
-<p>Fig. 4展示了一个有趣的正反馈：Autellix通过减少program wait time使program更快完成，更快的完成意味着后续call更早提交，稳态下GPU同时处理的call数量增加约10个。这说明program-level scheduling的收益不仅仅是延迟改善，还通过提高到达率间接提升了GPU利用率。</p>
+<p>Fig. 4展示正反馈效应：减少wait time → program更快完成 → 后续call更早提交 → 稳态下GPU同时处理的call数增加 ~10个。Program-level scheduling不仅改善延迟，还通过提高到达率提升GPU utilization。</p>
+
+<p><strong>KV-cache swap</strong>：preemptive scheduling增加swap频率，Autellix通过batching parallel block transfers减少18× swap operations, 3-7× swap time, ~1.3× throughput。使preemption实际可行。</p>
+
+<p><strong>Anti-starvation $\beta$</strong>：$\beta$ 过低 → 频繁promote → 退化为FCFS；过高 → 长program饿死。有效范围：wait/service ratio 3-7。</p>
+
+<p><strong>MLFQ队列数 $K$</strong>：更多queue提供更细粒度preemption，$K = 8\text{-}16$ 后收益递减。</p>
+
+<h3 id="tool-environment-interface">Tool & environment interface <a class="heading-anchor" href="#tool-environment-interface" aria-label="Link to tool-environment-interface">#</a></h3>
+
+<p>Autellix作为serving中间层的接口设计：</p>
+
+<ul>
+<li><strong>API形式</strong>：Stateful session API。与OpenAI stateless API不同，program先建立session获得session_id，后续LLM call附带session_id提交。与LangChain/AutoGen等框架compatible——替换endpoint + 添加session lifecycle即可。</li>
+<li><strong>Side effects</strong>：Autellix是read-only中间层——不修改program逻辑，不拦截tool call。Tool call在program端直接执行，结果作为下一次LLM call的input提交。</li>
+<li><strong>Error surface</strong>：scheduling/routing failure对program透明——失败call按OpenAI error convention返回。Engine-level error（OOM, CUDA error）由vLLM处理。</li>
+<li><strong>Environment contract</strong>：stateful（session间保持process table entry）但non-deterministic（scheduling依赖concurrent workload）。Engine间无shared state，靠routing维持locality。</li>
+</ul>
 
 <hr>
 
@@ -444,40 +511,106 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <table>
 <tr><th>Step</th><th>Claim</th><th>Evidence</th><th>强度</th></tr>
-<tr><td>1</td><td>Agentic program的延迟由wait time主导，而非execution time</td><td>Fig. 5: 中等负载下wait >> exec across all workloads</td><td>强——直接测量，三类workload一致</td></tr>
-<tr><td>2</td><td>Wait time的根源是双层HoL blocking：call-level + program-level</td><td>Fig. 6: MLFQ解决call-level但program-level不变或更差；Fig. 2 motivating example: MLFQ = FCFS = 18 units</td><td>强——MLFQ反而更差是convincing的counterexample</td></tr>
-<tr><td>3</td><td>按program累计service排优先级可消除program-level blocking（借鉴LAS理论）</td><td>PLAS/ATLAS定义 + LAS在DHR分布下的已知optimality（Rai et al. 2003）</td><td>中——理论连接依赖分布假设（paper未验证workload是否DHR）</td></tr>
-<tr><td>4</td><td>ATLAS的critical-path max优于naive sum用于多线程program</td><td>Fig. 9 motivating example + §6 ATLAS vs PLAS ablation（MapReduce/MCTS上ATLAS胜出）</td><td>中——ablation有力但缺少formal competitive analysis</td></tr>
-<tr><td>5</td><td>综合系统（MLFQ + program priority + anti-starvation + batched swap）实现4-15× throughput</td><td>§6全套实验：4 workloads × 2 models × single/multi-engine</td><td>强——多维度一致性高，15× on MCTS尤其显著</td></tr>
-<tr><td>6</td><td>Intra-program KV cache locality支持data-locality-aware routing</td><td>Fig. 7: intra >90% vs inter指数衰减 + multi-engine实验 up to 1.5×</td><td>中——1.5×的multi-engine gain相对modest</td></tr>
+<tr><td>1</td><td>Agentic program延迟由wait time主导</td><td>Fig. 5: 中等负载下wait >> exec across all workloads</td><td>强——直接测量，三类workload一致</td></tr>
+<tr><td>2</td><td>Wait time根源是双层HoL blocking（call-level + program-level）</td><td>Fig. 6: MLFQ解决call-level但program-level不变/更差</td><td>强——MLFQ反而更差是convincing counterexample</td></tr>
+<tr><td>3</td><td>按program累计service排优先级可消除program-level blocking</td><td>PLAS/ATLAS定义 + LAS在DHR分布下的已知optimality</td><td>中——理论依赖分布假设（paper未验证workload是否DHR）</td></tr>
+<tr><td>4</td><td>ATLAS的critical-path max优于naive sum用于多线程program</td><td>Fig. 9 example + ATLAS vs PLAS ablation on MapReduce/MCTS</td><td>中——ablation有力但缺formal competitive analysis</td></tr>
+<tr><td>5</td><td>综合系统实现4-15× throughput at same latency</td><td>§6全套实验：4 workloads × 2 models × single/multi-engine</td><td>强——多维度一致性高，MCTS 15×尤为显著</td></tr>
+<tr><td>6</td><td>Intra-program KV-cache locality支持locality-aware routing</td><td>Fig. 7: intra >90% vs inter指数衰减 + multi-engine 1.5×</td><td>中——1.5× multi-engine gain相对modest</td></tr>
+<tr><td>7</td><td>Non-clairvoyant scheduling仍有提升空间</td><td>Fig. 18: Autellix vs SRPT存在visible gap</td><td>信息——定量了upper bound，指明future work</td></tr>
 </table>
 
 <hr>
 
 <h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
 
-<p>Autellix作为vLLM上层实现，论文未开源完整代码。</p>
+<p><strong>代码开源状态</strong>：论文未提供public repository。[实现未公开]</p>
 
 <p><strong>关键实现细节</strong>：</p>
 
 <ol>
-<li><strong>新call的MLFQ queue assignment</strong>（Algorithm 1的核心修改）：传统MLFQ将新请求放入 $Q_1$，Autellix根据process table中program的累计service time决定初始queue。这一行代码级的改动是program-level scheduling生效的关键——没有它，长program的新call仍会享受最高优先级。</li>
+<li><strong>新call的MLFQ queue assignment</strong>（Algorithm 1核心修改）：传统MLFQ将新请求放入 $Q_1$，Autellix根据process table中program的累计service time决定初始queue。这一改动是program-level scheduling生效的关键——没有它，长program的新call仍享受最高优先级。vLLM的scheduler代码（<code>vllm/core/scheduler.py</code>）是最接近的实现base。</li>
 </ul>
 
 <ol>
-<li><strong>Batched KV-cache block transfer</strong>：vLLM默认逐block swap，preemptive scheduling下频繁swap成为bottleneck。Autellix将同一call的多个KV block打包为单次PCIe transfer，减少18× operations——这是使preemption实际可行的实现前提。</li>
+<li><strong>Batched KV-cache block transfer</strong>：vLLM默认逐block swap，preemptive scheduling下频繁swap成为bottleneck。Autellix将同一call的多个KV block打包为单次PCIe transfer，减少18× operations——使preemption实际可行的实现前提。</li>
 </ul>
 
-<p><strong>核心技术壁垒</strong>（详述）：</p>
-<p>co-design scheduler与program-level metadata tracking。Process table必须在call completion时同步更新（Algorithm 1 line 4），且update必须用max（for ATLAS）而非sum——错误的聚合函数会导致高并行program被过度惩罚。Anti-starvation的reset逻辑（promote后清零）也是subtle的：不reset则一次promote后service归零→再次被promote→oscillation。这些设计选择的组合空间大，paper的贡献在于找到了正确的组合。</p>
+<p><strong>核心技术壁垒</strong>（详述）：co-design scheduler与program-level metadata tracking。Process table必须在call completion时同步更新（Algorithm 1 line 4），且update必须用max（for ATLAS）而非sum——错误的聚合函数导致高并行program被过度惩罚。Anti-starvation的reset逻辑也是subtle：不reset则service归零 → 再次promote → oscillation。这些设计选择的组合空间大，正确组合是核心贡献。</p>
 
-<h3 id="reproducibility-ecosystem">Reproducibility & ecosystem <a class="heading-anchor" href="#reproducibility-ecosystem" aria-label="Link to reproducibility-ecosystem">#</a></h3>
+<h3 id="llm-backbone-requirements">LLM backbone requirements <a class="heading-anchor" href="#llm-backbone-requirements" aria-label="Link to llm-backbone-requirements">#</a></h3>
 
 <ul>
-<li><strong>代码开源状态</strong>：论文未提供public repository。[实现未公开]</li>
-<li><strong>最近open reference</strong>：vLLM的scheduler代码（<code>vllm/core/scheduler.py</code>）是最接近的base，可在其上实现PLAS/ATLAS queue assignment逻辑。</li>
-<li><strong>社区复现</strong>：截至论文发布时无已知第三方复现报告。</li>
-<li><strong>影响</strong>：Autellix的program-aware scheduling思路与后续工作（如agent serving中的prefix-aware routing、session-based scheduling）形成了新的research direction。SGLang后续版本和其他serving系统可能借鉴类似的program-level context设计。</li>
+<li><strong>Model-agnostic</strong>：Autellix在serving层工作，不依赖特定模型能力。已验证LLaMA-3.1-8B和70B，设计上对任何decoder-only LLM适用。</li>
+<li><strong>无特殊能力要求</strong>：不要求long-context、tool-call format、structured output——这些由program层负责。</li>
+<li><strong>Serving cost</strong>：MCTS workload下单A100-80GB engine ~0.2 programs/sec。以每MCTS program ~100 calls × ~1K output tokens估算，需5 engines处理1 program/sec。Multi-engine routing可近线性扩展（with locality benefit up to 1.5×）。</li>
+<li><strong>Backbone sensitivity</strong>：scheduling策略不依赖model特性——PLAS/ATLAS仅依赖call runtime统计。绝对throughput随model大小变化（8B vs 70B需要不同engine数量）。</li>
+</ul>
+
+<hr>
+
+<h2 id="§8-evaluation">§8 Evaluation <a class="heading-anchor" href="#§8-evaluation" aria-label="Link to §8-evaluation">#</a></h2>
+
+<h3 id="benchmarks">Benchmarks <a class="heading-anchor" href="#benchmarks" aria-label="Link to benchmarks">#</a></h3>
+
+<p>论文使用自构建synthetic workloads基于real trace distributions，而非标准agent benchmarks：</p>
+
+<ul>
+<li><strong>Chatbot</strong>: 基于ShareGPT / LMSYS-Chat-1M数据集的多轮对话分布</li>
+<li><strong>ReAct</strong>: 单线程agent with tool call interrupts</li>
+<li><strong>Map-Reduce</strong>: parallel fork-join pattern</li>
+<li><strong>MCTS</strong>: 基于LATS-style tree search</li>
+</ul>
+
+<p>未使用SWE-bench / WebArena / AgentBench / τ-bench等task-level benchmarks。这是合理的scope界定——Autellix的贡献在serving throughput而非task success rate——但无法验证scheduling优化是否在极端条件下影响agent task quality。</p>
+
+<h3 id="metrics">Metrics <a class="heading-anchor" href="#metrics" aria-label="Link to metrics">#</a></h3>
+
+<ul>
+<li><strong>Primary</strong>: program-level throughput（programs completed per unit time at target latency）</li>
+<li><strong>Secondary</strong>: end-to-end latency distribution (median/p95/p99)</li>
+<li><strong>Diagnostic</strong>: wait time breakdown, cache hit rates, swap overhead</li>
+<li><strong>Not measured</strong>: task success rate (pass@1/pass@k), cost per task, output quality</li>
+</ul>
+
+<h3 id="baselines">Baselines <a class="heading-anchor" href="#baselines" aria-label="Link to baselines">#</a></h3>
+
+<ul>
+<li>vLLM FCFS (default scheduler)</li>
+<li>vLLM + MLFQ (FastServe-style preemption, per-request)</li>
+<li>Round-robin load balancer (multi-engine)</li>
+<li>SRPT (optimal clairvoyant, simulation only)</li>
+</ul>
+
+<p><strong>缺失baseline</strong>：SGLang——尽管反复引用为predecessor（有prefix caching和program-level constructs），未直接对比。SGLang的RadixAttention tree-based caching与Autellix的session-based routing可能有interesting交互。</p>
+
+<h3 id="task-difficulty-distribution">Task difficulty distribution <a class="heading-anchor" href="#task-difficulty-distribution" aria-label="Link to task-difficulty-distribution">#</a></h3>
+
+<p>Workload分布为long-tailed（Fig. 11）：decode steps per call和calls per program均服从heavy-tail分布。这是HoL blocking严重的根本原因，也是LAS-based scheduling理论适用的前提条件（DHR分布）。但论文未formal地验证workload分布是否满足DHR。</p>
+
+<hr>
+
+<h2 id="§9-multi-agent-production-readiness">§9 Multi-agent & Production readiness <a class="heading-anchor" href="#§9-multi-agent-production-readiness" aria-label="Link to §9-multi-agent-production-readiness">#</a></h2>
+
+<h3 id="multi-agent">Multi-agent <a class="heading-anchor" href="#multi-agent" aria-label="Link to multi-agent">#</a></h3>
+
+<p>Autellix的multi-threaded program支持自然覆盖multi-agent场景：</p>
+
+<ul>
+<li><strong>Topology</strong>: 评估了hierarchical（MCTS: expand → evaluate → backpropagate）和fan-out/fan-in（Map-Reduce）。通过DAG IR支持任意topology。</li>
+<li><strong>Coordination</strong>: 同一program内的多个thread（agents）共享session和process table entry，通过scheduling隐式协调。无显式message passing。</li>
+<li><strong>Role specialization</strong>: Autellix不区分agent角色——所有thread的LLM call统一调度。不同角色使用不同LLM model的场景（如planner用大模型、executor用小模型）提及为future work。</li>
+<li><strong>Failure isolation</strong>: thread-level failure不影响其他thread的scheduling——process table仅追踪completed calls，某thread crash不污染其他thread的priority。</li>
+</ul>
+
+<h3 id="production-readiness">Production readiness <a class="heading-anchor" href="#production-readiness" aria-label="Link to production-readiness">#</a></h3>
+
+<ul>
+<li><strong>Sandboxing</strong>: Autellix不执行tool call或code——所有side-effect execution在用户端program内完成。LLM engine isolation依赖vLLM existing机制。Multi-engine部署中engine间无shared memory，单engine crash不影响其他engine。</li>
+<li><strong>Observability</strong>: process table提供per-program实时可观测性（cumulative service、waiting time、active threads）。Stateful session API天然支持trace logging——每次call附带session_id可重建program timeline。</li>
+<li><strong>Non-deterministic replay</strong>: scheduling依赖runtime statistics和concurrent workload，相同program在不同load下获得不同优先级。</li>
+<li><strong>Deployment</strong>: vLLM之上的additional layer，需modified vLLM scheduler集成。Client-side需session management（替换endpoint + 添加session lifecycle），与LangChain/AutoGen compatible。</li>
+<li><strong>Cost controls</strong>: anti-starvation threshold $\beta$ 是关键tuning parameter。无per-program token budget或rate limiting机制——依赖program层自行控制。</li>
 </ul>
 
 </div>

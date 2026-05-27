@@ -196,466 +196,355 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Kimi K2.5: Visual Agentic Intelligence</h1>
-<div class="card-meta"><span class="badge badge-model">model</span> 2602.02276</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent</span><span class="tag">algorithm</span></div>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2602.02276</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">RL</span><span class="tag">multimodal-training</span><span class="tag">agent-orchestration</span><span class="tag">zero-vision-SFT</span><span class="tag">token-efficiency</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/model.html">← model Survey</a>
+<a href="/papers/2602.02276.html">← Synthesis</a>
+<a href="/overview/algorithm.html">← algorithm Survey</a>
 <a href="https://arxiv.org/abs/2602.02276" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
+
 <h1 id="kimi-k2-5-visual-agentic-intelligence">Kimi K2.5: Visual Agentic Intelligence <a class="heading-anchor" href="#kimi-k2-5-visual-agentic-intelligence" aria-label="Link to kimi-k2-5-visual-agentic-intelligence">#</a></h1>
+
 <blockquote>
-Kimi Team: Tongtong Bai, Yifan Bai, Yiping Bao et al. (326 authors) | 2026-02 | https://arxiv.org/abs/2602.02276
-Category: llm | Tags: multimodal, agent, MoE, MLA, MoonViT, agent-swarm, RL
-Read: 2026-04-18
+Kimi Team (Moonshot AI) | 2026-02 | <https://arxiv.org/abs/2602.02276>
+Category: algorithm | Tags: RL, multimodal-training, agent-orchestration, zero-vision-SFT, token-efficiency
 </blockquote>
 
-<h2 id="模型架构互动图-可缩放-可切页-可点击">模型架构互动图 (可缩放 / 可切页 / 可点击) <a class="heading-anchor" href="#模型架构互动图-可缩放-可切页-可点击" aria-label="Link to 模型架构互动图-可缩放-可切页-可点击">#</a></h2>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<p>下图把 Kimi K2.5 拆成 4 页：(1) 顶层多模态流水线，(2) MoonViT-3D 视觉编码器内部，(3) K2 LLM 单层（MLA + MoE）展开，(4) 多阶段训练流水线。所有维度数字来自 <code>moonshotai/Kimi-K2.5/config.json</code> 和 SGLang/vLLM 的 <code>kimi_k25.py</code> / <code>deepseek_v2.py</code> 源码。</p>
+<p>K2.5 提出四项训练算法创新：(1) 早期融合低比例 (10:90) 联合视觉-文本预训练；(2) 零视觉 SFT——仅用文本 SFT 激活视觉推理；(3) PARL——冻结子 agent + 编排器 RL 的去耦多 agent 训练；(4) Toggle——交替 budget/full-length 的 token 高效 RL。Agent Swarm 实现 3–4.5× 延迟降低。</p>
 
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
 
-<p><!-- Source: former drawio page "1. Top-level Pipeline" (18 nodes, 8 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    k_text_in["Text Input token_ids [seq]"]
-    k_img_in["Image / Video Input frames ≤4 packed"]
-    k_tok["Tokenizer vocab=163 840"]
-    k_vit["MoonViT-3D Encoder 27 L · d=1152 · 16 heads · h_d=72 NaViT pack + 2D RoPE"]
-    k_pool["Spatial 2×2 merge + Temporal Pool (4×)"]
-    k_proj["Patch-merger MLP Lin(1152·4 → 7168)"]
-    k_placeholder["Place vision tokens at <&vert;kimi_k25_video_placeholder&vert;> → unified 7168-d sequence"]
-    k_llm["Kimi K2 LLM 61 L · d=7168 · MLA · MoE 384E top-8 + 1 shared ~1.04 T total / 32 B active"]
-    k_text_out["Text Output logits [seq, 163840]"]
-    k_note["Note: layer 0 is dense (first_k_dense_replace=1) Layers 1..60 are MoE YaRN: 4K → 262K via factor 64"]
-    k_p1_title["Kimi K2.5 — Top-level Multimodal Pipeline (paper §4 + HF config.json)"]
-    k_text_in -->|" "| k_tok
-    k_tok -->|" "| k_placeholder
-    k_img_in -->|" "| k_vit
-    k_vit -->|" "| k_pool
-    k_pool -->|" "| k_proj
-    k_proj -->|" "| k_placeholder
-    k_placeholder -->|" "| k_llm
-    k_llm -->|" "| k_text_out
-</div>
+<h3 id="problem-formulation">Problem Formulation <a class="heading-anchor" href="#problem-formulation" aria-label="Link to problem-formulation">#</a></h3>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
+<p><strong>Objective</strong>: K2.5 同时优化两个目标——(a) 多模态联合策略 $\pi_\theta$ 在文本和视觉任务上的奖励期望，(b) 多 agent 编排器的任务质量 $r_{\text{perf}}$ 在 CriticalSteps 约束下的最大化。</p>
 
-<p>K2.5 把 K2 那个 <strong>1.04 T total / 32 B active</strong> 的 MoE LLM <strong>复用为多模态主干</strong>，前面接一个 <strong>27 层 MoonViT-3D</strong> 视觉塔（NaViT 打包 + 4 帧时空压缩），通过 <strong>patchmerger MLP</strong> 投影到 7168 维 LLM 嵌入流。最关键的工程创新不在于架构（架构基本是 K2 + MoonViT 的组合），而在于：</p>
+<p>核心 RL 损失：</p>
+
+<p>$$L_{\mathrm{RL}}(\theta) = \mathbb{E}_{x \sim \mathcal{D}}\left[\frac{1}{N}\sum_{j=1}^{K}\sum_{i=1}^{|y_j|} \mathrm{Clip}\left(\frac{\pi_\theta(y_j^i \mid x, y_j^{0:i})}{\pi_{\mathrm{old}}(y_j^i \mid x, y_j^{0:i})}, \alpha, \beta\right)(r(x, y_j) - \bar{r}(x)) - \tau\left(\log\frac{\pi_\theta(y_j^i \mid x, y_j^{0:i})}{\pi_{\mathrm{old}}(y_j^i \mid x, y_j^{0:i})}\right)^2\right]$$</p>
+
+<p>PARL 编排器奖励：</p>
+
+<p>$$r_{\mathrm{PARL}}(x,y) = \lambda_{1} \cdot r_{\text{parallel}} + \lambda_{2} \cdot r_{\text{finish}} + r_{\text{perf}}(x,y)$$</p>
+
+<p><strong>Assumptions</strong>: (1) 任务 $x$ 从 $\mathcal{D}$ i.i.d. 采样；(2) off-policy importance sampling 在 $[\alpha, \beta]$ 内有效；(3) 子 agent 输出视为环境观测（非可微分决策点）；(4) Toggle 的 budget 基于前序正确 rollout 的长度分布（隐含稳态假设）。</p>
+
+<p><strong>I/O per step</strong>: 输入为问题 $x$ 与 $K$ 条 rollout $\{y_1, \ldots, y_K\}$（来自 $\pi_{\text{old}}$），输出为更新后策略 $\pi_\theta$。</p>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
 
 <ol>
-<li><strong>早期融合 + 低视觉比例</strong> — 联合预训练阶段 vision : text = <strong>10 : 90</strong>，挑战 "视觉数据越多越好" 的常识</li>
-<li><strong>零视觉 SFT</strong> — text-only SFT 配 IPython 程序代理图像操作就能激活视觉能力，避开高质量 visual SFT 数据的稀缺</li>
-<li><strong>PARL / Agent Swarm</strong> — 把 multi-agent orchestration 形式化为 RL 问题，编排器 RL 训练 + 子 agent 冻结，3-4.5× 延迟降低</li>
-<li><strong>DEP (Decoupled Encoder Process)</strong> — 让多模态训练吞吐达到纯文本 ~90%</li>
-<li><strong>Toggle 解码预算控制</strong> — 交替 budget-limited 和 full-length 训练，~25-30% token 节省</li>
+<li><strong>晚期视觉注入是次优的</strong>：传统做法在训练后期以高比例（≥50%）注入视觉 token，实际上损害了文本能力且未提升视觉性能。</li>
+<li><strong>高质量视觉 SFT 数据稀缺且损害泛化</strong>：人工标注的视觉 CoT 轨迹多样性不足，直接加入 SFT 反而降低视觉 agentic 任务表现。</li>
+<li><strong>顺序执行的延迟瓶颈</strong>：单 agent 推理时间随任务复杂度线性增长（从 1.8× 到 7.0× 基线），在 wide-search 场景不可接受。</li>
+<li><strong>Multi-agent RL 的 credit assignment 困难</strong>：端到端联合优化编排器和执行 agent 导致梯度信号模糊和训练不稳定。</li>
 </ul>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
 
-<p>K2.5 的设计哲学是 "<strong>LLM 主干别动，把所有创新放到对接层和训练管线上</strong>"。LLM 主干完全继承 K2：<strong>61 层 dense-skip + MoE，d_model=7168</strong>，<strong>MLA</strong>（DeepSeek V3 风格 latent attention，q_lora_rank=1536, kv_lora_rank=512, qk_nope_head_dim=128, qk_rope_head_dim=64, v_head_dim=128），<strong>384 routed experts top-8 + 1 shared expert</strong>，expert hidden=2048（SwiGLU），首层 dense（<code>first_k_dense_replace=1</code>），vocab=163 840，YaRN 扩展到 <strong>262 144 context</strong>。</p>
+<p><strong>Innovation 1 — 早期融合低比例预训练</strong>：以 vision:text = 10:90 在 ~15T tokens 上从训练初期联合预训练，让模型自然发展平衡的多模态表征。</p>
 
-<p>视觉塔 <strong>MoonViT-3D</strong>：基于 SigLIP-SO-400M 初始化，27 层，d=1152，16 heads，head_dim=72（继承 SigLIP 的非 2 幂设计），FFN=4304，patch=14×14，2D RoPE，NaViT 风格 patch 打包同时处理多分辨率。视频路径在编码器后做 <strong>空间 2×2 merge + 时间 4× pool</strong>，最后一个 patchmerger MLP 投到 7168 维直接替换文本流里的 <code><|kimi_k25_video_placeholder|></code> token。</p>
+<p><strong>Innovation 2 — 零视觉 SFT</strong>：仅使用文本 SFT 数据，通过 IPython 程序代理图像操作（binarization、像素计数、定位等）激活视觉能力。可行性源于联合预训练已建立的跨模态对齐。</p>
 
-<p>训练分四大阶段：(1) <strong>K2 文本预训</strong> 15T tokens（继承）；(2) <strong>ViT 阶段</strong> ~1T，先训 ViT 再训 projector 桥接（caption CE only）；(3) <strong>联合预训</strong> ~15T，vision : text = 10 : 90，DEP 让吞吐 ~90% of text-only；(4) <strong>mid-train 长上下文</strong> 500B → 200B（论文 Table 3），seq 32K → 262K，YaRN factor=64。后训练：<strong>zero-vision SFT → joint multimodal SFT → joint multimodal RL</strong>（按 ability 而非 modality 组织），RL 用 token-level log-ratio clipping + KL 惩罚 + MuonClip。Agent 变体走 <strong>PARL</strong> 路径：λ₁·r_parallel + λ₂·r_finish + r_perf，λ 退火到 0；CriticalSteps 度量。</p>
+<p><strong>Innovation 3 — Token-level log-ratio RL</strong>：不同于 PPO 的 sign-dependent clipping，K2.5 在 log-ratio $\log(\pi_\theta / \pi_{\text{old}})$ 上施加 sign-agnostic 区间 $[\alpha, \beta]$ 剪裁，配合 GRPO 式 group-relative advantage $r(x,y_j) - \bar{r}(x)$ 和 squared log-ratio KL 惩罚。</p>
 
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
+<p><strong>Innovation 4 — PARL (Parallel-Agent RL)</strong>：编排器通过 RL 学习何时、如何并行化；子 agent 冻结为固定中间 checkpoint。三项奖励中辅助项 $r_{\text{parallel}}$（反序列坍缩）和 $r_{\text{finish}}$（反虚假并行）退火到 0，最终只剩任务奖励。CriticalSteps 度量约束并行分解的有效性。</p>
 
-<ul>
-<li><strong>架构 = K2 backbone + MoonViT-3D</strong>：61L · d=7168 · 384E top-8 + shared，<strong>MLA</strong> 不是 GQA / MHA</li>
-<li><strong>MLA 关键 latent rank</strong>：q_lora_rank=1536，kv_lora_rank=512 — 单 token KV cache 仅 <strong>512+64=576 floats</strong>（vs 标准 GQA 数千）</li>
-<li><strong>MoE 配置精选</strong>：384 routed × 2048 hidden + 1 shared，sigmoid scoring，noaux_tc top-8，routed_scaling_factor=2.827</li>
-<li><strong>YaRN 64×</strong>：4K 原生 → 262K 部署 context（factor=64, beta_fast=32, beta_slow=1）</li>
-<li><strong>Vision tower 相对小</strong>：27 × 1152 vs 主干 7168，靠 NaViT packing + 2×2 merge + 4× temporal pool 控制 token 数</li>
-<li><strong>Early fusion 10:90 比 conventional 50:50 更好</strong> — 早期混入但比例低，避免 LLM 偏向视觉</li>
-<li><strong>Zero-vision SFT 比 text+vision SFT 更好</strong> — 文本 SFT + IPython 图像操作代理足够激活视觉能力</li>
-<li><strong>Vision RL 反向提升 text</strong> — 跨模态正向迁移（GPQA +2.1, MMLU-Pro +1.7）</li>
-<li><strong>DEP 让多模态训练 ~90% throughput of text-only</strong> — 否则视觉 stage-0 PP load spike 会拖慢一切</li>
-<li><strong>PARL Agent Swarm</strong>：3-4.5× 端到端延迟下降，子 agent 用 frozen K2，编排器单独 RL</li>
-<li><strong>Toggle</strong>：alternating budget / full-length 训练，~25-30% token 节省，accuracy 几乎不掉</li>
-</ul>
+<p><strong>Innovation 5 — Toggle</strong>：交替 budget-constrained（Phase 0，仅当准确率 >$\lambda$ 时惩罚超预算 rollout）和 full-length（Phase 1）训练，~25–30% token 节省。</p>
 
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
+<h4 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h4>
 
-<ul>
-<li>论文几乎全部 LLM 主干维度都让你去查 K2 报告，正文非常 light on hyperparams</li>
-<li>mid-train 那个 "500B→200B" 的表述含混，需要核对 PDF 附录</li>
-<li>总 GPU-hours、节点数、互联类型完全没披露</li>
-<li>precision (BF16/FP8)、optimizer 细节、aux-loss 权重等都没说，只说 "继承 K2"</li>
-</ul>
+<p>零视觉 SFT 的可行性完全依赖于 10:90 联合预训练在 ~15T tokens 规模上已将视觉特征深度嵌入 LLM 表征空间。如果预训练规模或比例不对，text-only SFT 无法激活视觉能力——这是一个高资本壁垒，论文承认实验成本过高无法在多 scale 上验证。</p>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
 
-<ul>
-<li><strong>Algorithm</strong>: 早期融合 + 低视觉比例策略；Zero-vision SFT；按 ability 组织的 joint multimodal RL；PARL；Toggle</li>
-<li><strong>Kernel</strong>: MLA kernel (DeepSeek V3 family)；MoE routing；MoonViT NaViT packing kernel</li>
-<li><strong>Framework</strong>: vLLM + SGLang 都已支持（<code>KimiK25ProcessingInfo</code>, <code>kimi_k25.py</code>, 复用 <code>DeepseekV3ForCausalLM</code>）</li>
-<li><strong>LLM</strong>: 证明 "<strong>主干不动 + 多模态加挂</strong>" 在 1T 规模仍可行；YaRN 64× 长上下文部署有效</li>
-<li><strong>Agent</strong>: PARL 是首个把 multi-agent orchestration 形式化为 RL 问题的开源工作</li>
-</ul>
+<table>
+<tr><th>Benchmark</th><th>K2.5</th><th>Best Competitor</th><th>Delta</th></tr>
+<tr><td>HLE-Full (w/ tools)</td><td>50.2%</td><td>Gemini 3 Pro 45.8%</td><td>+4.4</td></tr>
+<tr><td>BrowseComp (Agent Swarm)</td><td>78.4%</td><td>GPT-5.2 Pro 77.9%</td><td>+0.5</td></tr>
+<tr><td>WideSearch Item-F1</td><td>79.0%</td><td>Claude Opus 4.5 76.2%</td><td>+2.8</td></tr>
+<tr><td>Agent Swarm 延迟</td><td>0.6–1.6×</td><td>Single-agent 1.8–7.0×</td><td>3–4.5× 降低</td></tr>
+<tr><td>AIME 2025</td><td>96.1%</td><td>GPT-5.2 100%</td><td>-3.9</td></tr>
+<tr><td>OCRBench</td><td>92.3%</td><td>Gemini 3 Pro 90.3%</td><td>+2.0</td></tr>
+<tr><td>MathVista (mini)</td><td>90.1%</td><td>Gemini 3 Pro 89.8%</td><td>+0.3</td></tr>
+</table>
 
-<hr>
+<p>跨模态迁移：视觉 RL 后文本指标提升——MMLU-Pro +1.7 (84.7→86.4)，GPQA-Diamond +2.1 (84.3→86.4)，LongBench v2 +2.2 (56.7→58.9)。</p>
 
-<h2 id="deep-analysis-llm-extends-phase-2">Deep Analysis (llm, extends Phase 2) <a class="heading-anchor" href="#deep-analysis-llm-extends-phase-2" aria-label="Link to deep-analysis-llm-extends-phase-2">#</a></h2>
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
 
-<h3 id="1-architecture-with-drawio-per-sub-system">1. Architecture (with drawio per sub-system) <a class="heading-anchor" href="#1-architecture-with-drawio-per-sub-system" aria-label="Link to 1-architecture-with-drawio-per-sub-system">#</a></h3>
+<h3 id="the-four-novel-mechanisms">The Four Novel Mechanisms <a class="heading-anchor" href="#the-four-novel-mechanisms" aria-label="Link to the-four-novel-mechanisms">#</a></h3>
 
-<h4 id="1a-top-level-multimodal-pipeline">1a. Top-level multimodal pipeline <a class="heading-anchor" href="#1a-top-level-multimodal-pipeline" aria-label="Link to 1a-top-level-multimodal-pipeline">#</a></h4>
+<p>K2.5 的架构（K2 MoE backbone + MoonViT-3D）继承自前作，不是本文创新。四项算法创新的 diff 如下：</p>
 
-<p>详见上方互动图第 1 页 (Top-level Pipeline)。三条输入通路：text → tokenizer → 7168 流；vision → MoonViT-3D → 2×2 merge → 4× temporal pool → patchmerger → 7168 流；两路在 <code><|kimi_k25_video_placeholder|></code> token 位置合并，进入 K2 LLM。</p>
+<p><strong>1. Vision injection strategy</strong></p>
 
-<h4 id="1b-moonvit-3d-vision-encoder-27-l-d1152">1b. MoonViT-3D Vision Encoder (27 L, d=1152) <a class="heading-anchor" href="#1b-moonvit-3d-vision-encoder-27-l-d1152" aria-label="Link to 1b-moonvit-3d-vision-encoder-27-l-d1152">#</a></h4>
+<table>
+<tr><th>Before (conventional)</th><th>After (K2.5)</th></tr>
+<tr><td>晚期注入（>50% 训练进度），vision:text ≥ 50:50</td><td>从 0% 开始注入，全程 10:90</td></tr>
+<tr><td>视觉作为后置 add-on</td><td>视觉与文本从头共优化</td></tr>
+</table>
 
+<p><strong>2. Visual SFT activation</strong></p>
 
-<p><!-- Source: former drawio page "2. MoonViT-3D Vision Encoder" (27 nodes, 22 edges) --></p>
+<table>
+<tr><th>Before (conventional)</th><th>After (K2.5)</th></tr>
+<tr><td>人工标注视觉 CoT 轨迹做 SFT</td><td>Text-only SFT + IPython 程序代理图像操作</td></tr>
+<tr><td>需要视觉数据激活视觉能力</td><td>零视觉数据即可激活</td></tr>
+</table>
+
+<p><strong>3. RL policy optimization</strong></p>
+
+<table>
+<tr><th>Before (PPO)</th><th>After (K2.5)</th></tr>
+<tr><td>Sign-dependent clipping: $\min(r_t \hat{A}_t, \text{clip}(r_t, 1 \pm \epsilon) \hat{A}_t)$</td><td>Sign-agnostic log-ratio clipping: Clip on $\log(r_t) \in [\alpha, \beta]$</td></tr>
+<tr><td>Value model 估计 advantage</td><td>Group-relative advantage $r - \bar{r}$ (GRPO 式)</td></tr>
+<tr><td>Adam optimizer</td><td>MuonClip optimizer</td></tr>
+</table>
+
+<p><strong>4. Multi-agent training</strong></p>
+
+<table>
+<tr><th>Before (e2e co-optimization)</th><th>After (K2.5 PARL)</th></tr>
+<tr><td>所有 agent 端到端联合优化</td><td>子 agent 冻结，仅编排器 RL 训练</td></tr>
+<tr><td>Credit 在所有 agent 间分摊</td><td>Credit 隔离到编排器决策</td></tr>
+<tr><td>预定义并行启发式</td><td>通过 RL 探索学习何时/如何并行化</td></tr>
+</table>
+
+<h3 id="agent-swarm-架构">Agent Swarm 架构 <a class="heading-anchor" href="#agent-swarm-架构" aria-label="Link to agent-swarm-架构">#</a></h3>
+
+<p><img src="/assets/2602.02276/fig3-agent-swarm-full.png" alt="Figure 3: Agent Swarm architecture with trainable orchestrator and frozen subagents"></p>
+
+<p><em>Paper Figure 3, verbatim (caption: "An agent swarm has a trainable orchestrator that dynamically creates specialized frozen subagents and decomposes complex tasks into parallelizable subtasks for efficient distributed execution.").</em></p>
+
+<p>图中展示了 PARL 的核心去耦设计：编排器（蓝色）是唯一的可训练组件，通过 RL 学习任务分解和子 agent 调度策略。子 agent（灰色）从固定中间 checkpoint 实例化，其执行轨迹被排除在优化目标之外——这使得 credit assignment 仅作用于高层编排决策，而非底层执行细节。</p>
+
+<h3 id="训练管线概览">训练管线概览 <a class="heading-anchor" href="#训练管线概览" aria-label="Link to 训练管线概览">#</a></h3>
+
 <div class="mermaid">
-flowchart TB
-    v_in["Image / Video frames NaViT-style packing"]
-    v_pe["Patch Embed Conv2D 14×14, stride 14 → d=1152"]
-    v_pos["Pos Embed (divided_fixed) grid 64×64 · 4 time bins"]
-    subgraph sg_v_grp["× 27 Vision Encoder Layers"]
-        direction TB
-    v_ln1["RMSNorm(1152)"]
-    v_q["Q Proj Lin(1152→1152)"]
-    v_k["K Proj Lin(1152→1152)"]
-    v_v["V Proj Lin(1152→1152)"]
-    v_rope["2D RoPE on Q,K"]
-    v_attn["MHA Attention 16 heads × head_dim=72"]
-    v_o["O Proj Lin(1152→1152)"]
-    v_res1["Residual Add"]
-    v_ln2["RMSNorm(1152)"]
-    v_gate["gate_proj Lin(1152→4304)"]
-    v_up["up_proj Lin(1152→4304)"]
-    v_silu["SiLU(gate)*up"]
-    v_down["down_proj Lin(4304→1152)"]
-    end
-    v_merge["Spatial 2×2 merge → [N/4, 4608]"]
-    v_tpool["Temporal Pool (4× across packed frames)"]
-    v_proj["patchmerger MLP Lin(4608→7168)"]
-    v_out["Output → LLM input [N_v, 7168]"]
-    v_t["MoonViT-3D — 27-layer ViT + spatial merge + temporal pool + patchmerger projector to 7168"]
-    v_in -->|" "| v_pe
-    v_pe -->|" "| v_pos
-    v_pos -->|" "| v_ln1
-    v_ln1 -->|" "| v_q
-    v_ln1 -->|" "| v_k
-    v_ln1 -->|" "| v_v
-    v_q -->|" "| v_rope
-    v_k -->|" "| v_rope
-    v_rope -->|" "| v_attn
-    v_v -->|" "| v_attn
-    v_attn -->|" "| v_o
-    v_o -->|" "| v_res1
-    v_res1 -->|" "| v_ln2
-    v_ln2 -->|" "| v_gate
-    v_ln2 -->|" "| v_up
-    v_gate -->|" "| v_silu
-    v_up -->|" "| v_silu
-    v_silu -->|" "| v_down
-    v_down -->|" "| v_merge
-    v_merge -->|" "| v_tpool
-    v_tpool -->|" "| v_proj
-    v_proj -->|" "| v_out
+flowchart LR
+    A["K2 Pretrain\n15T text tokens\nMuonClip"] --> B["ViT Stage\n~1T tokens\ncaption CE only"]
+    B --> C["Joint Pretrain\n~15T tokens\n10:90 vision:text"]
+    C --> D["Mid-train\n500B→200B\nseq 32K→262K\nYaRN 64×"]
+    D --> E["Zero-Vision SFT\ntext-only + IPython"]
+    E --> F["Joint Multimodal RL\nby-ability domains\nlog-ratio clip + KL"]
+    F --> G["PARL\nAgent Swarm\n3-term reward\nannealing"]
 </div>
 
-<p><strong>关键设计</strong>：</p>
-<ul>
-<li><strong>head_dim=72</strong> 非 2 幂（继承 SigLIP-SO-400M）</li>
-<li><strong>NaViT-style packing</strong>: 多分辨率图像可在同一 batch 内打包，节省 padding</li>
-<li><strong>divided_fixed pos embed</strong> 64×64 grid + 4 time bins 支持视频 4 帧时空捆绑</li>
-<li><strong>2D RoPE</strong> 在 Q,K 上施加位置（image），video 通过时间 bin 索引</li>
-<li><strong>空间 2×2 merge</strong> 后 token 数降 4×；<strong>时间 4× pool</strong> 把 4 帧 packed 为 1 token</li>
-<li><strong>patchmerger MLP</strong> Lin(4608 → 7168)：从 4608 (=1152×4) 投到 LLM 主维度</li>
-<li><strong>DeepStack 风格未使用</strong>（K2.5 不像 Qwen3-VL 取多层中间特征）</li>
-</ul>
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
 
-<h4 id="1c-k2-llm-decoder-layer-—-mla-moe">1c. K2 LLM Decoder Layer — MLA + MoE <a class="heading-anchor" href="#1c-k2-llm-decoder-layer-—-mla-moe" aria-label="Link to 1c-k2-llm-decoder-layer-—-mla-moe">#</a></h4>
+<p><strong>无形式化作者证明 — 仅实证</strong>。论文无收敛定理、无方差界、无复杂度分析。所有主张均依赖实证结果。以下是对论文 4 个形式化等式的结构分析。</p>
 
-
-<p><!-- Auto-migrated from drawio page 2 — 35 nodes may layout densely. --></p>
-<p><!-- Source: former drawio page "3. K2 LLM Decoder Layer (MLA + MoE)" (35 nodes, 26 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    l_in["Hidden [seq, 7168]"]
-    subgraph sg_l_mla_grp["MLA Self-Attention (DeepSeek V3-style)"]
-        direction TB
-    l_rn["RMSNorm(7168)"]
-    l_qa["q_a_proj Lin(7168→1536)"]
-    l_qb["q_b_proj Lin(1536→64·(128+64)) =12 288"]
-    l_kva["kv_a_proj Lin(7168→512+64) (latent kv + RoPE k)"]
-    l_kvb["kv_b_proj Lin(512→64·(128+128)) =16 384"]
-    l_qrope["Q split: Q_nope [64,128] + Q_rope [64,64] RoPE on Q_rope"]
-    l_kvrope["K split: K_nope [64,128] + K_rope [64,64] (shared) V [64,128]"]
-    l_attn["MLA Attention 64 heads · head_dim=192 (effective) YaRN scaled to 262K KV cache: 512+64 latent / token"]
-    l_op["o_proj Lin(64·128→7168)"]
-    l_res1["Residual Add"]
-    end
-    subgraph sg_l_moe_grp["MoE FFN (384 routed + 1 shared, top-8)"]
-        direction TB
-    l_rn2["RMSNorm(7168)"]
-    l_router["Router (sigmoid scoring) Lin(7168→384) → noaux_tc top-8 routed_scaling_factor=2.827"]
-    l_combine["Combine routed + shared"]
-    l_res2["Residual Add"]
-    end
-    subgraph sg_l_routed_grp["Routed Experts (× 384, top-8 active)"]
-        direction TB
-    l_re_g["expert.gate_proj Lin(7168→2048)"]
-    l_re_u["expert.up_proj Lin(7168→2048)"]
-    l_re_s["SiLU(gate)*up"]
-    l_re_d["expert.down_proj Lin(2048→7168)"]
-    l_re_w["Weighted Sum (top-8) × routed_scaling_factor"]
-    end
-    subgraph sg_l_shared_grp["Shared Expert (always)"]
-        direction TB
-    l_se_g["shared.gate_proj Lin(7168→2048)"]
-    l_se_u["shared.up_proj Lin(7168→2048)"]
-    l_se_s["SiLU(gate)*up"]
-    l_se_d["shared.down_proj Lin(2048→7168)"]
-    end
-    l_layer_note["Layer 0 is DENSE (no MoE) (first_k_dense_replace = 1) Layers 1..60 are MoE"]
-    l_t["Kimi K2.5 LLM — One Decoder Layer (61 layers total) — MLA + MoE"]
-    l_in -->|" "| l_rn
-    l_rn -->|" "| l_qa
-    l_qa -->|" "| l_qb
-    l_rn -->|" "| l_kva
-    l_kva -->|" "| l_kvb
-    l_qb -->|" "| l_qrope
-    l_kvb -->|" "| l_kvrope
-    l_qrope -->|" "| l_attn
-    l_kvrope -->|" "| l_attn
-    l_attn -->|" "| l_op
-    l_op -->|" "| l_res1
-    l_rn2 -->|" "| l_router
-    l_router -->|" "| l_re_g
-    l_router -->|" "| l_re_u
-    l_re_g -->|" "| l_re_s
-    l_re_u -->|" "| l_re_s
-    l_re_s -->|" "| l_re_d
-    l_re_d -->|" "| l_re_w
-    l_rn2 -->|" "| l_se_g
-    l_rn2 -->|" "| l_se_u
-    l_se_g -->|" "| l_se_s
-    l_se_u -->|" "| l_se_s
-    l_se_s -->|" "| l_se_d
-    l_re_w -->|" "| l_combine
-    l_se_d -->|" "| l_combine
-    l_combine -->|" "| l_res2
-</div>
-
-<p><strong>MLA (Multi-head Latent Attention) 细节</strong>：</p>
-<ul>
-<li>每 token 通过 <code>q_a_proj</code> 压到 q_lora_rank=1536，再 <code>q_b_proj</code> 展开到 64×(128+64)</li>
-<li>KV 路径：<code>kv_a_proj</code> 压到 latent (512+64) → <code>kv_b_proj</code> 展开到 64×(128+128)</li>
-<li>Q split: Q_nope [64, 128] + Q_rope [64, 64]，<strong>RoPE 只施加在 Q_rope 部分</strong></li>
-<li>K 同样 split；K_rope 这一段是 <strong>跨 head 共享的</strong></li>
-<li>真实 attention 是 <strong>64 heads × head_dim=192 effective</strong>（128 nope + 64 rope）</li>
-<li><strong>KV cache 仅 576 floats / token</strong>（512 latent + 64 rope k）— 这是 1T 级模型能跑的关键</li>
-</ul>
-
-<p><strong>MoE 细节</strong>：</p>
-<ul>
-<li>Router: Linear(7168→384), <strong>sigmoid</strong> scoring (不是 softmax)，<strong>noaux_tc</strong> top-8 选择</li>
-<li><code>routed_scaling_factor=2.827</code> 是 routed 输出的乘性放大</li>
-<li>384 expert × 2048 hidden × SwiGLU = 每 expert ≈ 44M 参数</li>
-<li>1 shared expert 始终激活，hidden 同 2048</li>
-<li><strong>首层 (layer 0) 是 dense 不走 MoE</strong>（<code>first_k_dense_replace=1</code>），稳定性考虑</li>
-<li><code>aux_loss_alpha=0.001</code>, <code>seq_aux=true</code> — 序列级辅助 loss 控制 expert 负载均衡</li>
-</ul>
-
-<h4 id="1d-architecture-comparison-vs-k2-deepseek-v3">1d. Architecture comparison vs K2 / DeepSeek V3 <a class="heading-anchor" href="#1d-architecture-comparison-vs-k2-deepseek-v3" aria-label="Link to 1d-architecture-comparison-vs-k2-deepseek-v3">#</a></h4>
+<h3 id="notation-table">Notation Table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
 
 <table>
-<tr><th>组件</th><th>Kimi K2.5</th><th>Kimi K2 (text only)</th><th>DeepSeek V3</th></tr>
-<tr><td>Layers</td><td>61</td><td>61</td><td>61</td></tr>
-<tr><td>d_model</td><td>7168</td><td>7168</td><td>7168</td></tr>
-<tr><td>Attention</td><td>MLA (q_lora=1536, kv_lora=512)</td><td>MLA same</td><td>MLA same</td></tr>
-<tr><td>MoE</td><td>384E top-8 + 1 shared</td><td>384E top-8 + 1 shared</td><td>256E top-8 + 1 shared</td></tr>
-<tr><td>Expert hidden</td><td>2048</td><td>2048</td><td>2048</td></tr>
-<tr><td>Router scoring</td><td>sigmoid noaux_tc</td><td>sigmoid noaux_tc</td><td>sigmoid noaux_tc</td></tr>
-<tr><td>Vision</td><td>MoonViT-3D (27L, d=1152)</td><td>None</td><td>None</td></tr>
-<tr><td>Context</td><td>262 144 (YaRN 64×)</td><td>256K</td><td>128K</td></tr>
-<tr><td>Vocab</td><td>163 840</td><td>163 840</td><td>129 280</td></tr>
+<tr><th>Symbol</th><th>Definition</th><th>Domain</th></tr>
+<tr><td>$\pi_\theta, \pi_{\text{old}}$</td><td>当前/上一轮策略</td><td>参数空间 $\Theta$</td></tr>
+<tr><td>$K$</td><td>每问题 rollout 数</td><td>$K \geq 2$</td></tr>
+<tr><td>$N$</td><td>总 token 数: $\sum_{j=1}^K \lvert y_j \rvert$</td><td>正整数</td></tr>
+<tr><td>$\alpha, \beta$</td><td>Log-ratio 剪裁边界</td><td>$\alpha < 0 < \beta$</td></tr>
+<tr><td>$\tau$</td><td>KL 惩罚系数</td><td>$\tau > 0$</td></tr>
+<tr><td>$\bar{r}(x)$</td><td>组内均值奖励: $\frac{1}{K}\sum_j r(x, y_j)$</td><td>标量</td></tr>
+<tr><td>$\lambda_1, \lambda_2$</td><td>PARL 辅助奖励权重（退火到 0）</td><td>$\geq 0$</td></tr>
+<tr><td>$r_{\text{parallel}}$</td><td>实例化奖励（反序列坍缩）</td><td>类二值</td></tr>
+<tr><td>$r_{\text{finish}}$</td><td>子 agent 完成率（反虚假并行）</td><td>$[0,1]$</td></tr>
+<tr><td>$r_{\text{perf}}$</td><td>任务级结果奖励</td><td>任务相关</td></tr>
+<tr><td>$S_{\text{main}}^{(t)}, S_{\text{sub},i}^{(t)}$</td><td>阶段 $t$ 中编排器/第 $i$ 子 agent 步数</td><td>非负整数</td></tr>
+<tr><td>$m$</td><td>Toggle 交替周期</td><td>正整数</td></tr>
+<tr><td>$\rho$</td><td>Budget 百分位（来自正确 rollout）</td><td>$(0,1)$</td></tr>
 </table>
 
-<p><strong>和 DeepSeek V3 最大差异</strong>：384 vs 256 expert（K2.5 更大稀疏度），vocab 更大覆盖更多语种。</p>
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
 
-<h3 id="2-training-—-如何训出来的">2. Training — 如何训出来的 <a class="heading-anchor" href="#2-training-—-如何训出来的" aria-label="Link to 2-training-—-如何训出来的">#</a></h3>
+<p><strong>Eq. 1 — RL 策略损失 $L_{\text{RL}}$</strong></p>
 
-<p>详见互动图第 4 页：</p>
+<p>两项分解：</p>
 
+<ul>
+<li><strong>Clipped policy gradient</strong>: $\text{Clip}(\text{log-ratio}, \alpha, \beta) \cdot (r - \bar{r})$。Token 级梯度仅在 log importance ratio 落入 $[\alpha, \beta]$ 时传播；超出区间则梯度归零。作用：阻止 off-policy 发散。关键区别于 PPO 的 sign-dependent clipping——后者在 $\hat{A} > 0$ 和 $\hat{A} < 0$ 时施加不同方向的裁剪；K2.5 不区分 advantage 符号，仅约束 log-ratio 幅度。论文称此设计对多步 tool-use 推理场景的训练稳定性至关重要。</li>
+<li><strong>KL penalty</strong>: $-\tau (\log \text{ratio})^2$。Squared log-ratio 作为 trust region 正则化，效果类似标准 KL 散度但对大偏离惩罚更强（二次 vs 线性增长）。</li>
+</ul>
 
-<p><!-- Source: former drawio page "4. Training Pipeline" (12 nodes, 7 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    t_k2["K2 Pretrain (text) 15 T tokens · MuonClip + QK-Clip From Kimi K2 report"]
-    t_vit["ViT Stage ~1 T tokens two-step: step1: ViT (caption CE only) step2: projector bridge (very short) seq=4096"]
-    t_joint["Joint Pretrain ~15 T tokens Mix: ~10% vision / 90% text seq=4096 Trainable: ViT + LLM (init from late K2)"]
-    t_mid["Mid-train (long context) ~500B → 200B (paper Table 3) seq=32 768 → 262 144 YaRN factor=64 Long text + video + long-CoT"]
-    t_sft1["Zero-Vision SFT Text-only SFT with IPython-program proxies for image ops (text+vision SFT hurt in pilots)"]
-    t_sft2["Joint Multimodal SFT from K2-family templates synth + human-verified"]
-    t_rl["Joint Multimodal RL organized by ABILITY (not modality) Token-level log-ratio clip [α,β] KL-style penalty (τ) MuonClip optimizer"]
-    t_rewards["Rewards: • Rule-based (verifiable) • Vision: IoU, edit-dist, count, mask, LLM-judge • GRMs cross-behaviour • Toggle (budget / full alternation)"]
-    t_parl["PARL — Agent Swarm λ₁·r_parallel + λ₂·r_finish + r_perf λ_i annealed to 0 CriticalSteps metric"]
-    t_dep["DEP infra: Decoupled Encoder Process phase A: balanced ViT forward phase B: backbone fwd/bwd phase C: ViT recompute + bwd → ~90% of text-only throughput"]
-    t_t["Kimi K2.5 — Multi-stage Training Pipeline"]
-    t_k2 -->|" "| t_vit
-    t_vit -->|" "| t_joint
-    t_joint -->|" "| t_mid
-    t_mid -->|" "| t_sft1
-    t_sft1 -->|" "| t_sft2
-    t_sft2 -->|" "| t_rl
-    t_rl -->|" "| t_parl
-</div>
+<p><strong>Eq. 2 — PARL 奖励 $r_{\text{PARL}}$</strong></p>
 
-<h4 id="2a-规模清单">2a. 规模清单 <a class="heading-anchor" href="#2a-规模清单" aria-label="Link to 2a-规模清单">#</a></h4>
+<p>三项分解：</p>
+
+<ul>
+<li>$r_{\text{parallel}}$：鼓励编排器实例化子 agent 而非退化为顺序执行（序列坍缩是无辅助奖励时的局部最优——编排器发现单 agent 能获得正奖励后不再探索并行）。</li>
+<li>$r_{\text{finish}}$：惩罚未完成的子 agent（防止 reward hacking：spawn 大量子 agent 获得 $r_{\text{parallel}}$ 但无实际分解）。</li>
+<li>$r_{\text{perf}}$：任务级结果，是最终优化目标。辅助项 $\lambda_1, \lambda_2$ 退火到 0 确保最终策略仅优化任务质量。</li>
+</ul>
+
+<p><strong>Eq. 3 — CriticalSteps</strong></p>
+
+<p>$$\text{CriticalSteps} = \sum_{t=1}^{T}\left(S_{\mathrm{main}}^{(t)} + \max_{i} S_{\mathrm{sub},i}^{(t)}\right)$$</p>
+
+<p>类比计算图中的 critical path：每阶段延迟由最长子 agent 决定。用 CriticalSteps（而非 total steps）作为训练和评估度量，显式激励均衡的任务分解——单纯增加子 agent 数量但不缩短最长分支不会带来收益。</p>
+
+<p><strong>Eq. 4 — Toggle 奖励 $\tilde{r}$</strong></p>
+
+<p>$$\tilde{r}(x,y) = \begin{cases} r(x,y) \cdot \mathbb{1}[\lvert y \rvert \leq \text{budget}(x)] & \text{Phase 0} \\ r(x,y) & \text{Phase 1} \end{cases}$$</p>
+
+<p>交替阶段实现 bi-objective 优化：Phase 0 在准确率 >$\lambda$ 时惩罚超预算 rollout（推向短输出），Phase 1 允许最大 token 数（推向深度推理）。$\text{budget}(x) = \rho$-percentile of 前序正确 rollout 长度，动态适应问题难度。</p>
+
+<h3 id="6-结构性检查">6 结构性检查 <a class="heading-anchor" href="#6-结构性检查" aria-label="Link to 6-结构性检查">#</a></h3>
 
 <table>
-<tr><th>维度</th><th>数值</th></tr>
-<tr><td>总参数</td><td>~1.04 T (MoE)</td></tr>
-<tr><td>激活参数</td><td>~32 B</td></tr>
-<tr><td>主干层数 × d_model</td><td>61 × 7168</td></tr>
-<tr><td>Expert × top-k</td><td>384 routed top-8 + 1 shared</td></tr>
-<tr><td>Vision 塔</td><td>27 × 1152, 16 heads, head_dim=72</td></tr>
-<tr><td>Context (训练)</td><td>4096 (主) → 32 768 → 262 144</td></tr>
-<tr><td>Vocab</td><td>163 840</td></tr>
+<tr><th>#</th><th>检查项</th><th>结果</th></tr>
+<tr><td>1</td><td>Sign-agnostic clipping 的正确性：当 advantage 为正但 log-ratio > β 时，梯度是否应被截断？</td><td>合理：防止 off-policy 发散比利用正 advantage 更重要，特别是长 horizon 场景</td></tr>
+<tr><td>2</td><td>$\bar{r}(x)$ 作为 baseline 的方差：相比 learned value function，group mean 的方差更高但无 bias</td><td>论文未提供方差分析；GRPO 原论文有类似讨论</td></tr>
+<tr><td>3</td><td>$\lambda_1, \lambda_2$ 退火到 0 后，$r_{\text{parallel}}$ 的初始信号是否足以跨越序列坍缩？</td><td>实证有效（Fig. 4 显示并行度递增），但对初始 $\lambda_1$ 值和退火速率的敏感度未消融</td></tr>
+<tr><td>4</td><td>CriticalSteps 是否低估实际延迟？（忽略通信开销、子 agent 启动时间）</td><td>论文 Fig. 8 显示 Agent Swarm 延迟 0.6–1.6×，暗示开销已被摊销；但在更大并行度下可能成为瓶颈</td></tr>
+<tr><td>5</td><td>Toggle 的 Phase 0 仅在准确率 >$\lambda$ 时激活：$\lambda$ 过低会过早压缩 token、$\lambda$ 过高则 budget 约束形同虚设</td><td>论文称 ~25–30% token 节省，但未消融 $\lambda$ 的敏感度</td></tr>
+<tr><td>6</td><td>零视觉 SFT 的前提条件：联合预训练比例/规模不足时是否退化？</td><td>论文承认"实验成本太高"未在多 scale 验证，是硬假设</td></tr>
 </table>
 
-<h4 id="2b-数据-阶段-paper-table-3">2b. 数据 / 阶段 (paper Table 3) <a class="heading-anchor" href="#2b-数据-阶段-paper-table-3" aria-label="Link to 2b-数据-阶段-paper-table-3">#</a></h4>
+<p>期望但缺失的理论保证：(1) 收敛速率 as function of $K$, clipping bounds, $\tau$；(2) PARL 退火 schedule 的最优性条件；(3) CriticalSteps 与实际延迟的近似比。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="training-recipe-scale">Training Recipe & Scale <a class="heading-anchor" href="#training-recipe-scale" aria-label="Link to training-recipe-scale">#</a></h3>
 
 <table>
-<tr><th>Stage</th><th>目标</th><th>数据</th><th>Seq len</th><th>Tokens</th><th>Trainable</th></tr>
-<tr><td><strong>K2 Pretrain</strong> (继承)</td><td>文本主干</td><td>K2 corpus</td><td>4K</td><td><strong>15 T</strong></td><td>全参</td></tr>
-<tr><td><strong>ViT Stage</strong></td><td>encoder 对齐</td><td>alt-text + 合成 caption + 定位 + OCR + 视频</td><td>4096</td><td><strong>~1 T</strong></td><td>ViT only (caption CE)；二步：先 ViT，后 projector 桥接 (very short)</td></tr>
-<tr><td><strong>Joint Pretrain</strong></td><td>多模态联合</td><td>K2 mix + 交错视觉 + OS 截图等；<strong>vision : text = 10 : 90</strong></td><td>4096</td><td><strong>~15 T</strong></td><td>ViT + LLM (init from late K2)</td></tr>
-<tr><td><strong>Mid-train</strong></td><td>长上下文</td><td>高质量 text + 多模态 + 长文本 / 长视频 / long-CoT</td><td><strong>32 768 → 262 144</strong></td><td>"<strong>500B → 200B</strong>" (Table 3, 含义存疑)</td><td>ViT + LLM, YaRN factor=64</td></tr>
+<tr><th>Stage</th><th>Purpose</th><th>Data</th><th>Tokens</th><th>Seq Len</th><th>LR</th><th>Batch</th><th>Special</th></tr>
+<tr><td>K2 Pretrain</td><td>文本主干</td><td>K2 corpus</td><td>15T</td><td>4K</td><td>[论文未披露]</td><td>[论文未披露]</td><td>MuonClip + QK-Clip</td></tr>
+<tr><td>ViT Stage</td><td>编码器对齐</td><td>alt-text, synth caption, grounding, OCR, video</td><td>~1T</td><td>4096</td><td>[论文未披露]</td><td>[论文未披露]</td><td>Caption CE only; 两步：先 ViT 后 projector</td></tr>
+<tr><td>Joint Pretrain</td><td>多模态融合</td><td>K2 mix + vision (10:90)</td><td>~15T</td><td>4096</td><td>[论文未披露]</td><td>[论文未披露]</td><td>Early fusion, DEP ~90% throughput</td></tr>
+<tr><td>Mid-train</td><td>长上下文</td><td>High-quality text + multimodal + long-CoT</td><td>500B→200B</td><td>32K→262K</td><td>[论文未披露]</td><td>[论文未披露]</td><td>YaRN factor=64</td></tr>
+<tr><td>Zero-Vision SFT</td><td>激活视觉</td><td>Text-only + IPython proxies</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>无视觉数据</td></tr>
+<tr><td>Joint Multimodal RL</td><td>跨模态精炼</td><td>Text + vision tasks (by ability)</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>Log-ratio clip + KL + GRM</td></tr>
+<tr><td>PARL</td><td>Agent 编排</td><td>Wide/deep search tasks</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>Frozen subagents, 3-term reward</td></tr>
 </table>
 
-<p><strong>数据混合 know-how</strong>：</p>
+<p><strong>关键超参</strong>:</p>
 <ul>
-<li><strong>早期融合 + 10:90 vision:text</strong> 比常见的 50:50 更好（消融）</li>
-<li>text 域内：weights extend K2 distribution，更多 coding，每源 epoch 上限</li>
-<li>论文未披露每域精确比例</li>
+<li>Clipping bounds $[\alpha, \beta]$: [论文未披露]</li>
+<li>KL 系数 $\tau$: [论文未披露]</li>
+<li>PARL $\lambda_1, \lambda_2$ 初始值与退火 schedule: [论文未披露]</li>
+<li>Toggle 周期 $m$, 百分位 $\rho$, 准确率阈值 $\lambda$: [论文未披露]</li>
+<li>Rollout group size $K$: [论文未披露]</li>
+<li>GPU hours / MFU / 节点数 / 互联: [论文未披露]</li>
+<li>数值精度: [论文未披露]（推测 BF16，K2 已用 FP8）</li>
+<li>稳定性技巧: MuonClip + QK-Clip（继承 K2），其余 [论文未披露]</li>
 </ul>
 
-<h4 id="2c-算力账单">2c. 算力账单 <a class="heading-anchor" href="#2c-算力账单" aria-label="Link to 2c-算力账单">#</a></h4>
+<h3 id="key-results">Key Results <a class="heading-anchor" href="#key-results" aria-label="Link to key-results">#</a></h3>
 
-<ul>
-<li>GPU 型号 / 节点 / 互联：<strong>[论文未披露]</strong></li>
-<li>总 GPU-hours：<strong>[论文未披露]</strong></li>
-<li>MFU / HFU：<strong>[论文未披露]</strong></li>
-<li><strong>唯一公开效率指标</strong>：DEP 让多模态训练 ~90% of text-only throughput</li>
-</ul>
+<p><img src="/assets/2602.02276/fig1-main-result.png" alt="Figure 1: Main benchmark comparison across reasoning, coding, vision, and agentic tasks"></p>
 
-<h4 id="2d-后训练">2d. 后训练 <a class="heading-anchor" href="#2d-后训练" aria-label="Link to 2d-后训练">#</a></h4>
+<p><em>Paper Figure 1, verbatim. K2.5 与 GPT-5.2、Claude Opus 4.5、Gemini 3 Pro、DeepSeek-V3.2 的全面对比。</em></p>
 
-<p><strong>Thinker（K2-style 三段）</strong>：</p>
-<ol>
-<li><strong>Zero-Vision SFT</strong> — 全部 text，IPython program 代理图像操作；论文实验显示 text+vision SFT 反而比纯 text SFT 差（先验对齐已够强）</li>
-<li><strong>Joint Multimodal SFT</strong> — 合成 + 人工验证</li>
-<li><strong>Joint Multimodal RL</strong> — 按 ability 组织（数学 / 代码 / 视觉推理 / 通用对话），不按 modality</li>
-</ul>
+<p>K2.5 在 agentic 任务（HLE-Full 50.2%，BrowseComp Swarm 78.4%）和视觉理解（OCRBench 92.3%，MathVista 90.1%）上达到 SOTA。在纯数学推理（AIME 96.1% vs GPT-5.2 100%）和代码（SWE-Bench 76.8% vs Claude 80.9%）上略低于最强 proprietary baseline。</p>
 
-<p><strong>RL 算法（不是 PPO）</strong>：</p>
-<ul>
-<li><strong>Token-level log-ratio clipping</strong> 作为 gradient mask，区间 [α, β]</li>
-<li>KL 惩罚项系数 τ</li>
-<li><strong>MuonClip</strong> 优化 RL objective</li>
-<li>Truncated importance sampling</li>
-<li>Dynamic KL + dynamic minibatch size</li>
-</ul>
+<p><img src="/assets/2602.02276/fig2-vision-rl.png" alt="Figure 2: Vision RL training curves showing continuous improvement with scaled FLOPs"></p>
 
-<p><strong>奖励设计</strong>：</p>
-<ul>
-<li><strong>Rule-based</strong>: 数学 / 代码 / 指令遵循（可验证）</li>
-<li><strong>Vision-specific</strong>: IoU、edit distance、计数、mask、LLM-as-judge</li>
-<li><strong>GRMs (General Reward Models)</strong>: 跨行为通用 RM</li>
-<li><strong>Toggle</strong>: 每 m 步交替 budget-limited (budget(x) = ρ-percentile of correct rollout lengths) 和 full-length</li>
-</ul>
+<p><em>Paper Figure 2, verbatim (caption: "Vision RL training curves on vision benchmarks starting from minimal zero-vision SFT. By scaling vision RL FLOPs, the performance continues to improve.").</em></p>
 
-<p><strong>Agent 变体 (PARL)</strong>:</p>
-<ul>
-<li>编排器 RL 训练，子 agent 冻结（K2 frozen）</li>
-<li>奖励 = λ₁·r_parallel + λ₂·r_finish + r_perf</li>
-<li>λ_i 退火到 0，最终只剩 r_perf</li>
-<li><strong>CriticalSteps</strong> 指标：度量哪些 step 是任务关键节点</li>
-</ul>
+<p>此图是 zero-vision SFT 可行性的核心证据：从纯文本 SFT 出发，仅通过 vision RL 即可持续提升视觉性能，无需视觉 SFT 数据。曲线形状接近对数增长，暗示 compute scaling 有效但收益递减。</p>
 
-<h4 id="2e-训练技术清单">2e. 训练技术清单 <a class="heading-anchor" href="#2e-训练技术清单" aria-label="Link to 2e-训练技术清单">#</a></h4>
+<p><img src="/assets/2602.02276/fig4-parl-training.png" alt="Figure 4: PARL training curves showing accuracy and parallelism increasing together"></p>
+
+<p><em>Paper Figure 4, verbatim (caption: "In our parallel-agent reinforcement learning environment, the training accuracy increases smoothly as training progresses. At the same time, the level of parallelism during training also gradually increases.").</em></p>
+
+<p>关键观察：准确率和并行度同步上升，表明 PARL 的 3-term reward + 退火 schedule 成功地引导编排器从序列执行逐步过渡到并行执行，而非在初期就强制并行（这会导致任务失败）。</p>
+
+<p><img src="/assets/2602.02276/fig8-latency.png" alt="Figure 8: Agent Swarm latency vs single-agent baseline at increasing F1 targets"></p>
+
+<p><em>Paper Figure 8, verbatim (caption: "Agent Swarm achieves 3×–4.5× faster execution time compared to single-agent baselines as target Item-F1 increases from 30% to 70% in WideSearch testing.").</em></p>
+
+<p>Agent Swarm 的延迟几乎不随目标 F1 增加而增长（0.6–1.6×），而单 agent 的延迟从 1.8× 爆增到 7.0×。这是 CriticalSteps 度量和学习化并行分解的直接效果：编排器学会了将工作负载均匀分配到并行分支，使 critical path 保持短恒定。</p>
+
+<h3 id="跨模态迁移实证">跨模态迁移实证 <a class="heading-anchor" href="#跨模态迁移实证" aria-label="Link to 跨模态迁移实证">#</a></h3>
 
 <table>
-<tr><th>类别</th><th>K2.5 实际使用</th><th>备注</th></tr>
-<tr><td>并行</td><td>Pipeline parallelism + <strong>DEP</strong></td><td>DEP 三相位：vision fwd / backbone / vision recompute+bwd</td></tr>
-<tr><td>数值精度</td><td><strong>[论文未披露]</strong></td><td>推测 BF16 训练 + 部分 FP8（K2 已用）</td></tr>
-<tr><td>Optimizer (pretrain)</td><td><strong>MuonClip + QK-Clip</strong> (来自 K2)</td><td>K2.5 ViT 阶段只用 caption CE</td></tr>
-<tr><td>Optimizer (RL)</td><td><strong>MuonClip</strong></td><td>不是 Adam</td></tr>
-<tr><td>LR schedule</td><td><strong>[论文未披露]</strong></td><td>推测 WSD (K2 风格)</td></tr>
-<tr><td>长上下文</td><td><strong>YaRN factor=64</strong></td><td>beta_fast=32, beta_slow=1, mscale=1</td></tr>
-<tr><td>蒸馏</td><td>合成 SFT 用 K2 + K2 Thinking + 专家模型</td><td></td></tr>
-<tr><td>RL</td><td><strong>token-level log-ratio clip + KL penalty (τ)</strong> + MuonClip</td><td>论文 Eq. 1</td></tr>
-<tr><td>Reward</td><td>rule + vision-specific + GRM + LLM-judge</td><td>不同任务用不同 RM</td></tr>
-<tr><td>Token efficiency</td><td><strong>Toggle</strong> budget vs full alternation</td><td>Eq. 2</td></tr>
-<tr><td>Agent infra</td><td><strong>PARL</strong> + <strong>Agent Swarm</strong> + <strong>CriticalSteps</strong></td><td>§5</td></tr>
+<tr><th>Benchmark</th><th>Before Vision-RL</th><th>After Vision-RL</th><th>Δ</th></tr>
+<tr><td>MMLU-Pro</td><td>84.7</td><td>86.4</td><td>+1.7</td></tr>
+<tr><td>GPQA-Diamond</td><td>84.3</td><td>86.4</td><td>+2.1</td></tr>
+<tr><td>LongBench v2</td><td>56.7</td><td>58.9</td><td>+2.2</td></tr>
 </table>
 
-<h4 id="2f-核心训练壁垒">2f. 核心训练壁垒 <a class="heading-anchor" href="#2f-核心训练壁垒" aria-label="Link to 2f-核心训练壁垒">#</a></h4>
+<p>视觉 RL 增强了结构化信息提取能力（计数、OCR、表格理解），该能力正向迁移到类似模式的文本推理任务。</p>
 
-<p><strong>最难复现的一件事</strong>：<strong>zero-vision SFT 的可行性</strong>。它依赖于联合预训阶段（10% vision + 90% text，~15T tokens）已经把 LLM 表征空间彻底"沾染"了视觉特征，使得后续不需要再做视觉 SFT 也能正确响应视觉任务。如果联合预训规模或比例不对，zero-vision SFT 会立刻退化。论文承认实验成本太高没办法在多个 scale 上验证。</p>
-
-<p>第二壁垒：<strong>DEP 实现</strong>。让多模态训练吞吐达到纯文本 90% 是工程奇迹——意味着 vision encoder 的 fwd/bwd 几乎完全 hide 在 backbone 后面。论文只描述三相位，不公开实际 schedule、buffer 大小、recompute 策略。</p>
-
-<h3 id="3-performance（保留原分析）">3. Performance（保留原分析） <a class="heading-anchor" href="#3-performance（保留原分析）" aria-label="Link to 3-performance（保留原分析）">#</a></h3>
-
-<ul>
-<li><strong>Multimodal</strong>: MMMU 70.8 (vs Gemini-2.5-Pro 71.4), DocVQA 92.6, Video-MME 76.2</li>
-<li><strong>Text</strong>: GPQA-Diamond 76.8, MMLU-Pro 81.5, AIME 2025 96.1 (thinking, 25k tokens)</li>
-<li><strong>Code</strong>: SWE-Bench 76.8, LiveCodeBench v6 73.1</li>
-<li><strong>Agent</strong>: GAIA 70.0 (Agent Swarm 75.5), HLE-Sci 31.1</li>
-<li><strong>Visual reasoning</strong>: MathVision 62.0, MathVerse 51.7</li>
-<li><strong>OCR</strong>: OCRBench 932/1000</li>
-</ul>
-
-<h3 id="4-open-questions">4. Open Questions <a class="heading-anchor" href="#4-open-questions" aria-label="Link to 4-open-questions">#</a></h3>
-
-<ol>
-<li>mid-train Table 3 的 "500B → 200B" 究竟是什么含义？两个子阶段？还是课程？</li>
-<li>zero-vision SFT 能否泛化到没有强联合预训的小模型？</li>
-<li>PARL 子 agent 冻结策略，能否在更复杂任务（多步推理 + 多 agent 协作）上保持？</li>
-<li>Toggle 的 ρ-percentile 选择论文没消融，对结果敏感度如何？</li>
-<li>MLA 在 K2 vs K2.5 是否完全一致，还是 K2.5 有微调？</li>
-</ul>
-
-<h3 id="5-position-in-landscape">5. Position in Landscape <a class="heading-anchor" href="#5-position-in-landscape" aria-label="Link to 5-position-in-landscape">#</a></h3>
-
-<ul>
-<li><strong>里程碑</strong>：1T 级 MoE + 多模态 + 强 agent 能力的开源组合</li>
-<li>对比 GPT-5 / Gemini 2.5 Pro：text 接近但视觉略弱，agent 强（PARL）</li>
-<li><strong>架构血统</strong>：MLA (DeepSeek V3) + MoE (DeepSeek V2/V3 风格 sigmoid noaux_tc) + ViT (SigLIP-SO-400M)</li>
-<li><strong>开源价值</strong>：补全开源生态在 1T 级 native multimodal 的空白</li>
-</ul>
-
-<hr>
-
-<h2 id="implementation-references-paper-×-code-cross-check">Implementation references (paper × code cross-check) <a class="heading-anchor" href="#implementation-references-paper-×-code-cross-check" aria-label="Link to implementation-references-paper-×-code-cross-check">#</a></h2>
+<h3 id="agent-swarm-对比">Agent Swarm 对比 <a class="heading-anchor" href="#agent-swarm-对比" aria-label="Link to agent-swarm-对比">#</a></h3>
 
 <table>
-<tr><th>来源</th><th>路径</th><th>用途</th></tr>
-<tr><td>HF config</td><td><code>https://huggingface.co/moonshotai/Kimi-K2.5/raw/main/config.json</code></td><td>所有维度的 ground truth</td></tr>
-<tr><td>HF modeling</td><td><code>auto_map</code> → <code>modeling_kimi_k25.KimiK25ForConditionalGeneration</code> (trust_remote_code)</td><td>主参考</td></tr>
-<tr><td>SGLang model</td><td><code>sglang/python/sglang/srt/models/kimi_k25.py</code></td><td>端到端 multimodal 路径</td></tr>
-<tr><td>SGLang config</td><td><code>sglang/python/sglang/srt/configs/kimi_k25.py</code></td><td>默认配置</td></tr>
-<tr><td>SGLang ViT</td><td><code>sglang/python/sglang/srt/models/kimi_vl_moonvit.py</code></td><td>MoonViT 共享组件</td></tr>
-<tr><td>SGLang LLM</td><td><code>sglang/python/sglang/srt/models/deepseek_v2.py</code></td><td>MLA + MoE 实现</td></tr>
+<tr><th>Benchmark</th><th>K2.5 Single</th><th>K2.5 Agent Swarm</th><th>Claude Opus 4.5</th><th>GPT-5.2 Pro</th></tr>
+<tr><td>BrowseComp</td><td>60.6</td><td>78.4 (+17.8)</td><td>—</td><td>77.9</td></tr>
+<tr><td>WideSearch Item-F1</td><td>72.7</td><td>79.0 (+6.3)</td><td>76.2</td><td>—</td></tr>
+<tr><td>In-house Swarm Bench</td><td>41.6</td><td>58.3 (+16.7)</td><td>45.8</td><td>—</td></tr>
+</table>
+
+<p>增益在需要并行分解的任务上最为显著（In-house Swarm Bench +16.7），验证了 PARL 学到的不仅是简单的任务拆分，而是针对任务结构的自适应调度。</p>
+
+<h3 id="convergence-stability">Convergence & Stability <a class="heading-anchor" href="#convergence-stability" aria-label="Link to convergence-stability">#</a></h3>
+
+<ul>
+<li><strong>学习曲线形状</strong>: Vision RL 近对数增长（Fig. 2）；PARL 训练平滑单调（Fig. 4），未观察到震荡或退化。</li>
+<li><strong>超参敏感度</strong>: 论文未提供 $[\alpha, \beta]$, $\tau$, $\lambda_1$, $\lambda_2$ 的消融。Toggle 的 $\rho$, $\lambda$ 敏感度也未报告。</li>
+<li><strong>Reward hacking 信号</strong>: 论文识别了两类退化——序列坍缩（无 $r_{\text{parallel}}$ 时编排器默认单 agent）和虚假并行（spawn 大量子 agent 获取 $r_{\text{parallel}}$ 但无有效分解）。$r_{\text{finish}}$ 和退火共同抑制这两种 hacking。</li>
+<li><strong>RL vs SFT 的价值</strong>: 零视觉 SFT 提供 cold start activation，但视觉能力的持续提升完全依赖 RL（Fig. 2 曲线从 SFT baseline 持续攀升）。文本能力同样受益于视觉 RL 的正迁移（Table 2）。</li>
+</ul>
+
+<h3 id="dataset-analysis">Dataset Analysis <a class="heading-anchor" href="#dataset-analysis" aria-label="Link to dataset-analysis">#</a></h3>
+
+<ul>
+<li><strong>Composition</strong>: 联合预训练 ~15T tokens，vision:text = 10:90。视觉数据含 alt-text、合成 caption、grounding bbox、OCR、视频、OS 截图。文本域延续 K2 distribution 但增加 coding 权重。具体百分比 [论文未披露]。</li>
+<li><strong>Quality filters</strong>: 每数据源有 epoch 上限（防过拟合），其余 [论文未披露]。</li>
+<li><strong>Contamination</strong>: [论文未披露]。</li>
+<li><strong>Annotation</strong>: SFT 阶段使用 K2 + K2 Thinking + 专家模型合成 + 人工多阶段验证。人工标注规模/一致率 [论文未披露]。</li>
+<li><strong>Synthetic data</strong>: RL 的 visual puzzles 用 K2 作为 LLM verifier 合成；PARL prompts 合成为 wide-search / deep-search / real-world workloads，不显式指令并行化。</li>
+</ul>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Validity</th><th>Link</th></tr>
+<tr><td>1</td><td>早期低比例融合 (10:90) 优于晚期高比例 (50:50)</td><td>Table 1 消融：Early 10:90 在所有 6 项指标上领先 Late 50:50 (Vision Knowledge 25.8 vs 24.2, Text Reasoning 58.5 vs 57.8 等)</td><td>中等——消融仅 3 行，无中间比例（如 20:80 early）的数据点</td><td>§2.1 → §2.2</td></tr>
+<tr><td>2</td><td>零视觉 SFT 足以激活视觉能力</td><td>Fig. 2: text-only SFT + RL 持续提升视觉性能；text+vision SFT 反而更差（定性声明，无具体数值对比表）</td><td>中等——"更差" 的结论缺少定量差值；可能与 vision SFT 数据质量相关而非方法论本质</td><td>§2.2 → §2.3</td></tr>
+<tr><td>3</td><td>视觉 RL 正向迁移到文本</td><td>Table 2: MMLU-Pro +1.7, GPQA-Diamond +2.1, LongBench v2 +2.2</td><td>较强——三项独立 benchmark 一致提升，但缺少 confidence interval 和统计检验</td><td>§2.3 → §5.1</td></tr>
+<tr><td>4</td><td>PARL 去耦解决 credit assignment</td><td>Agent Swarm vs single-agent: BrowseComp 78.4 vs 60.6 (+17.8), WideSearch 79.0 vs 72.7 (+6.3)</td><td>较强——大幅增益；但缺少与 e2e co-optimization baseline 的直接对比（仅 vs single-agent）</td><td>§3 → §5.3</td></tr>
+<tr><td>5</td><td>辅助奖励退火防止退化均衡</td><td>论文描述序列坍缩和虚假并行两种 failure mode，声称退火有效</td><td>较弱——仅定性描述，无消融曲线（如：保留 $\lambda_1$ 不退火时的性能对比）</td><td>§3</td></tr>
+<tr><td>6</td><td>CriticalSteps 激励均衡分解</td><td>Fig. 8: Agent Swarm 延迟 0.6–1.6× 近恒定 vs single-agent 1.8–7.0× 线性增长</td><td>较强——延迟曲线差异显著且趋势清晰</td><td>§3 → §5.3</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<h3 id="代码引用">代码引用 <a class="heading-anchor" href="#代码引用" aria-label="Link to 代码引用">#</a></h3>
+
+<table>
+<tr><th>Source</th><th>Path</th><th>Purpose</th></tr>
+<tr><td>HF config</td><td><code>moonshotai/Kimi-K2.5/config.json</code></td><td>所有架构维度的 ground truth (MLA ranks, MoE config, YaRN params)</td></tr>
+<tr><td>HF modeling</td><td><code>modeling_kimi_k25.KimiK25ForConditionalGeneration</code></td><td>主模型实现 (trust_remote_code)</td></tr>
+<tr><td>SGLang model</td><td><code>sglang/python/sglang/srt/models/kimi_k25.py</code></td><td>端到端多模态推理路径</td></tr>
+<tr><td>SGLang ViT</td><td><code>sglang/python/sglang/srt/models/kimi_vl_moonvit.py</code></td><td>MoonViT-3D 共享组件</td></tr>
+<tr><td>SGLang LLM</td><td><code>sglang/python/sglang/srt/models/deepseek_v2.py</code></td><td>MLA + MoE kernel 实现（复用 DeepSeek V2/V3）</td></tr>
 <tr><td>vLLM model</td><td><code>vllm/vllm/model_executor/models/kimi_k25.py</code></td><td>多模态 processor + 集成</td></tr>
 <tr><td>vLLM ViT</td><td><code>vllm/vllm/model_executor/models/kimi_k25_vit.py</code></td><td>MoonViT-3D, 2D RoPE, patchmerger</td></tr>
-<tr><td>vLLM config</td><td><code>vllm/vllm/transformers_utils/configs/kimi_k25.py</code></td><td>KimiK25Config</td></tr>
-<tr><td>关联论文</td><td>Kimi K2 (arXiv 2507.20534), Kimi-VL (arXiv 2504.07491)</td><td>主干 + 视觉血统</td></tr>
 </table>
 
-<p><strong>Paper × code 对照核验</strong>（精确数值都从 HF config.json 拿，非论文文本）：</p>
+<p>训练代码（RL pipeline, PARL, Toggle, DEP）：<strong>[实现未公开]</strong>。最接近的开源参考为 verl (GRPO-style RL) 和 OpenRLHF (PPO 变体)，但均不支持 PARL 的去耦 multi-agent 训练。</p>
+
+<h3 id="核心技术壁垒专述">核心技术壁垒专述 <a class="heading-anchor" href="#核心技术壁垒专述" aria-label="Link to 核心技术壁垒专述">#</a></h3>
+
+<p>零视觉 SFT 是 K2.5 训练管线中最不可能被低成本复现的环节。其可行性的因果链为：(1) ~15T tokens 的 10:90 联合预训练将视觉 patch 投影到与文本 token 共享的高维表征空间，使 LLM 隐层对视觉 query 和文本 query 产生类似的激活模式；(2) 该对齐足够深，以至于 text-only SFT 中 IPython 程序操作图像的轨迹自动泛化到直接的视觉输入；(3) 后续 vision RL 在此 activation 上微调即可持续提升。打破链条中任何一环（预训练规模不足、比例失衡、IPython proxy 质量不够）都会导致零视觉 SFT 退化为普通 text SFT——无法激活视觉。</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>PARL 辅助奖励必须退火到 0</strong>：保留非零 $\lambda_1$ 会导致编排器在顺序任务上也强制并行化（虚假并行），保留非零 $\lambda_2$ 则过度惩罚合理的长 subagent（截断有效分解）。退火速率是隐含的关键超参。</li>
+<li><strong>Token-level log-ratio clipping 是 sign-agnostic 的</strong>：标准 PPO 的 sign-dependent clipping 在长 horizon agentic trace 中失效——因为 advantage 估计噪声大，sign 频繁翻转导致梯度信号碎片化。K2.5 的 $[\alpha, \beta]$ clipping 不区分 advantage 符号，仅约束 policy 偏移幅度，对 noisy advantage 更鲁棒。</li>
+</ul>
+
+<h3 id="reproducibility-ecosystem">Reproducibility & Ecosystem <a class="heading-anchor" href="#reproducibility-ecosystem" aria-label="Link to reproducibility-ecosystem">#</a></h3>
+
 <ul>
-<li>MLA dims: 论文只说 "MLA"，config.json 才有 q_lora_rank=1536, kv_lora_rank=512, qk_nope/rope/v_head_dim=128/64/128</li>
-<li>MoE: 论文说 "384 routed top-8"，config 加了 routed_scaling_factor=2.827, sigmoid scoring, noaux_tc 等关键细节</li>
-<li>YaRN: 论文说 "long context"，config 给出 factor=64, beta_fast=32, beta_slow=1</li>
+<li><strong>训练代码开源？</strong> 否。Post-trained checkpoint 已开源于 HuggingFace (<code>moonshotai/Kimi-K2.5</code>)，但训练管线（RL、PARL、Toggle、DEP）均未公开。</li>
+<li><strong>最接近开源参考</strong>: verl (GRPO RL), OpenRLHF (PPO variants), SGLang/vLLM (inference only)。均不支持 PARL 去耦 multi-agent 训练。</li>
+<li><strong>社区复现</strong>: 截至 2026-05，尚无社区复现 PARL 或零视觉 SFT 的报告。模型权重可直接使用但训练 recipe 不可复现。</li>
+<li><strong>后续使用</strong>: K2.5 的 Agent Swarm 概念已被 Kimi K2.6 继承扩展。零视觉 SFT 的思路可能影响后续多模态模型的训练策略设计。</li>
 </ul>
 
 </div>

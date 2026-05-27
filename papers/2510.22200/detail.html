@@ -196,364 +196,409 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">LongCat-Video Technical Report</h1>
-<div class="card-meta"><span class="badge badge-model">model</span> 2510.22200</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">video-generation</span><span class="tag">diffusion-transformer</span><span class="tag">GRPO</span><span class="tag">sparse-attention</span><span class="tag">RLHF</span></div>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2510.22200</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">GRPO</span><span class="tag">flow-matching</span><span class="tag">multi-reward-RLHF</span><span class="tag">video-generation</span><span class="tag">sparse-attention</span><span class="tag">coarse-to-fine</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/model.html">← model Survey</a>
+<a href="/papers/2510.22200.html">← Synthesis</a>
+<a href="/overview/algorithm.html">← algorithm Survey</a>
 <a href="https://arxiv.org/abs/2510.22200" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
+
 <h1 id="longcat-video-technical-report">LongCat-Video Technical Report <a class="heading-anchor" href="#longcat-video-technical-report" aria-label="Link to longcat-video-technical-report">#</a></h1>
+
 <blockquote>
 Meituan LongCat Team, Xunliang Cai, Qilong Huang, Zhuoliang Kang, Hongyu Li, Shijun Liang, Liya Ma, Siyu Ren, Xiaoming Wei, Rixu Xie, Tong Zhang | 2025-10 | https://arxiv.org/abs/2510.22200
-Category: llm | Tags: algorithm, kernel, framework, cluster
-Read: 2026-04-16
 </blockquote>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-<p>A unified 13.6B video generation model that natively supports long video generation through video-continuation pretraining, with multi-reward GRPO post-training and efficient coarse-to-fine inference achieving 12x speedup.</p>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
-<p>LongCat-Video is a 13.6B parameter Diffusion Transformer (DiT) model from Meituan that unifies Text-to-Video (T2V), Image-to-Video (I2V), and Video-Continuation (VC) tasks within a single framework by treating all tasks as conditional video continuation with varying numbers of conditioning frames (0 for T2V, 1 for I2V, multiple for VC). The model employs a standard DiT architecture with single-stream transformer blocks (48 layers, hidden size 4096, 32 attention heads), 3D self-attention + cross-attention, SwiGLU FFN, 3D RoPE, and RMSNorm QKNorm. It uses WAN2.1 VAE (4×16×16 compression) and umT5 for bilingual text encoding.</p>
+<p>美团提出将 GRPO 适配到 flow matching 视频生成，理论证明其等价于随机噪声搜索（$dR/dv_\theta \approx -\frac{3}{2}\hat{A}\epsilon$），由此导出固定 SDE 时间步、loss 重加权、max group std 三项改进；结合多 reward 加权训练防止 reward hacking，加上 coarse-to-fine + 3D Block Sparse Attention 实现 12.3× 推理加速。13.6B 稠密 DiT 模型在 VBench 2.0 开源第一、Commonsense 全场最佳。</p>
 
-<p>The paper introduces several technical innovations: (1) Block Causal Attention that isolates condition tokens from noisy tokens, enabling KV caching of condition frames across all sampling steps for efficient long video generation; (2) an improved GRPO training method for Flow Matching that interprets GRPO as stochastic noise search ($dR/dv_\theta \approx -\frac{3}{2} \cdot \hat{A} \cdot \varepsilon$), fixes SDE timesteps for precise credit assignment, introduces policy/KL loss reweighting to address gradient vanishing, and uses max group standard deviation across all groups for training stability; (3) multi-reward training with HPSv3 (visual quality), VideoAlign-based motion quality (trained on grayscale), and text-video alignment rewards that naturally prevent reward hacking through mutual constraints; (4) a coarse-to-fine inference pipeline generating 480p@15fps first then refining to 720p@30fps via a LoRA expert using flow matching with $t_{\text{thresh}}=0.5$ and only 5 refinement steps; (5) 3D Block Sparse Attention (open-sourced, Triton implementation with ring attention support) that retains $<$10% computation at near-lossless quality.</p>
+<h2 id="§2-核心三问">§2 核心三问 <a class="heading-anchor" href="#§2-核心三问" aria-label="Link to §2-核心三问">#</a></h2>
 
-<p>Comprehensive evaluations show LongCat-Video achieves a VBench 2.0 total score of 62.11% (3rd overall, 1st among open-source), leads all models in Commonsense (70.94%), and is competitive with commercial models (Veo3, PixVerse-V5) in internal T2V benchmarks. The combined optimizations yield 12.3x inference speedup on a single H800 GPU. Code and model weights are open-source.</p>
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
 
-<h2 id="核心三问">核心三问 <a class="heading-anchor" href="#核心三问" aria-label="Link to 核心三问">#</a></h2>
+<p>三个交叉痛点驱动本工作：</p>
 
-<p><strong>Q1: 这篇论文试图解决什么核心痛点/问题？</strong></p>
-<p>视频生成模型面临三大核心痛点：(1) 长视频生成中，随时间积累的误差导致颜色漂移和质量下降；(2) 高分辨率高帧率视频的推理效率极低（attention复杂度随token数二次增长，720p@30fps在H800上需1429秒）；(3) GRPO应用于视频生成时收敛慢、单一reward容易导致reward hacking。</p>
-
-<p><strong>Q2: 作者提出了什么新的"杀手锏"方法/架构？</strong></p>
-<p>LongCat-Video的杀手锏是<strong>三位一体</strong>的创新：(1) 通过将所有视频任务统一为video continuation并原生预训练，配合Block Causal Attention+KV Cache实现分钟级长视频生成；(2) 采用coarse-to-fine策略（480p→720p）+ 3D Block Sparse Attention（93.75% sparsity）实现>12x推理加速；(3) 为Flow Matching设计改进的多reward GRPO（固定SDE时间步 + loss重加权 + max group std + 多reward加权组合）。</p>
-
-<p><strong>Q3: 最终效果/结论如何？</strong></p>
-<p>在VBench 2.0上总分62.11%（开源模型第一），Commonsense维度70.94%领先所有模型（含Veo3的69.48%）。在内部T2V评测中Overall Quality与PixVerse-V5持平，明显优于Wan2.2开源模型。推理加速12.3x（1429s→116.5s），720p@30fps视频仅需约2分钟。</p>
-
-<h2 id="逻辑故事还原">逻辑故事还原 <a class="heading-anchor" href="#逻辑故事还原" aria-label="Link to 逻辑故事还原">#</a></h2>
-
-<p><strong>背景 (Context):</strong></p>
-<p>视频生成正朝着world model方向发展，但现有方法面临几个关键瓶颈：长视频生成时误差随时间累积导致退化，高分辨率推理代价极高（attention的二次复杂度使720p视频生成需要数十分钟），GRPO虽在LLM和图像生成中成功但在视频生成中收敛慢且reward优化复杂。大多数现有模型无法在单一框架中同时支持T2V、I2V和视频续写。</p>
-
-<p><strong>破局 (Insight):</strong></p>
-<p>作者的核心洞察是：所有视频生成任务本质上都是"视频续写"——区别仅在于给了多少条件帧。通过原生预训练而非后期微调来获取长视频能力，模型天然学会了帧间的时间一致性。</p>
-
-<blockquote>
-👉 类比：就像一个厨师如果从学徒阶段就练习"接力做菜"（前一道菜的剩余食材作为下一道菜的起点），而不是只学做单道菜再硬加续集，他做出来的连续宴席自然更连贯、风味更统一。
-</blockquote>
-
-<p><strong>拆解 (Deconstruction):</strong></p>
 <ol>
-<li><strong>统一架构</strong>：基于DiT框架，条件帧设timestep=0注入无损信息，noisy帧正常采样。Block Causal Attention确保条件tokens不受noisy tokens影响，KV可跨采样步缓存</li>
-<li><strong>渐进式预训练</strong>：256p图像→256p视频→256p多任务→480p→720p，逐步提升分辨率和任务复杂度，共约678k iterations</li>
-<li><strong>GRPO后训练</strong>：将GRPO解释为随机噪声搜索，固定单个SDE时间步解决credit assignment模糊，引入loss重加权消除梯度消失，max group std增强鲁棒性，多reward（VQ+MQ+TA）加权组合防止hacking</li>
-<li><strong>高效推理</strong>：CFG+CM蒸馏（50步→16步）→C2F（480p@15fps生成 + LoRA refinement expert升频到720p@30fps，仅5步）→BSA（93.75% sparsity，attention计算量 $<10\%$），三者叠加实现12.3x加速</li>
+<li><strong>GRPO 适配 flow matching 的理论缺失</strong>：GRPO 在 LLM 中成功（Guo et al., 2025），在图像生成中初步验证（Liu et al., 2025a），但应用于视频生成时收敛慢、梯度消失严重。根本原因是标准 SDE 采样在所有时间步注入噪声，导致 reward 信号的 credit assignment 模糊——无法区分哪个时间步的噪声探索真正影响了最终质量。</li>
+<li><strong>单一 reward 的 hacking 问题</strong>：仅用视觉质量 reward（如 HPSv3）训练会导致模型生成静态视频——通过消除运动来最大化静帧质量，而非提升真正的视频质量。</li>
+<li><strong>高分辨率视频的二次复杂度瓶颈</strong>：720p@30fps 视频在 latent 空间产生 ~224,640 个 token，标准 dense attention 在单 H800 上需 1429.5 秒，实际部署不可行。</li>
 </ul>
 
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
+<h3 id="q2-方法（含核心技术壁垒）">Q2 方法（含核心技术壁垒） <a class="heading-anchor" href="#q2-方法（含核心技术壁垒）" aria-label="Link to q2-方法（含核心技术壁垒）">#</a></h3>
 
-<h3 id="figure-5-unified-transformer-block-causal-attention">Figure 5: Unified Transformer & Block Causal Attention <a class="heading-anchor" href="#figure-5-unified-transformer-block-causal-attention" aria-label="Link to figure-5-unified-transformer-block-causal-attention">#</a></h3>
-<p><img src="/assets/2510.22200/fig5-unified-architecture.png" alt="Figure 5: Unified Transformer & Block Causal Attention"></p>
-<p><strong>What it shows</strong>: Left side shows the unified transformer architecture supporting T2V (0 condition frames), I2V (1 frame), and VC (multiple frames) through a single model with different condition frame counts. Right side shows Block Causal Attention where condition tokens only attend to themselves while noisy tokens attend to both condition and noisy tokens.</p>
-<p><strong>Why it matters</strong>: This is the architectural foundation of the entire paper — it explains how a single model handles three distinct video generation tasks and why KV caching of condition tokens is possible (their computation is independent of noisy tokens).</p>
-<p><strong>Detailed description</strong>: The left diagram shows input sequences partitioned into condition frames (green, timestep=0) and noisy frames (blue, timestep sampled from [0,1]). For T2V there are no condition frames, for I2V there is one, for VC there are multiple. The right diagram shows the attention mask: condition tokens form a self-contained block (Eq.1: $X_{\text{cond}} = \text{Attention}(Q_{\text{cond}}, K_{\text{cond}}, V_{\text{cond}})$), while noisy tokens attend to the full concatenated KV (Eq.2: $X_{\text{noisy}} = \text{Attention}(Q_{\text{noisy}}, [K_{\text{cond}}, K_{\text{noisy}}], [V_{\text{cond}}, V_{\text{noisy}}])$). Cross-attention only applies to noisy tokens.</p>
+<p><strong>核心方法</strong>：将 GRPO 解释为 flow matching 上的随机噪声搜索，建立理论框架后推导出三项关键改进，并结合多 reward 训练和高效推理策略。</p>
 
-<h3 id="figure-12-3d-block-sparse-attention">Figure 12: 3D Block Sparse Attention <a class="heading-anchor" href="#figure-12-3d-block-sparse-attention" aria-label="Link to figure-12-3d-block-sparse-attention">#</a></h3>
-<p><img src="/assets/2510.22200/fig12-block-sparse-attention.png" alt="Figure 12: 3D Block Sparse Attention"></p>
-<p><strong>What it shows</strong>: The three-step process of 3D block sparse attention: (a) partition latents into 3D blocks of size $t \times h \times w$, compute similarity between query block and all key blocks using average pooling; (b) select top-$r$ key blocks with highest scores; (c) compute standard attention only within selected blocks.</p>
-<p><strong>Why it matters</strong>: This mechanism reduces attention computation to $<$10% of dense attention while maintaining near-lossless quality, enabling practical high-resolution video generation. It is open-sourced with both forward and backward implementations in Triton.</p>
-<p><strong>Detailed description</strong>: The figure shows a 3D video latent ($T \times H \times W$) partitioned into non-overlapping blocks. For each query block $q_i$, average-pooled representations of all key blocks are computed, and a similarity score matrix is calculated. The top-$r$ key blocks (with highest similarity) are selected, and standard attention is computed only between $q_i$ and the selected key blocks. This exploits the high redundancy in video latents — nearby spatial-temporal regions have similar features, so most attention mass is concentrated in a few key blocks.</p>
+<p><strong>核心技术壁垒</strong>：GRPO 与 flow matching velocity field 之间的理论联系。论文在 Appendix A.1 证明 GRPO 的 policy gradient 等价于用 advantage-weighted noise 做 reward 对 velocity field 的零阶梯度估计：$\frac{dR}{dv_\theta} \approx -\frac{3}{2}\hat{A}_t^i \cdot \epsilon$。这一洞察是所有后续设计（固定时间步、重加权公式、max group std）的理论支撑——没有它，这些选择都缺乏原则性依据，需要大量经验搜索。</p>
 
-<h3 id="figure-11-coarse-to-fine-generation-pipeline">Figure 11: Coarse-to-Fine Generation Pipeline <a class="heading-anchor" href="#figure-11-coarse-to-fine-generation-pipeline" aria-label="Link to figure-11-coarse-to-fine-generation-pipeline">#</a></h3>
-<p><img src="/assets/2510.22200/fig11-coarse-to-fine.png" alt="Figure 11: Coarse-to-Fine Generation Pipeline"></p>
-<p><strong>What it shows</strong>: The two-stage generation pipeline for T2V, I2V, and VC tasks. Green arrows indicate low-resolution generation (480p@15fps), orange arrows indicate the refinement phase (720p@30fps). I2V and VC include additional condition frame handling.</p>
-<p><strong>Why it matters</strong>: This design not only achieves >10x inference speedup but actually improves quality over native 720p generation by correcting local distortions and enhancing texture details.</p>
-<p><strong>Detailed description</strong>: For T2V: base model generates 480p@15fps video → trilinear upsample to 720p@30fps → add noise at level $t_{\text{thresh}}=0.5$ → LoRA refinement expert denoises in 5 steps. For I2V/VC: condition frames are downsampled for stage 1, but original high-res condition frames are concatenated with upsampled output for stage 2 refinement. The refinement uses flow matching between the upsampled distribution and the high-res target distribution.</p>
-
-<h3 id="figure-13-training-process-overview">Figure 13: Training Process Overview <a class="heading-anchor" href="#figure-13-training-process-overview" aria-label="Link to figure-13-training-process-overview">#</a></h3>
-<p><img src="/assets/2510.22200/fig13-training-overview.png" alt="Figure 13: Training Process Overview"></p>
-<p><strong>What it shows</strong>: The complete three-component training pipeline: (1) base model training (progressive pre-training + SFT), (2) RLHF training via GRPO with LoRA, (3) acceleration training (distillation LoRA + refinement expert LoRA + BSA).</p>
-<p><strong>Why it matters</strong>: Shows how LoRA is used as a composable mechanism to stack multiple enhancements (RLHF, distillation, refinement) independently on top of the base model.</p>
-<p><strong>Detailed description</strong>: The base model undergoes progressive pre-training from low to high resolution across multiple stages (images → videos → multi-task), followed by SFT on curated high-quality data. Three LoRA modules are then trained independently: RLHF LoRA (multi-reward GRPO), distillation LoRA (CFG + CM distillation for step reduction), and refinement expert LoRA (with BSA for coarse-to-fine generation). This modular design enables flexible combination and future extensions.</p>
-
-<h3 id="figure-6-grpo-quality-improvement">Figure 6: GRPO Quality Improvement <a class="heading-anchor" href="#figure-6-grpo-quality-improvement" aria-label="Link to figure-6-grpo-quality-improvement">#</a></h3>
-<p><img src="/assets/2510.22200/fig6-grpo-quality.png" alt="Figure 6: GRPO Quality Improvement"></p>
-<p><strong>What it shows</strong>: Side-by-side comparison of video frames generated by the base model vs. the GRPO-enhanced model, demonstrating significant improvement in visual quality after multi-reward GRPO training.</p>
-<p><strong>Why it matters</strong>: Visual proof that the proposed GRPO techniques meaningfully improve generation quality, not just benchmark numbers.</p>
-<p><strong>Detailed description</strong>: Two rows of comparison frames. The "base" model frames show artifacts, less vivid colors, and lower visual fidelity. The "GRPO" model frames demonstrate improved color richness, sharper details, and better text-video alignment.</p>
-
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
-
-<h3 id="table-2-speed-comparison-under-different-inference-settings">Table 2: Speed Comparison Under Different Inference Settings <a class="heading-anchor" href="#table-2-speed-comparison-under-different-inference-settings" aria-label="Link to table-2-speed-comparison-under-different-inference-settings">#</a></h3>
-<table>
-<tr><th>Variant</th><th>LCM</th><th>C2F</th><th>BSA</th><th>Steps</th><th>Latency</th><th>Speedup</th></tr>
-<tr><td>720p × 93 frames</td><td>✗</td><td>✗</td><td>✗</td><td>50</td><td>1429.5s</td><td>1.0×</td></tr>
-<tr><td>720p × 93 frames</td><td>✓</td><td>✗</td><td>✗</td><td>16</td><td>244.6s</td><td>5.8×</td></tr>
-<tr><td>480p→720p × 93 frames</td><td>✓</td><td>✓</td><td>✗</td><td>16/5</td><td>135.3s</td><td>10.6×</td></tr>
-<tr><td>480p→720p × 189 frames</td><td>✓</td><td>✓</td><td>✗</td><td>16/5</td><td>302.9s</td><td>4.7×</td></tr>
-<tr><td>480p→720p × 93 frames</td><td>✓</td><td>✓</td><td>✓</td><td>16/5</td><td><strong>116.5s</strong></td><td><strong>12.3×</strong></td></tr>
-<tr><td>480p→720p × 189 frames</td><td>✓</td><td>✓</td><td>✓</td><td>16/5</td><td><strong>142.0s</strong></td><td><strong>10.1×</strong></td></tr>
-</table>
-<p><strong>Takeaway</strong>: LCM distillation provides 5.8× speedup, C2F adds another 1.8×, and BSA adds a further 1.2×, combining for a total <strong>12.3× speedup</strong> on 720p@93frames. For doubled frame count (189 frames), BSA's contribution is more significant (4.7×→10.1×).</p>
-
-<h3 id="table-8-vbench-2-0-results">Table 8: VBench 2.0 Results <a class="heading-anchor" href="#table-8-vbench-2-0-results" aria-label="Link to table-8-vbench-2-0-results">#</a></h3>
-<table>
-<tr><th>Model</th><th>Accessibility</th><th>Creativity</th><th>Commonsense</th><th>Controllability</th><th>Human Fidelity</th><th>Physics</th><th>Total</th></tr>
-<tr><td>HunyuanVideo</td><td>Open</td><td>41.84%</td><td>63.44%</td><td>28.60%</td><td>82.41%</td><td>60.20%</td><td>55.30%</td></tr>
-<tr><td>Wan2.1</td><td>Open</td><td>55.25%</td><td>63.98%</td><td>37.32%</td><td>81.60%</td><td>62.84%</td><td>60.20%</td></tr>
-<tr><td>Sora-480p</td><td>Proprietary</td><td>60.57%</td><td>64.32%</td><td>22.09%</td><td>87.72%</td><td>57.18%</td><td>58.38%</td></tr>
-<tr><td>Vidu Q1</td><td>Proprietary</td><td>56.54%</td><td>65.98%</td><td>38.13%</td><td>81.24%</td><td>71.63%</td><td>62.70%</td></tr>
-<tr><td>Veo3</td><td>Proprietary</td><td>60.85%</td><td>69.48%</td><td>47.04%</td><td>86.88%</td><td>69.35%</td><td><strong>66.72%</strong></td></tr>
-<tr><td><strong>LongCat-Video</strong></td><td><strong>Open</strong></td><td>54.73%</td><td><strong>70.94%</strong></td><td>44.79%</td><td>80.20%</td><td>59.92%</td><td>62.11%</td></tr>
-</table>
-<p><strong>Takeaway</strong>: LongCat-Video achieves the <strong>highest Commonsense score</strong> (70.94%) among all models including proprietary ones, and ranks 3rd overall (62.11%) behind only Veo3 and Vidu Q1. Among open-source models, it leads by a significant margin.</p>
-
-<h3 id="table-3-progressive-training-stages">Table 3: Progressive Training Stages <a class="heading-anchor" href="#table-3-progressive-training-stages" aria-label="Link to table-3-progressive-training-stages">#</a></h3>
-<table>
-<tr><th>Training Tasks</th><th>Size Bucket</th><th>Learning Rate</th><th>Iterations</th></tr>
-<tr><td>T2I</td><td>256p</td><td>1e-4</td><td>285k</td></tr>
-<tr><td>T2I + T2V</td><td>256p × 93 frames</td><td>1e-4</td><td>140k</td></tr>
-<tr><td>T2I + T2V + I2V + VC</td><td>256p × 93 frames</td><td>5e-5</td><td>164k</td></tr>
-<tr><td>T2I + T2V + I2V + VC</td><td>480p × 93 frames</td><td>5e-5</td><td>36k</td></tr>
-<tr><td>T2I + T2V + I2V + VC</td><td>480p + 720p × 93 frames</td><td>2e-5</td><td>53k</td></tr>
-</table>
-<p><strong>Takeaway</strong>: Progressive training starts from images only (285k iters) and gradually introduces video, multi-task training, and higher resolution. Learning rate decreases across stages (1e-4 → 2e-5). Total ~678k pretraining iterations.</p>
-
-<h2 id="关键细节与启示">关键细节与启示 <a class="heading-anchor" href="#关键细节与启示" aria-label="Link to 关键细节与启示">#</a></h2>
-
-<p><strong>技术细节补充:</strong></p>
-<ol>
-<li><strong>GRPO的随机噪声搜索视角</strong>: 论文证明GRPO for Flow Matching本质上用相对优势 $\hat{A}$ 和SDE噪声 $\varepsilon$ 来近似奖励对速度场的梯度 $dR/dv_\theta \approx -\frac{3}{2} \cdot \hat{A}_t \cdot \varepsilon$（Eq.5），这一理论洞察直接指导了固定SDE时间步（解决credit assignment模糊）和loss重加权（消除梯度消失）的设计</li>
-<li><strong>Motion Quality reward用灰度视频训练</strong>: 为避免MQ reward model对特定颜色的偏好，使用灰度视频训练和推理，这一trick使验证集loss的上升延迟，说明减少了过拟合，提高了泛化能力</li>
-</ul>
-
-<p><strong>一句话总结:</strong> 美团LongCat-Video通过统一视频续写框架+原生长视频预训练+改进的多reward GRPO+coarse-to-fine推理策略，在13.6B参数下实现了与商业SOTA comparable的视频生成质量（VBench 2.0开源第一，Commonsense维度全场最佳），特别在长视频生成和物理常识方面表现突出，且推理效率提升12倍。</p>
-
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
-<ul>
-<li>12.3x inference speedup (1429.5s → 116.5s for 720p) through LCM distillation + C2F + BSA on a single H800 GPU</li>
-<li>Coarse-to-fine not only accelerates but improves quality — better texture details and local distortion correction vs. native 720p</li>
-<li>Multi-reward GRPO prevents reward hacking that single-reward (HPSv3-only) training exhibits (static video tendency)</li>
-<li>Block Sparse Attention achieves near-lossless quality at 93.75% sparsity (only retaining ~6.25% of attention computation)</li>
-<li>GRPO improvements from T2V generalize to I2V and VC tasks without task-specific rewards</li>
-<li>70.94% on VBench 2.0 Commonsense (best across all models including Veo3), validating physical understanding capability</li>
-<li>Training MFU of 33-38% with DeepSpeed-Zero2, Context Parallelism, Ring Attention, and Activation Checkpointing</li>
-</ul>
-
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-<ul>
-<li>I2V overall quality (3.17 MOS) lags behind Seedance 1.0 (3.35), Hailuo-02 (3.27), and Wan2.2 (3.26)</li>
-<li>Image-alignment (4.04) is lower than competitors (4.12-4.18), suggesting room for improvement in preserving reference image attributes</li>
-<li>RLHF training only uses T2V tasks — no task-specific rewards for I2V or VC (acknowledged as future work)</li>
-<li>No audio generation capability</li>
-<li>Training infrastructure achieves only 33-38% MFU, suggesting optimization room</li>
-<li>Human Fidelity score (80.20%) is the lowest among tested models, indicating weaker human generation quality</li>
-</ul>
-
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-<ul>
-<li><strong>Algorithm</strong>: Introduces novel GRPO techniques for Flow Matching (fix SDE timestep, policy/KL loss reweighting, max group std) that are broadly applicable to any diffusion/flow model post-training beyond video generation</li>
-<li><strong>Kernel</strong>: Open-source 3D Block Sparse Attention in Triton with forward/backward implementations and ring attention support for context parallelism; directly reusable as a modular component in other video/image generation models</li>
-<li><strong>Framework</strong>: C2F inference pipeline with LoRA refinement expert, Block Causal Attention with KV caching, and step distillation collectively provide a replicable recipe for efficient video serving; patterns applicable to other generation serving systems</li>
-<li><strong>LLM</strong>: The multi-reward GRPO method with weighted advantage aggregation provides a template for multi-objective RLHF in LLMs; the "GRPO as stochastic noise search" theoretical insight may generalize beyond flow matching</li>
-<li><strong>Agent</strong>: N/A — no direct impact on agent systems; long video generation may eventually serve as a world model backbone for agent planning</li>
-<li><strong>Cluster</strong>: DeepSpeed-Zero2 + Ring Attention + Context Parallelism training recipe at 13B scale with 33-38% MFU; BSA's ring attention variant enables efficient distributed sparse attention training</li>
-</ul>
-
-<hr>
-
-<h2 id="deep-analysis-llm">Deep Analysis (llm) <a class="heading-anchor" href="#deep-analysis-llm" aria-label="Link to deep-analysis-llm">#</a></h2>
-
-<h3 id="1-architecture">1. Architecture <a class="heading-anchor" href="#1-architecture" aria-label="Link to 1-architecture">#</a></h3>
-
-<p><strong>Base architecture</strong>: Dense Diffusion Transformer (DiT) with single-stream transformer blocks. Not a pure LLM but follows the Transformer-based generative model paradigm.</p>
-
-<p><strong>Key architectural details</strong>:</p>
-<ul>
-<li><strong>Attention</strong>: 3D self-attention (MHA with 32 heads) + cross-attention for text conditioning. Block Causal Attention separates condition and noisy tokens. The model uses <strong>full attention</strong> (not GQA/MQA) — this is typical for DiT models which have shorter sequences than autoregressive LLMs</li>
-<li><strong>Position encoding</strong>: 3D RoPE across temporal, height, and width dimensions, enabling the model to handle varying video resolutions and aspect ratios</li>
-<li><strong>Normalization</strong>: RMSNorm applied as QKNorm within both self-attention and cross-attention for training stability. AdaLN-Zero for timestep modulation (each block has a dedicated modulation MLP with embedding size 512)</li>
-<li><strong>Activation</strong>: SwiGLU in FFN (FFN hidden size 16384 = 4× hidden size 4096)</li>
-<li><strong>Text encoder</strong>: umT5 (multilingual, supporting English and Chinese)</li>
-<li><strong>VAE</strong>: WAN2.1 VAE with 4×8×8 compression + 1×2×2 patchify = 4×16×16 total compression ratio</li>
-<li><strong>Model size</strong>: 48 layers, hidden size 4096, 32 attention heads, 13.6B parameters total</li>
-</ul>
-
-<h3 id="figure-5-unified-transformer-block-causal-attention-2">Figure 5: Unified Transformer & Block Causal Attention <a class="heading-anchor" href="#figure-5-unified-transformer-block-causal-attention-2" aria-label="Link to figure-5-unified-transformer-block-causal-attention-2">#</a></h3>
-<p><img src="/assets/2510.22200/fig5-unified-architecture.png" alt="Figure 5"></p>
-<p><strong>解读</strong>: 这张图是整个架构的核心。左侧展示了统一输入表示——条件帧（green, $t=0$）和噪声帧（blue, $t \in [0,1]$）沿时间轴拼接。右侧的Block Causal Attention是关键设计：条件tokens自成一组只做self-attention（不受噪声tokens影响），而噪声tokens attend to全部tokens。这意味着条件部分的KV可以在所有采样步骤中缓存复用，对长视频生成（条件帧多）的效率提升至关重要。</p>
-
-<p><strong>Comparison to competitors</strong>:</p>
-<ul>
-<li>vs. Wan2.1: LongCat-Video uses single-stream DiT (Wan2.1 also uses DiT but different architecture scale)</li>
-<li>vs. HunyuanVideo: Similar DiT backbone but HunyuanVideo uses dual-stream architecture</li>
-<li>The key differentiator is the unified video-continuation formulation and Block Causal Attention for KV caching</li>
-</ul>
-
-<h3 id="2-scale-training">2. Scale & Training <a class="heading-anchor" href="#2-scale-training" aria-label="Link to 2-scale-training">#</a></h3>
-
-<p><strong>Parameter count</strong>: 13.6B total parameters (dense model, no MoE)</p>
-
-<p><strong>Training data</strong>: Large-scale curated video dataset with comprehensive annotation pipeline:</p>
-<ul>
-<li>Data preprocessing: deduplication (ID + MD5), scene detection (PySceneDetect + TransNetV2), black border cropping</li>
-<li>Data annotation: aesthetic score, blur score, text coverage, watermark detection, optical flow for motion dynamics</li>
-<li>Caption system: fine-tuned LLaVA-Video for basic captions + Tarsier2 data for temporal dynamics + Qwen2.5VL for cinematography/visual style + caption augmentation (Chinese/English translation, summarization)</li>
-<li>Data distribution: text embedding clustering for category analysis and rebalancing</li>
-</ul>
-
-<p><strong>Training recipe</strong> (multi-stage):</p>
-<ol>
-<li><strong>Progressive pretraining</strong>: 5 stages from T2I@256p (285k iters) → T2V@256p → multi-task@256p → @480p → @480p+720p, total ~678k iterations, AdamW with decreasing LR (1e-4 → 2e-5)</li>
-<li><strong>SFT</strong>: 7.5k iterations on curated high-quality data, LR 1e-5, including specialized datasets for camera motion and visual style</li>
-<li><strong>RLHF (GRPO)</strong>: 500 iterations only, LR 1e-4, group size 4, 64 prompts per step, T2V only</li>
-<li><strong>Distillation</strong>: CFG distillation (2k iters) + CM distillation (3k iters), enabling 16-step inference</li>
-<li><strong>Refinement expert</strong>: Full attention (500 iters) → BSA (500 iters, 93.75% sparsity), $t_{\text{thresh}}=0.5$</li>
-</ul>
-
-<p><strong>Training stability techniques</strong>:</p>
-<ul>
-<li>RMSNorm as QKNorm</li>
-<li>Logit-normal-like loss weighting (more stable than logit-normal timestep sampling)</li>
-<li>Adaptive timestep shift based on noise token volume</li>
-<li>Per-frame independent noise perturbation for VC condition frames (reduces color drift)</li>
-</ul>
-
-<p><strong>Training infrastructure</strong>: DeepSpeed-Zero2, Context Parallelism, Ring Attention, Activation Checkpointing, bucket-based mixed-resolution training, VAE cache to eliminate computation bubbles. MFU 33-38%.</p>
-
-<h3 id="3-quantization-compression">3. Quantization & Compression <a class="heading-anchor" href="#3-quantization-compression" aria-label="Link to 3-quantization-compression">#</a></h3>
-
-<p>N/A — The paper does not discuss weight or activation quantization for the model. The "compression" in this paper refers to:</p>
-<ul>
-<li><strong>VAE compression</strong>: 4×16×16 pixel-to-latent compression</li>
-<li><strong>Step reduction</strong>: CFG + CM distillation reduces sampling from 50 to 16 steps</li>
-<li><strong>Spatial-temporal compression</strong>: C2F generates at 480p@15fps then refines to 720p@30fps</li>
-<li><strong>Attention sparsity</strong>: BSA retains only ~6.25% of attention computation (93.75% sparsity)</li>
-</ul>
-
-<p>These are all inference-time efficiency optimizations rather than model weight compression. Given the 13.6B parameter model size (~27GB in FP16), quantization to INT8 or INT4 would be valuable future work for deployment on consumer GPUs, but the paper does not explore this.</p>
-
-<h3 id="4-performance">4. Performance <a class="heading-anchor" href="#4-performance" aria-label="Link to 4-performance">#</a></h3>
-
-<p><strong>VBench 2.0</strong> (public benchmark):</p>
-<ul>
-<li>Total Score: 62.11% (3rd overall, 1st open-source, behind Veo3 66.72% and Vidu Q1 62.70%)</li>
-<li>Commonsense: <strong>70.94%</strong> (1st among all models, including proprietary)</li>
-<li>Controllability: 44.79% (2nd, behind Veo3 47.04%)</li>
-<li>Creativity: 54.73%</li>
-<li>Human Fidelity: 80.20% (lowest among tested models)</li>
-<li>Physics: 59.92%</li>
-</ul>
-
-<p><strong>Internal benchmark (T2V, MOS 5-point scale)</strong>:</p>
-<ul>
-<li>Overall Quality: 3.38 (competitive with Wan2.2 3.35, PixVerse-V5 3.36; behind Veo3 3.48)</li>
-<li>Visual Quality: 3.25 (nearly matches Wan2.2 3.26, best Seedance-level)</li>
-<li>Text-Alignment: 3.76 (behind Veo3 3.99)</li>
-<li>Motion Quality: 3.74 (behind Veo3 3.86)</li>
-</ul>
-
-<p><strong>Internal benchmark (I2V, MOS)</strong>:</p>
-<ul>
-<li>Visual Quality: <strong>3.27</strong> (highest)</li>
-<li>Overall Quality: 3.17 (behind Seedance 3.35, Hailuo 3.27, Wan2.2 3.26)</li>
-<li>Image-Alignment: 4.04 (lowest, vs. 4.12-4.18 for competitors)</li>
-</ul>
-
-<p><strong>Inference efficiency</strong> (single H800 GPU):</p>
-<ul>
-<li>Baseline 720p×93f: 1429.5s → with all optimizations: 116.5s (12.3x speedup)</li>
-<li>720p×189f (double frames): 142.0s (10.1x speedup)</li>
-</ul>
-
-<p><strong>Fair comparison assessment</strong>: The internal benchmark uses both human evaluation (MOS, GSB) and trained automatic judge model (>0.92 correlation with humans). Multiple annotators per video with consensus protocol. The comparison against Veo3, PixVerse-V5, and Wan2.2 is reasonably fair though proprietary models may have different scale and training data advantages.</p>
-
-<h3 id="5-key-innovations">5. Key Innovations <a class="heading-anchor" href="#5-key-innovations" aria-label="Link to 5-key-innovations">#</a></h3>
-
-<p><strong>Innovation 1: Unified Video-Continuation Framework</strong></p>
-<ul>
-<li><strong>Problem</strong>: Separate models or adapters for T2V/I2V/VC increase complexity and prevent knowledge sharing</li>
-<li><strong>Mechanism</strong>: All tasks are formulated as conditional video continuation. T2V has 0 condition frames, I2V has 1, VC has multiple. Condition frames get timestep=0 (clean), noisy frames get sampled timesteps</li>
-<li><strong>Impact</strong>: Single model handles all tasks; shared pretraining improves each task; Block Causal Attention enables KV caching for condition tokens</li>
-<li><strong>Generality</strong>: Applicable to any conditional video generation model</li>
-</ul>
-
-<p><strong>Innovation 2: GRPO for Flow Matching with Theoretical Foundation</strong></p>
-<ul>
-<li><strong>Problem</strong>: GRPO for video generation suffers from slow convergence, credit assignment ambiguity, and gradient vanishing</li>
-<li><strong>Mechanism</strong>: (a) Theoretical insight that GRPO approximates $dR/dv_\theta$ via stochastic noise search; (b) Fix SDE timestep to single critical timestep for precise credit assignment; (c) Policy/KL loss reweighting $\lambda = \sqrt{t/(\Delta t(1-t))}$ to normalize gradient magnitude; (d) Max group std across all groups for stable advantage estimation</li>
-<li><strong>Impact</strong>: Ablation in Figure 7 shows each technique contributes; combined they enable successful GRPO training for video generation in only 500 iterations</li>
-<li><strong>Generality</strong>: The theoretical framework and techniques are applicable to any flow matching model, not just video generation</li>
-</ul>
-
-<p><strong>Innovation 3: Multi-Reward Training with Anti-Hacking</strong></p>
-<ul>
-<li><strong>Problem</strong>: Single reward optimization leads to reward hacking (e.g., HPSv3-only training produces static videos)</li>
-<li><strong>Mechanism</strong>: Three reward models (HPSv3 for VQ, VideoAlign for MQ trained on grayscale, VideoAlign for TA) with weighted relative advantage aggregation: $\hat{A}_{\text{total}} = \sum w_k \cdot \hat{A}_{k,t}$</li>
-<li><strong>Impact</strong>: Figure 9 demonstrates that HPSv3-only training hacks motion (videos become static) while multi-reward maintains balanced improvement across all dimensions. Figure 8 shows all reward curves improve together</li>
-<li><strong>Generality</strong>: Multi-reward GRPO with weighted advantages is directly applicable to any RL-based training</li>
-</ul>
-
-<p><strong>Innovation 4: Coarse-to-Fine with Flow Matching Refinement</strong></p>
-<ul>
-<li><strong>Problem</strong>: Native high-resolution generation is prohibitively expensive</li>
-<li><strong>Mechanism</strong>: Stage 1 generates 480p@15fps, stage 2 uses flow matching between upsampled distribution and target HR distribution with $t_{\text{thresh}}=0.5$ (only 5 refinement steps). LoRA training for efficient adaptation</li>
-<li><strong>Impact</strong>: 10.6x speedup AND improved quality (Figure 10 shows better textures than native 720p)</li>
-<li><strong>Generality</strong>: Applicable to any latent diffusion video model</li>
-</ul>
-
-<p><strong>Innovation 5: 3D Block Sparse Attention (Open-Source)</strong></p>
-<ul>
-<li><strong>Problem</strong>: Quadratic attention complexity is the primary bottleneck for high-resolution video generation</li>
-<li><strong>Mechanism</strong>: Partition video latents into 3D blocks ($t \times h \times w = 4 \times 4 \times 4$), compute block-level similarity scores via average pooling, select top-$r$ key blocks, compute attention only within selected blocks</li>
-<li><strong>Impact</strong>: 93.75% sparsity with near-lossless quality; ring attention variant for context parallelism; open-sourced Triton implementation</li>
-<li><strong>Generality</strong>: Open-sourced as modular component; users can customize block selection patterns (top-$r$, CDF-based, 2D+1D)</li>
-</ul>
-
-<h3 id="figure-12-3d-block-sparse-attention-2">Figure 12: 3D Block Sparse Attention <a class="heading-anchor" href="#figure-12-3d-block-sparse-attention-2" aria-label="Link to figure-12-3d-block-sparse-attention-2">#</a></h3>
-<p><img src="/assets/2510.22200/fig12-block-sparse-attention.png" alt="Figure 12"></p>
-<p><strong>解读</strong>: 这张图详细展示了BSA的三步流程。(a) 将3D视频latent分割为 $t \times h \times w$ 的非重叠block，对query block和所有key blocks做average pooling计算block级相似度分数；(b) 选择得分最高的top-$r$ 个key blocks；(c) 只在选中的key blocks范围内计算标准attention。这利用了视频latent的高冗余性——空间-时间上相近的区域特征相似，attention权重集中在少数key blocks上。93.75% sparsity意味着只保留1/16的key blocks（$r = N_k/16$）。</p>
-
-<h3 id="6-infrastructure-impact">6. Infrastructure Impact <a class="heading-anchor" href="#6-infrastructure-impact" aria-label="Link to 6-infrastructure-impact">#</a></h3>
+<p><strong>Before vs After</strong>（相对于标准 GRPO for diffusion）：</p>
 
 <table>
-<tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>Novel GRPO techniques for flow matching (fix SDE timestep, loss reweighting, max group std) provide a template for post-training any diffusion/flow model. Multi-reward weighted advantage is a general anti-hacking strategy.</td></tr>
-<tr><td>Kernel</td><td>Open-source 3D Block Sparse Attention in Triton with forward/backward + ring attention. Directly usable as drop-in replacement for dense attention in video generation. 3D block size configuration ($t\!=\!h\!=\!w\!=\!4$, optimal at $t_q \cdot h_q \cdot w_q = 128$, $t_k \cdot h_k \cdot w_k = 1024$) provides hardware alignment guidance.</td></tr>
-<tr><td>Framework</td><td>C2F pipeline + LoRA stacking design provides a replicable serving recipe: base model + LoRA (RLHF) + LoRA (distillation) + LoRA (refinement). Block Causal Attention KV caching pattern is applicable to any conditional generation system.</td></tr>
-<tr><td>Agent</td><td>No direct impact; long video generation capability may eventually serve as a world model backbone for agent planning and simulation.</td></tr>
-<tr><td>Hardware</td><td>13.6B model fits on a single H800 for inference. Training uses DeepSpeed-Zero2 + Ring Attention at 33-38% MFU — room for optimization with better parallelism or Flash Attention integration.</td></tr>
+<tr><th>维度</th><th>Before (标准 GRPO)</th><th>After (LongCat GRPO)</th></tr>
+<tr><td>SDE 采样</td><td>所有时间步都注入 SDE 噪声</td><td>仅单个随机时间步 $t' \sim \mathcal{U}(0, T'-1)$ 注入 SDE，其余用 ODE</td></tr>
+<tr><td>初始噪声</td><td>每个 sample 独立采样</td><td>同一 group 共享初始噪声 $\boldsymbol{x}_T$</td></tr>
+<tr><td>优势归一化</td><td>Per-group std $\sigma_k^j$</td><td>Max group std $\sigma_{\max,k} = \max(\{\sigma_k^j\}_{j=1}^B)$</td></tr>
+<tr><td>Loss 权重</td><td>均匀</td><td>时间步相关重加权 $\lambda_{\text{policy}} = \sqrt{t/(\Delta t(1-t))}$</td></tr>
+<tr><td>Reward</td><td>单一</td><td>多 reward 加权 $\hat{A}_{\text{total}} = \sum_k w_k \hat{A}_k$</td></tr>
+<tr><td>理论基础</td><td>无（启发式适配）</td><td>随机噪声搜索解释（Appendix A.1）</td></tr>
 </table>
 
-<h3 id="7-deployment-considerations">7. Deployment Considerations <a class="heading-anchor" href="#7-deployment-considerations" aria-label="Link to 7-deployment-considerations">#</a></h3>
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
 
 <ul>
-<li><strong>Minimum hardware</strong>: Single H800 (80GB) GPU for inference at 720p@30fps with all optimizations (116.5s per video). FP16 model weights ~27GB + KV cache. Without C2F/BSA, native 720p requires more memory</li>
-<li><strong>Recommended parallelism</strong>: Single GPU for inference (demonstrated). Training uses context parallelism + ring attention across multiple GPUs. No TP/PP details given</li>
-<li><strong>Open weights</strong>: Yes, code and model weights publicly available (GitHub: meituan-longcat/LongCat-Video). License not specified in paper</li>
-<li><strong>LoRA compatibility</strong>: Excellent — the paper's entire post-training strategy is based on LoRA (RLHF LoRA dim 128, alpha 64, applied to all linear layers in self-attention, cross-attention, and FFN). Multiple LoRA modules can be stacked</li>
-<li><strong>Fine-tuning friendly</strong>: Progressive training recipe is well-documented; LoRA-based adaptation demonstrated for multiple downstream tasks (refinement, distillation, RLHF)</li>
+<li><strong>VBench 2.0</strong>: 总分 62.11%（开源第一，仅次于 Veo3 66.72% 和 Vidu Q1 62.70%）；<strong>Commonsense 70.94%</strong> 全场最佳（含 Veo3 的 69.48%）</li>
+<li><strong>内部 T2V MOS</strong>: Overall Quality 3.38（Wan 2.2 3.35, PixVerse-V5 3.36, Veo3 3.48）</li>
+<li><strong>推理加速</strong>: 720p×93f 从 1429.5s → 116.5s（12.3×），720p×189f 降至 142.0s（10.1×）</li>
+<li><strong>BSA 效率</strong>: attention 计算量降至 dense 的 <10%（93.75% sparsity），质量近无损</li>
+<li><strong>弱项</strong>: I2V Overall Quality 3.17（落后 Seedance 3.35、Hailuo 3.27）；Image-Alignment 4.04（落后 4.12-4.18）；Human Fidelity 80.20%（测试模型中最低）</li>
 </ul>
 
-<h3 id="8-position-in-model-landscape">8. Position in Model Landscape <a class="heading-anchor" href="#8-position-in-model-landscape" aria-label="Link to 8-position-in-model-landscape">#</a></h3>
+<h3 id="problem-formulation">Problem Formulation <a class="heading-anchor" href="#problem-formulation" aria-label="Link to problem-formulation">#</a></h3>
 
-<p><strong>Compared to SOTA at same scale</strong>:</p>
-<ul>
-<li>vs. Wan2.2-A14B (14B, open-source): LongCat-Video is competitive/superior in T2V (wins GSB on text-alignment and motion), slightly behind in I2V</li>
-<li>vs. Veo3 (proprietary, Google): Behind in overall metrics but competitive; leads in Commonsense</li>
-<li>vs. Seedance 1.0 (proprietary, ByteDance): Behind in I2V overall quality but comparable in T2V</li>
-</ul>
+<p><strong>目标函数</strong>：优化 flow matching 模型的 GRPO objective：</p>
 
-<p><strong>Gap filled</strong>: First open-source video generation model to:</p>
+<p>$$\mathcal{L}_{\text{total}} = \frac{1}{B \cdot G}\sum_{j=1}^{B}\sum_{i=1}^{G}\left(\mathcal{L}_{\text{policy}}^{i} - \mathcal{L}_{\text{KL}}^{i}\right)$$</p>
+
+<p>其中 policy loss 和 KL loss 分别为：</p>
+
+<p>$$\mathcal{L}_{\text{policy}}^{i} = \lambda_{\text{policy}} \cdot r_{t'}^{i}(\theta) \cdot \hat{A}_{\text{total}}^{i}$$</p>
+
+<p>$$\mathcal{L}_{\text{KL}}^{i} = \beta \lambda_{\text{KL}} \cdot D_{\text{KL}}(\pi_\theta \| \pi_{\text{ref}})$$</p>
+
+<p><strong>假设</strong>：(1) shared initial noise $\boldsymbol{x}_T$ 保证 group 内差异仅源于 SDE 噪声；(2) 单时间步 SDE 足以提供有效探索（$T' < T$ 限制在早期时间步）；(3) multi-reward 各维度近似独立可分。</p>
+
+<p><strong>输入/输出</strong>：一步 GRPO 消耗 $B$ 个 prompt + 每个 prompt 生成 $G$ 个完整 ODE/SDE 轨迹 + $n$ 个 reward model 的评分，产出 $\theta$ 的梯度更新。</p>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<h3 id="统一视频续写框架">统一视频续写框架 <a class="heading-anchor" href="#统一视频续写框架" aria-label="Link to 统一视频续写框架">#</a></h3>
+
+<p>所有视频生成任务统一为条件视频续写：条件帧 $X_{\text{cond}} \in \mathbb{R}^{B \times N_{\text{cond}} \times H \times W \times C}$（timestep 固定为 0）与噪声帧 $X_{\text{noisy}}$（timestep $\sim [0,1]$）沿时间轴拼接。T2V 令 $N_{\text{cond}}=0$，I2V 令 $N_{\text{cond}}=1$，VC 令 $N_{\text{cond}} > 1$。</p>
+
+<p>Block Causal Attention 确保条件 token 的更新独立于噪声 token：</p>
+
+<p>$$X_{\text{cond}} = \mathrm{Attention}(Q_{\text{cond}}, K_{\text{cond}}, V_{\text{cond}})$$</p>
+
+<p>$$X_{\text{noisy}} = \mathrm{Attention}(Q_{\text{noisy}}, [K_{\text{cond}}, K_{\text{noisy}}], [V_{\text{cond}}, V_{\text{noisy}}])$$</p>
+
+<p>这一设计使条件帧的 KV 可在所有采样步缓存复用，对长视频生成（条件帧多）的效率至关重要。条件 token 不参与 cross-attention 计算。</p>
+
+<h3 id="3d-block-sparse-attention">3D Block Sparse Attention <a class="heading-anchor" href="#3d-block-sparse-attention" aria-label="Link to 3d-block-sparse-attention">#</a></h3>
+
+<p><img src="/assets/2510.22200/fig5-unified-architecture.png" alt="Figure 5: Block Sparse Attention — 3D block 选择与稀疏 attention 计算流程"></p>
+
+<p><em>Paper's Figure (BSA mechanism): 将视频 latent 分为 3D block，计算 block 级相似度分数，选择 top-r 个 key blocks，仅在选中 blocks 内计算 attention。</em></p>
+
+<p>BSA 将 latent 按空间-时间局部性重排为 3D block（默认 chunk shape $[4, 4, 8]$），计算 query block 与所有 key blocks 的 average-pooled 相似度，选择 top-$r$ 个 key blocks（$r = (1 - \text{sparsity}) \times N_k$），仅在选中范围内执行标准 attention。93.75% sparsity 意味着只保留 1/16 的 key blocks，attention 计算量降至 dense 的 <10%。选择策略支持 Top-K、CDF 阈值及组合模式。Triton 内核实现了变长 block 选择的 online softmax，前向/反向均有优化路径。</p>
+
+<h3 id="training-pipeline">Training Pipeline <a class="heading-anchor" href="#training-pipeline" aria-label="Link to training-pipeline">#</a></h3>
+
+<p><img src="/assets/2510.22200/fig6-grpo-quality.png" alt="Figure 6: 训练流水线 — 基础训练与 LoRA 后训练分支"></p>
+
+<p><em>Paper's Figure (Training overview): 展示三阶段训练流程——渐进式预训练 → SFT → Base Model，然后分三条 LoRA 分支独立训练 RLHF、Refinement Expert、Distillation。</em></p>
+
+<p>训练采用模块化 LoRA 设计：在 base model（渐进式预训练 + SFT）上独立训练三个 LoRA 模块——RLHF LoRA（多 reward GRPO，500 iter）、Refinement Expert LoRA（480p→720p 精细化 + BSA）、Distillation LoRA（CFG + CM 蒸馏，减少采样步数）。这种设计使各模块可独立迭代，并支持灵活组合。</p>
+
+<h3 id="grpo-for-flow-matching-—-算法核心">GRPO for Flow Matching — 算法核心 <a class="heading-anchor" href="#grpo-for-flow-matching-—-算法核心" aria-label="Link to grpo-for-flow-matching-—-算法核心">#</a></h3>
+
+<div class="mermaid">
+sequenceDiagram
+    participant P as Prompt c_j
+    participant N as Shared Noise x_T
+    participant S as G Trajectories (ODE+1-step SDE)
+    participant R as Multi-Reward {R_k}
+    participant A as Weighted Advantage
+    participant U as θ Update
+
+    P->>N: Sample shared x_T ~ N(0,I)
+    N->>S: For i=1..G: generate via ODE except at t' (SDE)
+    S->>R: Decode x_0^i, compute R_k(x_0^i, c_j)
+    R->>A: Per-reward normalize, weight, aggregate
+    A->>U: Compute reweighted policy + KL loss, update θ
+</div>
+
+<p>核心算法流程：(1) 同一 prompt 的 G 个样本共享初始噪声 $\boldsymbol{x}_T$；(2) 随机选择单个关键时间步 $t' \sim \mathcal{U}(0, T'-1)$，仅在此步注入 SDE 噪声（截断调度 $\sigma_t$），其余步用 ODE；(3) 解码后计算多个 reward，每个 reward 独立归一化后加权聚合为 $\hat{A}_{\text{total}}$；(4) 应用时间步相关重加权 $\lambda_{\text{policy}}, \lambda_{\text{KL}}$ 后更新参数。</p>
+
+<h3 id="coarse-to-fine-generation">Coarse-to-Fine Generation <a class="heading-anchor" href="#coarse-to-fine-generation" aria-label="Link to coarse-to-fine-generation">#</a></h3>
+
+<p>三阶段推理流水线：</p>
+
+<table>
+<tr><th>Stage</th><th>方法</th><th>分辨率</th><th>FPS</th><th>LoRA</th><th>BSA</th><th>步数</th></tr>
+<tr><td>1</td><td>Base T2V/I2V</td><td>480p</td><td>15</td><td>—</td><td>No</td><td>50 (or 16 w/ distill)</td></tr>
+<tr><td>2</td><td>Distillation</td><td>480p</td><td>15</td><td><code>cfg_step_lora</code></td><td>No</td><td>8-16</td></tr>
+<tr><td>3</td><td>Refinement</td><td>720p</td><td>30</td><td><code>refinement_lora</code></td><td>Yes</td><td>5</td></tr>
+</table>
+
+<p>Stage 1 输出经三线性上采样后加噪至 $t_{\text{thresh}} = 0.5$，由 Refinement Expert LoRA 在仅 5 步内去噪至 720p@30fps。对于 I2V/VC，原始高分辨率条件帧在 Stage 3 与上采样输出拼接，确保条件帧保真度。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$\theta$</td><td>Policy（DiT）参数</td></tr>
+<tr><td>$\pi_\theta, \pi_{\text{ref}}$</td><td>当前策略 / 冻结参考策略</td></tr>
+<tr><td>$v_\theta(\boldsymbol{x}_t, t, c)$</td><td>Flow matching velocity field</td></tr>
+<tr><td>$\hat{A}_{k,t'}^i$</td><td>样本 $i$ 在时间步 $t'$ 的 reward $k$ 相对优势</td></tr>
+<tr><td>$\hat{A}_{\text{total}}^i$</td><td>多 reward 加权总优势</td></tr>
+<tr><td>$\epsilon$</td><td>SDE 注入噪声</td></tr>
+<tr><td>$t'$</td><td>关键（固定）时间步，$t' \sim \mathcal{U}(0, T'-1)$</td></tr>
+<tr><td>$T, T'$</td><td>总时间步 / SDE 范围上界（$T' < T$）</td></tr>
+<tr><td>$G, B$</td><td>每组样本数 / batch 中 prompt 数</td></tr>
+<tr><td>$R_k, w_k$</td><td>第 $k$ 个 reward model / 其权重</td></tr>
+<tr><td>$\sigma_{\max,k}$</td><td>reward $k$ 在 batch 内的最大组标准差</td></tr>
+<tr><td>$\lambda_{\text{policy}}, \lambda_{\text{KL}}$</td><td>时间步相关重加权系数</td></tr>
+<tr><td>$\beta$</td><td>KL 惩罚系数</td></tr>
+<tr><td>$r_{t'}^i(\theta)$</td><td>策略比率（importance sampling ratio）</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Eq.1 — Block Causal Attention (条件)</strong>: $X_{\text{cond}} = \mathrm{Attention}(Q_{\text{cond}}, K_{\text{cond}}, V_{\text{cond}})$。条件 token 仅自我注意，不受噪声 token 影响，保证条件信息的无损传递和 KV 缓存的可行性。</p>
+
+<p><strong>Eq.2 — Block Causal Attention (噪声)</strong>: $X_{\text{noisy}} = \mathrm{Attention}(Q_{\text{noisy}}, [K_{\text{cond}}, K_{\text{noisy}}], [V_{\text{cond}}, V_{\text{noisy}}])$。噪声 token 可看到全部上下文（条件+噪声），使得生成帧与条件帧保持一致。</p>
+
+<p><strong>Eq.3 — Reweighted policy gradient</strong>: $\nabla_\theta \mathcal{L}_{\text{policy, reweighted}}(\theta) = -\frac{3}{2}\hat{A}_t^i \cdot \epsilon \cdot \nabla_\theta v_\theta$。GRPO 的 policy gradient 分解为 advantage-weighted noise 乘以 velocity field 对参数的 Jacobian——物理上，噪声 $\epsilon$ 提供了探索方向，$\hat{A}$ 提供了 reward 反馈的幅度和符号。</p>
+
+<p><strong>Eq.4 — Chain rule decomposition</strong>: $\frac{dR}{d\theta} = \frac{dR}{dv_\theta} \cdot \frac{dv_\theta}{d\theta}$。将 reward 对参数的梯度分解为 reward 对 velocity field 的敏感度（前者由 GRPO 零阶估计）和 velocity field 对参数的标准梯度（后者由反向传播计算）。</p>
+
+<p><strong>Eq.5 — Stochastic noise search</strong>: $\frac{dR}{dv_\theta} \approx -\frac{3}{2}\hat{A}_t^i \cdot \epsilon$。核心理论结果——GRPO 用 advantage-weighted noise 做了 reward 关于 velocity field 的零阶梯度估计，类似于进化策略中用噪声-reward 相关性估计梯度。</p>
+
+<p><strong>重加权系数</strong>: $\lambda_{\text{policy}} = \sqrt{\frac{t'/T}{\Delta(t'/T)(1-t'/T)}}$, $\lambda_{\text{KL}} = \frac{t'/T}{\Delta(t'/T)(1-t'/T)}$。消除 flow matching 中不同时间步 SNR 差异导致的梯度幅度不均——中间时间步的贡献最大，边界时间步（纯噪声或纯信号）的贡献被压制。</p>
+
+<h3 id="6-项一致性检查">6 项一致性检查 <a class="heading-anchor" href="#6-项一致性检查" aria-label="Link to 6-项一致性检查">#</a></h3>
+
+<table>
+<tr><th>#</th><th>检查</th><th>结论</th></tr>
+<tr><td>1</td><td><strong>量纲一致性</strong>：$\nabla_\theta \mathcal{L} = -\frac{3}{2}\hat{A} \cdot \epsilon \cdot \nabla_\theta v_\theta$——$\hat{A}$ 无量纲标量，$\epsilon$ 与 latent 同维，$\nabla_\theta v_\theta$ 为 velocity-to-parameter Jacobian</td><td>✓ 量纲匹配</td></tr>
+<tr><td>2</td><td><strong>零梯度退化</strong>：当 group 内所有 $G$ 个样本 reward 相同，$\hat{A}_t^i = 0$，梯度消失——正确，无信息时不更新</td><td>✓</td></tr>
+<tr><td>3</td><td><strong>符号一致性</strong>：高 reward → 正 $\hat{A}$ → policy gradient 推动 $\theta$ 沿增大该方向 velocity 的方向更新</td><td>✓</td></tr>
+<tr><td>4</td><td><strong>边界 $t \to 0$</strong>：$\lambda_{\text{policy}} \to 0$，近纯信号时间步几乎不贡献梯度——合理，因为此时 perturbation 对输出影响极小</td><td>✓</td></tr>
+<tr><td>5</td><td><strong>边界 $t \to T$</strong>：$\lambda_{\text{policy}} \to \sqrt{1/\Delta}$（常数），纯噪声时间步获得有限权重</td><td>✓</td></tr>
+<tr><td>6</td><td><strong>KL 非负性</strong>：$D_{\text{KL}}(\pi_\theta \</td><td>\pi_{\text{ref}}) \geq 0$，KL 惩罚始终非负，确保不会奖励偏离参考策略</td><td>✓</td></tr>
+</table>
+
+<h3 id="收敛定理-命题">收敛定理 / 命题 <a class="heading-anchor" href="#收敛定理-命题" aria-label="Link to 收敛定理-命题">#</a></h3>
+
+<p>论文在 Appendix A.1 给出了完整的理论框架：</p>
+
+<p><strong>命题</strong>（非正式）：在 flow matching 模型中，GRPO 的 reweighted policy gradient 等价于以 advantage-weighted noise 为梯度估计器的零阶优化，即 $\frac{dR}{dv_\theta} \approx -\frac{3}{2}\hat{A}_t^i \cdot \epsilon$。</p>
+
+<p><strong>假设</strong>：(1) velocity field $v_\theta$ 关于 $\theta$ 可微；(2) reward $R$ 关于生成结果 $\boldsymbol{x}_0$ 可微（但不需要关于轨迹可微——这正是零阶方法的优势）；(3) SDE 噪声 $\epsilon \sim \mathcal{N}(0, I)$。</p>
+
+<p><strong>假设失效场景</strong>：(a) reward 高度非平滑（如 binary 判别器）时，零阶估计方差极大，$G$ 需要很大；(b) 当 group size $G$ 过小时，$\hat{A}$ 的估计本身噪声很大。</p>
+
+<h3 id="proof-sketch">Proof Sketch <a class="heading-anchor" href="#proof-sketch" aria-label="Link to proof-sketch">#</a></h3>
+
 <ol>
-<li>Natively support long (minutes-long) video generation via pretraining on video continuation</li>
-<li>Achieve VBench 2.0 Commonsense leadership (70.94%), suggesting strong physical understanding</li>
-<li>Open-source an efficient 3D Block Sparse Attention operator with ring attention support</li>
-<li>Demonstrate successful multi-reward GRPO for video generation with theoretical foundation</li>
+<li>从 flow matching ODE $\boldsymbol{x}_{t-1} = \boldsymbol{x}_t + v_\theta(\boldsymbol{x}_t, t, c)\Delta t$ 出发，在单时间步 $t'$ 引入 SDE 扰动 $\sigma_{t'}\sqrt{\Delta t}\epsilon_i$</li>
+<li>共享初始噪声 $\boldsymbol{x}_T$ 保证 group 内样本差异仅源于 $\epsilon_i$</li>
+<li>最终生成结果 $\boldsymbol{x}_0^i$ 关于 $\epsilon_i$ 的一阶展开给出 $\boldsymbol{x}_0^i \approx \bar{\boldsymbol{x}}_0 + J_{t'}\sigma_{t'}\sqrt{\Delta t}\epsilon_i$</li>
+<li>Reward $R(\boldsymbol{x}_0^i)$ 关于 $\epsilon_i$ 的线性展开结合 group-relative advantage 计算，得 $\hat{A}_t^i \cdot \epsilon_i$ 近似 $\nabla_{v_\theta} R$ 的方向</li>
+<li>链式法则 $\frac{dR}{d\theta} = \frac{dR}{dv_\theta} \cdot \frac{dv_\theta}{d\theta}$ 中，第一项由零阶估计替代，第二项由标准反向传播计算</li>
 </ul>
 
-<p><strong>Next step</strong>: The paper explicitly mentions future directions including better physical knowledge modeling, multi-modal memory integration in video generation, and incorporation of knowledge from LLMs and MLLMs — moving toward true world model capabilities. The Commonsense leadership provides a strong foundation for this trajectory.</p>
+<h3 id="loss-分解">Loss 分解 <a class="heading-anchor" href="#loss-分解" aria-label="Link to loss-分解">#</a></h3>
+
+<p>$$\mathcal{L}_{\text{total}} = \underbrace{\lambda_{\text{policy}} \cdot r_{t'}(\theta) \cdot \hat{A}_{\text{total}}}_{\text{policy: 推动高 reward 方向}} - \underbrace{\beta \lambda_{\text{KL}} \cdot D_{\text{KL}}(\pi_\theta \| \pi_{\text{ref}})}_{\text{KL: 约束不偏离参考策略过远}}$$</p>
+
+<ul>
+<li>Policy 项：推动参数沿 reward 增大方向移动；$r_{t'}(\theta)$ 是 importance sampling ratio 防止过大更新</li>
+<li>KL 项：正则化，防止策略崩溃；$\beta$ 控制约束强度</li>
+<li>两项的重加权系数不同（$\lambda_{\text{policy}}$ 比 $\lambda_{\text{KL}}$ 多取一次平方根），因为 KL 对策略漂移更敏感，需要更强的时间步归一化</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="training-recipe">Training Recipe <a class="heading-anchor" href="#training-recipe" aria-label="Link to training-recipe">#</a></h3>
+
+<table>
+<tr><th>Stage</th><th>任务</th><th>分辨率</th><th>LR</th><th>Iterations</th><th>特殊技术</th></tr>
+<tr><td>Pre-train 1</td><td>T2I</td><td>256p</td><td>1e-4</td><td>285k</td><td>图像预训练</td></tr>
+<tr><td>Pre-train 2</td><td>T2I + T2V</td><td>256p × 93f</td><td>1e-4</td><td>140k</td><td>引入视频</td></tr>
+<tr><td>Pre-train 3</td><td>T2I + T2V + I2V + VC</td><td>256p × 93f</td><td>5e-5</td><td>164k</td><td>多任务统一</td></tr>
+<tr><td>Pre-train 4</td><td>同上</td><td>480p × 93f</td><td>5e-5</td><td>36k</td><td>提升分辨率</td></tr>
+<tr><td>Pre-train 5</td><td>同上</td><td>480p + 720p × 93f</td><td>2e-5</td><td>53k</td><td>混合分辨率</td></tr>
+<tr><td>SFT</td><td>curated HQ data</td><td>480p</td><td>1e-5</td><td>7.5k</td><td>含镜头运动/视觉风格专项数据</td></tr>
+<tr><td>GRPO</td><td>T2V only</td><td>480p</td><td>1e-4</td><td>500</td><td>多 reward, group size 4, 64 prompts/step</td></tr>
+<tr><td>Distillation</td><td>CFG + CM</td><td>—</td><td>—</td><td>2k + 3k</td><td>50步 → 16步</td></tr>
+<tr><td>Refinement</td><td>480p→720p</td><td>720p</td><td>—</td><td>500 + 500</td><td>full attn → BSA (93.75% sparsity)</td></tr>
+</table>
+
+<p>总预训练约 678k iterations。GRPO 仅需 500 iterations 即可有效收敛——归功于理论框架指导的设计。</p>
+
+<p><strong>GPU hours / MFU</strong>: [论文未明确披露总 GPU hours]。训练使用 DeepSpeed-Zero2 + Context Parallelism + Ring Attention + Activation Checkpointing，MFU 33-38%。</p>
+
+<p><strong>关键超参</strong>：GRPO group size $G=4$，KL 系数 $\beta$ [论文未披露具体值]，SDE 范围 $T' < T$（截断至早期时间步），refinement $t_{\text{thresh}} = 0.5$。</p>
+
+<h3 id="关键实验结果">关键实验结果 <a class="heading-anchor" href="#关键实验结果" aria-label="Link to 关键实验结果">#</a></h3>
+
+<p><strong>T2V MOS 评测</strong>（内部基准，5 分制）：</p>
+
+<table>
+<tr><th>模型</th><th>可用性</th><th>架构</th><th>激活参数</th><th>Text-Align↑</th><th>Visual Q↑</th><th>Motion Q↑</th><th>Overall↑</th></tr>
+<tr><td>Veo3</td><td>闭源</td><td>—</td><td>—</td><td><strong>3.99</strong></td><td>3.23</td><td><strong>3.86</strong></td><td><strong>3.48</strong></td></tr>
+<tr><td>PixVerse-V5</td><td>闭源</td><td>—</td><td>—</td><td>3.81</td><td>3.13</td><td>3.81</td><td>3.36</td></tr>
+<tr><td>Wan 2.2-A14B</td><td>开源</td><td>MoE</td><td>14B</td><td>3.70</td><td><strong>3.26</strong></td><td>3.78</td><td>3.35</td></tr>
+<tr><td><strong>LongCat-Video</strong></td><td>开源</td><td>Dense</td><td>13.6B</td><td>3.76</td><td>3.25</td><td>3.74</td><td>3.38</td></tr>
+</table>
+
+<p>LongCat-Video 在 13.6B 稠密参数下 overall quality 3.38 优于 Wan 2.2（28B 参数、14B 激活的 MoE）。Visual Quality 3.25 几乎追平 Wan 2.2 的 3.26，并超过 Veo3 的 3.23——商业闭源模型在视觉质量维度反而低于开源模型。</p>
+
+<p><strong>I2V MOS 评测</strong>：</p>
+
+<table>
+<tr><th>模型</th><th>Image-Align↑</th><th>Text-Align↑</th><th>Visual Q↑</th><th>Motion Q↑</th><th>Overall↑</th></tr>
+<tr><td>Seedance 1.0</td><td>4.12</td><td>3.70</td><td>3.22</td><td>3.77</td><td><strong>3.35</strong></td></tr>
+<tr><td>Hailuo-02</td><td><strong>4.18</strong></td><td><strong>3.85</strong></td><td>3.18</td><td><strong>3.80</strong></td><td>3.27</td></tr>
+<tr><td>Wan 2.2-A14B</td><td><strong>4.18</strong></td><td>3.33</td><td>3.23</td><td>3.79</td><td>3.26</td></tr>
+<tr><td><strong>LongCat-Video</strong></td><td>4.04</td><td>3.49</td><td><strong>3.27</strong></td><td>3.59</td><td>3.17</td></tr>
+</table>
+
+<p>I2V 是明显弱项：Image-Alignment 4.04 落后 4.18（差距 3.3%），Motion Quality 3.59 落后 3.77-3.80（差距 5-6%）。值得注意的是 GRPO 仅在 T2V 任务上训练，无 I2V/VC 专项 reward——这可能是 I2V 弱于的结构性原因。</p>
+
+<p><strong>推理加速消融</strong>：</p>
+
+<table>
+<tr><th>配置</th><th>LCM</th><th>C2F</th><th>BSA</th><th>步数</th><th>延迟</th><th>加速比</th></tr>
+<tr><td>Baseline</td><td>✗</td><td>✗</td><td>✗</td><td>50</td><td>1429.5s</td><td>1.0×</td></tr>
+<tr><td>+LCM</td><td>✓</td><td>✗</td><td>✗</td><td>16</td><td>244.6s</td><td>5.8×</td></tr>
+<tr><td>+C2F</td><td>✓</td><td>✓</td><td>✗</td><td>16/5</td><td>135.3s</td><td>10.6×</td></tr>
+<tr><td><strong>+BSA</strong></td><td>✓</td><td>✓</td><td>✓</td><td>16/5</td><td><strong>116.5s</strong></td><td><strong>12.3×</strong></td></tr>
+<tr><td>189f +BSA</td><td>✓</td><td>✓</td><td>✓</td><td>16/5</td><td>142.0s</td><td>10.1×</td></tr>
+</table>
+
+<p>LCM 蒸馏贡献最大加速（5.8×），C2F 额外带来 1.8×，BSA 再加 1.2×。帧数翻倍（93f → 189f）时 BSA 的相对贡献更显著（因为 dense attention 的二次增长被截断）。</p>
+
+<p><strong>VBench 2.0 结果</strong>：</p>
+
+<table>
+<tr><th>模型</th><th>Creativity</th><th>Commonsense</th><th>Controllability</th><th>Human Fidelity</th><th>Physics</th><th>Total</th></tr>
+<tr><td>HunyuanVideo</td><td>41.84%</td><td>63.44%</td><td>28.60%</td><td>82.41%</td><td>60.20%</td><td>55.30%</td></tr>
+<tr><td>Wan2.1</td><td>55.25%</td><td>63.98%</td><td>37.32%</td><td>81.60%</td><td>62.84%</td><td>60.20%</td></tr>
+<tr><td>Vidu Q1</td><td>56.54%</td><td>65.98%</td><td>38.13%</td><td>81.24%</td><td>71.63%</td><td>62.70%</td></tr>
+<tr><td>Veo3</td><td>60.85%</td><td>69.48%</td><td><strong>47.04%</strong></td><td><strong>87.72%</strong></td><td><strong>69.35%</strong></td><td><strong>66.72%</strong></td></tr>
+<tr><td><strong>LongCat-Video</strong></td><td>54.73%</td><td><strong>70.94%</strong></td><td>44.79%</td><td>80.20%</td><td>59.92%</td><td>62.11%</td></tr>
+</table>
+
+<p>Commonsense 70.94% 是全场最高——超越 Veo3 的 69.48%。这表明通过原生视频续写预训练和多 reward GRPO，模型获得了较强的物理常识理解能力。</p>
+
+<h3 id="生成质量示例">生成质量示例 <a class="heading-anchor" href="#生成质量示例" aria-label="Link to 生成质量示例">#</a></h3>
+
+<p><img src="/assets/2510.22200/fig11-coarse-to-fine.png" alt="Figure 11: 视频生成结果 — 长视频与交互式视频示例"></p>
+
+<p><em>Paper's Figure: 展示 LongCat-Video 在不同场景的长视频生成（分钟级，带时间戳）和交互式视频续写（带分段标注）结果。</em></p>
+
+<p>长视频示例（驾驶、滑板、芭蕾）跨越 1-4 分钟时间尺度，帧间保持一致的颜色和风格——验证了原生 VC 预训练对时间一致性的有效性。交互式视频示例展示了多步条件续写能力，每 5-6 秒一个语义段落，动作衔接流畅。</p>
+
+<p><img src="/assets/2510.22200/fig12-block-sparse-attention.png" alt="Figure 12: 长视频生成能力 — 多场景时序一致性"></p>
+
+<p><em>Paper's Figure: 更多长视频生成结果，包括高速公路驾驶（第一人称）、山路滑板、芭蕾独舞等场景，以及厨房、办公室、浴室等日常交互场景。</em></p>
+
+<p>驾驶场景在 3 分钟内保持了一致的天气、光照和道路特征。芭蕾场景中舞者服装和舞台布局跨越 4 分钟保持稳定。这些结果直接支撑了 §2 Q3 中"无颜色漂移的分钟级生成"的核心主张。</p>
+
+<h3 id="convergence-stability">Convergence & Stability <a class="heading-anchor" href="#convergence-stability" aria-label="Link to convergence-stability">#</a></h3>
+
+<p><img src="/assets/2510.22200/fig13-training-overview.png" alt="Figure 13: MQ reward 模型验证损失 — RGB vs Grayscale 训练对比"></p>
+
+<p><em>Paper's Figure: Motion Quality reward 模型的验证损失曲线。Grayscale（灰色线）训练后 ~800 步开始剧烈上升（过拟合），RGB（红色线）上升延迟但同样出现过拟合趋势。</em></p>
+
+<p>这张图支撑了 MQ reward 用灰度训练的设计选择：灰度训练虽然也会最终过拟合，但相比 RGB 训练延迟了过拟合的发生（~800 步 vs ~600 步），说明去除颜色信息减少了 reward model 可利用的 shortcut 特征。选择灰度训练的时间点（~800 步以前）可获得更好的泛化 MQ reward。</p>
+
+<p><strong>GRPO 收敛特性</strong>：500 iterations 即可有效收敛，远少于图像 GRPO 的典型训练量。论文将此归因于理论框架指导的设计——固定时间步消除了 credit assignment 噪声，重加权消除了梯度消失，使得每步更新信息量更大。</p>
+
+<p><strong>Reward hacking 信号</strong>：单一 HPSv3 reward 训练会导致 motion quality 急剧下降（生成静态视频最大化静帧视觉质量）。多 reward 训练通过维度间的互相约束有效避免了这一问题——VQ、MQ、TA 三个 reward 同时改善。</p>
+
+<h3 id="dataset-analysis">Dataset Analysis <a class="heading-anchor" href="#dataset-analysis" aria-label="Link to dataset-analysis">#</a></h3>
+
+<p><strong>数据构成</strong>：大规模视频数据集，经过完整的清洗流水线处理。具体规模 [论文未披露总量]。</p>
+
+<p><strong>质量过滤</strong>：</p>
+<ul>
+<li>去重：source video ID + MD5 hash</li>
+<li>场景分割：PySceneDetect + TransNetV2（in-house 训练），切分为内容一致的 clips</li>
+<li>黑边裁剪：FFMPEG</li>
+<li>标注过滤：aesthetic score, blur score, text coverage, watermark detection, optical flow (运动量过低的 clips 被过滤)</li>
+</ul>
+
+<p><strong>标注系统</strong>（全模型自动标注，非人工）：</p>
+<ul>
+<li>基础描述：fine-tuned LLaVA-Video + Tarsier2 数据增强时间动作理解</li>
+<li>镜头/风格：Qwen2.5VL 标注镜头运动（平移、倾斜、变焦、摇晃）、画面尺寸、镜头类型、视觉风格</li>
+<li>描述增广：中英互译、摘要、随机整合镜头/风格属性</li>
+</ul>
+
+<p><strong>分布均衡</strong>：对 caption 做 text embedding 聚类分析，LLM 总结每个 cluster 并分配标签，用于评估类别均衡性并进行针对性补充。</p>
+
+<p><strong>污染检查</strong>：[论文未提及评测集重叠检查]。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>主张</th><th>证据</th><th>支撑位置</th><th>反面验证</th></tr>
+<tr><td>1</td><td>所有视频生成任务可统一为条件视频续写</td><td>Block Causal Attention 设计：条件 token 独立计算，噪声 token attend to 全部——保证任务间共享同一前向逻辑</td><td>§3.2, Eq.1-2</td><td>缺 ablation：未对比统一框架 vs 独立模型的质量差异</td></tr>
+<tr><td>2</td><td>原生 VC 预训练消除长视频颜色漂移</td><td>分钟级长视频生成示例保持颜色/风格一致</td><td>Fig.11-12</td><td>定性证据为主，缺定量颜色漂移指标</td></tr>
+<tr><td>3</td><td>GRPO for flow matching 等价于随机噪声搜索</td><td>Appendix A.1 提供从 ODE/SDE 出发的完整推导，得 $dR/dv_\theta \approx -3/2 \cdot \hat{A} \cdot \epsilon$</td><td>§3.3.1, Eq.3-5</td><td>理论成立，但零阶估计的方差随 latent 维度增长，大规模场景下效率未分析</td></tr>
+<tr><td>4</td><td>固定单时间步 SDE + 重加权消除 credit assignment 模糊和梯度消失</td><td>Ablation（论文 Fig.7）显示每项技术贡献 positive</td><td>§3.3.1</td><td>Fig.7 ablation 可能包含交叉效应——未测试所有组合</td></tr>
+<tr><td>5</td><td>多 reward 训练防止 reward hacking</td><td>单 HPSv3 reward → 静态视频（motion collapse）；多 reward 下 VQ/MQ/TA 同时改善</td><td>§3.3.2, Fig.8-9</td><td>三个 reward 足够吗？更多维度（如物理真实性）是否需要额外 reward</td></tr>
+<tr><td>6</td><td>BSA 在 93.75% sparsity 下近无损</td><td>BSA vs dense attention 的质量对比 + 12.3× 加速消融</td><td>§3.5, Table 2</td><td>sparsity 对不同类型内容（快速运动 vs 静态）的影响未区分分析</td></tr>
+<tr><td>7</td><td>组合优化（LCM+C2F+BSA）提供 12.3× 加速</td><td>逐项消融表：1429.5s → 244.6s → 135.3s → 116.5s</td><td>Table 2</td><td>加速比在更长视频（>189f）和更高分辨率（1080p）下的表现未验证</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<h3 id="开源实现">开源实现 <a class="heading-anchor" href="#开源实现" aria-label="Link to 开源实现">#</a></h3>
+
+<p>代码和模型权重公开发布：GitHub <a href="https://github.com/meituan-longcat/LongCat-Video">meituan-longcat/LongCat-Video</a>。</p>
+
+<p><strong>BSA Triton 内核</strong>（开源，关键文件）：</p>
+
+<ul>
+<li><code>_attn_fwd_gating</code>: Gating score computation kernel（前向 block 选择评分）</li>
+<li><code>_attn_fwd_bsa_varlen</code>: 通用前向稀疏 attention kernel（<code>chunk_size_k > 128</code>）</li>
+<li><code>_attn_fwd_bsa_varlen_align</code>: 优化前向 kernel（<code>chunk_size_k <= 128</code>，对齐优化）</li>
+<li><code>_attn_bwd_dkdv_bsa_varlen_wrapper</code>: 反向 dK/dV 计算</li>
+<li><code>_attn_bwd_dq_bsa_varlen_wrapper</code> / <code>_attn_bwd_dq_bsa_varlen_align_wrapper</code>: 反向 dQ 计算</li>
+<li><code>create_indices_k_from_indices_q_varlen</code>: 前向→反向索引转置</li>
+<li><code>rearrange_THW_to_3d_block</code> / <code>rearrange_3d_block_to_THW</code>: 3D block 重排</li>
+<li><code>flash_attn_fwd_softmax_lse_correction</code> / <code>flash_attn_fwd_out_correction</code>: Context Parallelism LSE 校正</li>
+</ul>
+
+<p><strong>推理流水线入口</strong>：<code>generate_t2v</code>, <code>generate_i2v</code>, <code>generate_vc</code>, <code>generate_refine</code></p>
+
+<p><strong>LoRA 模块</strong>：<code>refinement_lora</code>（480p→720p）, <code>cfg_step_lora</code>（蒸馏加速）</p>
+
+<h3 id="核心技术壁垒实现">核心技术壁垒实现 <a class="heading-anchor" href="#核心技术壁垒实现" aria-label="Link to 核心技术壁垒实现">#</a></h3>
+
+<p>GRPO for flow matching 的核心实现要点：</p>
+<ul>
+<li>同一 group 共享初始噪声 $\boldsymbol{x}_T$（而非独立采样）</li>
+<li>单时间步 SDE 选择：$t' \sim \mathcal{U}(0, T'-1)$，$T' < T$</li>
+<li>Max group std 归一化：$\sigma_{\max,k} = \max(\{\sigma_k^j\}_{j=1}^B)$（需跨进程收集所有组的 std）</li>
+<li>重加权公式直接来自理论推导，非超参搜索结果</li>
+</ul>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Max group std 归一化</strong>：标准 GRPO 用 per-group std 归一化 advantage。LongCat 改用 batch 内所有 group 的最大 std——防止低方差 group（所有样本 reward 接近）的 advantage 被过度放大。这是一个微妙但重要的稳定性 trick：低方差 group 的 advantage 被压缩而非爆炸。</li>
+<li><strong>MQ reward 灰度训练</strong>：Motion Quality reward model 使用灰度视频训练和推理，强制模型关注运动本身而非颜色特征。验证损失对比（Fig.13）显示这延迟了过拟合，提升了泛化能力。</li>
+</ul>
+
+<h3 id="reproducibility-ecosystem">Reproducibility & Ecosystem <a class="heading-anchor" href="#reproducibility-ecosystem" aria-label="Link to reproducibility-ecosystem">#</a></h3>
+
+<ul>
+<li><strong>训练代码</strong>: 开源（GitHub: meituan-longcat/LongCat-Video）</li>
+<li><strong>模型权重</strong>: 公开发布</li>
+<li><strong>BSA 算子</strong>: Triton 实现开源，含 ring attention 变体支持 context parallelism</li>
+<li><strong>最近参考实现</strong>: BSA 机制可与 FlashAttention 系列方法互补使用；GRPO for flow matching 的训练方法可在 TRL / OpenRLHF / verl 等框架中复现</li>
+<li><strong>社区复现情况</strong>: [发表时间较新，社区复现报告尚待观察]</li>
+<li><strong>生态影响</strong>: (1) BSA 作为独立模块可直接用于其他视频/图像生成模型的 attention 加速；(2) GRPO for flow matching 的理论框架和实现技术可迁移至 Stable Diffusion、Flux 等其他 flow matching 模型的后训练</li>
+</ul>
 
 </div>
 </div>

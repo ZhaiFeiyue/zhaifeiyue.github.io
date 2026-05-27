@@ -196,19 +196,20 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Tackling the Data-Parallel Load Balancing Bottleneck in LLM Serving: Practical Online Routing at Scale</h1>
-<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2605.06113</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">load-balancing</span><span class="tag">LLM-serving</span><span class="tag">data-parallelism</span><span class="tag">online-routing</span><span class="tag">KV-cache</span><span class="tag">barrier-synchronization</span></div>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2605.06113</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">load-balancing</span><span class="tag">LLM-serving</span><span class="tag">data-parallelism</span><span class="tag">online-routing</span><span class="tag">barrier-synchronization</span><span class="tag">prefill-decode-disaggregation</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/algorithm.html">← algorithm Survey</a>
+<a href="/papers/2605.06113.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
 <a href="https://arxiv.org/abs/2605.06113" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
 
-<h1 id="balanceroute-practical-online-routing-for-dp-load-balancing-in-llm-serving">BalanceRoute: Practical Online Routing for DP Load Balancing in LLM Serving <a class="heading-anchor" href="#balanceroute-practical-online-routing-for-dp-load-balancing-in-llm-serving" aria-label="Link to balanceroute-practical-online-routing-for-dp-load-balancing-in-llm-serving">#</a></h1>
+<h1 id="balanceroute-practical-online-dp-routing-for-llm-decode-serving">BalanceRoute: Practical Online DP Routing for LLM Decode Serving <a class="heading-anchor" href="#balanceroute-practical-online-dp-routing-for-llm-decode-serving" aria-label="Link to balanceroute-practical-online-dp-routing-for-llm-decode-serving">#</a></h1>
 
 <h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<p>BalanceRoute 利用分段线性 F-score 捕获 barrier 同步下 safe-margin fill 与 overflow 之间的 $(G{-}1)$ 倍不对称性，通过两阶段算法（贪心填充 + 精细分配）在毫秒级预算内实现 DP 负载均衡。无需预测的 BR-0 即可将不均衡降低 4.1×、吞吐提升 +11.8%；加上轻量二元终止分类器的 BR-H 达到 +15.4%，优势随 $G$ 超线性增长。</p>
+<p>BalanceRoute 是部署于 vllm-ascend 之上的集中式 stateful proxy 框架，利用分段线性 F-score 捕获 barrier 同步下 safe/overflow 的 $(G{-}1)$ 倍不对称性，以两阶段贪心+子集选择在毫秒级完成 DP decode 路由。BR-0 无需预测即降低不均衡 4.1×/吞吐+11.8%；BR-H 加 binary termination classifier 达 +15.4%，优势随 $G$ 超线性放大至 +34.5%（$G{=}16$）。</p>
 
 <h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
 
@@ -220,18 +221,25 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <p><em>Paper Figure 1, verbatim (caption: "Data-parallel decode under barrier synchronization").</em></p>
 
-<p>图 1 直观对比：均衡分配时所有 worker 近乎同时到达 barrier（利用率 88–94%）；不均衡时 straggler 将步延迟拉高，轻载 worker 空闲等待（Worker 3/4 仅 32–42% 利用率）。每步空闲在 request 生命期内逐步累积。</p>
+<p>图 1 直观对比：均衡分配时所有 worker 近乎同时到达 barrier（利用率 88–94%）；不均衡时 straggler 将步延迟拉高，轻载 worker 空闲等待。每步空闲在 request 生命期内逐步累积，随 $G$ 按 order-statistics 增长。</p>
 
 <p><strong>问题形式化</strong>:</p>
 
 <ul>
 <li><strong>目标函数</strong>: 最小化累积不均衡 $\sum_k I(k)$，其中 $I(k) = G \cdot M(k) - \sum_{g} L_g(k)$</li>
 <li><strong>假设</strong>: sticky assignment（非抢占）、KV-cache 线性增长 $w_i^{(j)} = s_i + j - 1$、barrier 同步使步延迟 = $\max_g L_g(k)$</li>
-<li><strong>算法单步输入</strong>: 等待池 $R_{\text{wait}}(k)$（含已知 prefill 长度 $s_i$），每个 worker 的活跃集 $\mathcal{A}_g(k)$ 与负载 $L_g(k)$</li>
-<li><strong>算法单步输出</strong>: 对每个 worker 的 admission 子集 $Q_g \subseteq R_{\text{wait}}(k)$</li>
+<li><strong>四个结构性难点</strong>: (i) sticky assignment 不可修正；(ii) per-request 负载未知且动态增长；(iii) 到达非平稳突发；(iv) 毫秒决策预算排除重计算</li>
 </ul>
 
 <h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>System scope</strong>:</p>
+<ul>
+<li>Stage coverage: decode only（prefill 在独立 tier 处理后 KV handle 传入）</li>
+<li>Serving mode: continuous batching, prefill-decode disaggregated</li>
+<li>Parallelism: TP within worker group, DP across groups（框架 own DP routing，delegate TP/EP 给底层引擎）</li>
+<li>Deployment: single-node decode tier（$G{=}4$–$16$ workers），multi-node prefill tier</li>
+</ul>
 
 <p><strong>核心机制 — 分段线性 F-score</strong>: 度量将候选子集 $Q$ 分配给 worker $g$ 对单步不均衡 $I(k)$ 的边际效应：</p>
 
@@ -247,30 +255,20 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <p>交叉点处不对称性为 $(G{-}1)$ 倍：$G{=}16$ 时一单位溢出产生 15 倍不均衡代价。</p>
 
-<p><strong>Before vs After 对比</strong>:</p>
-
-<table>
-<tr><th></th><th>Before (JSQ/P2C/RR)</th><th>After (BR-0 / BR-H)</th></tr>
-<tr><td>决策信号</td><td>队列长度或随机选择</td><td>分段线性 F-score（感知 safe margin 与 overflow 不对称）</td></tr>
-<tr><td>容量区分</td><td>无</td><td>两阶段：充裕容量下贪心填充 / 稀缺容量下精细子集选择</td></tr>
-<tr><td>未来感知</td><td>无</td><td>BR-H: 常数 horizon $H$ 折扣 F-score + 二元终止分类器</td></tr>
-<tr><td>复杂度</td><td>$O(1)$ per request</td><td>毫秒级 per step（两阶段分解保证）</td></tr>
-</table>
-
 <p><strong>BR-H 扩展</strong>: 将 F-score 推广到 horizon 折扣形式：</p>
 
 <p>$$F_g(Q) = \alpha \, (\mathbf{1}^\top \mathbf{d}) \, \Delta_s(Q) - \beta \, (\Delta_s(Q) \, \mathbf{1} - \mathbf{m}_g)_+^\top \mathbf{d}$$</p>
 
-<p>其中 $\mathbf{d} = (1, \gamma, \ldots, \gamma^H)^\top$ 为折扣向量，$\mathbf{m}_g$ 为 horizon margin 向量。BR-0 是 $H{=}0, \alpha{=}1, \beta{=}G$ 的特例。BR-H 仅需二元终止分类器（request 是否在 $H$ 步内结束），而非完整长度回归——论文论证二元分类器比完整回归更可靠，因为噪声增长快于信号。</p>
+<p>其中 $\mathbf{d} = (1, \gamma, \ldots, \gamma^H)^\top$ 为折扣向量，$\mathbf{m}_g$ 为 horizon margin 向量。BR-0 是 $H{=}0, \alpha{=}1, \beta{=}G$ 的特例。BR-H 仅需二元终止分类器（request 是否在 $H$ 步内结束），而非完整长度回归——论文论证 binary classifier 捕获 routing-relevant signal 比 full-length regressor 更可靠，因为噪声增长快于信号。</p>
 
-<p><strong>核心技术壁垒</strong>: 分段线性 F-score 将 barrier 同步的物理约束（max-load 决定步延迟）精确编码为一个具有尖锐交叉的目标函数，使 safe-margin fill 与 overflow 的不对称代价可在 $O(1)$ 内求值。这个洞见非平凡——它将看似需要整数规划的在线调度问题化简为可在毫秒级求解的贪心 + 子集选择，且理论上给出了最优结构（overflow 代价随 $G$ 线性放大）。现有通用负载均衡文献中没有类似的 barrier-aware 分段评分函数。</p>
+<p><strong>核心技术壁垒</strong>: 分段线性 F-score 将 barrier 同步的物理约束（max-load 决定步延迟）精确编码为一个具有尖锐交叉的目标函数，使 safe-margin fill 与 overflow 的不对称代价可在 $O(1)$ 内求值。这个洞见将需要整数规划的在线调度问题化简为毫秒级两阶段贪心+子集选择，且给出了最优结构（overflow 代价随 $G$ 线性放大）。现有通用负载均衡文献中没有类似的 barrier-aware 分段评分函数。</p>
 
 <h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
 
 <ul>
 <li>BR-0（无预测）: 不均衡降低 4.1×（Proprietary）/ 1.94×（Azure），吞吐 +11.8% / +8.8% over JSQ</li>
 <li>BR-H deployed (ExactMatch): 吞吐 +15.4% / +14.5% over JSQ，同时 TPOT P95 最低</li>
-<li>随 $G$ 增长优势超线性放大：BR-H 在 $G{=}4/8/16$ 分别 +13.4% / +21.5% / +34.5%</li>
+<li>随 $G$ 增长优势超线性放大：BR-H oracle 在 $G{=}4/8/16$ 分别 +13.4% / +21.5% / +34.5%</li>
 <li>部署在 144-NPU Ascend 910C 集群，验证硬件无关性</li>
 </ul>
 
@@ -280,32 +278,38 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <p><em>Paper Figure 2, verbatim (caption: "System architecture. A stateful proxy maintains the cluster snapshot and runs the BR-H rule.").</em></p>
 
-<p>系统采用三层架构：控制面（Stateful Python Proxy）、Prefill Tier（kv_producer）、Decode Tier（kv_consumer）。</p>
+<p>系统采用三层架构：控制面（Stateful Python/uvloop Proxy）、Prefill Tier（kv_producer）、Decode Tier（kv_consumer）。Proxy 维护 Cluster Snapshot 并在每个 decode step 运行 BR-H rule。</p>
 
-<p>关键数据流：① Client request 经 Payload Mutator 改写（设 <code>max_tokens=1</code> 触发 prefill-only）→ ② Prefill 完成后返回 KV handle，request 进入 Prompt Pool → ③ BR-H Dispatcher 从 Cluster Snapshot $\sigma(k) = \{\mathcal{A}_g(k), L_g(k), \hat{c}_i(k)\}$ 读取状态，运行 horizon F-score 选择最优 (worker, subset) 分配，重写 payload 发送到 decode worker → ④ SSE telemetry 回传 per-token 进度，增量更新 snapshot。</p>
-
-<p>三个设计原则：<strong>集中式状态</strong>（horizon F-score 需要跨 worker 视图）；<strong>Above-the-engine 集成</strong>（通过 payload mutation 和 SSE 解析，零引擎修改）；<strong>Pool 解耦</strong>（prefill 完成的 request 缓存在 prompt pool 中，等待 decode dispatcher 以全局视图调度）。</p>
+<p>关键数据流：① Client request 经 Payload Mutator 改写（设 <code>max_tokens=1</code> 触发 prefill-only）→ ② Prefill 完成后返回 KV handle，request 进入 Prompt Pool → ③ BR-H Dispatcher 从 Cluster Snapshot $\sigma(k) = \{\mathcal{A}_g(k), L_g(k), \hat{c}_i(k)\}$ 读取状态，运行 horizon F-score 选择最优 (worker, subset) 分配 → ④ SSE telemetry 回传 per-token 进度，增量更新 snapshot。</p>
 
 <div class="mermaid">
 sequenceDiagram
     participant C as Client
     participant PM as Payload Mutator
-    participant P as Prefill Tier
+    participant P as Prefill Tier (TP=8)
     participant PP as Prompt Pool
     participant BR as BR-H Dispatcher
-    participant CS as Cluster Snapshot
-    participant D as Decode Tier
+    participant CS as Cluster Snapshot σ(k)
+    participant D as Decode Tier (DP=G, TP=4)
 
     C->>PM: OpenAI-compat request
-    PM->>P: mutated payload (max_tokens=1)
-    P-->>PP: KV handle + prefill result
-    BR->>CS: read σ(k)
+    PM->>P: mutated payload (kv_role=kv_producer)
+    P-->>PP: KV handle via MooncakeConnector
+    BR->>CS: read {A_g(k), L_g(k), ĉ_i(k)}
     BR->>PP: select from R_wait(k)
-    Note over BR: Stage 1: greedy fill (abundant capacity)<br/>Stage 2: refined subset (scarce capacity)
-    BR->>D: rewritten payload + KV handle
-    D-->>CS: SSE telemetry (per-token Δ)
-    D-->>C: streamed response
+    Note over BR: Stage 1: greedy fill (S_tot > S_greedy)<br/>Stage 2: refined subset (S_tot ≤ S_greedy)
+    BR->>D: rewritten payload (kv_role=kv_consumer)
+    D-->>CS: SSE telemetry (per-token incremental Δ)
+    D-->>C: streamed response tokens
 </div>
+
+<p><strong>Request lifecycle</strong>: arrival → payload mutation → prefill (separate tier) → KV handle into prompt pool → BR-H dispatch with global F-score → decode on assigned worker → SSE completion telemetry → snapshot update.</p>
+
+<p><strong>Scheduler</strong>: BR-H Dispatcher 是一等公民，其 queuing discipline 是两阶段 F-score 最大化（非 FCFS / SJF / priority）。调度粒度为 per-step batch admission（非 per-request）。</p>
+
+<p><strong>KV / memory manager</strong>: KV-cache 分配由下层 vllm-ascend PagedAttention 管理（page-level allocation），BR-H 仅通过 concurrency cap $B$ = <code>max_num_seqs</code> 控制 admission。无独立 eviction 策略——request 自然结束后释放。</p>
+
+<p><strong>Cross-node communication</strong>: Prefill→Decode KV transfer 经 MooncakeConnector（RDMA-based），decode 内部 TP all-reduce 经 NVLink/HCCS。</p>
 
 <p><strong>两阶段算法流程</strong>:</p>
 
@@ -335,37 +339,42 @@ sequenceDiagram
 <tr><td>$\alpha, \beta, \gamma$</td><td>BR-H 超参：reward 缩放、overflow 惩罚、折扣因子</td><td>§4.1</td></tr>
 <tr><td>$H$</td><td>常数 lookahead horizon</td><td>§4</td></tr>
 <tr><td>$\mathbf{d}$</td><td>折扣向量 $(1, \gamma, \ldots, \gamma^H)^\top$</td><td>§4.1</td></tr>
-<tr><td>$\mathbf{m}_g$</td><td>Horizon margin 向量</td><td>§4.1</td></tr>
+<tr><td>$\mathbf{m}_g$</td><td>Horizon margin 向量 $(m_{g,0}, \ldots, m_{g,H})^\top$</td><td>§4.1</td></tr>
+<tr><td>$S_{\text{greedy}}$</td><td>Stage 1→2 切换阈值</td><td>§3.2</td></tr>
+<tr><td>$R_{\max}$</td><td>Stage 2 候选子集上限</td><td>§3.2</td></tr>
 </table>
 
 <h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
 
 <p><strong>Eq. (1) — BR-0 F-score</strong>: $F_g(Q) = \Delta_s(Q) - G \cdot (\Delta_s(Q) - m_g)_+$</p>
 
-<p>F-score 分解为 reward（deficit 填充收益）减去 penalty（overflow 代价乘以 $G$）。Safe regime 下 penalty 为零，每单位负载一单位收益。Overflow regime 下每单位溢出产生 $(G{-}1)$ 单位不均衡代价——因为新的 max-load 抬高了 barrier，所有 $G$ 个 worker 都必须等到这个新 max。</p>
+<p>F-score 分解为 reward（deficit 填充收益）减去 penalty（overflow 代价乘以 $G$）。Safe regime 下 penalty 为零，每单位负载一单位收益。Overflow regime 下每单位溢出产生 $(G{-}1)$ 单位不均衡代价——因为新 max-load 抬高了 barrier，所有 $G$ 个 worker 都必须等到新 max。</p>
 
-<p><strong>Eq. (2) — BR-H horizon F-score</strong>: $F_g(Q) = \alpha \, (\mathbf{1}^\top \mathbf{d}) \, \Delta_s(Q) - \beta \, (\Delta_s(Q) \, \mathbf{1} - \mathbf{m}_g)_+^\top \mathbf{d}$</p>
+<p><strong>Eq. (2) — BR-H horizon F-score</strong>: $F_g(Q) = \alpha (\mathbf{1}^\top \mathbf{d}) \Delta_s(Q) - \beta (\Delta_s(Q) \mathbf{1} - \mathbf{m}_g)_+^\top \mathbf{d}$</p>
 
-<p>将单步 F-score 在 $H$ 步 horizon 上求和，几何折扣 $\gamma$ 使近期预测权重更高。$\alpha, \beta$ 从理论值 $(1, G)$ 解耦为可调参数，补偿预测噪声。逻辑上：未来 $H$ 步中每一步的 overflow 都按该步的 margin 向量独立判断是否激活惩罚。</p>
+<p>将单步 F-score 在 $H$ 步 horizon 上求和，几何折扣 $\gamma$ 使近期预测权重更高。$\alpha, \beta$ 从理论值 $(1, G)$ 解耦为可调参数，补偿预测噪声。逻辑上：未来 $H$ 步中每一步的 overflow 都按该步的 margin 独立判断是否激活惩罚。</p>
+
+<p><strong>Throughput/latency model</strong>: 论文给出 per-step time 近似为 $T(x) = ax + b$，其中 $x$ 为 worker 总 KV-cache footprint，$a$ 为带宽系数，$b$ 为固定开销。DP load balancing 在 $ax \gg b$ 时最有价值（长上下文、大 batch、低带宽硬件）。这不是显式优化目标，而是 regime 分析。</p>
+
+<p><strong>单调性分析</strong>: $F_g(Q)$ 在 safe regime 内单调递增（reward 线性增长），在 overflow regime 单调递减（penalty 超线性增长）。最优在 $\Delta_s(Q) = m_g$（boundary）处取得——这是 interior optimum 而非 boundary max，因为越过 $m_g$ 后收益急剧翻转为代价。</p>
 
 <h3 id="6-项检验">6 项检验 <a class="heading-anchor" href="#6-项检验" aria-label="Link to 6-项检验">#</a></h3>
 
 <table>
 <tr><th>#</th><th>检验项</th><th>判定</th></tr>
-<tr><td>1</td><td>F-score 在 $m_g$ 处的连续性</td><td>✓ — 在 $\Delta_s = m_g$ 处左右极限一致 $= m_g$，但导数不连续（分段线性交叉点）</td></tr>
+<tr><td>1</td><td>F-score 在 $m_g$ 处的连续性</td><td>✓ — 在 $\Delta_s = m_g$ 处左右极限一致 $= m_g$，但导数不连续</td></tr>
 <tr><td>2</td><td>BR-0 → BR-H 特例归约</td><td>✓ — $H{=}0$ 时 $\mathbf{d} = (1)$, $\mathbf{m}_g = (m_g)$，取 $\alpha{=}1, \beta{=}G$ 恢复 Eq. (1)</td></tr>
-<tr><td>3</td><td>极端情况 $G{=}1$</td><td>✓ — $G{=}1$ 时 $I(k) = 0$ 恒成立，F-score 退化为常数，路由无意义</td></tr>
-<tr><td>4</td><td>极端情况 $m_g{=}0$（满载 worker）</td><td>✓ — F-score $= \Delta_s - G \cdot \Delta_s = -(G{-}1)\Delta_s < 0$，正确表示任何 admission 都纯增不均衡</td></tr>
+<tr><td>3</td><td>极端情况 $G{=}1$</td><td>✓ — $I(k) = 0$ 恒成立，F-score 退化为常数，路由无意义</td></tr>
+<tr><td>4</td><td>极端情况 $m_g{=}0$（满载 worker）</td><td>✓ — $F_g = -(G{-}1)\Delta_s < 0$，正确表示任何 admission 都纯增不均衡</td></tr>
 <tr><td>5</td><td>Stage 2 starvation guard</td><td>✓ — 最优子集非正分时仍分配单 request，保证 waiting pool 不无限增长</td></tr>
-<tr><td>6</td><td>目标一致性：$F_g$ 最大化 ↔ $I(k)$ 最小化</td><td>✓ — $F_g$ 定义为 $-\Delta I(k)$（不均衡减少量），故最大化 F-score 等价于最小化单步不均衡增量</td></tr>
+<tr><td>6</td><td>目标一致性：$F_g$ 最大化 ↔ $I(k)$ 最小化</td><td>✓ — $F_g$ 定义为 $-\Delta I(k)$，最大化 F-score 等价于最小化单步不均衡增量</td></tr>
 </table>
 
-<h3 id="算法特定证明分析">算法特定证明分析 <a class="heading-anchor" href="#算法特定证明分析" aria-label="Link to 算法特定证明分析">#</a></h3>
+<p><strong>Framework-specific 额外检验</strong>:</p>
 
 <ul>
-<li><strong>无形式化收敛定理</strong>: 论文不含收敛定理或近似比证明。F-score 是一阶贪心的评分函数，论文未给出其与全局最优 $\min \sum_k I(k)$ 的近似比界。理想情况下应有 competitive ratio bound（如 $O(\log G)$ 竞争比），但论文选择了纯实证路线。</li>
-<li><strong>方差/复杂度界</strong>: 论文未分析 BR-H 预测噪声对 F-score 质量的影响界。$\gamma$ 的选择隐式控制了预测误差放大，但无显式 bias-variance 分析。</li>
-<li><strong>损失分解</strong>: $F_g$ 自然分解为 reward 项（deficit fill）和 penalty 项（overflow cost），物理意义清晰。Penalty 系数 $G$（BR-0）或 $\beta$（BR-H）控制两项权衡。</li>
+<li><strong>First-order mapping</strong>: $G{=}8$, Proprietary trace, JSQ baseline 不均衡 215,110 → BR-0 不均衡 51,927。将 F-score 在 $m_g$ 附近的 $(G{-}1){=}7$ 倍不对称代入 order-statistics gap 预期，与 4.1× reduction 一致。</li>
+<li><strong>无近似比定理</strong>: 论文未给出 competitive ratio bound。F-score 是 myopic one-step greedy 的评分函数，全局最优 $\min \sum_k I(k)$ 的近似比未知。</li>
 </ul>
 
 <h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
@@ -376,16 +385,17 @@ sequenceDiagram
 <li><strong>硬件</strong>: 144-NPU Ascend 910C 集群</li>
 <li><strong>模型</strong>: DeepSeek-V3 671B (W8A8)；验证也在 Qwen3-30B-A3B (MoE) / Atlas 910B</li>
 <li><strong>拓扑</strong>: 默认 4P1D（4 prefill nodes × 16 NPUs TP=8，1 decode node × 32 NPUs DP=8 TP=4），$G{=}8$</li>
-<li><strong>软件栈</strong>: vllm-ascend V1 scheduler, continuous batching, PagedAttention, MooncakeConnector</li>
+<li><strong>软件栈</strong>: vllm-ascend V1 scheduler, continuous batching, PagedAttention, cudagraph_mode=FULL_DECODE_ONLY, MooncakeConnector</li>
 <li><strong>数据集</strong>: Proprietary production trace (8k requests, mean prompt 3,197 / output 1,185) + Azure-2024 conversation split (10k requests, mean prompt 4,652 / output 1,052, filtered output > 1000)</li>
-<li><strong>基线</strong>: Random, Round-Robin, P2C, JSQ (vLLM default)</li>
+<li><strong>基线</strong>: Random, Round-Robin, P2C (Mitzenmacher 2002), JSQ (vllm-ascend default)</li>
+<li><strong>指标</strong>: Average imbalance (per-step max−min KV workload), TPOT P95 (ms), Throughput (output tok/s)</li>
 </ul>
 
-<h3 id="主要结果">主要结果 <a class="heading-anchor" href="#主要结果" aria-label="Link to 主要结果">#</a></h3>
+<h3 id="主要结果-g8">主要结果 ($G{=}8$) <a class="heading-anchor" href="#主要结果-g8" aria-label="Link to 主要结果-g8">#</a></h3>
 
 <p><img src="/assets/2605.06113/tab1.png" alt="Table 1: Main results on Proprietary Data and Azure-2024"></p>
 
-<p><em>Paper Table 1, verbatim (caption: "Main results on Proprietary Data and Azure-2024. G=8, heavy load.").</em></p>
+<p><em>Paper Table 1, verbatim (caption: "Main results. G=8, heavy load, 4P1D topology.").</em></p>
 
 <p>所有 BR 行在所有指标上完全支配所有基线行。BR-0（无预测）将 Proprietary 上不均衡从 JSQ 的 215k 降至 52k（4.1×），吞吐从 843 提升至 943 tok/s（+11.8%）。Deployed BR-H (ExactMatch) 达 977 tok/s（+15.4%），且 TPOT P95 78.8 ms 为所有方法最低——吞吐增益不以尾延迟为代价。</p>
 
@@ -395,27 +405,27 @@ sequenceDiagram
 
 <p><em>Paper Figure 3, verbatim (caption: "Per-worker KV-cache workload on Proprietary Data, G=8.").</em></p>
 
-<p>四面板对比 1,500 步 decode 段的 8 worker 瞬时 KV 负载。Random（左上）worker 轨迹散布 220k–340k 范围，大量空间浪费在 straggler 等待。JSQ（右上）收窄至 200k–320k 但仍有显著漂移。BR-0（左下）将全部 8 worker 压缩到 240k–290k 窄带。BR-H ExactMatch（右下）进一步收紧至 240k–275k，可见 horizon 信息的增量价值。</p>
+<p>四面板对比 1,500 步 decode 段的 8 worker 瞬时 KV 负载。Random（左上）worker 轨迹散布 220k–340k 范围；JSQ（右上）收窄至 200k–320k 但仍有显著漂移；BR-0（左下）将全部 8 worker 压缩到 240k–290k 窄带；BR-H ExactMatch（右下）进一步收紧至 240k–275k。Horizon 信息的增量价值在视觉上直观可辨。</p>
 
-<h3 id="部署级-br-h-可视化">部署级 BR-H 可视化 <a class="heading-anchor" href="#部署级-br-h-可视化" aria-label="Link to 部署级-br-h-可视化">#</a></h3>
+<h3 id="缩放实验-g-in-4-8-16">缩放实验 ($G \in \{4, 8, 16\}$) <a class="heading-anchor" href="#缩放实验-g-in-4-8-16" aria-label="Link to 缩放实验-g-in-4-8-16">#</a></h3>
 
-<p><img src="/assets/2605.06113/fig6.png" alt="Figure 6: BR-H deployed with Survival predictor workload trace"></p>
+<p><img src="/assets/2605.06113/fig4.png" alt="Figure 4: Scaling results across G=4,8,16 on Proprietary Data"></p>
 
-<p><em>Paper Figure 6, verbatim (caption: "Per-worker instantaneous KV-cache workload on Proprietary Data under BR-H deployed with the empirical-survival predictor, H=80, G=8.").</em></p>
+<p><em>Paper Figure 4, verbatim (caption: "Scaling on Proprietary Data across G ∈ {4, 8, 16}.").</em></p>
 
-<p>Survival 预测器下 BR-H 的 trace-mean 不均衡为 40,757 token，可见 worker 带宽压缩在 225k–250k 范围。与 BR-0 (51,927) 相比收窄明显，但宽于 ExactMatch (36,277)。Stage-1 confidence gate 使长尾 request 回退到保守锚 $H$，因此增益主要来自分类器有信心的 request。</p>
+<p>BR-H 吞吐优势随 $G$ 超线性增长：+13.4%（$G{=}4$, 415 vs 366）→ +21.5%（$G{=}8$, 1029 vs 847）→ +34.5%（$G{=}16$, 1247 vs 927）。拟合 $\Delta \propto G^{0.69}$。BR-0 增长较平（$\Delta \propto G^{0.44}$），BR-H-over-BR-0 的增量从 +2% 扩大到 +12%，预测价值在大规模下被放大。</p>
 
-<h3 id="缩放实验">缩放实验 <a class="heading-anchor" href="#缩放实验" aria-label="Link to 缩放实验">#</a></h3>
+<p>反直觉现象：$G{=}16$ 时 P2C (688k) 和 JSQ (676k) 的不均衡反而比 RR (616k) 更差——"聪明"的经典启发式在大规模下反效果。</p>
 
-<p><img src="/assets/2605.06113/tab2.png" alt="Table 2 and Figure 4: Scaling summary across G=4,8,16"></p>
+<h3 id="br-h-部署级可视化">BR-H 部署级可视化 <a class="heading-anchor" href="#br-h-部署级可视化" aria-label="Link to br-h-部署级可视化">#</a></h3>
 
-<p><em>Paper Table 2 + Figure 4, verbatim (caption: "Scaling summary on Proprietary Data. G=4 (2P1D, 48 NPUs), G=8 (4P1D, 96 NPUs), G=16 (5P1D, 144 NPUs).").</em></p>
+<p><img src="/assets/2605.06113/fig6.png" alt="Figure 6: BR-H deployed with Survival predictor"></p>
 
-<p>关键发现：BR-H 吞吐优势随 $G$ 超线性增长：+13.4%（$G{=}4$）→ +21.5%（$G{=}8$）→ +34.5%（$G{=}16$），拟合 $\Delta \propto G^{0.69}$。BR-0 增长较平（$\Delta \propto G^{0.44}$），BR-H-over-BR-0 的增量从 +2% 扩大到 +12%，说明预测价值在大规模下被放大。</p>
+<p><em>Paper Figure 6, verbatim (caption: "Per-worker KV-cache workload under BR-H deployed with empirical-survival predictor, H=80, G=8.").</em></p>
 
-<p>同时注意反直觉现象：$G{=}16$ 时 P2C (688k) 和 JSQ (676k) 的不均衡反而比 RR (616k) 更差——"聪明"的经典启发式在大规模下变得反效果。</p>
+<p>Survival 预测器下 worker 带宽压缩在 225k–250k 范围，trace-mean 不均衡 40,757（BR-0 为 51,927，ExactMatch 为 36,277）。Stage-1 confidence gate 使长尾 request 回退到保守锚 $H$，增益主要来自分类器有信心的 request。</p>
 
-<h3 id="数据集分析">数据集分析 <a class="heading-anchor" href="#数据集分析" aria-label="Link to 数据集分析">#</a></h3>
+<h3 id="数据集对比">数据集对比 <a class="heading-anchor" href="#数据集对比" aria-label="Link to 数据集对比">#</a></h3>
 
 <table>
 <tr><th>数据集</th><th>Requests</th><th>Mean prompt</th><th>Mean output</th><th>特点</th></tr>
@@ -423,51 +433,155 @@ sequenceDiagram
 <tr><td>Azure-2024</td><td>10,000</td><td>4,652</td><td>1,052</td><td>公开可复现，conversation split，filtered output > 1000</td></tr>
 </table>
 
-<p>两个 trace 均在重载（集群近饱和）下评估。Azure-2024 过滤掉短输出 request 是因为 decode-stage 不均衡仅在长输出时占主导。论文未报告 eval overlap 检查（不适用于在线调度场景）。</p>
+<p>两个 trace 均在重载（集群近饱和）下评估。Azure-2024 过滤掉短输出 request 是因为 decode-stage 不均衡仅在长输出时占主导。</p>
 
 <h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
 
 <table>
 <tr><th>Step</th><th>论证环节</th><th>依据</th><th>关键量</th></tr>
 <tr><td>1</td><td>DP decode 的 barrier 同步使每步延迟 = $\max_g L_g(k)$，idle 随 $G$ 按 order-statistics 增长</td><td>§2.1 形式化 + Chen et al. (2026) 报告 >40% waste</td><td>$I(k) = G \cdot M(k) - \sum_g L_g(k)$</td></tr>
-<tr><td>2</td><td>通用启发式（RR/P2C/JSQ）不感知 LLM-specific 结构（sticky assignment + 单调增长 KV + 毫秒决策窗口）</td><td>§1 论证 + §6 实验验证（基线不均衡 >100k–438k）</td><td>四个 hardness property</td></tr>
-<tr><td>3</td><td>分段线性 F-score 从 $I(k)$ 的边际效应推导，揭示 safe/overflow 的 $(G{-}1)$ 倍不对称性</td><td>§3.1 代数推导（Eq. 1）</td><td>交叉点 $\Delta_s = m_g$</td></tr>
-<tr><td>4</td><td>两阶段分解将 NP-hard 子集选择问题化简为毫秒可解：充裕容量下贪心 + 稀缺容量下优先队列子集选择</td><td>§3.2 算法设计</td><td>阈值 $S_{\text{greedy}}$</td></tr>
-<tr><td>5</td><td>Horizon 折扣扩展将 F-score 推广到 $H$ 步 lookahead，仅需二元终止分类器而非全长度回归</td><td>§4 代数推导（Eq. 2）+ BR-0 特例归约</td><td>$(\alpha, \beta, \gamma)$ 三参数</td></tr>
-<tr><td>6</td><td>集中式 stateful proxy + above-the-engine 集成使算法在零引擎修改下部署于 144-NPU 集群</td><td>§5 系统实现</td><td>SSE telemetry + payload mutation</td></tr>
-<tr><td>7</td><td>BR-0 在 $G{=}8$ 上将不均衡降至 52k（JSQ 的 1/4），吞吐提升 +11.8%；BR-H deployed 达 +15.4%，且 TPOT P95 最低</td><td>§6.2 Table 1</td><td>977 tok/s vs 843 tok/s</td></tr>
-<tr><td>8</td><td>优势随 $G$ 超线性增长（$\Delta \propto G^{0.69}$），从 +13.4% ($G{=}4$) 到 +34.5% ($G{=}16$)</td><td>§6.3 Table 2 + Figure 4</td><td>power-law fit</td></tr>
+<tr><td>2</td><td>通用启发式（RR/P2C/JSQ）不感知 LLM-specific 结构（sticky + 单调增长 KV + 毫秒决策）</td><td>§1 定性论证 + §6 实验（基线不均衡 100k–438k）</td><td>四个 hardness property</td></tr>
+<tr><td>3</td><td>分段线性 F-score 从 $I(k)$ 的边际效应推导，揭示 safe/overflow 的 $(G{-}1)$ 倍不对称性</td><td>§3.1 代数推导 Eq. (1)</td><td>交叉点 $\Delta_s = m_g$</td></tr>
+<tr><td>4</td><td>两阶段分解：充裕容量下贪心 $O(</td><td>R_{\text{wait}}</td><td>)$ + 稀缺容量下优先队列子集选择 $O(G \cdot R_{\max})$</td><td>§3.2 算法设计</td><td>阈值 $S_{\text{greedy}}$</td></tr>
+<tr><td>5</td><td>Horizon 折扣扩展：仅需二元终止分类器而非全长度回归，噪声增长快于信号</td><td>§4 Eq. (2) + BR-0 特例归约</td><td>$(\alpha, \beta, \gamma)$</td></tr>
+<tr><td>6</td><td>集中式 stateful proxy + above-the-engine 集成实现零引擎修改部署</td><td>§5 系统架构</td><td>SSE telemetry + payload mutation</td></tr>
+<tr><td>7</td><td>BR-0 不均衡降至 52k（JSQ 的 1/4），吞吐 +11.8%；BR-H 达 +15.4%，TPOT P95 同时最低</td><td>§6.2 Table 1</td><td>977 vs 843 tok/s</td></tr>
+<tr><td>8</td><td>优势随 $G$ 超线性增长 $\Delta \propto G^{0.69}$，从 +13.4% 到 +34.5%</td><td>§6.3 Table 2 + Figure 4</td><td>1247 vs 927 tok/s at $G{=}16$</td></tr>
 </table>
 
 <h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
 
-<p><strong>代码开放状态</strong>: [实现未公开] — 论文部署在 vllm-ascend（Ascend-NPU port of vLLM）之上，但 BalanceRoute proxy 代码未开源。</p>
-
-<p><strong>最近开源参考</strong>: 基线实现基于 vLLM 的 router 策略（<code>vllm.entrypoints.openai.api_server</code> 的 Random / RR / P2C / JSQ 选项）。</p>
-
-<p><strong>核心技术壁垒展开</strong>: F-score 的实现本身是轻量的（一个 piecewise-linear 函数求值），真正的工程壁垒在于维护毫秒级更新的 Cluster Snapshot $\sigma(k)$：</p>
-
-<ol>
-<li>需要通过 SSE stream inline parsing 逐 token 追踪每个 request 的 decode 进度，增量更新 $L_g(k)$ 和 $\hat{c}_i(k)$</li>
-<li>Cross-tier KV transfer 的 late-binding 设计（Prompt Pool 缓存 + decode dispatch 解耦）需要精确的 <code>PrefillerBudget</code> 背压控制</li>
-<li>Stage 2 的子集选择（在 $R_{\max}$ 候选中搜索最优子集）需要在 < 1 ms 内完成，论文在 Appendix D 中描述了计算优化但未公开实现</li>
-</ul>
+<p><strong>代码开放状态</strong>: [实现未公开] — BalanceRoute proxy 代码未开源。部署在 vllm-ascend 之上，基线实现基于 vLLM 的 router 策略。</p>
 
 <p><strong>关键实现细节</strong>:</p>
 
 <ol>
-<li><strong>BR-0 pool-bypass path</strong>: 当预测基础设施不可用时，BR-0 可以跳过 Prompt Pool 缓冲，直接在 request 到达时路由——这个快速路径避免了池化引入的额外延迟，但牺牲了 Stage 2 的全局子集选择能力。</li>
-<li><strong>$(\beta, \gamma)$ 调参</strong>: Table 1 显示两组超参 $(43, 0.86)$ 和 $(14.67, 0.64)$ 产生相近结果（不均衡 24.0k vs 23.6k），论文未报告系统化超参搜索方法。$\gamma{=}0.64$ 对应 $H{=}80$ 步后权重衰减至 $0.64^{80} \approx 10^{-16}$，实质 effective horizon 远小于名义 $H$。</li>
+<li><strong>BR-0 pool-bypass path</strong>: 当预测基础设施不可用时，BR-0 可以跳过 Prompt Pool 缓冲，直接在 request 到达时路由。这避免了池化引入的额外延迟，但牺牲了 Stage 2 的全局子集选择能力（退化为 per-request greedy）。</li>
+<li><strong>$(\beta, \gamma)$ effective horizon</strong>: Table 1 中 $\gamma{=}0.64$ 对应 $H{=}80$ 步后权重 $0.64^{80} \approx 10^{-16}$，实质 effective horizon 仅约 5–10 步。两组超参 $(43, 0.86)$ 和 $(14.67, 0.64)$ 产生相近结果（不均衡 24.0k vs 23.6k），暗示 F-score 结构对超参不敏感。</li>
 </ul>
 
-<h3 id="可复现性与生态">可复现性与生态 <a class="heading-anchor" href="#可复现性与生态" aria-label="Link to 可复现性与生态">#</a></h3>
+<p><strong>核心技术壁垒展开</strong>: F-score 求值本身是 $O(1)$ 的 piecewise-linear 函数。真正的工程壁垒在于维护毫秒级更新的 Cluster Snapshot $\sigma(k)$：</p>
 
 <ul>
-<li>训练代码 / 路由代码均未开源</li>
-<li>最近开源参考：vLLM 的路由策略实现是基线；Chen et al. (2026) 的 DP-decode 形式化是理论前驱</li>
-<li>论文部署在 Ascend 910C（华为）上，非 NVIDIA GPU，社区复现需适配</li>
-<li>核心算法（F-score + 两阶段）概念简单，可在任何 PD-disaggregated 系统上复现；工程难点在 stateful proxy 的实时状态维护</li>
+<li>通过 SSE stream inline parsing 逐 token 追踪每个 request 的 decode 进度，增量更新 $L_g(k)$</li>
+<li>Cross-tier KV transfer 的 late-binding 设计需要精确的 <code>PrefillerBudget</code> 背压控制</li>
+<li>Stage 2 的子集选择（在 $R_{\max}$ 候选中搜索最优子集）需要在 < 1 ms 内完成</li>
 </ul>
+
+<h2 id="§8-scheduling-resource-management">§8 Scheduling & resource management <a class="heading-anchor" href="#§8-scheduling-resource-management" aria-label="Link to §8-scheduling-resource-management">#</a></h2>
+
+<h3 id="调度决策">调度决策 <a class="heading-anchor" href="#调度决策" aria-label="Link to 调度决策">#</a></h3>
+
+<table>
+<tr><th>维度</th><th>设计</th></tr>
+<tr><td>粒度</td><td>Per decode-step batch admission（非 per-request 逐个）</td></tr>
+<tr><td>抢占</td><td>不支持（sticky assignment by design，迁移 KV-cache 成本太高）</td></tr>
+<tr><td>准入控制</td><td>concurrency cap $B$ = <code>max_num_seqs</code> per worker；超限 request 留在 prompt pool 等待下一步</td></tr>
+<tr><td>饥饿防护</td><td>Stage 2 最优子集非正分时仍强制分配单 request</td></tr>
+<tr><td>公平性</td><td>无 per-tenant/per-priority 保证；最小化全局 $I(k)$ 隐式平衡 worker 负载</td></tr>
+<tr><td>Admission frequency</td><td>每个 decode step 一次（sub-100 ms 周期）</td></tr>
+</table>
+
+<h3 id="内存管理">内存管理 <a class="heading-anchor" href="#内存管理" aria-label="Link to 内存管理">#</a></h3>
+
+<table>
+<tr><th>维度</th><th>设计</th></tr>
+<tr><td>KV-cache allocation</td><td>由下层 vllm-ascend PagedAttention 管理（page-level）</td></tr>
+<tr><td>BR-H 感知</td><td>仅通过 $L_g(k)$（总 KV footprint）和 $B$（slot cap）间接控制</td></tr>
+<tr><td>碎片化</td><td>不涉及——PagedAttention 处理</td></tr>
+<tr><td>驱逐/重用</td><td>不涉及——request 自然结束释放，无 prefix cache/radix tree</td></tr>
+<tr><td>Swap to CPU/disk</td><td>不涉及——由引擎层处理</td></tr>
+</table>
+
+<h3 id="before-vs-after-对比">Before vs After 对比 <a class="heading-anchor" href="#before-vs-after-对比" aria-label="Link to before-vs-after-对比">#</a></h3>
+
+<table>
+<tr><th></th><th>Before (JSQ/P2C)</th><th>After (BR-0/BR-H)</th></tr>
+<tr><td>决策信号</td><td>队列长度 or 随机</td><td>F-score（感知 safe margin + overflow 不对称）</td></tr>
+<tr><td>容量区分</td><td>无</td><td>两阶段：abundant capacity greedy / scarce capacity subset selection</td></tr>
+<tr><td>未来感知</td><td>无</td><td>BR-H: horizon discounted F-score + binary termination classifier</td></tr>
+<tr><td>全局视图</td><td>无（per-request independent decision）</td><td>有（centralized snapshot 驱动 batch-level decision）</td></tr>
+</table>
+
+<h2 id="§9-workload-characterization">§9 Workload characterization <a class="heading-anchor" href="#§9-workload-characterization" aria-label="Link to §9-workload-characterization">#</a></h2>
+
+<table>
+<tr><th>Workload regime</th><th>BalanceRoute</th><th>Baseline (JSQ)</th><th>Why</th></tr>
+<tr><td>Short output, low $G$ ($G{=}4$)</td><td>+13.4% throughput (BR-H)</td><td>baseline adequate</td><td>少量 worker 的 order-statistics gap 小，F-score safe/overflow 不对称不显著</td></tr>
+<tr><td>Long output, moderate $G$ ($G{=}8$)</td><td>+15.4% (deployed BR-H), 4.1× imbal reduction</td><td>215k imbalance</td><td>KV-cache 增长使 load variance 放大，F-score 的 $(G{-}1)$ 不对称充分发挥</td></tr>
+<tr><td>Long output, large $G$ ($G{=}16$)</td><td>+34.5% (oracle BR-H), 5.8× imbal reduction</td><td>676k imbalance</td><td>order-statistics gap 按 $G$ 增长，baseline 的 "smart" heuristic 反效果</td></tr>
+<tr><td>Short output (filtered out)</td><td>不适用</td><td>不适用</td><td>Decode-stage imbalance 不占主导；prefill latency dominates</td></tr>
+<tr><td>Prompt-recurrent workload</td><td>ExactMatch 最优</td><td>—</td><td>Prompt-hash CDF predictor 高精度</td></tr>
+<tr><td>No recurrence</td><td>Survival 最优</td><td>—</td><td>Marginal CDF fallback，无 per-prompt state</td></tr>
+</table>
+
+<p><strong>论文未报告但可推断的 lose regime</strong>: (i) 极短输出 (< 100 tokens)——KV 增长不显著，$ax \ll b$，F-score 增益趋零。(ii) 极低并发、单 request per worker——Stage 2 子集选择退化为无意义。(iii) 非 barrier-synchronized 系统（如 pure pipeline 或 async decode）——$I(k)$ 定义不适用。</p>
+
+<h2 id="§10-evaluation-details">§10 Evaluation details <a class="heading-anchor" href="#§10-evaluation-details" aria-label="Link to §10-evaluation-details">#</a></h2>
+
+<h3 id="基线版本">基线版本 <a class="heading-anchor" href="#基线版本" aria-label="Link to 基线版本">#</a></h3>
+
+<ul>
+<li>vLLM: vllm-ascend (Ascend-NPU port of vLLM), V1 scheduler</li>
+<li>Router policies: vLLM built-in Random / RR / P2C / JSQ</li>
+<li>具体 commit hash: 未报告</li>
+<li>Baseline tuning: 使用 vllm-ascend 默认配置（<code>cudagraph_mode=FULL_DECODE_ONLY</code>），未报告额外 tuning</li>
+</ul>
+
+<h3 id="指标定义">指标定义 <a class="heading-anchor" href="#指标定义" aria-label="Link to 指标定义">#</a></h3>
+
+<table>
+<tr><th>指标</th><th>定义</th></tr>
+<tr><td>Average imbalance</td><td>trace mean of per-step (max − min) KV workload across $G$ workers</td></tr>
+<tr><td>TPOT P95</td><td>95th-percentile time-per-output-token (ms) — decode 尾延迟</td></tr>
+<tr><td>Throughput</td><td>output tokens per second（仅输出，不含输入）</td></tr>
+</table>
+
+<p>仅报告 decode-stage 指标（prefill 不受 decode-tier routing 影响）。</p>
+
+<h3 id="基线公平性分析">基线公平性分析 <a class="heading-anchor" href="#基线公平性分析" aria-label="Link to 基线公平性分析">#</a></h3>
+
+<ul>
+<li>所有方法共享相同硬件、相同 trace、相同引擎配置</li>
+<li>Workload-aware endpoint routers (Jain et al. 2024/2025) 被排除因其面向不同 setting（无 cross-replica barrier）</li>
+<li>论文未报告对基线的额外 hyperparameter tuning</li>
+</ul>
+
+<h2 id="§11-api-usability">§11 API & usability <a class="heading-anchor" href="#§11-api-usability" aria-label="Link to §11-api-usability">#</a></h2>
+
+<table>
+<tr><th>维度</th><th>设计</th></tr>
+<tr><td>User-facing API</td><td>OpenAI-compatible（通过 proxy 转发，client 无感知）</td></tr>
+<tr><td>Internal API</td><td>Payload mutation（<code>kv_role</code>, <code>max_tokens</code> 字段改写）</td></tr>
+<tr><td>Config surface</td><td>$S_{\text{greedy}}$, $R_{\max}$, $H$, $\alpha$, $\beta$, $\gamma$, predictor choice (Survival / ExactMatch)</td></tr>
+<tr><td>Tuning guidance</td><td>论文未报告系统化调参方法；仅展示两组 $(\beta, \gamma)$ 均可</td></tr>
+<tr><td>Protocol</td><td>HTTP + SSE（per-token streaming telemetry）</td></tr>
+</table>
+
+<p><strong>Migration cost from vLLM</strong>: 部署 BalanceRoute proxy 为独立 Python 进程，无需修改 vllm-ascend 引擎二进制。核心改动：(i) 配置 proxy 为 client 入口；(ii) 配置 prefill/decode tier 的 <code>kv_role</code>；(iii) 部署 MooncakeConnector 支持 cross-tier KV transfer。无 vLLM 代码修改要求——above-the-engine 设计。</p>
+
+<h2 id="§12-adoption-ecosystem">§12 Adoption & ecosystem <a class="heading-anchor" href="#§12-adoption-ecosystem" aria-label="Link to §12-adoption-ecosystem">#</a></h2>
+
+<ul>
+<li><strong>未合并上游</strong>: BalanceRoute 代码未开源，未合并入 vLLM / SGLang / TRT-LLM</li>
+<li><strong>部署平台</strong>: Ascend 910C (华为)，非 NVIDIA GPU；社区复现需适配 NPU → GPU</li>
+<li><strong>生产部署</strong>: 论文验证在 144-NPU 集群上，暗示华为内部生产使用（proprietary trace 来源）</li>
+<li><strong>下游要求</strong>: 需要 PD-disaggregated 架构 + MooncakeConnector (或等价 RDMA KV transfer)；不兼容 co-located prefill-decode 部署</li>
+<li><strong>核心算法可移植性</strong>: F-score + 两阶段算法概念简单，可在任何 PD-disaggregated 系统上独立实现。工程壁垒在 stateful proxy 的实时状态维护（SSE parsing, snapshot update），而非算法本身</li>
+</ul>
+
+<h2 id="§13-deployment-context-实践上下文">§13 Deployment context (实践上下文) <a class="heading-anchor" href="#§13-deployment-context-实践上下文" aria-label="Link to §13-deployment-context-实践上下文">#</a></h2>
+
+<table>
+<tr><th>维度</th><th>定位</th></tr>
+<tr><td>Serving stage</td><td>Decode only（prefill 在独立 tier，proxy 仅路由 decode admission）</td></tr>
+<tr><td>Concurrency regime</td><td>Mid-to-high（$G{=}4$–$16$ workers, $B$ requests/worker）</td></tr>
+<tr><td>Hardware affinity</td><td>验证在 Ascend 910C；算法 hardware-agnostic（依赖 per-step time $\propto$ KV footprint，任何 bandwidth-bound decode 均适用）。在 bandwidth/overhead ratio 高的硬件上（长上下文 decode）收益最大</td></tr>
+<tr><td>Ecosystem integration</td><td>独立 Python proxy + 未修改 vllm-ascend workers；above-the-engine，无引擎侵入</td></tr>
+<tr><td>Migration path</td><td>(1) 部署 stateful proxy 进程；(2) 配置 prefill/decode tier 的 kv_role；(3) 接入 MooncakeConnector；(4) 调整 $(\beta, \gamma)$ 或直接用 BR-0（零配置）</td></tr>
+</table>
+
+<p><strong>对现有 vLLM 部署的影响</strong>: 需要从 co-located serving 迁移到 PD-disaggregated 架构——这本身是一个重大架构变更。若已有 PD-disaggregation，则 BalanceRoute 仅需插入 proxy layer（增量改动小）。BR-0 的 pool-bypass path 甚至不需要 prompt pool 基础设施。</p>
 
 </div>
 </div>

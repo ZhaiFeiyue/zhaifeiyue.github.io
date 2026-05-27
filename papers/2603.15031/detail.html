@@ -196,380 +196,368 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Attention Residuals</h1>
-<div class="card-meta"><span class="badge badge-model">model</span> 2603.15031</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">algorithm</span></div>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2603.15031</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">residual-connection</span><span class="tag">depth-attention</span><span class="tag">scaling-law</span><span class="tag">prenorm-dilution</span><span class="tag">structured-matrix</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/model.html">← model Survey</a>
+<a href="/papers/2603.15031.html">← Synthesis</a>
+<a href="/overview/algorithm.html">← algorithm Survey</a>
 <a href="https://arxiv.org/abs/2603.15031" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
-<h1 id="attention-residuals">Attention Residuals <a class="heading-anchor" href="#attention-residuals" aria-label="Link to attention-residuals">#</a></h1>
+
+<h1 id="attention-residuals-—-l2">Attention Residuals — L2 <a class="heading-anchor" href="#attention-residuals-—-l2" aria-label="Link to attention-residuals-—-l2">#</a></h1>
+
 <blockquote>
-Kimi Team: Guangyu Chen, Yu Zhang, Jianlin Su et al. (37 authors) | 2026-03 | https://arxiv.org/abs/2603.15031
-Category: llm | Tags: algorithm, residual-connection, scaling-law, kimi
-Read: 2026-04-18
+Kimi Team: Guangyu Chen, Yu Zhang, Jianlin Su, Weixin Xu et al. (37 authors, Moonshot AI)
+2026-03 | https://arxiv.org/abs/2603.15031
 </blockquote>
-
-<h2 id="模型架构互动图">模型架构互动图 <a class="heading-anchor" href="#模型架构互动图" aria-label="Link to 模型架构互动图">#</a></h2>
-
-<p>3 页：(1) 标准 PreNorm block 与 AttnRes block 并排对比；(2) 数学流程 + 块合并；(3) 训练动态、消融、生产部署。</p>
-
-
-<p><!-- Source: former drawio page "1. Standard vs AttnRes Block" (28 nodes, 17 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    subgraph sg_s_grp["Standard PreNorm Transformer Block"]
-        direction TB
-    s_in["h_{ℓ-1}"]
-    s_n1["RMSNorm"]
-    s_attn["Self-Attention"]
-    s_add1["+ (residual, weight=1)"]
-    s_n2["RMSNorm"]
-    s_mlp["FFN (SwiGLU)"]
-    s_add2["+ (residual, weight=1)"]
-    s_out["h_ℓ"]
-    s_note["Depth aggregation = uniform sum: h_ℓ = h_{ℓ-1} + f_{ℓ-1}(h_{ℓ-1}) Magnitudes drift / blow up Gradients dilute over depth"]
-    end
-    subgraph sg_a_grp["AttnRes Block (Block-AttnRes variant)"]
-        direction TB
-    a_blocks["blocks list (cached): [h_emb, blk_1, blk_2, …, blk_{n-1}] + partial_block (in progress)"]
-    a_attnres1["block_attn_res( blocks, partial, attn_res_proj, attn_res_norm) → softmax over depth"]
-    a_n1["attn_norm"]
-    a_attn["Self-Attention"]
-    a_add1["partial += attn_out"]
-    a_attnres2["block_attn_res( blocks, partial, mlp_res_proj, mlp_res_norm) → softmax over depth (2nd)"]
-    a_n2["mlp_norm"]
-    a_mlp["FFN (SwiGLU)"]
-    a_add2["partial += mlp_out"]
-    a_note["If layer_number % (block_size/2) == 0: blocks.append(partial); partial = None → start a new BLOCK Depth aggregation: h_ℓ = Σ_i α_{i→ℓ} · v_i (softmax over depth) Intra-block: standard '+'"]
-    end
-    t_t1["Attention Residuals — Standard PreNorm Block vs AttnRes Block"]
-    s_in -->|" "| s_n1
-    s_n1 -->|" "| s_attn
-    s_attn -->|" "| s_add1
-    s_in -->|" "| s_add1
-    s_add1 -->|" "| s_n2
-    s_n2 -->|" "| s_mlp
-    s_mlp -->|" "| s_add2
-    s_add1 -->|" "| s_add2
-    s_add2 -->|" "| s_out
-    a_blocks -->|" "| a_attnres1
-    a_attnres1 -->|" "| a_n1
-    a_n1 -->|" "| a_attn
-    a_attn -->|" "| a_add1
-    a_add1 -->|" "| a_attnres2
-    a_attnres2 -->|" "| a_n2
-    a_n2 -->|" "| a_mlp
-    a_mlp -->|" "| a_add2
-</div>
-
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-
-<p>把 PreNorm Transformer 的 <strong>"恒定权重为 1 的残差累加"</strong> 替换成 <strong>"沿深度做一次 softmax-attention 加权求和"</strong>。每层都学一个伪 query \(\mathbf{w}_\ell \in \mathbb{R}^d\)，对所有先前层输出 \(\mathbf{v}_i\) 做 softmax 选择性聚合：</p>
-
-<p>$$\mathbf{h}_\ell = \sum_{i=0}^{\ell-1} \alpha_{i \to \ell} \cdot \mathbf{v}_i, \quad \alpha_{i \to \ell} = \frac{\exp(\mathbf{w}_\ell^\top \, \text{RMSNorm}(\mathbf{k}_i))}{\sum_j \exp(\mathbf{w}_\ell^\top \, \text{RMSNorm}(\mathbf{k}_j))}$$</p>
-
-<p>直觉是 <strong>"时间-深度对偶 (Time-Depth Duality)"</strong>：标准残差 = 沿深度的 RNN（固定单元权重为 1），AttnRes = 用 attention 替代深度 RNN，让深层有 input-dependent 的方式选择从哪些早期层吸取信息。Block-AttnRes 把替换降到 block 边界（每 <code>block_size//2</code> 层做一次），训练 overhead < 4%。</p>
-
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
-
-<p>PreNorm Transformer 的标准 forward 是 \(\mathbf{h}_\ell = \mathbf{h}_{\ell-1} + f_{\ell-1}(\text{Norm}(\mathbf{h}_{\ell-1}))\)，每层输出以 <strong>固定权重 1</strong> 累加到 hidden state。后果：(1) 隐状态范数随深度 \(O(L)\) 增长（PreNorm dilution），(2) 早期层贡献被后期反复加权稀释，(3) 梯度信号在反传时跨深度逐渐被强势层稀释。</p>
-
-<p>AttnRes 的核心洞察：<strong>用 attention 替代固定权重</strong>。Full-AttnRes 在每一层都对所有先前层输出做 softmax 加权求和；Block-AttnRes 是工程化版本——只在 block 边界做（每 block 内部仍用普通 <code>+</code>），并且 attention 实际放在 <strong>attn 子层之前</strong> 和 <strong>MLP 子层之前</strong> 各一次。</p>
-
-<p>数学上每个注入点引入 <strong>一个学习参数</strong> \(\mathbf{w}_\ell\)（实现为 <code>Linear(d, 1)</code>），加 <strong>一个 RMSNorm</strong>，pseudo-query 零初始化保证开始时退化为均匀平均。Block-AttnRes 还需要 <strong>两阶段在线 softmax 合并</strong>（缓存的块表示 + 进行中的 partial block）：</p>
-
-<p>$$h_\ell = \frac{e^{m_1 - m} \cdot o_1 + e^{m_2 - m} \cdot o_2}{e^{m_1 - m} \cdot \ell_1 + e^{m_2 - m} \cdot \ell_2}$$</p>
-
-<p>实验上：</p>
-<ul>
-<li>16 层小模型：val loss baseline 1.766 → AttnRes-Full 1.737 (-0.029)，DenseFormer (固定标量) 1.767（基本无效）</li>
-<li>Scaling law：Block-AttnRes 在相同 loss 下 <strong>节省 ~1.25× compute</strong></li>
-<li>已用于 <strong>Kimi-Linear</strong> (48B-A3B, 1.4T tokens, Muon + WSD)，GPQA +7.5</li>
-<li>训练 overhead <strong>< 4%</strong>（Block 版）；I/O 5.5d / token / layer (vs 标准 3d)</li>
-</ul>
-
-<p>观察到的训练动态：output norm 在 baseline 单调增长，AttnRes 呈 <strong>bounded periodic</strong> pattern（每个 block 边界 reset）；梯度 norm 在 baseline 沿深度衰减，AttnRes 更均匀。</p>
-
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
-
-<ul>
-<li><strong>核心方程</strong>：\(\mathbf{h}_\ell = \sum_i \alpha_{i \to \ell} \mathbf{v}_i\)，softmax 取代固定权重 1</li>
-<li><strong>Block-AttnRes 注入点</strong>：每个 transformer 层 <strong>两次</strong>（attn 之前 + MLP 之前），block 内部仍标准 <code>+</code></li>
-<li><strong>Block 划分</strong>：每 <code>block_size // 2</code> 层一个 block 边界（每个 transformer 层 = 2 sublayers）</li>
-<li><strong>新参数</strong>：每注入点 <strong>一个 <code>Linear(d, 1)</code> 伪 query + 一个 RMSNorm</strong>；总 ≈ 2L · d，相对 FFN 可忽略</li>
-<li><strong>零初始化</strong>：pseudo-query 必须 zero-init，开始时退化为均匀平均，避免训练初期分布混乱</li>
-<li><strong>Softmax > Sigmoid</strong>（消融）；<strong>单 head depth-attention > multi-head</strong>（消融）</li>
-<li><strong>DenseFormer 风格固定标量不 work</strong>（Table 4 baseline 1.766 vs DenseFormer 1.767）</li>
-<li><strong>生产验证</strong>：Kimi Linear 48B-A3B 用了，GPQA +7.5</li>
-<li><strong>训练 overhead < 4%</strong>（Block 版本 + 在线 softmax 合并 + cache）</li>
-<li><strong>I/O 增加</strong>：每层 ~5.5d / token (vs 标准 3d)，但仍在带宽内可承受</li>
-<li><strong>Hidden norm 行为</strong>：bounded periodic vs baseline 单调增长 → 暗示 AttnRes 具有 stabilizing 效果</li>
-</ul>
-
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-
-<ul>
-<li>大规模验证只有 MoE Kimi Linear 一例；标准 dense 大模型 (e.g. 70B+ dense) 未验证</li>
-<li><strong>Depth-attention 的 \(L^2\) 复杂度</strong>：层数翻倍，AttnRes 开销也翻倍（虽然 Block 版本缓解到 \(O(L)\) blocks）</li>
-<li><strong>Block size 选择无理论指导</strong>，需要实验调（论文用 <code>block_size=6</code> for Kimi Linear）</li>
-<li><strong>I/O 5.5d</strong> 在 bandwidth-bound 推理下可能拖慢，论文未给精确 latency 数字</li>
-<li>对超大词表 / 多模态融合层的影响未研究</li>
-</ul>
-
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-
-<ul>
-<li><strong>Algorithm</strong>: 替代 PreNorm 残差的新机制，drop-in 可用</li>
-<li><strong>Kernel</strong>: 需要 fused 在线 softmax merge kernel（已开源）</li>
-<li><strong>Framework</strong>: 推理需要缓存 block 输出（轻微 KV-like 缓存）</li>
-<li><strong>LLM</strong>: 已被 Kimi Linear / K2.5 采用；可能成为下一代 LLM 的标配</li>
-<li><strong>Hardware</strong>: I/O 增加 ~1.8×，对 memory-bandwidth bound 推理略不利但训练影响小</li>
-</ul>
 
 <hr>
 
-<h2 id="deep-analysis-llm-extends-phase-2">Deep Analysis (llm, extends Phase 2) <a class="heading-anchor" href="#deep-analysis-llm-extends-phase-2" aria-label="Link to deep-analysis-llm-extends-phase-2">#</a></h2>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<h3 id="1-architecture-with-drawio">1. Architecture (with drawio) <a class="heading-anchor" href="#1-architecture-with-drawio" aria-label="Link to 1-architecture-with-drawio">#</a></h3>
+<p>AttnRes 用 depth-wise softmax attention（每层一个伪 query $\mathbf{w}_l$）替代固定权重 1 的残差累加，解决 PreNorm dilution；Block AttnRes 将层分 N 块把内存从 $O(Ld)$ 降至 $O(Nd)$。1.25× compute equivalence，Kimi Linear 48B 全面提升（GPQA +7.5），训练开销 <4%。</p>
 
-<h4 id="1a-standard-vs-attnres-block-side-by-side">1a. Standard vs AttnRes block (side-by-side) <a class="heading-anchor" href="#1a-standard-vs-attnres-block-side-by-side" aria-label="Link to 1a-standard-vs-attnres-block-side-by-side">#</a></h4>
+<hr>
 
-<p>详见上方互动图第 1 页。左侧标准 PreNorm，右侧 AttnRes：每层有两个 <code>block_attn_res</code> 调用（attn 之前和 MLP 之前），block 内部仍走普通 residual <code>+</code>。Block 边界由 <code>layer_number % (block_size // 2) == 0</code> 决定。</p>
+<h2 id="§2-痛点-·-方法-·-结果">§2 痛点 · 方法 · 结果 <a class="heading-anchor" href="#§2-痛点-·-方法-·-结果" aria-label="Link to §2-痛点-·-方法-·-结果">#</a></h2>
 
-<h4 id="1b-math-flow">1b. Math flow <a class="heading-anchor" href="#1b-math-flow" aria-label="Link to 1b-math-flow">#</a></h4>
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
 
+<p>标准 PreNorm Transformer 的残差更新为 $\mathbf{h}_l = \mathbf{h}_{l-1} + f_l(\mathbf{h}_{l-1})$，每层输出以固定权重 1 累加。展开后 $\mathbf{h}_L = \sum_{i=0}^{L-1} \mathbf{v}_i$，每个 $\mathbf{v}_i$ 因 PreNorm 约束有 $\|\mathbf{v}_i\| \approx O(1)$，但累积态 $\|\mathbf{h}_l\| \approx O(l)$，导致三个问题：</p>
 
-<p><!-- Source: former drawio page "2. AttnRes Math Flow" (12 nodes, 6 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    m_v["Stack V = [v_0, v_1, …, v_{ℓ-1}, partial] [N+1, B, T, D]"]
-    m_norm["K = RMSNorm(V)"]
-    m_proj["Pseudo-query w_ℓ ∈ R^d (zero-init for safe start = uniform averaging)"]
-    m_logits["logits = w_ℓᵀ · K [N+1, B, T]"]
-    m_smax["α = softmax(logits, dim=depth) → [N+1, B, T] non-neg, sums to 1"]
-    m_sum["h = Σ_i α_{i→ℓ} · v_i [B, T, D]"]
-    m_eq["Full-AttnRes (exact): h_ℓ = Σ_{i=0}^{ℓ-1} α_{i→ℓ} · v_i α_{i→ℓ} = exp(w_ℓᵀ RMSNorm(k_i)) / Σ_j exp(...) Block-AttnRes (efficient): applied at BLOCK boundaries (every block_size//2 layers) + standard '+' inside a block..."]
-    m_params["New trainable params per layer: • attn_res_proj (Linear d→1, used as w_ℓ) • mlp_res_proj (Linear d→1, used as w'_ℓ) • attn_res_norm (RMSNorm) • mlp_res_norm (RMSNorm) Total extra ≈ 2L·d (negligible vs FFN)"]
-    t_t2["Attention Residuals — Mathematical Flow + Block Merge"]
-    m_v -->|" "| m_norm
-    m_norm -->|" "| m_logits
-    m_proj -->|" "| m_logits
-    m_logits -->|" "| m_smax
-    m_smax -->|" "| m_sum
-    m_v -->|" "| m_sum
-</div>
+<ol>
+<li><strong>PreNorm dilution</strong>：第 $i$ 层输出在第 $l$ 层的相对贡献衰减为 $\sim 1/l$，深层被迫学更大输出以保持影响力</li>
+<li><strong>无选择性访问</strong>：所有先前层以同一权重混合，attention 子层和 MLP 子层共享同一聚合态</li>
+<li><strong>不可逆信息丢失</strong>：早期层信息一旦被稀释，后续层无法恢复</li>
+</ul>
 
-<p><strong>精确流程</strong>（从官方 README 的 PyTorch 伪代码提取）：</p>
+<p><strong>问题定义</strong>：给定 $L$ 层 Transformer，输入 token embedding $\mathbf{h}_0$，每层变换 $f_l$，设计深度聚合机制使各层贡献不因累积而被稀释。标准损失函数为 language modeling cross-entropy，AttnRes 不改变损失，只改变 forward pass 中的深度聚合方式。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>Full AttnRes</strong> 将固定累加替换为 depth-wise softmax attention：</p>
+
+<p>$$\mathbf{h}_l = \sum_{i=0}^{l-1} \alpha_{i \to l} \cdot \mathbf{v}_i$$</p>
+
+<p>$$\alpha_{i \to l} = \frac{\exp(\mathbf{w}_l^\top \operatorname{RMSNorm}(\mathbf{k}_i))}{\sum_{j=0}^{l-1} \exp(\mathbf{w}_l^\top \operatorname{RMSNorm}(\mathbf{k}_j))}$$</p>
+
+<p>其中 $\mathbf{w}_l \in \mathbb{R}^d$ 为每层学习的伪 query（零初始化），$\mathbf{k}_i = \mathbf{v}_i$ 为第 $i$ 层输出。每层增加的参数仅为一个 $d$ 维向量和一个 RMSNorm——对 $d=4096$, $L=64$ 的模型约 524K 参数（~0.005%）。</p>
+
+<p>核心 insight 是 <strong>深度-序列对偶 (depth-sequence duality)</strong>：标准残差 = 沿深度的 RNN（固定单元权重），就像 Transformer 用 attention 替代了时间维 RNN，AttnRes 用 attention 替代了深度维 RNN。</p>
+
+<p><strong>Block AttnRes</strong> 将 $L$ 层分成 $N$ 个 block，block 内标准残差，block 间做 softmax attention over block summaries $\mathbf{b}_n = \sum_{i \in \text{block}_n} \mathbf{v}_i$，内存从 $O(Ld)$ 降至 $O(Nd)$。</p>
+
+<table>
+<tr><th></th><th>Before（Standard Residual）</th><th>After（AttnRes）</th></tr>
+<tr><td>聚合公式</td><td>$\mathbf{h}_l = \mathbf{h}_{l-1} + f_l(\mathbf{h}_{l-1})$</td><td>$\mathbf{h}_l = \sum_i \alpha_{i \to l} \cdot \mathbf{v}_i$</td></tr>
+<tr><td>权重类型</td><td>固定 (all ones)</td><td>Learned, softmax-normalized</td></tr>
+<tr><td>Input-dependent</td><td>No</td><td>Yes（via pseudo-query）</td></tr>
+<tr><td>M 矩阵结构</td><td>All-ones lower-triangular</td><td>Dense, rank-$l$, input-dependent</td></tr>
+<tr><td>范数增长</td><td>$O(L)$ monotonic</td><td>Bounded periodic</td></tr>
+</table>
+
+<p><strong>核心技术壁垒</strong>：不在 Full AttnRes 的公式（简洁直接），而在 <strong>Block AttnRes 的系统工程</strong>——(1) 两阶段在线 softmax 合并（已完成 block 的 pre-computed attention + in-progress partial block 的 online merge），(2) pipeline parallelism 下跨 stage 的 block representation 缓存通信协议（将 per-transition 通信从 $O(C)$ 降到 $O(P)$），(3) 序列分片 prefill（128K context 从 15GB 压到 <0.3GB）。三者联合实现 <4% 训练开销和 <2% 推理延迟，是将理论方法变为 production-ready 的关键壁垒。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<p><strong>Scaling law</strong>（194M–528M，5 个模型尺度）：Block AttnRes 在相同 loss 下节省 ~1.25× compute。拟合幂律 $\mathcal{L} = a \times C^{-b}$：</p>
+
+<table>
+<tr><th>Variant</th><th>$a$</th><th>$b$</th><th>Loss @ max compute</th></tr>
+<tr><td>Baseline</td><td>1.891</td><td>0.057</td><td>1.719</td></tr>
+<tr><td>Block AttnRes</td><td>1.870</td><td>0.058</td><td>1.693</td></tr>
+<tr><td>Full AttnRes</td><td>1.865</td><td>0.057</td><td>1.692</td></tr>
+</table>
+
+<p><strong>Kimi Linear 48B (3B activated MoE)</strong>，1.4T tokens pre-training：</p>
+
+<table>
+<tr><th>Benchmark</th><th>Baseline</th><th>AttnRes</th><th>Delta</th></tr>
+<tr><td>GPQA-Diamond</td><td>36.9</td><td>44.4</td><td><strong>+7.5</strong></td></tr>
+<tr><td>Math</td><td>53.5</td><td>57.1</td><td><strong>+3.6</strong></td></tr>
+<tr><td>HumanEval</td><td>59.1</td><td>62.2</td><td><strong>+3.1</strong></td></tr>
+<tr><td>MMLU</td><td>73.5</td><td>74.6</td><td>+1.1</td></tr>
+<tr><td>C-Eval</td><td>79.6</td><td>82.5</td><td>+2.9</td></tr>
+</table>
+
+<p>所有 15 个 benchmark 均持平或改善。多步推理任务（GPQA, Math, HumanEval）收益最大，符合深度选择性改善组合推理的假设。</p>
+
+<hr>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<h3 id="attnres-架构总览">AttnRes 架构总览 <a class="heading-anchor" href="#attnres-架构总览" aria-label="Link to attnres-架构总览">#</a></h3>
+
+<p><img src="/assets/2603.15031/fig1.png" alt="Figure 1: Standard Residuals vs Full AttnRes vs Block AttnRes"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "Overview of Attention Residuals. (a) Standard Residuals: standard residual connections with uniform additive accumulation. (b) Full AttnRes: each layer selectively aggregates all previous layer outputs via learned attention weights. (c) Block AttnRes: layers are grouped into blocks, reducing memory from O(Ld) to O(Nd).").</em></p>
+
+<p>三列对比一目了然：(a) 标准残差逐层累加（每条边权重=1），(b) Full AttnRes 每层对所有先前层做 softmax attention（边权重 $\alpha_{i \to l}$ 可变），(c) Block AttnRes 将层分组、block 内标准累加、block 间做 attention。关键视觉线索：(b) 的连接密度远高于 (a)，但 (c) 通过 block 压缩把密度降回可控范围。</p>
+
+<h3 id="depth-mixing-matrix-统一视角">Depth mixing matrix 统一视角 <a class="heading-anchor" href="#depth-mixing-matrix-统一视角" aria-label="Link to depth-mixing-matrix-统一视角">#</a></h3>
+
+<p><img src="/assets/2603.15031/fig9.png" alt="Figure 9: Structured-matrix M for various residual variants"></p>
+
+<p><em>Paper's Figure 9, verbatim (caption: depth-mixing matrices M for Standard residuals, Highway, mHC, DenseFormer, Full AttnRes, Block AttnRes).</em></p>
+
+<p>论文 §6.2 将所有残差变体统一到 depth mixing matrix $M \in \mathbb{R}^{L \times L}$ 框架下：$\mathbf{h}_l = \sum_{i=0}^{l-1} M_{i \to l} \cdot \mathbf{v}_i$。标准残差的 $M$ 是 all-ones 下三角（rank-1, input-independent），Highway 是 1-semiseparable with scalar gates，mHC 是 $m$-semiseparable，DenseFormer 有 learned but input-independent 标量——<strong>所有这些都对应 depth-wise linear attention</strong>。AttnRes 是首个使用 <strong>depth-wise softmax attention</strong> 的方法，$M$ dense 且 input-dependent。这与序列维度上 RNN→Transformer 的转变完全平行。</p>
+
+<h3 id="block-attnres-伪代码">Block AttnRes 伪代码 <a class="heading-anchor" href="#block-attnres-伪代码" aria-label="Link to block-attnres-伪代码">#</a></h3>
 
 <pre><code class="language-python">
 def block_attn_res(blocks: list[Tensor], partial_block: Tensor,
                    proj: Linear, norm: RMSNorm) -&gt; Tensor:
-    &quot;&quot;&quot;Inter-block attention: attend over block reps + partial sum.&quot;&quot;&quot;
-    V = torch.stack(blocks + [partial_block])              # [N+1, B, T, D]
-    K = norm(V)                                            # RMSNorm
+    V = torch.stack(blocks + [partial_block])  # [N+1, B, T, D]
+    K = norm(V)                                 # RMSNorm on keys
     logits = torch.einsum(&#x27;d, n b t d -&gt; n b t&#x27;,
-                          proj.weight.squeeze(), K)        # w · K
+                          proj.weight.squeeze(), K)
     h = torch.einsum(&#x27;n b t, n b t d -&gt; b t d&#x27;,
-                     logits.softmax(0), V)                 # softmax over depth
+                     logits.softmax(0), V)
     return h
 </code></pre>
 
-<p>每次调用：</p>
-<ol>
-<li><code>V = stack(blocks + partial)</code> 拼出深度方向所有候选向量</li>
-<li><code>K = RMSNorm(V)</code> 对深度向量做归一</li>
-<li><code>logits = w · K</code> 用伪 query 算每个候选的分数</li>
-<li><code>α = softmax(logits, dim=depth)</code> 沿深度归一为概率</li>
-<li><code>h = Σ α_i · v_i</code> 加权求和得到注入到下一个子层的 input</li>
-</ul>
+<p>每个 Transformer 层执行两次 <code>block_attn_res</code>（attn 子层前 + MLP 子层前），各有独立的 <code>proj</code> 和 <code>norm</code>。Block 边界由 <code>layer_number % (block_size // 2) == 0</code> 决定。</p>
 
-<h4 id="1c-forward-全图">1c. Forward 全图 <a class="heading-anchor" href="#1c-forward-全图" aria-label="Link to 1c-forward-全图">#</a></h4>
-
-<pre><code class="language-python">
-def forward(self, blocks, hidden_states):
-    partial_block = hidden_states
-    # AttnRes #1: before attention
-    h = block_attn_res(blocks, partial_block,
-                       self.attn_res_proj, self.attn_res_norm)
-
-    # if at block boundary, finalize current block, start new
-    if self.layer_number % (self.block_size // 2) == 0:
-        blocks.append(partial_block)
-        partial_block = None
-
-    # standard self-attention sublayer
-    attn_out = self.attn(self.attn_norm(h))
-    partial_block = (partial_block + attn_out) if partial_block is not None else attn_out
-
-    # AttnRes #2: before MLP
-    h = block_attn_res(blocks, partial_block,
-                       self.mlp_res_proj, self.mlp_res_norm)
-
-    # standard MLP sublayer
-    mlp_out = self.mlp(self.mlp_norm(h))
-    partial_block = partial_block + mlp_out
-
-    return blocks, partial_block
-</code></pre>
-
-<h4 id="1d-key-design-decisions-rationale">1d. Key design decisions + rationale <a class="heading-anchor" href="#1d-key-design-decisions-rationale" aria-label="Link to 1d-key-design-decisions-rationale">#</a></h4>
+<h3 id="系统优化（§4）">系统优化（§4） <a class="heading-anchor" href="#系统优化（§4）" aria-label="Link to 系统优化（§4）">#</a></h3>
 
 <table>
-<tr><th>设计点</th><th>数值 / 选择</th><th>为什么</th></tr>
-<tr><td>Softmax (vs sigmoid)</td><td>softmax</td><td>sigmoid 输出非归一，会和 baseline 趋同；softmax 强制选择性</td></tr>
-<tr><td>Single head (vs multi)</td><td>1 head</td><td>multi-head 在深度方向无明显收益，只增 params</td></tr>
-<tr><td>Pseudo-query zero-init</td><td><code>w = 0</code></td><td>初始所有 logits = 0 → softmax 均匀 → 退化为简单均值，安全起点</td></tr>
-<tr><td>RMSNorm on V</td><td><code>K = RMSNorm(V)</code></td><td>不归一会让早期层大范数主导 attention，softmax 失效</td></tr>
-<tr><td>注入点</td><td>attn 之前 + MLP 之前</td><td>每个子层都有独立的 depth 选择能力</td></tr>
-<tr><td>Block-AttnRes (vs Full)</td><td>每 <code>block_size/2</code> 层</td><td>Full 的 \(L^2\) 复杂度太高；Block 把开销摊到 block 数量</td></tr>
-<tr><td>Block 内部仍 <code>+</code></td><td>partial += sublayer</td><td>保持局部信息流，AttnRes 只做"长程深度选择"</td></tr>
-<tr><td>Online softmax merge</td><td>两阶段 max + lse</td><td>让 partial block 和 cached blocks 可以分开计算再合并</td></tr>
+<tr><th>优化</th><th>机制</th><th>效果</th></tr>
+<tr><td>Cross-stage caching</td><td>Block reps 缓存在本地，跨 pipeline stage 复用</td><td>通信从 $O(C)$ 降到 $O(P)$</td></tr>
+<tr><td>Two-phase inference</td><td>Phase 1: batch pre-compute inter-block attention; Phase 2: online softmax merge with partial block</td><td><2% latency overhead</td></tr>
+<tr><td>Sequence-sharded prefill</td><td>Block reps 按 TP 分片</td><td>128K context: 15GB → <0.3GB</td></tr>
 </table>
 
-<h4 id="1e-与-denseformer-highway-depthformer-对比">1e. 与 DenseFormer / Highway / DepthFormer 对比 <a class="heading-anchor" href="#1e-与-denseformer-highway-depthformer-对比" aria-label="Link to 1e-与-denseformer-highway-depthformer-对比">#</a></h4>
+<hr>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证</strong></p>
+
+<p>论文无收敛定理、无 variance bound、无 loss decomposition 证明。核心理论贡献是 §6.2 的 structured-matrix taxonomy（描述性框架而非形式化定理）。以下为符号表和方程物理意义分析。</p>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
 
 <table>
-<tr><th>方法</th><th>深度聚合方式</th><th>是否 input-dependent</th><th>论文实验结果</th></tr>
-<tr><td>Standard residual</td><td><code>h_ℓ = h_{ℓ-1} + f(...)</code> (weight=1)</td><td>No</td><td>baseline (1.766)</td></tr>
-<tr><td><strong>DenseFormer</strong></td><td><code>h_ℓ = Σ a_i v_i</code> (固定标量)</td><td>No</td><td>1.767（无效）</td></tr>
-<tr><td>Highway Networks</td><td><code>h = T(x)·H(x) + (1-T(x))·x</code> (per-elem gate)</td><td>Yes</td><td>老方法，没在大 LLM scale 验证</td></tr>
-<tr><td><strong>AttnRes (本文)</strong></td><td>softmax over depth, input-dependent</td><td><strong>Yes</strong></td><td>1.737 (Full) / ~1.74 (Block)</td></tr>
+<tr><th>Symbol</th><th>Definition</th><th>Physical meaning</th></tr>
+<tr><td>$\mathbf{h}_l$</td><td>Hidden state at layer $l$</td><td>第 $l$ 层的输入表示</td></tr>
+<tr><td>$\mathbf{v}_i$</td><td>Output of layer $i$: $f_i(\mathbf{h}_i)$</td><td>第 $i$ 层变换后的增量</td></tr>
+<tr><td>$\mathbf{w}_l$</td><td>Learned pseudo-query $\in \mathbb{R}^d$</td><td>第 $l$ 层的深度偏好向量（零初始化）</td></tr>
+<tr><td>$\alpha_{i \to l}$</td><td>Softmax attention weight</td><td>第 $i$ 层对第 $l$ 层的贡献权重</td></tr>
+<tr><td>$\mathbf{b}_n$</td><td>Block summary: $\sum_{i \in \text{block}_n} \mathbf{v}_i$</td><td>第 $n$ 个 block 内所有层输出之和</td></tr>
+<tr><td>$M_{i \to l}$</td><td>Depth mixing matrix element</td><td>统一框架下第 $i$ 层对第 $l$ 层的权重</td></tr>
+<tr><td>$\mathcal{L}$</td><td>Validation loss</td><td>语言建模 cross-entropy</td></tr>
+<tr><td>$C$</td><td>Compute (PFLOP/s-days)</td><td>训练计算量</td></tr>
+<tr><td>$a, b$</td><td>Scaling law coefficients</td><td>$\mathcal{L} = a \times C^{-b}$</td></tr>
 </table>
 
-<h3 id="2-training-empirical-dynamics">2. Training & Empirical Dynamics <a class="heading-anchor" href="#2-training-empirical-dynamics" aria-label="Link to 2-training-empirical-dynamics">#</a></h3>
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
 
+<p><strong>标准残差展开</strong>：</p>
 
-<p><!-- Source: former drawio page "3. Dynamics & Scaling" (7 nodes, 0 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    d_d1["Output norm vs depth (toy 16-layer) ● Standard: monotonic growth ● AttnRes: BOUNDED & PERIODIC (resets at block boundaries)"]
-    d_d2["Gradient norm vs depth ● Standard: dilutes deep → shallow ● AttnRes: more uniform → better signal to early layers"]
-    d_d3["Scaling law (paper Fig.): baseline ≈ 1.891 · C^{-0.057} Block AttnRes matches baseline at ~1.25× LESS compute"]
-    d_t["Validation loss (16-L toy): baseline : 1.766 DenseFormer : 1.767 (no help) Full AttnRes: 1.737 (-0.029) Block AttnRes: ~1.74"]
-    d_t2["Ablations (paper): • softmax > sigmoid • single-head depth-attn > multi-head • RMSNorm on V is necessary • zero-init pseudo-query important (start uniform, learn from there)"]
-    d_kimi["Production validation: Kimi-Linear 48B-A3B + AttnRes • 1.4 T tokens, Muon + WSD • +7.5 GPQA (vs no AttnRes) • <4% training overhead • I/O per layer ~5.5d (vs 3d standard)"]
-    t_t3["Attention Residuals — Empirical Dynamics, Ablations, Production"]
-</div>
+<p>$$\mathbf{h}_L = \sum_{i=0}^{L-1} \mathbf{v}_i$$</p>
 
-<h4 id="2a-hidden-norm-and-gradient-behavior">2a. Hidden norm and gradient behavior <a class="heading-anchor" href="#2a-hidden-norm-and-gradient-behavior" aria-label="Link to 2a-hidden-norm-and-gradient-behavior">#</a></h4>
+<p>所有层输出以 unit weight 求和。$M$ 矩阵为 all-ones 下三角。因 PreNorm 保证 $\|\mathbf{v}_i\| \approx O(1)$，$\|\mathbf{h}_L\| \approx O(L)$——dilution 的数学根源。</p>
+
+<p><strong>AttnRes 聚合</strong>：</p>
+
+<p>$$\mathbf{h}_l = \sum_{i=0}^{l-1} \alpha_{i \to l} \cdot \mathbf{v}_i, \quad \sum_i \alpha_{i \to l} = 1$$</p>
+
+<p>Softmax 归一化使 $\|\mathbf{h}_l\|$ 不再随 $l$ 无界增长（bounded by max $\|\mathbf{v}_i\|$）。竞争机制使高相关源层被放大、低相关源层被抑制。</p>
+
+<p><strong>Block summary</strong>：</p>
+
+<p>$$\mathbf{b}_n = \sum_{i \in \text{block}_n} \mathbf{v}_i$$</p>
+
+<p>Block 内仍用标准累加（保持局部信息流），block 间做 softmax attention。$N$ 个 block + embedding 构成 $N+1$ 个候选，attention 复杂度从 $O(L)$ 降到 $O(N)$。</p>
+
+<p><strong>Scaling law fit</strong>：</p>
+
+<p>$$\mathcal{L}_{\text{baseline}} = 1.891 \times C^{-0.057}, \quad \mathcal{L}_{\text{block}} = 1.870 \times C^{-0.058}$$</p>
+
+<p>Exponent 基本一致（$\approx 0.057$–$0.058$），improvement 体现为 multiplicative offset——AttnRes 是 constant-factor improvement 而非改变 scaling 行为。</p>
+
+<h3 id="应有但论文未提供的保证">应有但论文未提供的保证 <a class="heading-anchor" href="#应有但论文未提供的保证" aria-label="Link to 应有但论文未提供的保证">#</a></h3>
 
 <ul>
-<li><strong>Output norm vs depth</strong>: baseline <strong>单调增长</strong> (PreNorm dilution); AttnRes <strong>bounded + periodic</strong> (在 block 边界 reset)</li>
-<li><strong>Gradient norm vs depth</strong>: baseline 衰减（信号被深层吃掉）; AttnRes <strong>更均匀</strong> → 早期层得到更强信号</li>
+<li><strong>收敛性</strong>：AttnRes 引入 softmax 非线性到 forward pass 中，是否影响训练收敛的理论保证？零初始化让起始等价于均匀平均（标准残差的一个变体），但从均匀→学习后权重的过渡没有形式化分析</li>
+<li><strong>Block vs Full 近似误差 bound</strong>：$N$ 个 block 对 $L$ 个 layer 的近似质量应可用信息论/矩阵近似理论量化</li>
+<li><strong>Gradient flow 分析</strong>：论文观察到更均匀的梯度分布（Fig 5），但未给出 AttnRes 下梯度传播的形式化表达</li>
 </ul>
 
-<p>这两个数值现象是 AttnRes "为什么能 work" 的核心证据：它实质上是一种 <strong>隐式深度归一化机制</strong>。</p>
-
-<h4 id="2b-scaling-law">2b. Scaling law <a class="heading-anchor" href="#2b-scaling-law" aria-label="Link to 2b-scaling-law">#</a></h4>
-
-<p>论文拟合：</p>
-<p>$$\text{baseline}: \quad L \approx 1.891 \cdot C^{-0.057}$$</p>
-
-<p>Block-AttnRes 在相同 \(L\) 下需要 <strong>\(\sim 0.8 C\)</strong>，即 <strong>节省 ~1.25× compute</strong>。</p>
-
-<h4 id="2c-toy-validation-16-layer">2c. Toy validation (16-layer) <a class="heading-anchor" href="#2c-toy-validation-16-layer" aria-label="Link to 2c-toy-validation-16-layer">#</a></h4>
+<h3 id="6-项验证">6 项验证 <a class="heading-anchor" href="#6-项验证" aria-label="Link to 6-项验证">#</a></h3>
 
 <table>
-<tr><th>方法</th><th>Val loss</th></tr>
-<tr><td>Standard PreNorm baseline</td><td>1.766</td></tr>
+<tr><th>#</th><th>Check</th><th>Result</th></tr>
+<tr><td>1</td><td><strong>量纲一致性</strong>: $\alpha_{i \to l}$ 无量纲概率，$\sum_i \alpha_{i \to l} = 1$</td><td>✓ softmax 输出 $\in (0,1)$, sum = 1</td></tr>
+<tr><td>2</td><td><strong>退化路径</strong>: $\mathbf{w}_l = \mathbf{0} \Rightarrow$ 所有 logits 相等 $\Rightarrow \alpha_{i \to l} = 1/l$ (均匀平均)</td><td>✓ 开始时退化为均匀聚合</td></tr>
+<tr><td>3</td><td><strong>边界条件</strong>: $l=1 \Rightarrow \mathbf{h}_1 = \alpha_{0 \to 1} \cdot \mathbf{v}_0 = \mathbf{v}_0$ (只有 embedding)</td><td>✓ 单源 softmax 退化为 identity</td></tr>
+<tr><td>4</td><td><strong>Scaling 一致性</strong>: exponent $b \approx 0.057$–$0.058$ 跨三种 variant 一致</td><td>✓ 改变 offset 不改变 scaling 行为</td></tr>
+<tr><td>5</td><td><strong>Block 近似收敛</strong>: Block size $S=1$ (= Full) → $S=2,4,8$ → $S=16,32$ 单调退化</td><td>✓ Table/Fig 3 验证</td></tr>
+<tr><td>6</td><td><strong>参数效率</strong>: 每层增加 $2d$ 参数 (query + RMSNorm gain)，总增量 $2Ld \ll d^2 L$</td><td>✓ 对 $d=4096$, $L=64$: 524K vs ~10B</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="scaling-law（194m–528m）">Scaling Law（194M–528M） <a class="heading-anchor" href="#scaling-law（194m–528m）" aria-label="Link to scaling-law（194m–528m）">#</a></h3>
+
+<p><img src="/assets/2603.15031/fig4.png" alt="Figure 4: Scaling curves for Baseline, Block AttnRes, Full AttnRes"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: Scaling curves showing fitted power laws for Baseline, Block AttnRes, and Full AttnRes).</em></p>
+
+<p>三条曲线斜率一致但 offset 不同：Full AttnRes < Block AttnRes < Baseline 在所有 compute level。在 matched loss 下 Block AttnRes 节省 ~1.25× compute——等价于"免费"多训 25%。Full 与 Block 的差距随规模收窄：最大 config（528M）仅 0.001。</p>
+
+<table>
+<tr><th># Act. Params</th><th>Tokens</th><th>Baseline</th><th>Block AttnRes</th><th>Full AttnRes</th><th>mHC(-lite)</th></tr>
+<tr><td>194M</td><td>38.7B</td><td>1.931</td><td>1.909</td><td><strong>1.899</strong></td><td>1.906</td></tr>
+<tr><td>241M</td><td>45.4B</td><td>1.895</td><td>1.875</td><td>1.874</td><td><strong>1.869</strong></td></tr>
+<tr><td>296M</td><td>62.1B</td><td>1.829</td><td>1.809</td><td><strong>1.804</strong></td><td>1.807</td></tr>
+<tr><td>436M</td><td>87.9B</td><td>1.766</td><td>1.746</td><td><strong>1.737</strong></td><td>1.747</td></tr>
+<tr><td>528M</td><td>119.0B</td><td>1.719</td><td>1.693</td><td><strong>1.692</strong></td><td>1.694</td></tr>
+</table>
+
+<p>mHC(-lite) 在 241M 规模略优（1.869 vs 1.874/1.875），但在所有其他规模上 Full AttnRes 胜出。</p>
+
+<h3 id="training-dynamics">Training Dynamics <a class="heading-anchor" href="#training-dynamics" aria-label="Link to training-dynamics">#</a></h3>
+
+<p><img src="/assets/2603.15031/fig5.png" alt="Figure 5: Output magnitudes and gradient norms across depth"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: Training dynamics comparison showing output magnitudes and gradient norms across depth for Baseline vs Block AttnRes).</em></p>
+
+<p><strong>左图</strong>（output magnitudes）：Baseline 单调增长（$O(L)$ PreNorm dilution 的直接证据），AttnRes 呈 bounded periodic pattern——block 边界处 softmax 归一化重置累积，范数周期性回落。<strong>右图</strong>（gradient norms）：Baseline 早期层梯度不成比例地大（identity path 放大敏感度），AttnRes 梯度分布更均匀。这两个观察是 AttnRes "为什么能 work" 的核心训练动态证据：softmax 归一化同时解决了前向的范数爆炸和反向的梯度不均匀。</p>
+
+<h3 id="architecture-sweep">Architecture Sweep <a class="heading-anchor" href="#architecture-sweep" aria-label="Link to architecture-sweep">#</a></h3>
+
+<p><img src="/assets/2603.15031/fig7.png" alt="Figure 7: Validation loss vs d_model/L_b ratio"></p>
+
+<p><em>Paper's Figure 7, verbatim (caption: Architecture sweep under fixed compute: validation loss vs. d_model/L_b ratio for Baseline and AttnRes).</em></p>
+
+<p>固定 compute $\approx 6.5 \times 10^{19}$ FLOPs 下，Baseline 最优 width/depth 比 $d_{\text{model}}/L_b \approx 60$（偏宽浅），AttnRes 最优比 $\approx 45$（偏窄深）。AttnRes 在所有 configuration 上均优于 Baseline，但在更深/更窄配置上优势更大——标准残差是 depth utility 的瓶颈，AttnRes 解锁了深度的价值。</p>
+
+<h3 id="depth-wise-attention-patterns">Depth-wise Attention Patterns <a class="heading-anchor" href="#depth-wise-attention-patterns" aria-label="Link to depth-wise-attention-patterns">#</a></h3>
+
+<p><img src="/assets/2603.15031/fig8.png" alt="Figure 8: Depth-wise attention weight distributions"></p>
+
+<p><em>Paper's Figure 8, verbatim (caption: Depth-wise attention weight distributions showing which layers attend to which).</em></p>
+
+<p>可视化 $\alpha_{i \to l}$ 矩阵揭示三个 striking patterns：(1) <strong>Locality preserved</strong>——对角线主导，每层仍最关注其前驱；(2) <strong>Embedding persistence</strong>——layer 0 (token embedding) 在整个深度上保持显著权重，模型学会了持续参考原始输入；(3) <strong>Attention vs MLP 分化</strong>——pre-attention 层有更宽的 receptive field（跨更远的层取信息），pre-MLP 层更依赖 recent information。</p>
+
+<h3 id="ablation-study（436m-16-层）">Ablation Study（436M, 16 层） <a class="heading-anchor" href="#ablation-study（436m-16-层）" aria-label="Link to ablation-study（436m-16-层）">#</a></h3>
+
+<table>
+<tr><th>Variant</th><th>Val loss</th></tr>
+<tr><td>Baseline (PreNorm)</td><td>1.766</td></tr>
 <tr><td>DenseFormer (fixed scalars)</td><td>1.767</td></tr>
-<tr><td>Block AttnRes</td><td>~1.740</td></tr>
+<tr><td>mHC</td><td>1.747</td></tr>
 <tr><td><strong>Full AttnRes</strong></td><td><strong>1.737</strong></td></tr>
+<tr><td>Block AttnRes ($N=8$)</td><td>1.746</td></tr>
+<tr><td>w/ sigmoid (not softmax)</td><td>1.741</td></tr>
+<tr><td>w/ input-dependent query</td><td><strong>1.731</strong></td></tr>
+<tr><td>w/ multi-head depth attn</td><td>1.752</td></tr>
+<tr><td>w/o RMSNorm</td><td>1.750</td></tr>
 </table>
 
-<h4 id="2d-production-kimi-linear-48b-a3b">2d. Production: Kimi Linear 48B-A3B <a class="heading-anchor" href="#2d-production-kimi-linear-48b-a3b" aria-label="Link to 2d-production-kimi-linear-48b-a3b">#</a></h4>
+<p>关键发现：(1) DenseFormer 无效（1.767 ≈ baseline 1.766）——input-independence 是瓶颈，不是 cross-layer access 的缺失；(2) softmax > sigmoid（1.737 vs 1.741）——竞争性归一化创造更锐利的选择；(3) multi-head depth attention 反而伤害（1.752）——层输出要么整体相关、要么整体不相关，per-channel 路由无益；(4) RMSNorm 关键（1.737 vs 1.750 without）——不加则大范数层主导 attention；(5) input-dependent query 最优（1.731）但不实用——需 $d \times d$ 矩阵且强制 sequential inference。</p>
 
-<ul>
-<li>1.4 T tokens, Muon + WSD</li>
-<li>27 transformer 层 → 54 sublayers, <code>block_size=6</code>, N=9 blocks + embedding ≈ 10 depth sources</li>
-<li>GPQA-Diamond <strong>+7.5</strong> 相对无 AttnRes</li>
-<li>训练 overhead <strong>< 4%</strong></li>
-<li>I/O 5.5d / token / layer (vs 标准 3d)</li>
-</ul>
-
-<h4 id="2e-ablations-summary">2e. Ablations summary <a class="heading-anchor" href="#2e-ablations-summary" aria-label="Link to 2e-ablations-summary">#</a></h4>
-
-<table>
-<tr><th>消融维度</th><th>结果</th></tr>
-<tr><td>Softmax vs sigmoid gate</td><td><strong>softmax 胜</strong></td></tr>
-<tr><td>Single vs multi-head depth-attention</td><td><strong>single 胜</strong>（multi 无收益增 params）</td></tr>
-<tr><td>RMSNorm on V (yes/no)</td><td><strong>必须有</strong>（无则范数失衡）</td></tr>
-<tr><td>Pseudo-query zero-init</td><td><strong>必须</strong>（随机 init 会破坏初期训练）</td></tr>
-<tr><td>DenseFormer baseline (fixed scalars)</td><td><strong>无效</strong></td></tr>
-<tr><td>Full vs Block AttnRes</td><td>Full 更好但 Block 性价比高</td></tr>
-</table>
-
-<h3 id="3-training-methodology">3. Training Methodology <a class="heading-anchor" href="#3-training-methodology" aria-label="Link to 3-training-methodology">#</a></h3>
-
-<h4 id="3a-规模-数据-production-kimi-linear">3a. 规模 & 数据 (production: Kimi Linear) <a class="heading-anchor" href="#3a-规模-数据-production-kimi-linear" aria-label="Link to 3a-规模-数据-production-kimi-linear">#</a></h4>
+<h3 id="kimi-linear-48b-pre-training">Kimi Linear 48B Pre-training <a class="heading-anchor" href="#kimi-linear-48b-pre-training" aria-label="Link to kimi-linear-48b-pre-training">#</a></h3>
 
 <table>
 <tr><th>维度</th><th>数值</th></tr>
 <tr><td>Total / Active params</td><td>48B / 3B (MoE)</td></tr>
 <tr><td>Layers</td><td>27 transformer (54 sublayers)</td></tr>
-<tr><td>Block size</td><td>6 sublayers (= 3 transformer layers)</td></tr>
-<tr><td>AttnRes injections per transformer layer</td><td>2 (attn-pre + mlp-pre)</td></tr>
-<tr><td>Pretrain tokens</td><td><strong>1.4 T</strong> + 400B mid-train</td></tr>
-<tr><td>Optimizer</td><td><strong>Muon</strong> (注意：不是 MuonClip)</td></tr>
-<tr><td>LR schedule</td><td><strong>WSD</strong> (Warmup-Stable-Decay)</td></tr>
-<tr><td>Context</td><td>4K → 32K (NoPE, no YaRN)</td></tr>
+<tr><td>Block size</td><td>6 sublayers (3 transformer layers)</td></tr>
+<tr><td>Pre-train tokens</td><td><strong>1.4T</strong></td></tr>
+<tr><td>Optimizer</td><td>Muon + WSD</td></tr>
+<tr><td>Context</td><td>4K → 32K</td></tr>
+<tr><td>AttnRes injections / layer</td><td>2 (attn-pre + mlp-pre)</td></tr>
+<tr><td>Training overhead</td><td><4%</td></tr>
+<tr><td>Inference latency overhead</td><td><2%</td></tr>
+<tr><td>GPU hours</td><td>[论文未披露]</td></tr>
+<tr><td>MFU</td><td>[论文未披露]</td></tr>
 </table>
 
-<h4 id="3b-训练技术">3b. 训练技术 <a class="heading-anchor" href="#3b-训练技术" aria-label="Link to 3b-训练技术">#</a></h4>
+<p>所有 15 个 benchmark 持平或提升（Table 3），compositional reasoning 类任务收益最大（GPQA +7.5, Math +3.6, HumanEval +3.1），knowledge-oriented 任务收益较小（MMLU +1.1）。</p>
 
-<table>
-<tr><th>类别</th><th>AttnRes 实际使用</th></tr>
-<tr><td>主优化器</td><td>Muon</td></tr>
-<tr><td>LR schedule</td><td>WSD</td></tr>
-<tr><td>Stability</td><td>Pseudo-query zero-init + RMSNorm on V</td></tr>
-<tr><td>Caching</td><td>Block reps cached during forward</td></tr>
-<tr><td>Online softmax merge</td><td>两阶段 max-shift + lse</td></tr>
-<tr><td>Pipeline communication</td><td>Cache-based (overlap with backbone compute)</td></tr>
-<tr><td>Long context</td><td>NoPE (linear attention layers handle recency)</td></tr>
-</table>
+<h3 id="block-size-sensitivity">Block Size Sensitivity <a class="heading-anchor" href="#block-size-sensitivity" aria-label="Link to block-size-sensitivity">#</a></h3>
 
-<h4 id="3c-核心壁垒">3c. 核心壁垒 <a class="heading-anchor" href="#3c-核心壁垒" aria-label="Link to 3c-核心壁垒">#</a></h4>
+<p><img src="/assets/2603.15031/fig3.png" alt="Figure 3: Validation loss vs block size"></p>
 
-<p>最难复现的一件事：<strong>Block-AttnRes 的 cache-based pipeline communication</strong>。Full-AttnRes 实现简单但 \(L^2\) 开销高；Block-AttnRes 需要 (1) 缓存 N-1 个完成的 block 表示，(2) 与 in-progress partial block 在线合并 (online softmax)，(3) 在 pipeline parallelism 下让 cache 跨 stage 通信不阻塞主路径——这是 < 4% overhead 的关键。论文承诺开源但没公开 pipeline 细节。</p>
+<p><em>Paper's Figure 3, verbatim (caption: Block size ablation: validation loss as a function of block size S).</em></p>
 
-<h3 id="4-open-questions">4. Open Questions <a class="heading-anchor" href="#4-open-questions" aria-label="Link to 4-open-questions">#</a></h3>
+<p>Block size $S = 2, 4, 8$ 的 loss 差距在 0.004–0.006 以内（接近 Full AttnRes），$S = 16, 32$ 逐步退化到 baseline 附近。$N \approx 8$ blocks 是实践甜点：深度信息结构是 remarkably coarse-grained 的——8 个 summary 就捕获了几乎全部 depth-wise selectivity 的价值。</p>
 
-<ol>
-<li>AttnRes 在 100B+ dense 模型上的扩展性？目前只有 MoE Kimi Linear 验证</li>
-<li>Pseudo-query 维度 = d 是必需还是可压缩？（理论上可以 low-rank）</li>
-<li>Block size 6 是否对 Kimi 规模最优？其他 scale 应该怎么调？</li>
-<li>Multi-head depth attention 真的没用，还是消融 setup 不充分？</li>
-<li>AttnRes 与 dynamic depth (early exit) 的结合潜力？</li>
-</ul>
+<h3 id="dataset-analysis">Dataset Analysis <a class="heading-anchor" href="#dataset-analysis" aria-label="Link to dataset-analysis">#</a></h3>
 
-<h3 id="5-position-in-landscape">5. Position in Landscape <a class="heading-anchor" href="#5-position-in-landscape" aria-label="Link to 5-position-in-landscape">#</a></h3>
-
-<ul>
-<li><strong>首个 LLM 规模生产化的 input-dependent depth aggregation</strong></li>
-<li>解决 PreNorm 的根本问题（fixed unit accumulation）</li>
-<li>论文 Figure 9 把 AttnRes / DenseFormer / Highway 统一到 structured-matrix 视角</li>
-<li>已是 <strong>Kimi Linear / K2.5 标配</strong>，推动 "深度 attention" 成为新维度的设计空间</li>
-</ul>
+<p>[论文未披露训练数据组成] — 使用 Kimi Linear 的预训练数据（web/code/math/chat 比例、质量过滤、contamination check 均未公开）。</p>
 
 <hr>
 
-<h2 id="implementation-references">Implementation references <a class="heading-anchor" href="#implementation-references" aria-label="Link to implementation-references">#</a></h2>
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
 
 <table>
-<tr><th>来源</th><th>路径</th><th>用途</th></tr>
-<tr><td>论文</td><td>https://arxiv.org/abs/2603.15031</td><td>核心方程 + 消融</td></tr>
-<tr><td>官方 repo</td><td>https://github.com/MoonshotAI/Attention-Residuals</td><td>PyTorch 伪代码 + 实验设置</td></tr>
-<tr><td>Local clone</td><td><code>Attention-Residuals/</code> (GitHub)</td><td>当前只有 README，无代码 — 需 git pull</td></tr>
-<tr><td>生产部署</td><td>Kimi Linear (arXiv 2510.26692)</td><td>实战验证</td></tr>
-<tr><td>关联</td><td>DenseFormer / Highway Networks</td><td>对比 baseline</td></tr>
+<tr><th>Step</th><th>Premise</th><th>Conclusion</th><th>Evidence</th></tr>
+<tr><td>1</td><td>PreNorm 下 $\</td><td>\mathbf{v}_i\</td><td>\approx O(1)$ 但 $\</td><td>\mathbf{h}_l\</td><td>\approx O(l)$，第 $i$ 层贡献相对衰减为 $\sim 1/l$</td><td>标准残差存在 PreNorm dilution：深层被迫学更大输出，层间信息流缺乏选择性</td><td>§2 形式推导 + Fig 5 左图（output magnitudes 单调增长）</td></tr>
+<tr><td>2</td><td>序列维度上 RNN→Transformer（attention 替代 recurrence）大幅提升表达力；残差是深度维度的 "RNN"（固定权重累加 = linear attention with all-ones M）</td><td>用 depth-wise softmax attention 替代 fixed accumulation 应带来类似收益（depth-sequence duality）</td><td>§6.2 structured-matrix framework: 标准残差 = depth-wise linear attention, AttnRes = depth-wise softmax attention</td></tr>
+<tr><td>3</td><td>Full AttnRes 每层对所有 $l$ 个先前层做 softmax attention，单层增加 $\sim 2d$ 参数；Block AttnRes 将 $L$ 层分 $N$ block 降低到 $O(N)$ 候选</td><td>在可控开销下实现 input-dependent depth-wise selection</td><td>Table 4 ablation（Full: 1.737, Block: 1.746, Baseline: 1.766）+ §4 系统优化（<4% training, <2% inference）</td></tr>
+<tr><td>4</td><td>5 个模型尺度的 scaling 实验：AttnRes 曲线在所有 compute 水平一致低于 baseline；exponent 不变，改善为 constant offset</td><td>AttnRes 是 fundamental 而非 scale-dependent 的改进；Block AttnRes ≈ 1.25× compute equivalence</td><td>Fig 4 scaling curves + 拟合系数 $a=1.870$ vs $1.891$, $b=0.058$ vs $0.057$</td></tr>
+<tr><td>5</td><td>Kimi Linear 48B (3B activated) 1.4T tokens pre-training：15 benchmarks 全面持平或提升，GPQA +7.5, Math +3.6</td><td>AttnRes 在生产规模 MoE 模型上有效，compositional reasoning 受益最大</td><td>Table 3 全 benchmark 比较</td></tr>
+<tr><td>6</td><td>可视化 $\alpha_{i \to l}$：对角线主导（locality），embedding 持续高权重，attention 子层 broader receptive field</td><td>模型自主学出了有意义的 depth routing pattern——不是随机分配而是有结构的信息流优化</td><td>Fig 8 attention pattern 可视化</td></tr>
 </table>
 
-<p><strong>Paper × code 对照</strong>：</p>
+<hr>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<h3 id="代码引用">代码引用 <a class="heading-anchor" href="#代码引用" aria-label="Link to 代码引用">#</a></h3>
+
+<p>官方仓库 <a href="https://github.com/MoonshotAI/Attention-Residuals">MoonshotAI/Attention-Residuals</a> 提供 PyTorch 伪代码：</p>
+
 <ul>
-<li>论文核心方程 \(\mathbf{h}_\ell = \sum \alpha_{i \to \ell} v_i\) ↔ README 中的 <code>block_attn_res()</code> einsum 实现</li>
-<li>Block-AttnRes 的 boundary logic ↔ <code>if self.layer_number % (self.block_size // 2) == 0</code> (README forward)</li>
-<li>Pseudo-query 实现为 <code>proj: Linear(d, 1)</code>，<code>proj.weight.squeeze()</code> 是 \(\mathbf{w}_\ell\)</li>
+<li><code>block_attn_res()</code> — 核心 inter-block attention（README），对应论文公式 3.1–3.2</li>
+<li><code>forward()</code> — 单层 forward pass 含两次 AttnRes 注入（README），展示 block boundary logic</li>
+</ul>
+
+<p>完整训练代码和 pipeline parallelism 的 cross-stage caching 实现 <strong>[实现未公开]</strong>——仓库仅有 README 级伪代码，无可运行的训练/推理代码。生产部署在 Kimi Linear（arXiv 2510.26692）中。</p>
+
+<h3 id="核心技术壁垒展开">核心技术壁垒展开 <a class="heading-anchor" href="#核心技术壁垒展开" aria-label="Link to 核心技术壁垒展开">#</a></h3>
+
+<p>Block AttnRes 的 <4% training overhead 依赖三个系统组件的精确协同：</p>
+
+<ol>
+<li><strong>Two-phase online softmax merge</strong>：Phase 1 对已完成 block 做 batch attention query（pseudo-query 是参数不依赖输入，可预计算）；Phase 2 在 intra-block forward 过程中用 online softmax 将 partial block 与 pre-computed 结果合并。公式为：</li>
+</ul>
+
+<p>$$h_l = \frac{e^{m_1 - m} \cdot o_1 + e^{m_2 - m} \cdot o_2}{e^{m_1 - m} \cdot \ell_1 + e^{m_2 - m} \cdot \ell_2}$$</p>
+
+<p>其中 $m = \max(m_1, m_2)$。这是 Flash Attention 的 online softmax 技巧在深度维度上的应用。</p>
+
+<ol>
+<li><strong>Cross-stage caching for pipeline parallelism</strong>：Interleaved pipeline schedule 下，block reps 在 virtual stages 间本地缓存，避免每个 micro-batch chunk 都重传。Per-transition 通信从 $O(C)$ 降到 $O(P)$。</li>
+</ul>
+
+<ol>
+<li><strong>Sequence-sharded prefill</strong>：长上下文下 block reps 按 TP 分片，每 device 只存 $O(N \cdot T/P_{\text{tp}} \cdot d)$。128K context 从 15GB 压到 <0.3GB。</li>
+</ul>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Pseudo-query 零初始化</strong>：$\mathbf{w}_l = \mathbf{0}$ 使所有 logits 在初始化时相等，softmax 输出均匀分布 $\alpha_{i \to l} = 1/l$。这保证 AttnRes 在训练开始时退化为标准残差的均匀平均版本，是训练稳定性的关键。非零初始化在消融中显著 underperform。</li>
+</ul>
+
+<ol>
+<li><strong>RMSNorm 加在 key 而非 value 上</strong>：消融显示去掉 RMSNorm 导致 loss 从 1.737 升到 1.750。原因：不同 block 的 summary $\mathbf{b}_n$ 因包含不同数量层的累加而范数差异大，RMSNorm 确保 attention 基于内容而非范数竞争。</li>
+</ul>
+
+<h3 id="reproducibility-ecosystem">Reproducibility & Ecosystem <a class="heading-anchor" href="#reproducibility-ecosystem" aria-label="Link to reproducibility-ecosystem">#</a></h3>
+
+<ul>
+<li><strong>训练代码</strong>：未公开完整实现。最接近的开源参考为 Hyper-Connections (mHC) 的实现（用于对比 baseline）</li>
+<li><strong>社区复现</strong>：截至 2026-05 未发现独立复现报告</li>
+<li><strong>生产采用</strong>：Kimi Linear (48B-A3B) 和 K2.5 已部署 Block AttnRes。其他已知采用者：无公开报告</li>
+<li><strong>AttnRes 与 input-dependent query 的后续</strong>：论文消融显示 input-dependent query (loss 1.731) 优于 pseudo-query (1.737)，但因推理 sequential 依赖而弃用——这是一个明确的 future work 方向</li>
 </ul>
 
 </div>

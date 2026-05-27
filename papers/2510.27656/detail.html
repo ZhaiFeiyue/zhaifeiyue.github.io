@@ -197,435 +197,466 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">fabric-lib: RDMA Point-to-Point Communication for LLM Systems</h1>
 <div class="card-meta"><span class="badge badge-cluster">cluster</span> 2510.27656</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">RDMA</span><span class="tag">communication</span><span class="tag">point-to-point</span><span class="tag">LLM-systems</span><span class="tag">networking</span><span class="tag">disaggregated-inference</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">RDMA</span><span class="tag">point-to-point</span><span class="tag">disaggregated-inference</span><span class="tag">MoE-communication</span><span class="tag">vendor-portability</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2510.27656.html">← Synthesis</a>
 <a href="/overview/cluster.html">← cluster Survey</a>
 <a href="https://arxiv.org/abs/2510.27656" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
+
 <h1 id="fabric-lib-rdma-point-to-point-communication-for-llm-systems">fabric-lib: RDMA Point-to-Point Communication for LLM Systems <a class="heading-anchor" href="#fabric-lib-rdma-point-to-point-communication-for-llm-systems" aria-label="Link to fabric-lib-rdma-point-to-point-communication-for-llm-systems">#</a></h1>
-<blockquote>
-Perplexity AI (Anonymous, corresponding: Lequn Chen) | MLSys 2026 / arXiv 2025-10 | https://arxiv.org/abs/2510.27656
-Category: cluster | Tags: RDMA, communication, point-to-point, LLM-systems, networking, disaggregated-inference, MoE, EFA, ConnectX-7
-Read: 2026-04-16
-</blockquote>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-<p>fabric-lib提供了一个可移植的RDMA点对点通信库，通过ImmCounter原语在不依赖消息顺序的前提下实现完成通知，统一抽象了ConnectX-7和AWS EFA等异构NIC硬件，在三个生产系统（KvCache传输、RL权重更新、MoE dispatch/combine）中实现了400 Gbps峰值吞吐和state-of-the-art延迟。</p>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<h2 id="核心三问">核心三问 <a class="heading-anchor" href="#核心三问" aria-label="Link to 核心三问">#</a></h2>
+<p>fabric-lib 抽象 ConnectX-7 与 EFA 的共同语义（可靠无序传输 + WriteImm），通过 ImmCounter 原语实现无序完成通知，为 LLM 系统提供可移植的 RDMA P2P 通信库。三个生产系统验证：KvCache 传输（1.9% TTFT 开销）、RL 权重更新（1T 模型 1.3s）、MoE dispatch（CX-7 上匹配/超越 DeepEP decode 延迟）。</p>
 
-<p><strong>Q1: 解决什么问题？</strong></p>
-<p>新兴LLM系统模式（disaggregated inference、MoE routing、异步RL fine-tuning）需要灵活的点对点通信，但现有RDMA方案存在严重的vendor lock-in问题。DeepEP依赖ConnectX独有的IBGDA，NVSHMEM在EFA上性能严重退化，Mooncake和NIXL缺乏EFA支持。云厂商部署不同RDMA实现（ConnectX用RC transport有序交付，AWS EFA用SRD协议无序交付），没有可行的跨provider方案。</p>
+<hr>
 
-<p><strong>Q2: 怎么解决的？</strong></p>
-<p>核心洞察：ConnectX RC和EFA SRD都支持<strong>可靠但无序</strong>的交付语义。就像建了一个"通用翻译层"——不管底层NIC说什么"方言"（RC/SRD），fabric-lib都用同一套"普通话"（reliable-but-unordered + ImmCounter）来对话。ImmCounter通过轮询completion queue并在收到immediate value时递增计数器来实现完成通知，完全不依赖消息顺序。库用Rust实现，透明管理多NIC聚合（EFA需要4×100Gbps才达400Gbps），暴露Send/Recv和WriteImm两类操作。</p>
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
 
-<p><strong>Q3: 效果如何？</strong></p>
-<ul>
-<li>点对点吞吐：ConnectX-7和EFA均达到400 Gbps峰值</li>
-<li>KvCache传输：层级传输被计算完全隐藏，128K序列TTFT增加仅1.9%（16735→17056ms）</li>
-<li>RL权重更新：1T参数模型仅需1.3秒，比现有框架快100×+</li>
-<li>MoE decode：ConnectX-7上超越DeepEP成为新SOTA，EFA上首次实现可行延迟（比pplx-kernels快3-6×）</li>
-<li>生产部署于Perplexity AI</li>
-</ul>
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
 
-<h2 id="逻辑故事还原">逻辑故事还原 <a class="heading-anchor" href="#逻辑故事还原" aria-label="Link to 逻辑故事还原">#</a></h2>
-
-<p><strong>背景：</strong></p>
-<p>LLM推理进入disaggregated时代，MoE成为主流架构，RL训练需要频繁同步权重。这些场景都需要灵活的P2P通信，但集体通信库（NCCL/torch.distributed）的固定membership、同步初始化、操作排序等限制使其不适合。RDMA本应是最佳选择，但ConnectX和EFA的协议差异（有序vs无序、连接vs无连接）导致没有统一的跨硬件解决方案。</p>
-
-<p><strong>破局（类比）：</strong></p>
-<p>想象你要在两个说不同语言的国家之间建立邮政系统。一个国家（ConnectX）保证信件按发送顺序到达，另一个（EFA）只保证信件都能到但顺序随机。fabric-lib的做法是：我不依赖顺序，而是在每封信上贴一个编号（ImmCounter），收件人只需数清楚收到了几封编号为X的信就知道传输完成了。这样两个"国家"的邮政系统都能用同一套规则。</p>
-
-<p><strong>拆解：</strong></p>
-<ol>
-<li><strong>TransferEngine核心</strong>（Section 3）：Rust实现，per-GPU worker线程，NUMA-aware分配，lock-free queue，透明多NIC管理。API包含Send/Recv（RPC风格）、WriteImm（单次/分页/scatter）、UVM Watcher（GPU→CPU通知，CUDA Graph兼容）</li>
-<li><strong>三大应用系统</strong>：KvCache传输（Section 4，层级流水线overlap）、RL权重更新（Section 5，全集群带宽利用+4阶段流水线）、MoE dispatch/combine（Section 6，host proxy + NVLink/RDMA协同）</li>
-<li><strong>硬件特化优化</strong>：EFA用libfabric + WR templating，ConnectX用libibverbs + WR chaining + relaxed ordering + 双QP分离（Send/Recv与WriteImm各一个避免干扰）</li>
-</ul>
-
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
-
-<h3 id="figure-1-transferengine-architecture">Figure 1: TransferEngine Architecture <a class="heading-anchor" href="#figure-1-transferengine-architecture" aria-label="Link to figure-1-transferengine-architecture">#</a></h3>
-<p><img src="/assets/2510.27656/x1.png" alt="Figure 1: TransferEngine Architecture"></p>
-<p><strong>What it shows</strong>: TransferEngine管理跨NUMA节点的GPU的内部架构。每个GPU对应一个DomainGroup worker，管理1-4个NIC Domain。命令通过lock-free queue转发给worker，ImmCounter追踪WriteImm完成，Callback Worker处理异步通知。单实例管理节点内所有GPU和NIC，一个main address用于peer发现。</p>
-<p><strong>Why it matters</strong>: 架构的核心是per-GPU worker + per-NIC domain的两级抽象，实现了硬件异构性的透明封装。这是fabric-lib能统一ConnectX-7（单NIC 400Gbps）和EFA（4×100Gbps聚合）的根本原因——上层代码看到的只是一个TransferEngine实例。</p>
-
-<h3 id="figure-3-kv-transfer-between-prefillers-and-decoders">Figure 3: KV Transfer between Prefillers and Decoders <a class="heading-anchor" href="#figure-3-kv-transfer-between-prefillers-and-decoders" aria-label="Link to figure-3-kv-transfer-between-prefillers-and-decoders">#</a></h3>
-<p><img src="/assets/2510.27656/x2.png" alt="Figure 3: KV Transfer between Prefillers and Decoders"></p>
-<p><strong>What it shows</strong>: Disaggregated inference的KvCache传输流程。Global scheduler分配prefiller和decoder节点，decoder预分配KV pages和context buffer后通过Send通知prefiller。Prefiller在chunked prefill过程中通过UVM Watcher逐层发起RDMA Write，layer-by-layer与计算overlap。多NIC（图中每节点2个NIC）透明聚合带宽。</p>
-<p><strong>Why it matters</strong>: UVM Watcher是关键创新——让host能在GPU完成每层计算后立即发起传输，同时兼容CUDA Graph。层级流水线使KvCache传输被计算完全隐藏，128K序列TTFT增加仅1.9%。</p>
-
-<h3 id="figure-4-weight-transfer-data-path-—-rank0-based-vs-point-to-point">Figure 4: Weight Transfer Data Path — Rank0-based vs Point-to-Point <a class="heading-anchor" href="#figure-4-weight-transfer-data-path-—-rank0-based-vs-point-to-point" aria-label="Link to figure-4-weight-transfer-data-path-—-rank0-based-vs-point-to-point">#</a></h3>
-<p><img src="/assets/2510.27656/x3.png" alt="Figure 4: Weight Transfer Data Path"></p>
-<p><strong>What it shows</strong>: 对比传统collective方式（左：所有训练GPU通过NVLink聚合到Rank0，bottleneck在Rank0的单NIC）vs P2P方式（右：每个训练GPU直接通过自己的NIC Write到推理GPU，利用全集群NIC带宽）。</p>
-<p><strong>Why it matters</strong>: 这张图直观展示了fabric-lib P2P设计的核心优势——消除了collective通信中Rank0的NIC瓶颈。配合4阶段流水线（H2D memcpy → full_tensor() → RDMA → barrier），实现1T参数仅1.3秒传输，比现有框架快100×+。</p>
-
-<h3 id="figure-6-moe-dispatch-combine-gpu-cpu-nic-coordination">Figure 6: MoE Dispatch/Combine GPU-CPU-NIC Coordination <a class="heading-anchor" href="#figure-6-moe-dispatch-combine-gpu-cpu-nic-coordination" aria-label="Link to figure-6-moe-dispatch-combine-gpu-cpu-nic-coordination">#</a></h3>
-<p><img src="/assets/2510.27656/x5.png" alt="Figure 6: MoE Dispatch/Combine GPU-CPU-NIC Coordination"></p>
-<p><strong>What it shows</strong>: Dispatch和combine的完整GPU-CPU-NIC三方协作时序图。GPU准备数据→GDRCopy通知CPU proxy→proxy调用TransferEngine发起RDMA→NVLink处理节点内传输。时序展示了dispatch_send、dispatch_recv、combine_send、combine_recv各阶段及其在GPU/CPU/NIC三条timeline上的overlap关系。</p>
-<p><strong>Why it matters</strong>: Host proxy设计虽增加PCIe往返延迟，但通过bulk transfer和两轮dispatch策略（先投机发送少量token到private buffer隐藏路由交换延迟，再scatter到shared buffer），在ConnectX-7上仍超越GPU-initiated的DeepEP。这证明了当前硬件条件下host proxy方案的可行性和优越性。</p>
-
-<h3 id="figure-8-point-to-point-communication-performance">Figure 8: Point-to-Point Communication Performance <a class="heading-anchor" href="#figure-8-point-to-point-communication-performance" aria-label="Link to figure-8-point-to-point-communication-performance">#</a></h3>
-<p><img src="/assets/2510.27656/x7.png" alt="Figure 8: P2P Communication Performance"></p>
-<p><strong>What it shows</strong>: TransferEngine vs NIXL在不同消息大小下的带宽利用率（Rel. Bandwidth），分Single Write和Paged Write两种模式，覆盖EFA和ConnectX-7两种NIC。Single Write在≥16MiB时饱和；Paged Write在32-64KiB时饱和。fabric-lib在两种NIC上均略优于NIXL。</p>
-<p><strong>Why it matters</strong>: 这是fabric-lib可移植性的硬证据——在保持统一抽象的同时，性能不输甚至超越专有方案。EFA上的Paged Write性能（64KiB即饱和）直接支撑了KvCache传输的高效实现；Single Write饱和特性决定了RL权重传输的消息大小选择。</p>
-
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
-
-<p><strong>Table 1: RDMA Transport Types Comparison</strong></p>
+<p>LLM 新兴工作负载（disaggregated inference、MoE routing、异步 RL fine-tuning）需要灵活的点对点通信，但现有方案被绑定到特定 NIC：</p>
 
 <table>
-<tr><th>Feature</th><th>RC</th><th>UC</th><th>UD</th><th>SRD</th><th>fabric-lib</th></tr>
-<tr><td>Reliability</td><td>✓</td><td>✗</td><td>✗</td><td>✓</td><td>✓</td></tr>
-<tr><td>Ordering</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td><td><strong>✗</strong></td></tr>
-<tr><td>Connection</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td><td><strong>✗</strong></td></tr>
-<tr><td>Send/Recv</td><td>✓</td><td>✓</td><td>MTU</td><td>✓</td><td>✓</td></tr>
-<tr><td>WriteImm</td><td>✓</td><td>✓</td><td>✗</td><td>✓</td><td>✓</td></tr>
-<tr><td>Read</td><td>✓</td><td>✗</td><td>✗</td><td>✓</td><td>✗</td></tr>
-<tr><td>Atomic</td><td>✓</td><td>✗</td><td>✗</td><td>✓</td><td>✗</td></tr>
+<tr><th>方案</th><th>限制</th></tr>
+<tr><td>DeepEP</td><td>依赖 IBGDA（仅 ConnectX）</td></tr>
+<tr><td>NVSHMEM</td><td>EFA 上性能严重退化</td></tr>
+<tr><td>Mooncake / NIXL</td><td>缺少 EFA 支持或仅初步</td></tr>
+<tr><td>NCCL / torch.distributed</td><td>固定成员、同步初始化、顺序约束、均匀缓冲区</td></tr>
 </table>
 
-<p>fabric-lib选择了RC和SRD的<strong>交集</strong>：可靠+无序+无连接+Send/Recv+WriteImm。放弃Read和Atomic是有意为之。</p>
+<p>核心矛盾：云供应商部署异构 RDMA 硬件（ConnectX RC 有序 vs EFA SRD 无序），无统一抽象可用。</p>
 
-<p><strong>Table 5: RL Weight Transfer Latency Breakdown (Kimi-K2 1T, 256→128 GPUs)</strong></p>
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
 
-<table>
-<tr><th>Operation</th><th>Time</th><th>Avg/call</th><th>Count</th></tr>
-<tr><td><strong>Total</strong></td><td><strong>1233 ms</strong></td><td>—</td><td>—</td></tr>
-<tr><td>Memcpy H2D</td><td>184 ms</td><td>378 µs</td><td>487</td></tr>
-<tr><td>full_tensor()</td><td>518 ms</td><td>532 µs</td><td>974</td></tr>
-<tr><td>Fuse projections</td><td>18 ms</td><td>37 µs</td><td>487</td></tr>
-<tr><td>Quantize</td><td>88 ms</td><td>137 µs</td><td>647</td></tr>
-<tr><td>RDMA submit</td><td>26 ms</td><td>23 µs</td><td>1144</td></tr>
-<tr><td>Waiting for ranks</td><td>357 ms</td><td>—</td><td>—</td></tr>
-<tr><td>Remaining*</td><td>42 ms</td><td>—</td><td>—</td></tr>
-</table>
+<p><strong>核心洞察</strong>：ConnectX RC 与 EFA SRD 共享一个交集语义——<em>可靠但无序传输</em> + WriteImm 操作。fabric-lib 在此最小公共语义之上构建统一接口。</p>
 
-<p>关键数字：<strong>full_tensor()占42%，跨rank同步占29%</strong>，RDMA本身仅占2.1%。瓶颈在FSDP unsharding和同步，不在网络。</p>
-
-<p><strong>Table 6: End-to-End MoE Decode Speed (DeepSeek-V3, EP=DP=64)</strong></p>
-
-<table>
-<tr><th>Cluster</th><th>Kernel</th><th>batch=2</th><th>batch=8</th><th>batch=32</th></tr>
-<tr><td>H200 EFA</td><td><strong>Ours</strong></td><td><strong>66.8</strong></td><td><strong>56.5</strong></td><td><strong>32.0</strong></td></tr>
-<tr><td>H200 EFA</td><td>pplx-kernels</td><td>21.0</td><td>11.6</td><td>4.9</td></tr>
-<tr><td>H100 CX-7</td><td><strong>Ours</strong></td><td><strong>78.4</strong></td><td><strong>67.7</strong></td><td><strong>36.1</strong></td></tr>
-<tr><td>H100 CX-7</td><td>DeepEP</td><td>73.8</td><td>65.8</td><td>36.3</td></tr>
-</table>
-
-<p>在EFA上，fabric-lib比pplx-kernels快<strong>3-6.5×</strong>。在ConnectX-7上，fabric-lib在batch=2/8时超越DeepEP约6-3%，batch=32持平。</p>
-
-<h2 id="key-details-takeaway">Key Details & Takeaway <a class="heading-anchor" href="#key-details-takeaway" aria-label="Link to key-details-takeaway">#</a></h2>
-
-<p><strong>Detail 1: ImmCounter的正确性依赖PCIe ordering</strong></p>
-<p>ImmCounter能在无序传输下正确工作的关键在于PCIe的写顺序保证：RDMA规范要求WriteImm的data payload在immediate value之前发出，PCIe switch保证指向同一设备的写按序到达。虽然immediate value目标是CPU而data目标是GPU（不同设备），但host-proxy架构巧妙避免了data race——CPU观察到ImmCount后的任何CPU→GPU操作（如GDRCopy flag更新）都会被PCIe switch排序在NIC→GPU的数据写之后。这是一个精妙的底层正确性论证。</p>
-
-<p><strong>Detail 2: MoE dispatch的两轮策略隐藏路由延迟</strong></p>
-<p>Dispatch先投机发送少量token到private buffer（不需要路由信息），同时交换路由信息。路由到达后再scatter剩余token到shared buffer。Private buffer的最优大小经验值为24-32 tokens（Figure 11）。这个设计将routing exchange的10-30µs延迟完全隐藏。</p>
-
-<p><strong>一句话总结：</strong> fabric-lib证明了"可靠但无序"是RDMA硬件的最大公约数，ImmCounter是在此语义上实现高效完成通知的关键原语，host proxy方案在当前硬件条件下不仅可行而且能超越GPU-initiated方案。</p>
-
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
-
-<p>fabric-lib是Perplexity AI开源的可移植RDMA点对点通信库，解决了LLM系统中异构RDMA硬件的vendor lock-in问题。其核心洞察是ConnectX RC和AWS EFA SRD都支持可靠但无序的交付语义，因此可以构建一个不依赖消息顺序的统一抽象。库的关键创新是ImmCounter原语——通过WriteImm操作携带的32位immediate value在接收端递增计数器来实现完成通知，利用PCIe ordering保证正确性。TransferEngine用Rust实现，透明管理多NIC聚合（关键用于EFA的4×100Gbps场景），采用per-GPU worker + per-NIC domain的两级架构。</p>
-
-<p>论文通过三个生产系统验证了设计：(1) KvCache传输利用UVM Watcher实现层级overlap，在Qwen3-235B上TTFT增加不到2%；(2) RL权重更新利用全集群NIC带宽和4阶段流水线，实现1T参数1.3秒传输，比现有框架快100×+；(3) MoE dispatch/combine尽管使用host proxy而非GPU-initiated RDMA，在ConnectX-7上仍超越DeepEP成为新SOTA，并在EFA上首次实现可行延迟。</p>
-
-<p>这项工作的更深层意义在于证明了P2P通信是collectives的必要补充而非替代。在disaggregated inference、MoE和RL等新场景中，集体通信的固定membership、同步初始化和操作排序等约束已成为瓶颈，而基于RDMA的P2P通信通过更灵活的抽象提供了更好的解决方案。</p>
-
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
+<p>关键设计：</p>
 
 <ol>
-<li><strong>可靠但无序（reliable-but-unordered）是异构RDMA硬件的最大公约数</strong>：ConnectX RC可以忽略ordering，EFA SRD天然无序，基于此统一抽象避免了vendor lock-in</li>
-<li><strong>ImmCounter原语在无序传输下正确高效</strong>：利用PCIe write ordering保证和host-proxy架构避免data race，在不假设网络消息顺序的前提下实现完成通知</li>
-<li><strong>Host proxy方案在当代硬件上不输GPU-initiated RDMA</strong>：MoE decode在ConnectX-7上fabric-lib超越DeepEP（IBGDA），证明PCIe往返开销可被bulk transfer和流水线策略补偿</li>
-<li><strong>P2P权重传输利用全集群带宽</strong>：避免collective通信中Rank0瓶颈，1T参数模型1.3秒完成传输（256 GPU→128 GPU），比现有框架快100×+</li>
-<li><strong>EFA上首次实现可行的MoE decode</strong>：通过多NIC聚合和路由延迟隐藏策略，在AWS p5实例上实现比pplx-kernels快3-6×的端到端decode速度</li>
-<li><strong>层级KvCache传输被计算完全隐藏</strong>：UVM Watcher + CUDA Graph兼容的层级触发，使disaggregated inference的TTFT开销几乎可忽略</li>
+<li><strong>TransferEngine</strong> — 每 GPU 一个 DomainGroup worker，管理 1–4 个 NIC Domain；锁无队列跨线程通信；NUMA 感知内存分配。</li>
+<li><strong>ImmCounter</strong> — 基于 WriteImm 32-bit 立即值的无序完成通知。不依赖消息顺序，正确性建立在 PCIe 写序保证之上（NIC→GPU 数据先于 NIC→CPU 立即值被 PCIe switch 序列化）。</li>
+<li><strong>三个应用层</strong>：</li>
+<li>KvCache Transfer：layer-by-layer paged write + UVM watcher（CUDA Graph 兼容）</li>
+<li>RL Weight Transfer：全集群带宽一侧 RDMA Write + 4 阶段流水线</li>
+<li>MoE Dispatch/Combine：host proxy + 两轮投机发送 + NVLink intra-node</li>
 </ul>
 
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
+<p><strong>核心技术壁垒</strong>：ImmCounter 的正确性论证——在无序传输下，利用 PCIe ordering guarantee 跨 CPU/GPU 边界建立 data-before-notification 语义。这需要理解 RDMA spec（WriteImm payload 先于 immediate 发出）、PCIe switch ordering（同设备写有序）、以及 host-proxy 架构（CPU 观察到 ImmCount 后发起的 CPU→GPU 事务被 PCIe switch 排在 NIC→GPU 数据写之后）。这一论证不出现在标准 RDMA 编程指南中。</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<table>
+<tr><th>指标</th><th>数值</th></tr>
+<tr><td>峰值吞吐</td><td>400 Gbps（CX-7 & EFA 均达到）</td></tr>
+<tr><td>KvCache 128K TTFT 开销</td><td>+1.9%（monolithic→disaggregated）</td></tr>
+<tr><td>RL 权重更新（1T, 256→128 GPU）</td><td>1.3 s（>100× faster than existing RL frameworks）</td></tr>
+<tr><td>MoE decode tok/s CX-7 EP64 batch=2</td><td>78.4（vs DeepEP 73.8）</td></tr>
+<tr><td>MoE decode tok/s EFA EP64 batch=2</td><td>66.8（vs pplx-kernels 21.0, 3.2×）</td></tr>
+<tr><td>RDMA 在 RL 总时间中占比</td><td>2.1%（瓶颈是 FSDP unsharding 42%）</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Node["Node (multi-GPU)"]
+        subgraph GPU0["GPU 0"]
+            UVM0["UVM Watcher"]
+        end
+        subgraph GPU1["GPU 1"]
+            UVM1["UVM Watcher"]
+        end
+        
+        TE["TransferEngine Instance"]
+        
+        subgraph DG0["DomainGroup 0 (GPU0)"]
+            D0a["Domain 0\n(NIC 0)"]
+            D0b["Domain 1\n(NIC 1)"]
+            D0c["Domain 2\n(NIC 2)"]
+            D0d["Domain 3\n(NIC 3)"]
+        end
+        
+        subgraph DG1["DomainGroup 1 (GPU1)"]
+            D1a["Domain 0"]
+            D1b["Domain 1"]
+            D1c["Domain 2"]
+            D1d["Domain 3"]
+        end
+        
+        IC["ImmCounter\n(per-NUMA)"]
+        CB["Callback Thread"]
+    end
+    
+    GPU0 --> TE
+    GPU1 --> TE
+    TE --> DG0
+    TE --> DG1
+    DG0 --> IC
+    DG1 --> IC
+    IC --> CB
+    
+    D0a & D0b & D0c & D0d -->|"RDMA\nWriteImm"| Remote["Remote Peers"]
+</div>
+
+<p><strong>TransferEngine 内部数据流</strong>：应用通过 API 提交请求 → TransferEngine 路由至服务对应 GPU 的 DomainGroup → DomainGroup worker（NUMA-pinned 线程）将请求分片到多个 Domain（每个管理一个 NIC）→ Domain 提交 WR 到 NIC 发送队列 → 完成事件从 CQ 中 poll 回 → ImmCounter 累加 → 回调线程通知应用。</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant TE as TransferEngine
+    participant DG as DomainGroup Worker
+    participant NIC as NIC (Domain)
+    participant Remote as Remote GPU
+    
+    App->>TE: submit_paged_writes(src, dst, imm)
+    TE->>DG: enqueue (lock-free)
+    DG->>NIC: post_send(WriteImm, shard_0)
+    DG->>NIC: post_send(WriteImm, shard_1)
+    NIC->>Remote: RDMA Write payload
+    NIC->>Remote: Immediate value delivery
+    Remote-->>DG: CQ completion (imm value)
+    DG->>DG: ImmCounter++
+    DG-->>App: callback / flag
+</div>
+
+<hr>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>RC</td><td>Reliable Connection（RDMA传输类型，有序可靠）</td></tr>
+<tr><td>SRD</td><td>Scalable Reliable Datagram（EFA 专有协议，无序可靠）</td></tr>
+<tr><td>WriteImm</td><td>RDMA Write with Immediate（写 + 32-bit 立即值通知）</td></tr>
+<tr><td>ImmCounter</td><td>每 immediate 值计数器，累计 CQ 事件</td></tr>
+<tr><td>DomainGroup</td><td>每 GPU 的 NIC 管理单元</td></tr>
+<tr><td>Domain</td><td>单 NIC 抽象</td></tr>
+<tr><td>MrDesc</td><td>可序列化的内存注册描述符</td></tr>
+<tr><td>QP</td><td>Queue Pair（RDMA 通信端点）</td></tr>
+<tr><td>CQ</td><td>Completion Queue</td></tr>
+<tr><td>WR</td><td>Work Request</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p>本文为系统论文，无编号公式。关键定量关系：</p>
 
 <ul>
-<li><strong>仅支持ConnectX和EFA两种NIC</strong>：虽然论文声称RC兼容NIC容易适配，但缺乏eRDMA、Broadcom、AMD等NIC的实际验证和性能数据</li>
-<li><strong>MoE prefill性能不如DeepEP</strong>：DeepEP通过NVLink pre-accumulation和分批传输在prefill场景显著更优，fabric-lib的decode优化策略不能直接迁移到prefill</li>
-<li><strong>Host proxy随EP规模线性增长的CPU开销</strong>：Table 9显示EFA在EP64时post time达28µs p50，随着EP规模继续增大（如EP128/256），CPU开销可能成为瓶颈</li>
-<li><strong>MoE kernel的内存开销大</strong>：decode优化的kernel在prefill时因缺乏chunking导致buffer memory过大，限制了部分模型的部署可行性</li>
-<li><strong>缺乏与NCCL P2P的直接对比</strong>：论文主要对比DeepEP和pplx-kernels，未系统比较torch.distributed的Send/Recv在相同场景下的性能</li>
-<li><strong>ImmCounter的PCIe ordering依赖假设</strong>：正确性论证依赖于NIC和PCIe switch的ordering行为，不同厂商的PCIe实现可能存在微妙差异</li>
-<li><strong>Anonymous authorship但标注Perplexity AI</strong>：论文声称production-deployed但无法独立验证具体生产规模和稳定性数据</li>
-<li><strong>未讨论安全性和隔离性</strong>：RDMA one-sided Write直接操作远程GPU内存，multi-tenant环境下的安全隔离问题未涉及</li>
-<li><strong>NVLink内转发策略较简单</strong>：节点内仅在MoE场景使用NVLink，KvCache和RL场景未利用NVLink优化</li>
+<li>MoE dispatch buffer上界：$N \cdot T \cdot \max(R, E/N)$，其中 $N$ 为节点数，$T$ 为每专家 token 数，$R$ 为路由专家数，$E$ 为总专家数</li>
+<li>带宽聚合：EFA 通过 4×100 Gbps NIC 聚合至 400 Gbps；ConnectX-7 单 NIC 400 Gbps</li>
 </ul>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
+<h3 id="6-项最低检查">6 项最低检查 <a class="heading-anchor" href="#6-项最低检查" aria-label="Link to 6-项最低检查">#</a></h3>
+
+<ol>
+<li><strong>ImmCounter 正确性</strong>：声称无序传输下 ImmCounter 安全 → 依赖 (a) RDMA spec: WriteImm data 先于 immediate 发出, (b) PCIe switch: 同目标设备写有序, (c) host-proxy: CPU→GPU 事务排在 NIC→GPU 之后。✓ 三层论据完整。</li>
+</ul>
+
+<ol>
+<li><strong>400 Gbps 峰值吞吐</strong>：Figure 7/8 显示 single write ≥16 MiB 饱和、paged write ≥32-64 KiB 饱和。物理上限 = 线速 400 Gbps。✓ 与硬件线速一致。</li>
+</ul>
+
+<ol>
+<li><strong>1.3s RL 权重传输</strong>：Table 5 分解 = 184(H2D) + 518(full_tensor) + 18(fuse) + 88(quant) + 26(RDMA) + 357(barrier) + 42(其他) = 1233ms。✓ 各项加和一致。</li>
+</ul>
+
+<ol>
+<li><strong>MoE host proxy 与 DeepEP 性能对比</strong>：Table 6 CX-7 batch=2: 78.4 vs 73.8 tok/s。声称 host proxy 不劣于 GPU-initiated RDMA。✓ 数据支持。但 prefill 模式下 DeepEP 胜出（Figure 10），论文承认此限制。</li>
+</ul>
+
+<ol>
+<li><strong>EFA 多 NIC 聚合必要性</strong>：p5 实例 4×100 Gbps → 400 Gbps。声称单 NIC 不够 → ✓ 硬件规格确认。p5en 为 2×200 Gbps。</li>
+</ul>
+
+<ol>
+<li><strong>Two-round dispatch 延迟隐藏</strong>：Figure 11 ablation 显示 private buffer = 24-32 tokens 最优。✓ 投机发送量过小不足以隐藏 10-30 µs routing 交换，过大浪费带宽。</li>
+</ul>
+
+<h3 id="集群专项检查">集群专项检查 <a class="heading-anchor" href="#集群专项检查" aria-label="Link to 集群专项检查">#</a></h3>
 
 <ul>
-<li><strong>Algorithm</strong>: 低 — 不改变算法本身，但P2P语义使disaggregated inference和异步RL成为可行的系统选择</li>
-<li><strong>Kernel</strong>: 中 — MoE dispatch/combine kernel设计（split kernel + host proxy + two-round dispatch）提供了新的kernel-network协同范式</li>
-<li><strong>Framework</strong>: 高 — 可集成到vLLM/SGLang/TensorRT-LLM等推理框架，为disaggregated serving和MoE routing提供底层通信原语；RL框架可直接采用P2P权重更新</li>
-<li><strong>LLM</strong>: 高 — 直接支持MoE模型（DeepSeek-V3/R1, Kimi-K2）的高效部署，使trillion参数级模型的RL训练周期显著缩短</li>
-<li><strong>Agent</strong>: 低 — 间接受益于更快的推理延迟</li>
-<li><strong>Cluster</strong>: 极高 — 打破RDMA vendor lock-in是cluster层面的核心贡献，使AWS EFA等云原生硬件首次可用于MoE推理，TransferEngine的多NIC聚合和NUMA-aware设计直接影响集群网络利用率</li>
+<li><strong>带宽预算</strong>：KvCache 传输 layer-by-layer 与 prefill 重叠 → 网络传输完全被计算隐藏（128K TTFT +1.9%）。RL 权重传输中 RDMA 仅占 2.1% → 带宽足够大，瓶颈在计算侧。✓ 一致。</li>
+</ul>
+
+<ul>
+<li><strong>Tail 延迟模型</strong>：本文未显式建模 p99。Table 3 UVM Watcher latency = 6.3 ± 1.3 µs，标准差小，暗示低尾延迟。MoE 延迟 breakdown (Table 8/9) 提供 p50 数据，未提供 p99。⚠️ 不完整。</li>
+</ul>
+
+<ul>
+<li><strong>Loss / retransmit accounting</strong>：依赖 RC 和 SRD 的内建可靠性（重传由传输层处理）。论文未讨论重传开销对尾延迟的影响。⚠️ 未覆盖。</li>
+</ul>
+
+<ul>
+<li><strong>Scaling formula</strong>：MoE dispatch 为 all-to-all 模式，$O(N)$ 总消息数（每节点向 $N-1$ 个对端发送）。CPU proxy overhead 线性增长（Table 9: post time ~28 µs at EP64）。✓ 与 EP size 线性关系一致。</li>
 </ul>
 
 <hr>
 
-<h2 id="deep-analysis-cluster">Deep Analysis (cluster) <a class="heading-anchor" href="#deep-analysis-cluster" aria-label="Link to deep-analysis-cluster">#</a></h2>
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
 
-<h3 id="1-system-scope">1. System Scope <a class="heading-anchor" href="#1-system-scope" aria-label="Link to 1-system-scope">#</a></h3>
+<h3 id="关键结果-1-p2p-吞吐量-figure-7-8">关键结果 1: P2P 吞吐量 (Figure 7/8) <a class="heading-anchor" href="#关键结果-1-p2p-吞吐量-figure-7-8" aria-label="Link to 关键结果-1-p2p-吞吐量-figure-7-8">#</a></h3>
 
-<p>fabric-lib定位为<strong>通信中间件</strong>，介于NIC驱动（libibverbs/libfabric）和上层LLM框架之间。它不是collective通信库的替代品，而是<strong>补充</strong>——专注于collectives无法高效覆盖的P2P场景。</p>
+<table>
+<tr><th>平台</th><th>Single Write 饱和点</th><th>Paged Write 饱和点</th><th>峰值</th></tr>
+<tr><td>ConnectX-7</td><td>≥16 MiB</td><td>≥32 KiB</td><td>~400 Gbps</td></tr>
+<tr><td>EFA</td><td>≥16 MiB</td><td>≥64 KiB</td><td>~400 Gbps</td></tr>
+</table>
 
-<p>系统边界明确：</p>
+<p>fabric-lib 在两平台略优于 NIXL。EFA paged write 需要更大页以饱和（64K vs 32K），反映 SRD 协议的 per-message overhead 更高。</p>
+
+<h3 id="关键结果-2-rl-权重传输分解-table-5">关键结果 2: RL 权重传输分解 (Table 5) <a class="heading-anchor" href="#关键结果-2-rl-权重传输分解-table-5" aria-label="Link to 关键结果-2-rl-权重传输分解-table-5">#</a></h3>
+
+<table>
+<tr><th>阶段</th><th>耗时</th><th>占比</th></tr>
+<tr><td>full_tensor() (FSDP unsharding)</td><td>518 ms</td><td>42.0%</td></tr>
+<tr><td>跨 rank 同步等待</td><td>357 ms</td><td>28.9%</td></tr>
+<tr><td>H2D memcpy</td><td>184 ms</td><td>14.9%</td></tr>
+<tr><td>量化</td><td>88 ms</td><td>7.1%</td></tr>
+<tr><td>Remaining</td><td>42 ms</td><td>3.4%</td></tr>
+<tr><td>RDMA submit</td><td>26 ms</td><td>2.1%</td></tr>
+<tr><td>Fuse projections</td><td>18 ms</td><td>1.5%</td></tr>
+</table>
+
+<p><strong>关键洞察</strong>：4 阶段流水线成功将 RDMA 传输完全隐藏在 FSDP unsharding 计算之下。实际瓶颈是 PyTorch FSDP 的 <code>full_tensor()</code> 及集群同步。</p>
+
+<h3 id="关键结果-3-moe-decode-端到端-table-6">关键结果 3: MoE Decode 端到端 (Table 6) <a class="heading-anchor" href="#关键结果-3-moe-decode-端到端-table-6" aria-label="Link to 关键结果-3-moe-decode-端到端-table-6">#</a></h3>
+
+<table>
+<tr><th>平台</th><th>方案</th><th>batch=2</th><th>batch=8</th><th>batch=32</th></tr>
+<tr><td>H200 EFA</td><td>fabric-lib</td><td><strong>66.8</strong></td><td><strong>56.5</strong></td><td><strong>32.0</strong></td></tr>
+<tr><td>H200 EFA</td><td>pplx-kernels</td><td>21.0</td><td>11.6</td><td>4.9</td></tr>
+<tr><td>H100 CX-7</td><td>fabric-lib</td><td><strong>78.4</strong></td><td><strong>67.7</strong></td><td><strong>36.1</strong></td></tr>
+<tr><td>H100 CX-7</td><td>DeepEP</td><td>73.8</td><td>65.8</td><td>36.3</td></tr>
+</table>
+
+<p>EFA 上 fabric-lib 3–6× 优于 pplx-kernels（NVSHMEM 基础）；CX-7 上 host proxy 匹配或超越 GPU-initiated DeepEP。这证明 host proxy 开销可被两轮投机策略完全抵消。</p>
+
+<h3 id="关键结果-4-dual-batch-overlap-table-7-efa">关键结果 4: Dual-batch Overlap (Table 7, EFA) <a class="heading-anchor" href="#关键结果-4-dual-batch-overlap-table-7-efa" aria-label="Link to 关键结果-4-dual-batch-overlap-table-7-efa">#</a></h3>
+
+<table>
+<tr><th>batch</th><th>No overlap</th><th>Dual-batch</th><th>增益</th></tr>
+<tr><td>128</td><td>11.8</td><td>13.9</td><td>+18%</td></tr>
+<tr><td>96</td><td>14.3</td><td>16.5</td><td>+15%</td></tr>
+<tr><td>64</td><td>21.3</td><td>21.4</td><td>~0%</td></tr>
+<tr><td>32</td><td>32.0</td><td>30.2</td><td>-6%</td></tr>
+</table>
+
+<p>大 batch 受益于 overlap；小 batch 已经 communication-bound，overlap 开销反而有害。pplx-kernels 在所有 batch 下 overlap 无效或负效果。</p>
+
+<h3 id="关键结果-5-kvcache-transfer-table-4">关键结果 5: KvCache Transfer (Table 4) <a class="heading-anchor" href="#关键结果-5-kvcache-transfer-table-4" aria-label="Link to 关键结果-5-kvcache-transfer-table-4">#</a></h3>
+
+<p>Qwen3-235B，128K 序列，disaggregated 模式 TTFT = 17056ms vs monolithic 16735ms，增量仅 +321ms (+1.9%)。layer-by-layer transfer 通过 UVM watcher + CUDA Graph 兼容性实现了与 chunked prefill 的完全重叠。</p>
+
+<hr>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>步骤</th><th>论点</th><th>支撑证据</th><th>依赖</th></tr>
+<tr><td>1</td><td>LLM 新兴负载需要 P2P 通信而非仅 collective</td><td>disaggregated inference、MoE routing、async RL 均需动态成员、异步、非均匀 buffer</td><td>§1 四条 collective 限制</td></tr>
+<tr><td>2</td><td>现有 P2P 方案被锁定到特定 NIC</td><td>DeepEP→IBGDA, NVSHMEM→EFA退化, Mooncake/NIXL→无EFA</td><td>§1-§2 逐方案分析</td></tr>
+<tr><td>3</td><td>ConnectX RC 与 EFA SRD 共享"可靠无序"语义</td><td>Table 1 特性矩阵交集</td><td>§2.1 RDMA transport分析</td></tr>
+<tr><td>4</td><td>ImmCounter 在无序传输上构建安全的完成通知</td><td>PCIe ordering: data先于imm到达目标设备; host-proxy后续事务排在数据之后</td><td>§3.3 PCIe ordering论证</td></tr>
+<tr><td>5</td><td>TransferEngine 实现跨硬件 400 Gbps 线速</td><td>Figure 7/8: CX-7 和 EFA 均达到线速</td><td>§7.2 microbenchmark</td></tr>
+<tr><td>6</td><td>三个生产系统验证 P2P 比集合通信更优</td><td>KvCache: +1.9% TTFT; RL: 1.3s (100×); MoE: 匹配DeepEP + 首次EFA可用</td><td>§7.3-§7.5</td></tr>
+<tr><td>7</td><td>Host proxy 可匹配甚至超越 GPU-initiated RDMA</td><td>Table 6: CX-7 decode fabric-lib ≥ DeepEP</td><td>§7.5.1 + two-round策略</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>开源地址：https://github.com/perplexityai/pplx-garden/</p>
+
 <ul>
-<li><strong>不管调度</strong>：由上层global scheduler决定prefiller/decoder分配</li>
-<li><strong>不管路由</strong>：由MoE router产生expert assignment</li>
-<li><strong>不管计算</strong>：只负责数据搬运，通过callback/flag与计算协调</li>
-<li><strong>管连接</strong>：透明建立peer连接（ConnectX用UD交换RC握手，EFA无连接）</li>
-<li><strong>管传输</strong>：sharding、load-balancing、completion tracking</li>
+<li><strong>TransferEngine 核心</strong>: Rust 实现，per-DomainGroup worker 线程 NUMA-pinned，lock-free queue 通信</li>
+<li><strong>EFA Domain</strong>: libfabric API, 每 NIC 一个 fabric domain, WR templating</li>
+<li><strong>ConnectX-7 Domain</strong>: libibverbs, 2 RC QPs per peer (Send/Recv 与 WriteImm 分离), WR chaining (up to 4 WRs linked), <code>IBV_ACCESS_RELAXED_ORDERING</code></li>
+<li><strong>UVM Watcher</strong>: GDRCopy polling 线程, CUDA Graph 兼容</li>
+<li><strong>MoE kernels</strong>: host proxy thread + NVLink intra-node + two-round dispatch</li>
 </ul>
 
-<p>与同类系统的定位对比：</p>
-<ul>
-<li>vs NCCL：NCCL面向collectives，fabric-lib面向P2P</li>
-<li>vs NIXL：功能相似但fabric-lib有成熟的EFA支持和生产验证</li>
-<li>vs Mooncake Transfer Engine：Mooncake不支持EFA</li>
-<li>vs DeepEP：DeepEP是specialized MoE kernel，fabric-lib是generic通信库</li>
-</ul>
-
-<h3 id="2-topology-physical-architecture">2. Topology & Physical Architecture <a class="heading-anchor" href="#2-topology-physical-architecture" aria-label="Link to 2-topology-physical-architecture">#</a></h3>
-
-<p><strong>节点内拓扑</strong>：</p>
-<ul>
-<li>Per-GPU DomainGroup worker线程，pin到NUMA node</li>
-<li>每个DomainGroup管理1-4个NIC Domain</li>
-<li>ConnectX-7: 1 NIC/GPU (400 Gbps)</li>
-<li>AWS EFA p5: 4 NIC/GPU (4×100 Gbps = 400 Gbps)</li>
-<li>AWS EFA p5en: 2 NIC/GPU (2×200 Gbps = 400 Gbps)</li>
-<li>NVLink用于节点内MoE token传输</li>
-</ul>
-
-<p><strong>节点间拓扑</strong>：</p>
-<ul>
-<li>全P2P mesh（每个GPU可直接Write到任何远程GPU）</li>
-<li>无需collective world的global membership</li>
-<li>限制：所有peer必须使用相同数量的NIC per GPU</li>
-</ul>
-
-<p><strong>关键设计</strong>：</p>
-<ul>
-<li>NUMA-aware：线程pinning + 内存分配在正确NUMA节点</li>
-<li>多NIC聚合：对EFA尤其关键，透明sharding writes到多个NIC</li>
-<li>GPUDirect RDMA：NIC直接访问GPU memory，无CPU中转</li>
-<li>GDRCopy：低延迟CPU-GPU同步（UVM Watcher的实现基础）</li>
-</ul>
-
-<h3 id="3-collective-communication">3. Collective Communication <a class="heading-anchor" href="#3-collective-communication" aria-label="Link to 3-collective-communication">#</a></h3>
-
-<p>fabric-lib明确<strong>不做collectives</strong>，但论文系统地分析了collectives的局限性：</p>
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
 
 <ol>
-<li><strong>Fixed membership</strong>：NCCL需要预先知道所有参与者，disaggregated inference中prefiller/decoder动态伸缩不可行</li>
-<li><strong>Synchronized initialization</strong>：形成"world"需要全局协调，独立peer连接不可能</li>
-<li><strong>Operation ordering</strong>：所有参与者必须agree on operation sequence</li>
-<li><strong>Shape uniformity</strong>：跨参与者的transfer size必须一致</li>
+<li><strong>Two RC QPs per peer on CX-7</strong>：Send/Recv 与 WriteImm 必须分开 QP，因为 Recv 和 WriteImm completions 均按 posting order 消耗 work requests，混用会互相干扰。这是一个非显而易见的工程约束。</li>
 </ul>
 
-<p>fabric-lib的P2P操作如何替代collectives：</p>
+<ol>
+<li><strong>Two-round speculative dispatch</strong>：第一轮投机发送少量 token 到 private buffer（无需路由信息），与路由信息交换并行；第二轮在路由信息到达后精确 scatter 到 shared buffer。Private buffer 最优 24-32 tokens（Figure 11 ablation），恰好隐藏 10-30 µs 路由交换延迟。</li>
+</ul>
+
+<hr>
+
+<h2 id="§8-system-scope-cluster-specific">§8 System Scope (cluster-specific) <a class="heading-anchor" href="#§8-system-scope-cluster-specific" aria-label="Link to §8-system-scope-cluster-specific">#</a></h2>
+
 <ul>
-<li>AllGather → 每个训练GPU直接Write到推理GPU（RL weight transfer）</li>
-<li>AlltoAll → scatter + barrier（MoE dispatch/combine）</li>
-<li>Broadcast → 不需要，每个sender独立Write</li>
+<li><strong>Scale</strong>: 多节点 pod 级（评测最大 EP=DP=64，即 64 节点 × 8 GPU = 512 GPU；RL 场景 256 training + 128 inference = 384 GPU）</li>
+<li><strong>Workload</strong>: 推理为主（disaggregated inference P2P，MoE all-to-all），兼顾训练→推理异步 RL 权重同步</li>
+<li><strong>Generation</strong>: InfiniBand ConnectX-7 400 Gbps / AWS EFA SRD 4×100 Gbps (p5) 或 2×200 Gbps (p5en)；GPU 为 H100/H200；NVLink 用于 intra-node</li>
 </ul>
 
-<h3 id="4-congestion-traffic-engineering">4. Congestion & Traffic Engineering <a class="heading-anchor" href="#4-congestion-traffic-engineering" aria-label="Link to 4-congestion-traffic-engineering">#</a></h3>
+<hr>
 
-<p><strong>带宽管理</strong>：</p>
-<ul>
-<li>多NIC sharding：单个large write可split到多NIC，paged/scatter/barrier操作自动shard</li>
-<li>WR templating：预填充descriptor公共字段，减少CPU开销</li>
-<li>WR chaining（ConnectX）：最多4个WR链接，减少doorbell ring次数</li>
-<li>Relaxed PCIe ordering（ConnectX）：IBV_ACCESS_RELAXED_ORDERING允许NIC-GPU间乱序PCIe事务，降低延迟</li>
-</ul>
+<h2 id="§9-topology-physical-architecture">§9 Topology & Physical Architecture <a class="heading-anchor" href="#§9-topology-physical-architecture" aria-label="Link to §9-topology-physical-architecture">#</a></h2>
 
-<p><strong>拥塞控制</strong>：</p>
-<ul>
-<li>论文<strong>未讨论</strong>显式拥塞控制——依赖底层协议（RC的credit-based flow control, SRD的自有机制）</li>
-<li>MoE场景：通过barrier同步确保不会over-write receive buffer</li>
-<li>RL场景：one-sided Write，接收端无感知，无back-pressure机制</li>
-<li>潜在风险：大规模all-to-all（EP128+）时可能出现incast</li>
-</ul>
-
-<p><strong>流量工程</strong>：</p>
-<ul>
-<li>MoE两轮dispatch策略：先小量投机发送隐藏路由延迟，再按路由精确scatter</li>
-<li>NVLink vs RDMA分工：节点内用NVLink（带宽更高、延迟更低），节点间用RDMA</li>
-<li>NVLink写序策略：先signal host再写NVLink peer，避免memory barrier阻塞关键路径</li>
-</ul>
-
-<h3 id="5-storage-i-o-architecture">5. Storage & I/O Architecture <a class="heading-anchor" href="#5-storage-i-o-architecture" aria-label="Link to 5-storage-i-o-architecture">#</a></h3>
-
-<p><strong>内存管理</strong>：</p>
-<ul>
-<li>RDMA memory registration：MrDesc可序列化交换给peer，MrHandle本地使用</li>
-<li>GPU memory + host memory统一注册</li>
-<li>KvCache分页：128 tokens/page, 32KB/page，page indices间接引用</li>
-<li>MoE buffer：dispatch receive buffer上限 N·T·max(R, E/N)，combine复用dispatch buffer</li>
-<li>RL场景：GPU memory watermark控制in-flight tasks避免OOM</li>
-</ul>
-
-<p><strong>I/O路径</strong>：</p>
-<ul>
-<li>Zero-copy: Write操作直接从source GPU DMA到destination GPU</li>
-<li>UVM Watcher: CUDA Graph兼容的GPU→CPU通知（GDRCopy polling）</li>
-<li>GDRCopy: 用于ImmCounter同步、UVM polling、host proxy与GPU的低延迟通信</li>
-</ul>
-
-<h3 id="6-performance-analysis">6. Performance Analysis <a class="heading-anchor" href="#6-performance-analysis" aria-label="Link to 6-performance-analysis">#</a></h3>
-
-<h4 id="6a-key-metrics">6a. Key Metrics <a class="heading-anchor" href="#6a-key-metrics" aria-label="Link to 6a-key-metrics">#</a></h4>
+<div class="mermaid">
+flowchart TB
+    subgraph CX7_Node["H100 Node (ConnectX-7)"]
+        direction LR
+        G0["GPU 0"] --- NIC0["CX-7\n400G"]
+        G1["GPU 1"] --- NIC0
+        G2["GPU 2"] --- NIC0
+        G3["GPU 3"] --- NIC0
+        G4["GPU 4"] --- NIC0
+        G5["GPU 5"] --- NIC0
+        G6["GPU 6"] --- NIC0
+        G7["GPU 7"] --- NIC0
+        G0 ---|NVLink| G1 & G2 & G3 & G4 & G5 & G6 & G7
+    end
+    
+    subgraph EFA_Node["H200 Node (AWS p5, EFA)"]
+        direction LR
+        E0["GPU 0"] --- ENIC0["EFA\n100G"] & ENIC1["EFA\n100G"]
+        E1["GPU 1"] --- ENIC0 & ENIC1
+        E2["GPU 2"] --- ENIC2["EFA\n100G"] & ENIC3["EFA\n100G"]
+        E3["GPU 3"] --- ENIC2 & ENIC3
+        E4["GPU 4"] --- ENIC0 & ENIC1
+        E5["GPU 5"] --- ENIC0 & ENIC1
+        E6["GPU 6"] --- ENIC2 & ENIC3
+        E7["GPU 7"] --- ENIC2 & ENIC3
+    end
+</div>
 
 <table>
-<tr><th>Metric</th><th>Value</th><th>Context</th></tr>
-<tr><td>Peak throughput</td><td>400 Gbps</td><td>Both CX-7 and EFA</td></tr>
-<tr><td>Single Write saturation</td><td>≥16 MiB</td><td>Both platforms</td></tr>
-<tr><td>Paged Write saturation</td><td>32-64 KiB</td><td>CX-7 32K, EFA 64K</td></tr>
-<tr><td>UVM Watcher latency (Rust)</td><td>6.3±1.3 µs avg</td><td>CUDA Graph mode</td></tr>
-<tr><td>RL weight transfer</td><td>1.3 s</td><td>1T params, 256→128 GPUs</td></tr>
-<tr><td>MoE dispatch+combine (EP64 CX-7)</td><td>~100 µs total</td><td>128 tokens decode</td></tr>
-<tr><td>MoE decode throughput (EP64 CX-7)</td><td>78.4 tok/s</td><td>DeepSeek-V3, batch=2</td></tr>
-<tr><td>MoE decode throughput (EP64 EFA)</td><td>66.8 tok/s</td><td>DeepSeek-V3, batch=2</td></tr>
-<tr><td>KvCache TTFT overhead</td><td><2%</td><td>128K seqlen, Qwen3-235B</td></tr>
+<tr><th>属性</th><th>H100 CX-7 集群</th><th>H200 EFA 集群 (p5)</th></tr>
+<tr><td>GPU/node</td><td>8</td><td>8</td></tr>
+<tr><td>NIC/node</td><td>8 (1 per GPU)</td><td>32 (4 per GPU)</td></tr>
+<tr><td>单 NIC 带宽</td><td>400 Gbps</td><td>100 Gbps</td></tr>
+<tr><td>聚合带宽/GPU</td><td>400 Gbps</td><td>400 Gbps (4 NIC)</td></tr>
+<tr><td>传输协议</td><td>RC (有序可靠)</td><td>SRD (无序可靠)</td></tr>
+<tr><td>GPUDirect RDMA</td><td>✓</td><td>✓</td></tr>
+<tr><td>GPU-initiated (IBGDA)</td><td>✓</td><td>✗</td></tr>
+<tr><td>Intra-node</td><td>NVLink</td><td>NVLink</td></tr>
 </table>
 
-<h4 id="6b-bottleneck-analysis">6b. Bottleneck Analysis <a class="heading-anchor" href="#6b-bottleneck-analysis" aria-label="Link to 6b-bottleneck-analysis">#</a></h4>
+<p><strong>关键拓扑约束</strong>：fabric-lib 要求所有 peer 每 GPU NIC 数相同（用于分片/负载均衡）。EFA 多 NIC 聚合对于达到线速是必要的。</p>
 
-<p><strong>RL Weight Transfer</strong>：</p>
+<hr>
+
+<h2 id="§10-collective-communication">§10 Collective Communication <a class="heading-anchor" href="#§10-collective-communication" aria-label="Link to §10-collective-communication">#</a></h2>
+
 <ul>
-<li>瓶颈不在网络（RDMA submit仅26ms/2.1%），而在full_tensor() FSDP unsharding（518ms/42%）和跨rank同步（357ms/29%）</li>
-<li>流水线有效隐藏RDMA传输，仅42ms RDMA时间未被overlap</li>
+<li><strong>使用的集合操作</strong>: 无。fabric-lib 明确定位为 P2P 补充而非替代 collectives。RL 场景中最后的 global barrier 使用 GLOO over Ethernet。</li>
+<li><strong>P2P 操作</strong>: Send/Recv (RPC 式)、WriteImm (单写/分页写/scatter/barrier)</li>
+<li><strong>算法</strong>: 无 ring/tree 拓扑 — 纯点对点 direct RDMA Write</li>
+<li><strong>层级</strong>: intra-node 用 NVLink (MoE)；inter-node 用 RDMA WriteImm</li>
+<li><strong>GPU-direct 路径</strong>: ConnectX-7 使用 GPUDirect RDMA (host-initiated，非 IBGDA)；EFA 使用 GPUDirect RDMA</li>
+<li><strong>库</strong>: 自研 fabric-lib (Rust)；底层 libibverbs (CX-7) / libfabric (EFA)</li>
 </ul>
 
-<p><strong>MoE Decode</strong>：</p>
+<hr>
+
+<h2 id="§11-congestion-traffic-engineering">§11 Congestion & Traffic Engineering <a class="heading-anchor" href="#§11-congestion-traffic-engineering" aria-label="Link to §11-congestion-traffic-engineering">#</a></h2>
+
+<p>论文<strong>未显式讨论</strong>拥塞控制，这是一个值得注意的缺失：</p>
+
 <ul>
-<li>ConnectX-7: 在EP64时proxy CPU开销（enqueue ~1µs/peer）开始显现，dispatch比DeepEP慢</li>
-<li>EFA: 256KiB write仅达54 Gbps（CX-7的47%），message size不足以saturate是主要瓶颈</li>
-<li>NVLink: 节点内传输高效，但在dispatch中因routing信息缺失只能push到private buffer</li>
+<li>MoE dispatch 在 EP=64 时产生大量并发 all-to-all 式流量</li>
+<li>依赖底层传输协议内建机制：ConnectX RC 的 link-level flow control；EFA SRD 的内建拥塞管理</li>
+<li>无 ECN/DCQCN/HPCC 参数讨论</li>
+<li>负载均衡：fabric-lib 的 multi-NIC 分片自然分散流量（round-robin across Domains），但无 flowlet/packet-spray 讨论</li>
+<li>无死锁避免讨论（RC 点对点不需要 PFC 优先级管理）</li>
 </ul>
 
-<p><strong>KvCache Transfer</strong>：</p>
+<hr>
+
+<h2 id="§12-fault-tolerance-reliability">§12 Fault Tolerance & Reliability <a class="heading-anchor" href="#§12-fault-tolerance-reliability" aria-label="Link to §12-fault-tolerance-reliability">#</a></h2>
+
 <ul>
-<li>非瓶颈——计算完全隐藏传输延迟</li>
-<li>TTFT增加主要来自inference engine的额外decode pass，不是通信</li>
+<li><strong>传输可靠性</strong>: RC 和 SRD 均提供可靠传输（丢包由传输层重传）</li>
+<li><strong>KvCache 错误处理</strong>: 心跳检测通信故障；decoder 超时取消；per-request cancellation token 停止后续传输并等待 pending 操作完成后发送确认</li>
+<li><strong>RL 权重传输</strong>: 全局 barrier 通过 GLOO (TCP/Ethernet) 实现同步，隐含对断联的容忍（GLOO 会超时）</li>
+<li><strong>无量化</strong>: 论文未量化 time-to-detect / time-to-recover</li>
 </ul>
 
-<h4 id="6c-comparison-table">6c. Comparison Table <a class="heading-anchor" href="#6c-comparison-table" aria-label="Link to 6c-comparison-table">#</a></h4>
+<hr>
+
+<h2 id="§13-cost-efficiency">§13 Cost & Efficiency <a class="heading-anchor" href="#§13-cost-efficiency" aria-label="Link to §13-cost-efficiency">#</a></h2>
+
+<p>论文未提供成本数据。隐含信息：</p>
+
+<ul>
+<li>EFA p5 实例使用 4 个 100G NIC/GPU 达到与单 CX-7 400G 同等带宽 → 光学/NIC 成本不同但被 AWS 抽象</li>
+<li>fabric-lib 的价值命题之一是避免 vendor lock-in → 允许在成本更优的平台间迁移</li>
+</ul>
+
+<hr>
+
+<h2 id="§14-deployment-context-实践上下文">§14 Deployment Context (实践上下文) <a class="heading-anchor" href="#§14-deployment-context-实践上下文" aria-label="Link to §14-deployment-context-实践上下文">#</a></h2>
+
+<ul>
+<li><strong>Deployer profile</strong>: Perplexity AI（specialized AI cloud / inference provider）。生产部署在 AWS (EFA) 和自有/租赁 CX-7 集群。</li>
+<li><strong>Workload mix</strong>: 推理为主（disaggregated serving, MoE decode），RL fine-tuning 为辅（异步权重同步）。</li>
+<li><strong>Greenfield vs retrofit</strong>: 库层抽象，可叠加在现有集群上（不需改拓扑/交换机）。仅需已有 RDMA 能力（CX-7 或 EFA）。</li>
+<li><strong>Failure model</strong>: 论文未量化，但 KvCache 的心跳+取消机制暗示面向中等规模（数百 GPU）的偶发故障。</li>
+<li><strong>Vendor dependency</strong>: 明确去绑定。支持 NVIDIA ConnectX-7 和 AWS EFA。论文讨论 eRDMA / Broadcom / AMD 未来扩展。</li>
+</ul>
+
+<hr>
+
+<h2 id="§15-scalability-future-proofing">§15 Scalability / Future-proofing <a class="heading-anchor" href="#§15-scalability-future-proofing" aria-label="Link to §15-scalability-future-proofing">#</a></h2>
+
+<ul>
+<li><strong>EP scale 限制</strong>: CPU proxy overhead 随 EP 线性增长 (Table 9: ~28 µs at EP64)。EP=128+ 时 proxy 开销可能成为新瓶颈。</li>
+<li><strong>GB200 NVL72</strong>: 72 GPU NVLink domain 使 MoE intra-rack 无需 RDMA，但 inter-rack P2P 仍需。</li>
+<li><strong>GPU-initiated RDMA on EFA</strong>: p5en 实例可能支持 → fabric-lib 可从 host proxy 切换至 GPU-initiated，进一步降低延迟。</li>
+<li><strong>800G+ NIC</strong>: 下一代 NIC 可能单端口即可覆盖目前多 NIC 聚合场景，简化 Domain 分片逻辑。</li>
+<li><strong>更多 RC 兼容 NIC</strong>: eRDMA、Broadcom、AMD — RC 兼容即可适配。</li>
+</ul>
+
+<hr>
+
+<h2 id="§16-software-→-hardware-reverse-implication">§16 Software → Hardware Reverse Implication <a class="heading-anchor" href="#§16-software-→-hardware-reverse-implication" aria-label="Link to §16-software-→-hardware-reverse-implication">#</a></h2>
+
+<p>fabric-lib 的设计隐含以下对 NIC/fabric 硬件的期望：</p>
 
 <table>
-<tr><th>Scenario</th><th>fabric-lib</th><th>DeepEP</th><th>pplx-kernels (NVSHMEM)</th><th>NIXL</th></tr>
-<tr><td>MoE Decode EP64 CX-7</td><td><strong>78.4 tok/s</strong></td><td>73.8 tok/s</td><td>N/A</td><td>N/A</td></tr>
-<tr><td>MoE Decode EP64 EFA</td><td><strong>66.8 tok/s</strong></td><td>N/A (no EFA)</td><td>21.0 tok/s</td><td>N/A</td></tr>
-<tr><td>MoE Dispatch latency EP32 CX-7</td><td><strong>~45 µs</strong></td><td>~50 µs</td><td>~350 µs</td><td>N/A</td></tr>
-<tr><td>Single Write 32MiB CX-7</td><td>378 Gbps</td><td>N/A</td><td>N/A</td><td>~370 Gbps</td></tr>
-<tr><td>Single Write 32MiB EFA</td><td>336 Gbps</td><td>N/A</td><td>N/A</td><td>~330 Gbps</td></tr>
-<tr><td>RL 1T weight transfer</td><td><strong>1.3 s</strong></td><td>N/A</td><td>N/A</td><td>N/A</td></tr>
-<tr><td>EFA support</td><td>✓</td><td>✗</td><td>Degraded</td><td>Preliminary</td></tr>
-<tr><td>CX-7 support</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+<tr><th>软件需求</th><th>硬件期望</th></tr>
+<tr><td>ImmCounter 正确性</td><td>NIC 必须保证 WriteImm data 先于 immediate 到达 PCIe</td></tr>
+<tr><td>多 NIC 聚合透明化</td><td>期望 NIC 支持 multi-path load-balance 或至少不干扰软件层 round-robin</td></tr>
+<tr><td>Host proxy 低延迟</td><td>期望 NIC doorbell 和 CQ poll 延迟极低（sub-µs）</td></tr>
+<tr><td>GPUDirect RDMA</td><td>必须支持 NIC 直接访问 GPU memory via PCIe BAR</td></tr>
+<tr><td><code>IBV_ACCESS_RELAXED_ORDERING</code></td><td>CX-7 需支持 PCIe 乱序写以提升吞吐</td></tr>
+<tr><td>无序可靠传输</td><td>新 NIC 应暴露 reliable-unordered mode（不强制排序开销）</td></tr>
+<tr><td>最终消除 host proxy</td><td>期望 EFA 类 NIC 支持 GPU-initiated RDMA (IBGDA)</td></tr>
+<tr><td>Per-flow 不阻塞</td><td>WriteImm 到不同 peer 应互不阻塞（connectionless / parallel QP）</td></tr>
 </table>
 
-<h3 id="7-fault-tolerance-reliability">7. Fault Tolerance & Reliability <a class="heading-anchor" href="#7-fault-tolerance-reliability" aria-label="Link to 7-fault-tolerance-reliability">#</a></h3>
+<p><strong>显著缺失</strong>：论文未要求 in-network reduction (SHARP)、P4 可编程交换、或硬件加速 collective — 这与其"P2P 补充 collective"定位一致。</p>
 
-<p><strong>KvCache传输的容错</strong>：</p>
+<hr>
+
+<h2 id="pre-save-self-check">Pre-Save Self-Check <a class="heading-anchor" href="#pre-save-self-check" aria-label="Link to pre-save-self-check">#</a></h2>
+
 <ul>
-<li>Heartbeat检测prefiller/decoder间传输层故障</li>
-<li>Decoder发起的cancellation需要prefiller显式确认（防止remote write覆盖已释放的KV pages）</li>
-<li>Prefiller无响应时decoder超时取消请求</li>
-<li>Per-request cancellation token：停止未来传输 + 等待所有pending操作完成</li>
-</ul>
-
-<p><strong>传输层可靠性</strong>：</p>
-<ul>
-<li>底层依赖RC/SRD的可靠交付保证</li>
-<li>ImmCounter提供应用层完成确认</li>
-<li>论文<strong>未讨论</strong>NIC故障恢复、网络分区、silent data corruption等问题</li>
-</ul>
-
-<p><strong>局限</strong>：</p>
-<ul>
-<li>无冗余传输或纠错机制</li>
-<li>单NIC故障可能导致DomainGroup吞吐下降</li>
-<li>缺乏checkpointing或传输断点续传</li>
-</ul>
-
-<h3 id="8-cost-efficiency">8. Cost & Efficiency <a class="heading-anchor" href="#8-cost-efficiency" aria-label="Link to 8-cost-efficiency">#</a></h3>
-
-<p><strong>资源利用效率</strong>：</p>
-<ul>
-<li>全集群NIC带宽利用（RL场景vs collective的Rank0瓶颈）</li>
-<li>多NIC聚合达峰值带宽（EFA 4×100Gbps → 400Gbps）</li>
-<li>计算-通信overlap：KvCache层级流水线、RL 4阶段流水线、MoE dual-batch</li>
-<li>CPU overhead可控：RDMA submit 23µs/call，UVM callback 6.3µs avg</li>
-</ul>
-
-<p><strong>对总拥有成本的影响</strong>：</p>
-<ul>
-<li>打破vendor lock-in → 可选择更具性价比的云实例（如AWS EFA vs ConnectX集群）</li>
-<li>RL权重更新100×加速 → 训练GPU空闲等待时间大幅减少</li>
-<li>Disaggregated inference → prefiller/decoder独立弹性伸缩，提高资源利用率</li>
-<li>EFA MoE可行 → 首次使P5实例可用于DeepSeek-V3级MoE模型的实时推理</li>
-</ul>
-
-<h3 id="9-infrastructure-impact">9. Infrastructure Impact <a class="heading-anchor" href="#9-infrastructure-impact" aria-label="Link to 9-infrastructure-impact">#</a></h3>
-
-<p><strong>对集群网络基础设施的根本影响</strong>：</p>
-<p>fabric-lib证明了一个重要的架构论点：<strong>LLM系统不应该只有collective通信</strong>。P2P primitives是现代LLM workload（disaggregated inference, MoE, RL）的必要基础设施组件。</p>
-
-<p><strong>对云provider的影响</strong>：</p>
-<ul>
-<li>AWS EFA首次在MoE推理中可用 → 扩大EFA的适用场景</li>
-<li>降低从on-prem（ConnectX）迁移到云（EFA）的barrier</li>
-<li>可能推动云provider改进自有NIC对RDMA标准操作的支持</li>
-</ul>
-
-<p><strong>对框架生态的影响</strong>：</p>
-<ul>
-<li>vLLM/SGLang可集成fabric-lib实现disaggregated serving</li>
-<li>RL框架（OpenRLHF, veRL, NeMo-RL）可采用P2P权重更新</li>
-<li>可能催生更多基于P2P通信的新系统模式</li>
-</ul>
-
-<h3 id="10-scalability-future">10. Scalability & Future <a class="heading-anchor" href="#10-scalability-future" aria-label="Link to 10-scalability-future">#</a></h3>
-
-<p><strong>当前规模</strong>：</p>
-<ul>
-<li>验证到64 GPU（8节点×8 GPU）MoE</li>
-<li>RL场景256 training + 128 inference = 384 GPU</li>
-<li>未测试更大规模（如1000+ GPU）</li>
-</ul>
-
-<p><strong>扩展性瓶颈</strong>：</p>
-<ul>
-<li>Host proxy CPU开销随EP线性增长（EP64已显现）</li>
-<li>ConnectX RC每peer需2个QP → QP数量O(N²)，大规模可能成为问题</li>
-<li>Barrier latency随参与者增加</li>
-</ul>
-
-<p><strong>未来方向（论文提到）</strong>：</p>
-<ul>
-<li>GPU-Initiated RDMA：等p5en等实例成熟后可切换到GDA，进一步降低延迟</li>
-<li>GB200 NVL72：宽NVLink domain可能使RDMA在MoE场景不再必要</li>
-<li>更多NIC支持：eRDMA、Broadcom、AMD等RC兼容NIC</li>
-</ul>
-
-<p><strong>未来方向（个人判断）</strong>：</p>
-<ul>
-<li>需要解决大规模all-to-all的incast问题</li>
-<li>可能需要adaptive sharding策略应对网络拥塞</li>
-<li>Multi-tenant隔离和安全性将成为云部署的必要特性</li>
-<li>与UCCL等传输层优化的结合可能进一步提升性能</li>
+<li>[x] §1-§7 (base) all present and non-empty</li>
+<li>[x] §8-§16 (cluster-specific) all present</li>
+<li>[x] 无 <code>[内容未抓取]</code></li>
+<li>[x] §4 has 6+ checks (6 base + 4 cluster-specific)</li>
+<li>[x] §6 论证链 ≥3-step numbered table (7 steps)</li>
+<li>[x] §7 has code citation (open-source URL + implementation details)</li>
+<li>[x] No figure_files provided → Mermaid diagrams used for architecture</li>
+<li>[x] KaTeX: buffer formula uses <code>$...$</code> inline math</li>
+<li>[x] Swap-entity-name test: all paragraphs reference fabric-lib-specific content</li>
+<li>[x] No skill-doc citations, rule-tag acronyms, or self-referential format descriptions</li>
 </ul>
 
 </div>

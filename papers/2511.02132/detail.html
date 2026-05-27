@@ -196,286 +196,264 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Optimizing Attention on GPUs by Exploiting GPU Architectural NUMA Effects</h1>
-<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2511.02132</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention</span><span class="tag">NUMA</span><span class="tag">MI300X</span><span class="tag">chiplet</span><span class="tag">L2-cache</span><span class="tag">swizzling</span></div>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2511.02132</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention</span><span class="tag">NUMA</span><span class="tag">chiplet-GPU</span><span class="tag">workgroup-scheduling</span><span class="tag">cache-locality</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/kernel.html">← kernel Survey</a>
+<a href="/papers/2511.02132.html">← Synthesis</a>
+<a href="/overview/algorithm.html">← algorithm Survey</a>
 <a href="https://arxiv.org/abs/2511.02132" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
+
 <h1 id="optimizing-attention-on-gpus-by-exploiting-gpu-architectural-numa-effects">Optimizing Attention on GPUs by Exploiting GPU Architectural NUMA Effects <a class="heading-anchor" href="#optimizing-attention-on-gpus-by-exploiting-gpu-architectural-numa-effects" aria-label="Link to optimizing-attention-on-gpus-by-exploiting-gpu-architectural-numa-effects">#</a></h1>
-<blockquote>
-Mansi Choudhary, Karthik Sangaiah, Sonali Singh, Muhammad Osama, Lisa Wu Wills, Ganesh Dasika | 2025-11 | https://arxiv.org/abs/2511.02132
-Category: kernel | Tags: attention, NUMA, MI300X, chiplet, L2-cache, swizzling, FlashAttention
-Read: 2026-04-16
-</blockquote>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-<p>在 AMD MI300X 的多 chiplet (8 XCD) 架构上，识别出 FlashAttention2 的 workgroup 调度未考虑 NUMA 效应导致 L2 cache 失效，提出 <strong>Swizzled Head-first Mapping</strong> 策略——将同一 attention head 的所有 workgroups 映射到同一 XCD，使 K/V 数据在单 XCD 的 L2 cache 中被复用。以极小的代码改动（~15 行 swizzle 逻辑）实现最高 <strong>50% 性能提升</strong>和 <strong>80-97% L2 cache hit rate</strong>。</p>
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
-<p>现代 AI GPU 正从单 die 向多 chiplet 架构演进（MI300X 8 XCD、Blackwell 双 die、Rubin Ultra 四 die），引入了显著的 NUMA（Non-Uniform Memory Access）效应：不同 XCD 拥有独立的 L2 cache 和 HBM 控制器，跨 XCD 访问延迟和带宽显著劣化。然而，现有的 FlashAttention2 实现假设 GPU 内存访问是 uniform 的，其 workgroup 调度策略（round-robin 分配到各 XCD）将同一 attention head 的 workgroups 分散到不同 XCD，导致 K/V 数据在每个 XCD 的 L2 cache 中只有部分命中，产生大量冗余 HBM 访问。</p>
-
-<p>本文提出 Swizzled Head-first Mapping：将 attention 的计算网格按 head-first 顺序迭代，并通过 swizzle 逻辑将同一 head 的所有 row blocks 强制映射到同一 XCD。这样，每个 XCD 在某一时刻只服务一个 Attention Compute Cluster (ACC)，K/V 数据只需从 HBM 加载一次到该 XCD 的 L2 cache 中，被该 head 的所有 workgroups 共享复用。</p>
-
-<p>在 MI300X 上的实验覆盖 MHA（DeepSeek-V3 prefill, H=128）和 GQA（Llama 3 系列），Swizzled Head-first 在 MHA H=128 / seqlen=128K 下比传统 Block-first 映射快 <strong>50%</strong>，L2 cache hit rate 从 <strong>~1%</strong> 提升到 <strong>90-97%</strong>。Forward 和 backward pass 均有效。</p>
-
-<h2 id="逻辑故事还原（约束推导型）">逻辑故事还原（约束推导型） <a class="heading-anchor" href="#逻辑故事还原（约束推导型）" aria-label="Link to 逻辑故事还原（约束推导型）">#</a></h2>
-
-<h3 id="时代定位">时代定位 <a class="heading-anchor" href="#时代定位" aria-label="Link to 时代定位">#</a></h3>
-<p>2024-2025年，GPU 架构正经历从单 die 到多 chiplet 的范式转换。A100/H100 是单 die 统一 L2 cache，所有 CU 对 L2 的访问是 uniform 的。MI300X（8 XCD chiplet）和 Blackwell（2 die）打破了这个假设——L2 cache 被物理分散到各 die/XCD 中，NUMA 效应出现。GEMM 领域已经通过 CTA swizzling（Tensile, hipBLASLt）解决了这个问题（L2 hit rate 从 43% → 92%），但 <strong>attention kernel 领域还没有人系统性地解决 NUMA-aware 调度问题</strong>。本文将 GEMM swizzling 的思路迁移到 attention 领域，是一个 "低垂但重要的果实"。</p>
-
-<h3 id="约束推导（为何不可x？）">约束推导（为何不可X？） <a class="heading-anchor" href="#约束推导（为何不可x？）" aria-label="Link to 约束推导（为何不可x？）">#</a></h3>
-
-<p><strong>为何不可继续用 Naive Block-first (round-robin) 调度？</strong></p>
-<p>→ Round-robin 将 wg0 分到 XCD0, wg1 分到 XCD1, ...，同一 head 的 workgroups 被均匀打散到 8 个 XCD。每个 XCD 只服务该 head 的 1/8 row blocks，但需要完整的 K/V 数据。因此 K/V 在每个 XCD 的 L2 cache 中只有 1/8 的复用率，其余 7/8 是冗余加载。当 head 数多（H≥64）、序列长（≥32K）时，K/V 数据远超单 XCD 的 4MB L2 cache，命中率暴跌至 <strong>~1%</strong>（Figure 13）。</p>
-
-<p><strong>为何不可只用 Swizzled Block-first？</strong></p>
-<p>→ Swizzled Block-first 在 GQA（KV heads 数 = XCD 数 = 8）时效果好（每个 GQA group 恰好映射到一个 XCD），但在 <strong>MHA</strong>（如 DeepSeek-V3 的 H=128）时，128 个独立 head 需要 128 个 ACC，每个 XCD 同时服务 128/8 = 16 个 ACC，L2 cache 仍被 16 个不同 head 的 K/V 数据竞争，命中率在长序列下暴跌。</p>
-
-<p><strong>为何不可只用 Naive Head-first (无 swizzle)？</strong></p>
-<p>→ Head-first 迭代顺序对了（先完成一个 head 的所有 blocks 再到下一个 head），但 round-robin XCD 分配仍将同一 head 的 blocks 打散到所有 XCD。在短序列时尚可（K/V 小，各 XCD 的 L2 都装得下），但长序列（128K）时 K/V 超出单 XCD L2，打散导致命中率从 90% 跌至 <strong>40-60%</strong>（Figure 13）。</p>
-
-<p><strong>为何 NVIDIA Blackwell 不需要这个优化？</strong></p>
-<p>→ Blackwell 在硬件层面维持了两个 die 之间的 full cache coherency（Figure 1b），对软件隐藏了 NUMA 效应。而 MI300X 显式暴露了 NUMA 特性，<strong>需要软件层面的 NUMA-aware 调度</strong>。这是一个重要的 AMD vs NVIDIA 架构差异：NVIDIA 选择硬件兜底，AMD 选择给程序员更多控制。</p>
-
-<table>
-<tr><th>Mapping Strategy</th><th>MHA H=128 128K Perf</th><th>L2 Hit Rate</th><th>适用场景</th></tr>
-<tr><td>Naive Block-first</td><td>~65%</td><td>~1%</td><td>不推荐</td></tr>
-<tr><td>Swizzled Block-first</td><td>~76%</td><td>~10%</td><td>GQA (groups=XCDs)</td></tr>
-<tr><td>Naive Head-first</td><td>~90%</td><td>40-60%</td><td>短序列</td></tr>
-<tr><td><strong>Swizzled Head-first</strong></td><td><strong>100% (baseline)</strong></td><td><strong>90-97%</strong></td><td><strong>通用最优</strong></td></tr>
-</table>
-
-<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
-<p><strong>ACC (Attention Compute Cluster) 到 XCD 的 1:1 映射</strong>。核心 insight 极其简单——"同一 head 的所有 blocks 放在同一 XCD"——但需要精确的 swizzle 逻辑来在 round-robin 硬件调度器之上实现这个映射。Figure 11 的 ~15 行 Triton 代码是全部实现。</p>
-
-<p>真正的壁垒不在代码，而在 <strong>对 MI300X 内存层次结构的深度理解</strong>：(1) L2 cache 是 per-XCD 私有的 4MB；(2) 硬件 WG 调度器使用 chunked round-robin（chunk=1）；(3) 这个调度策略是 driver-level、跨代 GPU 可能变化的；(4) 因此 swizzle 必须做成 kernel-level 的 mutable 逻辑而非依赖固定的硬件行为。</p>
-
-<h3 id="质疑假设">质疑假设 <a class="heading-anchor" href="#质疑假设" aria-label="Link to 质疑假设">#</a></h3>
-<ol>
-<li><strong>MI300X 的 chunk=1 round-robin 调度假设</strong>：论文指出这是 "current hardware" 的行为，未来 driver 更新可能改变。如果 AMD 在驱动中实现了更智能的 NUMA-aware 调度，这个优化可能变得不必要。</li>
-<li><strong>L2 cache capacity 假设</strong>：方法的有效性取决于 "单个 ACC 的 K/V 数据能装入单 XCD 的 L2 cache (4MB)"。对于 HEAD_DIM=128, seqlen=128K: K 或 V 的大小 = 128K × 128 × 2B(FP16) = 32MB，远超 4MB L2。但 FA2 的 tiled access pattern 确保了在任一时刻只有 active tiles 在 L2 中，而非全部 K/V。这个隐含假设是否在所有 tile 大小和序列长度下都成立，论文未详细分析。</li>
-<li><strong>Forward-only 评估为主</strong>：Backward pass 仅在 Section 4.6 简要评估（~10% speedup），远低于 forward 的 50%。论文暗示 backward pass 有其他瓶颈（scalar operations）限制了收益。</li>
-<li><strong>仅在 MI300X 上验证</strong>：MI350X (CDNA4) 有不同的 chiplet 拓扑和 L2 大小，结论是否迁移？Blackwell 因硬件 coherency 不需要此优化，但 Rubin Ultra (4 die) 可能重新需要。</li>
-</ul>
-
-<h3 id="设计绑定批判">设计绑定批判 <a class="heading-anchor" href="#设计绑定批判" aria-label="Link to 设计绑定批判">#</a></h3>
-<ul>
-<li><strong>绑定 AMD MI300X 架构</strong>: 核心优化依赖 8 XCD + per-XCD L2 cache 的特定拓扑。迁移到 MI350X 需要调整 NUM_XCD 参数；不适用于 NVIDIA GPU（Blackwell 硬件 coherent）</li>
-<li><strong>绑定 Triton 实现</strong>: 代码用 Triton 编写，依赖 <code>tl.program_id</code> 和 swizzle 逻辑。CUDA/HIP native kernel 需要不同的 swizzle 实现</li>
-<li><strong>绑定 FA2 算法结构</strong>: Swizzle 逻辑与 FA2 的 grid 结构（batch × heads × blocks）紧耦合。其他 attention 算法（FA3、PagedAttention、MLA）需要重新设计 swizzle mapping</li>
-<li><strong>绑定 head 数 ≥ XCD 数</strong>: 当 H < 8（如 MQA with H_Q=1），每个 head 的 blocks 不足以填满一个 XCD，方法退化</li>
-</ul>
-
-<h3 id="生态影响追踪">生态影响追踪 <a class="heading-anchor" href="#生态影响追踪" aria-label="Link to 生态影响追踪">#</a></h3>
-<ul>
-<li><strong>AITER</strong>: AMD 的高性能 AI 算子仓库已部署了 Swizzled Block-first (Section 3.2.2)，本文的 Swizzled Head-first 是更优方案，可能被 AITER 后续采纳</li>
-<li><strong>Triton</strong>: 论文在 Triton 上实现，代码改动极小，可直接 upstream 到 Triton 的 FA 默认实现</li>
-<li><strong>与 2511.02168 (Three Taxes) 的关联</strong>: 同为 AMD GPU inference 优化，Three Taxes 解决 inter-GPU 通信融合，本文解决 intra-GPU NUMA 调度。两者在同一集群上互补</li>
-<li><strong>CDNA4/MI350X 适用性</strong>: MI350X 保持了 chiplet 架构但 XCD 数和 L2 大小可能不同，核心方法论（ACC-to-XCD mapping）仍适用</li>
-</ul>
-
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
-<ul>
-<li>MI300X 上 FA2 默认调度导致 L2 cache hit rate 在高 head 数 + 长序列下暴跌至 ~1%</li>
-<li>Swizzled Head-first Mapping 将 L2 hit rate 提升到 80-97%，实现最高 50% 性能提升</li>
-<li>MHA (H=128) 比 GQA (H_KV=8) 收益更大——GQA 因 KV groups=XCD 数而天然 cache 友好</li>
-<li>Forward pass 收益显著 (50%), backward pass 收益有限 (~10%)</li>
-<li>DeepSeek-V3 prefill (MHA H=128, D=56) 是最佳 case study</li>
-</ul>
-
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
-
-<h3 id="figure-1-gpu-architecture-evolution">Figure 1: GPU Architecture Evolution <a class="heading-anchor" href="#figure-1-gpu-architecture-evolution" aria-label="Link to figure-1-gpu-architecture-evolution">#</a></h3>
-<p><img src="/assets/2511.02132/fig1-gpu-evolution.png" alt="Figure 1: GPU Architecture Evolution"></p>
-<p><strong>What it shows</strong>: GPU 架构从单 die (A100/H100) → 双 die chiplet (Blackwell) → 四 die chiplet (MI300X, Rubin Ultra) 的演进。</p>
-<p><strong>Why it matters</strong>: 解释了 NUMA 效应的硬件根源——L2 cache 从统一变为 per-die 私有。关键对比：NVIDIA Blackwell 用硬件 coherency 隐藏 NUMA，AMD MI300X 显式暴露 NUMA。</p>
-<p><strong>Detailed description</strong>: 三幅子图分别展示：(a) 单 die 统一 L2 cache，所有 CU 均匀访问；(b) 双 die 有 interconnect，各 die 有独立 L2 和 HBM；(c) 四 die MI300X 架构，8 个 XCD 各有独立 L2 (4MB) 和 HBM 控制器，NUMA 效应最显著。</p>
-
-<h3 id="figure-2-numa-scheduling-impact">Figure 2: NUMA Scheduling Impact <a class="heading-anchor" href="#figure-2-numa-scheduling-impact" aria-label="Link to figure-2-numa-scheduling-impact">#</a></h3>
-<p><img src="/assets/2511.02132/fig2-numa-scheduling.png" alt="Figure 2: NUMA Scheduling Impact"></p>
-<p><strong>What it shows</strong>: 当处理相关 tiles 的 workgroups 被调度到不同 XCD 时，无法共享 L2 cache，导致冗余 HBM 访问。</p>
-<p><strong>Why it matters</strong>: 直观展示了问题的根源——round-robin 调度打散了本应在同一 L2 cache 中复用的数据。</p>
-
-<h3 id="figure-10-swizzled-head-first-mapping">Figure 10: Swizzled Head-first Mapping <a class="heading-anchor" href="#figure-10-swizzled-head-first-mapping" aria-label="Link to figure-10-swizzled-head-first-mapping">#</a></h3>
-<p><img src="/assets/2511.02132/fig10-swizzled-headfirst.png" alt="Figure 10: Swizzled Head-first Mapping"></p>
-<p><strong>What it shows</strong>: 核心方法——Head-first 迭代 + 空间 swizzle，将同一 head 的所有 blocks 限制在同一 XCD。</p>
-<p><strong>Why it matters</strong>: 这是论文的 "灵魂图"，展示了 ACC (Attention Compute Cluster) 到 XCD 的 1:1 映射策略。每种颜色代表一个 attention head，所有同色 blocks 被限制在同一 XCD 列中。</p>
-
-<h3 id="figure-1213-mha-performance-l2-hit-rate">Figure 12+13: MHA Performance & L2 Hit Rate <a class="heading-anchor" href="#figure-1213-mha-performance-l2-hit-rate" aria-label="Link to figure-1213-mha-performance-l2-hit-rate">#</a></h3>
-<p><img src="/assets/2511.02132/fig12-mha-perf.png" alt="Figure 12: MHA Performance"></p>
-<p><img src="/assets/2511.02132/fig13-l2-hitrate.png" alt="Figure 13: L2 Cache Hit Rate"></p>
-<p><strong>What it shows</strong>: 四种映射策略在不同 head 数、序列长度、batch size 下的性能和 L2 hit rate。</p>
-<p><strong>Why it matters</strong>: 核心实验结果。H=128/128K 下，Block-first L2 hit ≈1%, Swizzled Head-first ≈97%。性能差距 50%。</p>
-<p><strong>Detailed description</strong>: Figure 12 以 Swizzled Head-first 为 baseline (1.0) 归一化。Block-first 在 H≥64 + seqlen≥32K 时降到 0.64-0.70。Figure 13 的 L2 cache hit rate 揭示了原因：Block-first 在极端配置下 cache 完全失效 (~1%)，而 Swizzled Head-first 始终维持 90%+ 命中率。</p>
-
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
-
-<h3 id="table-1-mi300x-architecture">Table 1: MI300X Architecture <a class="heading-anchor" href="#table-1-mi300x-architecture" aria-label="Link to table-1-mi300x-architecture">#</a></h3>
-<table>
-<tr><th>Component</th><th>Specification</th></tr>
-<tr><td>XCDs</td><td>8</td></tr>
-<tr><td>CUs per XCD</td><td>38 (304 total)</td></tr>
-<tr><td>L1 Cache/CU</td><td>16 KB</td></tr>
-<tr><td><strong>L2 Cache/XCD</strong></td><td><strong>4 MB (32 MB total)</strong></td></tr>
-<tr><td>HBM3</td><td>192 GB, 5.3 TB/s</td></tr>
-</table>
-<p><strong>Takeaway</strong>: 每 XCD 仅 4MB L2。K/V 数据 (e.g. 128K×128×FP16=32MB per head) 远超 L2，tiled access 是唯一出路。</p>
-
-<h3 id="table-3-evaluated-model-configurations">Table 3: Evaluated Model Configurations <a class="heading-anchor" href="#table-3-evaluated-model-configurations" aria-label="Link to table-3-evaluated-model-configurations">#</a></h3>
-<table>
-<tr><th>Model</th><th>Attn Type</th><th>H_Q</th><th>H_K</th><th>D_HEAD</th></tr>
-<tr><td>Llama-3 8B</td><td>GQA</td><td>32</td><td>8</td><td>128</td></tr>
-<tr><td>Llama-3 70B</td><td>GQA</td><td>64</td><td>8</td><td>128</td></tr>
-<tr><td>Llama-3 405B</td><td>GQA</td><td>128</td><td>8</td><td>128</td></tr>
-<tr><td>DeepSeek-V3</td><td>MHA</td><td>128</td><td>128</td><td>56</td></tr>
-</table>
-<p><strong>Takeaway</strong>: DeepSeek-V3 (MHA H=128) 是 Swizzled Head-first 收益最大的场景。</p>
-
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-<ul>
-<li>仅在 AMD MI300X 上验证，不适用于 NVIDIA GPU（Blackwell 硬件 coherent）</li>
-<li>Forward pass 收益显著 (50%)，backward pass 收益有限 (~10%)，其他瓶颈限制</li>
-<li>当 head 数 < XCD 数（如 MQA H_Q < 8）时方法退化</li>
-<li>未评估 decode 阶段（batch size 极大但序列已长，K/V per-request 不同）</li>
-<li>未评估与 PagedAttention、MLA 等变体的兼容性</li>
-<li>MI350X (CDNA4) 适用性未验证</li>
-</ul>
-
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-<ul>
-<li>Algorithm: 方法论可泛化——任何在 chiplet GPU 上的 tiled kernel 都可能受益于 NUMA-aware swizzle</li>
-<li>Kernel: 极小代码改动 (~15 行 swizzle)，可直接集成到 Triton FA 默认实现和 AITER</li>
-<li>Framework: 对 vLLM/SGLang 的 attention kernel 在 MI300X 上有直接提速；prefill 阶段收益最大</li>
-<li>LLM: 对 MHA 高 head 数模型（如 DeepSeek-V3 H=128）影响最大；GQA 模型收益取决于 KV group 数与 XCD 数的关系</li>
-<li>Agent: Prefill 加速直接降低 TTFT，改善交互延迟</li>
-</ul>
+<p>Swizzled Head-first Mapping — a ~15-line Triton WG-ID remapping that confines all workgroups of one attention head (the "Attention Compute Cluster") to a single XCD on AMD MI300X, achieving up to 50% forward-pass speedup and sustaining 80–97% L2 cache hit rates versus ~1% for NUMA-unaware baselines.</p>
 
 <hr>
 
-<h2 id="deep-analysis-kernel-extends-phase-2">Deep Analysis (kernel, extends Phase 2) <a class="heading-anchor" href="#deep-analysis-kernel-extends-phase-2" aria-label="Link to deep-analysis-kernel-extends-phase-2">#</a></h2>
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
 
-<h3 id="1-target-operation">1. Target Operation <a class="heading-anchor" href="#1-target-operation" aria-label="Link to 1-target-operation">#</a></h3>
-<ul>
-<li><strong>Primitive</strong>: Multi-Head Attention (forward + backward) 的 FlashAttention2 实现</li>
-<li><strong>I/O shapes</strong>: $Q,K,V \in \mathbb{R}^{B \times H \times N \times D}$, $D$=56-128, $N$=2K-128K</li>
-<li><strong>Arithmetic intensity</strong>: FA2 forward 的 FLOP = $O(BHN^2D)$, 内存访问 = $O(BHND)$ (tiled) → compute-bound for large $N$</li>
-<li><strong>Roofline</strong>: 在 MI300X 上，FA2 在长序列时是 compute-bound（MFMA 瓶颈），但在短序列或 cache miss 严重时退化为 memory-bound → 本文通过提升 L2 hit rate 将瓶颈从 HBM bandwidth 移回 compute</li>
-</ul>
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
 
-<h3 id="2-hardware-model">2. Hardware Model <a class="heading-anchor" href="#2-hardware-model" aria-label="Link to 2-hardware-model">#</a></h3>
-<ul>
-<li><strong>Target</strong>: AMD MI300X (CDNA3), 8 XCDs, 304 CUs total</li>
-<li><strong>Compute units</strong>: Matrix Cores (MFMA instructions), 每 XCD 38 CUs</li>
-<li><strong>Memory hierarchy</strong>: L1 (16KB/CU) → <strong>L2 (4MB/XCD, 私有)</strong> → HBM3 (192GB, 5.3TB/s)</li>
-<li><strong>NUMA topology</strong>: 8 个 XCD 各有独立 L2 和 HBM 控制器。跨 XCD L2 访问需通过 Infinity Fabric，延迟和带宽显著劣化</li>
-<li><strong>WG scheduler</strong>: 硬件 round-robin, chunk=1（每个 XCD 依次分配 1 个 WG）</li>
-</ul>
+<p>Modern AI GPUs have evolved from monolithic dies with unified L2 cache to multi-chiplet architectures (AMD MI300X: 8 XCDs, each with private 4 MB L2). The default workgroup scheduler uses chunked round-robin (chunk=1), spreading workgroups that share the same K/V tensors across different XCDs. This fragments L2 cache: each XCD loads its own copy of shared data from HBM, collapsing aggregate L2 hit rate to as low as ~1% for MHA with many heads and long sequences.</p>
 
-<h3 id="3-design-space-constraint-analysis-extends-phase-2">3. Design Space & Constraint Analysis (extends Phase 2) <a class="heading-anchor" href="#3-design-space-constraint-analysis-extends-phase-2" aria-label="Link to 3-design-space-constraint-analysis-extends-phase-2">#</a></h3>
-<p>见上方约束推导——覆盖了 4 种 mapping 策略的 feasibility matrix 和 NVIDIA vs AMD 架构差异分析。</p>
+<p><img src="/assets/2511.02132/fig1-gpu-evolution.png" alt="Figure 1: Evolution of GPU architectures from single-die to multi-chiplet"></p>
 
-<p><strong>核心 constraint</strong>: MI300X 的 L2 是 per-XCD 私有且不 coherent across XCDs → 任何跨 XCD 的数据共享必须通过 HBM 重新加载。这迫使 kernel 设计者将数据共享的 workgroups 物理放在同一 XCD。</p>
+<p><em>Paper's Figure 1, verbatim (caption: "Evolution of GPU architectures toward disaggregated memory hierarchies").</em></p>
 
-<h3 id="4-optimization-techniques">4. Optimization Techniques <a class="heading-anchor" href="#4-optimization-techniques" aria-label="Link to 4-optimization-techniques">#</a></h3>
+<p>The progression from (a) unified L2 to (b) dual-die to (c) quad-die chiplet designs makes NUMA effects increasingly severe. AMD MI300X exposes these effects to software; NVIDIA Blackwell hides them via hardware coherency.</p>
 
-<table>
-<tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
-<tr><td>Tiling / blocking</td><td>Yes (inherited from FA2)</td><td>BLOCK_M=128, BLOCK_N=64</td></tr>
-<tr><td>Software pipelining</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled K/V access 模式</td></tr>
-<tr><td><strong>Workgroup swizzling</strong></td><td><strong>Yes (core contribution)</strong></td><td>Swizzled Head-first: ~15行 Triton swizzle 逻辑重映射 WG ID</td></tr>
-<tr><td>Vectorized memory access</td><td>Yes (inherited from FA2)</td><td>标准 Triton 向量化</td></tr>
-<tr><td>Shared memory / LDS</td><td>Yes (inherited from FA2)</td><td>FA2 的 tiled softmax</td></tr>
-<tr><td>Kernel fusion</td><td>N/A</td><td>不涉及 kernel fusion，纯调度优化</td></tr>
-</table>
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
 
-<p><strong>关键 insight</strong>: 本文不修改 FA2 kernel 的计算逻辑，仅修改 <strong>WG ID 到 (batch, head, block) 的映射函数</strong>。这意味着它与任何 FA2 实现兼容，不引入额外 compute 或 memory overhead。</p>
+<p><strong>Core insight</strong>: In FA2, all workgroups within one attention head read the same K and V tensors. Define an <strong>Attention Compute Cluster (ACC)</strong> as the set of WGs sharing K/V data (= one head for MHA, one KV-group for GQA). The algorithm remaps linear WG IDs so that an entire ACC is assigned to a single XCD before advancing to the next head.</p>
 
-<h3 id="5-performance-analysis">5. Performance Analysis <a class="heading-anchor" href="#5-performance-analysis" aria-label="Link to 5-performance-analysis">#</a></h3>
+<p>The mapping is:</p>
 
-<table>
-<tr><th>Config</th><th>Speedup (vs Naive Block-first)</th><th>L2 Hit Rate</th></tr>
-<tr><td>MHA H=128, N=128K, B=1</td><td><strong>1.50×</strong></td><td>90-97% (vs ~1%)</td></tr>
-<tr><td>MHA H=64, N=32K, B=4</td><td>1.30-1.40×</td><td>85-95% (vs ~5%)</td></tr>
-<tr><td>GQA H_Q=128 H_K=8, N=128K</td><td>1.10-1.15×</td><td>Similar to Swizzled Block-first</td></tr>
-<tr><td>DeepSeekV3 prefill, N=128K, B=8</td><td>~1.35× (vs Swizzled Block-first ~0.76)</td><td>-</td></tr>
-<tr><td>FA2 Backward, H=128, N=128K</td><td><strong>1.10×</strong></td><td>-</td></tr>
-</table>
-
-<p><strong>Scaling behavior</strong>: 收益随 head 数和序列长度增加而增大。H<16 或 N<8K 时所有方法性能接近（K/V 小，L2 装得下）。</p>
-
-<h3 id="6-numerical-considerations">6. Numerical Considerations <a class="heading-anchor" href="#6-numerical-considerations" aria-label="Link to 6-numerical-considerations">#</a></h3>
-<p>N/A — 本文是纯调度优化，不修改数值计算。与 FA2 完全数值等价。</p>
-
-<h3 id="7-portability">7. Portability <a class="heading-anchor" href="#7-portability" aria-label="Link to 7-portability">#</a></h3>
-
-<table>
-<tr><th>Dimension</th><th>Assessment</th></tr>
-<tr><td>Cross-GPU within AMD</td><td>需调整 NUM_XCD 参数（MI350X XCD 数可能不同）</td></tr>
-<tr><td>Cross-vendor</td><td><strong>不适用于 NVIDIA Blackwell</strong>（硬件 coherent，不暴露 NUMA），可能适用于 Rubin Ultra (4 die)</td></tr>
-<tr><td>Integration</td><td>Triton 实现，~15 行改动，可直接 upstream</td></tr>
-<tr><td>Compiler dependency</td><td>ROCm + Triton</td></tr>
-</table>
-
-<h3 id="8-deployment-context">8. Deployment Context <a class="heading-anchor" href="#8-deployment-context" aria-label="Link to 8-deployment-context">#</a></h3>
-<ul>
-<li><strong>Inference prefill</strong>: 收益最大——compute-bound, 长序列, 高 head 数</li>
-<li><strong>Inference decode</strong>: 未评估，可能收益有限（每 request 单 token, K/V 不同）</li>
-<li><strong>Training forward+backward</strong>: Forward 50% speedup, backward 10%</li>
-<li><strong>Hardware-specific buff</strong>: MI300X 的 8 XCD + 4MB per-XCD L2 使 NUMA 效应极度显著 → 本优化的 "甜蜜点"</li>
-<li><strong>Framework</strong>: 可直接集成到 AMD AITER 和 Triton FA 实现；vLLM/SGLang 在 MI300X 上的 attention 可直接受益</li>
-</ul>
-
-<h3 id="9-source-code">9. Source Code <a class="heading-anchor" href="#9-source-code" aria-label="Link to 9-source-code">#</a></h3>
-<ul>
-<li><strong>Code</strong>: 论文给出了 Triton 实现的核心 swizzle 代码（Figure 3, Figure 11）</li>
-<li><strong>AITER</strong>: https://github.com/ROCm/aiter — AMD 高性能 AI 算子仓库，已有 Swizzled Block-first，Swizzled Head-first 可作为 PR 提交</li>
-</ul>
-
-<h3 id="10-key-source-code-walkthrough">10. Key Source Code Walkthrough <a class="heading-anchor" href="#10-key-source-code-walkthrough" aria-label="Link to 10-key-source-code-walkthrough">#</a></h3>
-
-<h4 id="10a-swizzled-head-first-mapping-figure-11">10a. Swizzled Head-first Mapping (Figure 11) <a class="heading-anchor" href="#10a-swizzled-head-first-mapping-figure-11" aria-label="Link to 10a-swizzled-head-first-mapping-figure-11">#</a></h4>
 <pre><code class="language-python">
-# Grid: total WGs = batch * num_q_heads * ceil(seqlen_q / BLOCK_M)
-grid = lambda META: (batch * num_q_heads * (seqlen_q / META[&quot;BLOCK_M&quot;]))
-
-wid = tl.program_id(0)                         # [Line 5] 获取线性 WG ID
-wid_per_batch = wid // BATCH                    # [Line 6] 去掉 batch 维度
-heads_per_xcd = NUM_Q_HEADS // NUM_XCD          # [Line 7] 每 XCD 分配的 head 数 (e.g. 128/8=16)
-blocks_per_head = ceil(SEQLEN_Q / BLOCK_M)      # [Line 8] 每 head 的 row block 数
-chunk_size = NUM_XCD * blocks_per_head           # [Line 9] 一个 &quot;chunk&quot; = 8 × blocks_per_head
-
-# [Line 12] head_offset: 通过 wid % NUM_XCD 确定目标 XCD，
-#   再乘以 heads_per_xcd 映射到该 XCD 负责的 head 范围
 head_offset = ((wid_per_batch % NUM_XCD) * heads_per_xcd
                + wid_per_batch // (NUM_XCD * blocks_per_head))
-
-# [Line 13] block_offset: 在目标 head 内的 row block 编号
 block_offset = (wid_per_batch % chunk_size) // NUM_XCD
+</code></pre>
 
-# [Line 14] batch_offset: batch 维度 index
+<p>This ensures: (1) each XCD services one ACC at a time; (2) all blocks within that ACC share a single L2 for K/V; (3) zero cross-XCD redundant HBM fetches for shared tensors.</p>
+
+<p><strong>核心技术壁垒</strong>: The non-obvious insight is that head-first iteration alone (Naive Head-first) is insufficient — without spatial swizzling, round-robin dispatch still stripes blocks of one head across all 8 XCDs. The swizzle must simultaneously control both iteration order (head-first) and physical placement (all blocks → one XCD). Getting this wrong in either dimension collapses the benefit.</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<table>
+<tr><th>Metric</th><th>Swizzled Head-first</th><th>Best baseline</th></tr>
+<tr><td>MHA forward speedup (H=128, 128K)</td><td>1.0× (reference)</td><td>0.64–0.70× (Block-first)</td></tr>
+<tr><td>L2 hit rate (MHA, 128K)</td><td>90–97%</td><td>~1% (Naive Block-first)</td></tr>
+<tr><td>GQA forward (Llama-3 family)</td><td>1.0×</td><td>0.90–0.95× (Naive Head-first)</td></tr>
+<tr><td>DeepSeek-V3 prefill (H=128, D=56)</td><td>1.0×</td><td><0.65× (Block-first at 128K)</td></tr>
+<tr><td>Backward pass (128K)</td><td>1.0×</td><td>0.91× (Naive approaches)</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§3-架構-方法图">§3 架構 / 方法图 <a class="heading-anchor" href="#§3-架構-方法图" aria-label="Link to §3-架構-方法图">#</a></h2>
+
+<p><img src="/assets/2511.02132/fig10-swizzled-headfirst.png" alt="Figure 10: Swizzled Head-first mapping confining each head to one XCD"></p>
+
+<p><em>Paper's Figure 10, verbatim (caption: "Swizzled Head-first mapping (eight qheads, 128 row blocks, four XCDs): Head-first iteration with spatial swizzling confines each attention head to a single XCD").</em></p>
+
+<p>Each color = one attention head. All blocks of a given head are packed into a single XCD column. Contrast with Naive Block-first where colors (heads) are interleaved across all XCDs, or Naive Head-first where blocks of the same head are striped across XCDs via round-robin dispatch.</p>
+
+<p><img src="/assets/2511.02132/fig4-fa2-tiling.png" alt="Figure 4: FA2 tiling — all WGs within a head share K and V"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "FlashAttention2 Tiled Compute Partitioning Across Workgroups for a Single Attention Head").</em></p>
+
+<p>This illustrates why co-location matters: pid0–pid3 all read the entire K^T and V matrices. If they land on different XCDs, each loads K/V independently from HBM; if co-located, they share a single L2-cached copy.</p>
+
+<p><img src="/assets/2511.02132/fig2-numa-scheduling.png" alt="Figure 2: Cross-die scheduling forces redundant HBM fetches"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "Impact of workgroup scheduling on cache reuse in the multi-die chiplet architecture of AMD MI300X").</em></p>
+
+<p>When WGs sharing data land on different XCDs (Die 0 vs Die 1), their private L2 caches cannot share entries, and both must independently fetch from HBM through LLC — doubling bandwidth consumption for the same data.</p>
+
+<h3 id="method-as-before-after-diff">Method as before/after diff <a class="heading-anchor" href="#method-as-before-after-diff" aria-label="Link to method-as-before-after-diff">#</a></h3>
+
+<table>
+<tr><th>Aspect</th><th>Before (Naive / Swizzled Block-first)</th><th>After (Swizzled Head-first)</th></tr>
+<tr><td>Iteration order</td><td>Block-first (all heads per block) or Head-first (but unswizzled)</td><td>Head-first</td></tr>
+<tr><td>XCD assignment</td><td>Round-robin chunk=1 by linear WG ID</td><td>Swizzled: all WGs of one head → one XCD</td></tr>
+<tr><td>ACCs per XCD simultaneously</td><td>Multiple (fragments L2)</td><td>One at a time</td></tr>
+<tr><td>K/V copies in aggregate L2</td><td>Replicated across 8 XCDs</td><td>Single copy per XCD, fully reused</td></tr>
+<tr><td>L2 hit rate (MHA, H=128, 128K)</td><td>~1% (Block-first) / 40–60% (Naive Head-first)</td><td>90–97%</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证</strong></p>
+
+<p>The paper provides no convergence theorem, complexity bound, or formal proof. The argument is entirely empirical: measuring L2 hit rates and kernel throughput across a parameter sweep. The "proof" is architectural reasoning + hardware counter measurements.</p>
+
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$Q, K, V \in \mathbb{R}^{N \times d}$</td><td>Query, key, value matrices per head</td></tr>
+<tr><td>$N$ (N_CTX)</td><td>Sequence length</td></tr>
+<tr><td>$d$ (HEAD_DIM)</td><td>Per-head dimension</td></tr>
+<tr><td>$H_Q, H_K$</td><td>Number of query / KV heads</td></tr>
+<tr><td>ACC</td><td>Attention Compute Cluster: WGs sharing K/V</td></tr>
+<tr><td>XCD</td><td>Accelerator Complex Die (chiplet on MI300X)</td></tr>
+<tr><td>BLOCK_M</td><td>Row-block tile size (128)</td></tr>
+<tr><td>WG / pid</td><td>Workgroup / program ID</td></tr>
+</table>
+
+<h3 id="equation-physical-meaning">Equation physical meaning <a class="heading-anchor" href="#equation-physical-meaning" aria-label="Link to equation-physical-meaning">#</a></h3>
+
+<p>$$S = QK^{\top}, \quad P = \text{softmax}\!\left(\frac{S}{\sqrt{d}}\right), \quad O = PV$$</p>
+
+<p>Standard scaled dot-product attention. The relevant property for this work: within one head, all $Q$-row-blocks share the same $K$ and $V$ — establishing the data-sharing pattern that defines an ACC.</p>
+
+<h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Claim</strong>: up to 50% speedup over Block-first. <strong>Check</strong>: Figure 12 shows Naive Block-first at 0.64–0.70× for H=128, N=128K; 1/0.67 ≈ 1.49× confirming ~50%.</li>
+<li><strong>Claim</strong>: L2 hit rate 80–97%. <strong>Check</strong>: Figure 13 directly plots hit rates; Swizzled Head-first sustains >80% across all tested configs and reaches 97% at favorable points.</li>
+<li><strong>Claim</strong>: Naive Block-first collapses to ~1% L2 hit rate. <strong>Check</strong>: Figure 13 shows Block-first at <5% for H=128, N≥32K. Consistent with reasoning — 128 heads across 8 XCDs means 16 concurrent ACCs per XCD, each evicting the others' K/V from 4 MB L2.</li>
+<li><strong>Claim</strong>: works for both MHA and GQA. <strong>Check</strong>: §4.4 Figure 14 shows GQA results; Swizzled Head-first matches or exceeds all baselines. For GQA with 8 KV groups = 8 XCDs, Swizzled Block-first ties (expected — it's the degenerate case where groups perfectly tile XCDs).</li>
+<li><strong>Claim</strong>: backward pass gains ~10%. <strong>Check</strong>: Figure 16 shows other approaches at 0.91–0.94× of Swizzled Head-first. The paper attributes the ceiling to scalar operation bottlenecks but doesn't precisely isolate them.</li>
+<li><strong>Claim</strong>: minimal code change (~15 lines). <strong>Check</strong>: Figure 11 shows the complete swizzle logic in 10 lines of Triton. The claim holds — no algorithmic change to FA2, only WG ID remapping.</li>
+</ul>
+
+<h3 id="what-formal-guarantee-would-be-desirable">What formal guarantee would be desirable <a class="heading-anchor" href="#what-formal-guarantee-would-be-desirable" aria-label="Link to what-formal-guarantee-would-be-desirable">#</a></h3>
+
+<p>An analytical model predicting L2 hit rate as a function of $(H_Q, N, d, \text{L2\_size}, \text{NUM\_XCD})$ would let practitioners predict when Swizzled Head-first is necessary versus when NUMA effects are negligible (e.g., few heads, short sequences). The paper leaves this to empirical observation.</p>
+
+<hr>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="hardware-platform">Hardware platform <a class="heading-anchor" href="#hardware-platform" aria-label="Link to hardware-platform">#</a></h3>
+
+<p>AMD MI300X: 8 XCDs × 38 CUs = 304 CUs, 4 MB L2/XCD (32 MB total), 192 GB HBM3 @ 5.3 TB/s. Implementation in Triton; profiling via ROCProfiler v3 hardware counters.</p>
+
+<h3 id="parameter-sweep">Parameter sweep <a class="heading-anchor" href="#parameter-sweep" aria-label="Link to parameter-sweep">#</a></h3>
+
+<table>
+<tr><th>Parameter</th><th>Values</th></tr>
+<tr><td>Batch size</td><td>1, 2, 4, 8</td></tr>
+<tr><td>Sequence length</td><td>2K, 4K, 8K, 16K, 32K, 64K, 128K</td></tr>
+<tr><td>$H_Q$</td><td>8, 16, 32, 64, 128</td></tr>
+<tr><td>HEAD_DIM</td><td>128</td></tr>
+<tr><td>BLOCK_M</td><td>128</td></tr>
+</table>
+
+<h3 id="key-result-mha-forward-performance">Key result: MHA forward performance <a class="heading-anchor" href="#key-result-mha-forward-performance" aria-label="Link to key-result-mha-forward-performance">#</a></h3>
+
+<p><img src="/assets/2511.02132/fig12-mha-perf.png" alt="Figure 12: MHA performance — Swizzled Head-first dominates at high heads × long sequences"></p>
+
+<p><em>Paper's Figure 12, verbatim (caption: "MHA Performance relative to Swizzled Head-first baseline across varying batch sizes (1-8) and sequence lengths (8K-128K)").</em></p>
+
+<p>The performance gap widens monotonically with $H_Q$ and $N_{\text{CTX}}$. At $H_Q = 8$ the advantage is modest (<10%) because even naive scheduling only fragments 8 ACCs across 8 XCDs. At $H_Q = 128$, each XCD juggles 16 concurrent ACCs under naive dispatch, causing catastrophic L2 thrashing.</p>
+
+<h3 id="key-result-l2-cache-hit-rate">Key result: L2 cache hit rate <a class="heading-anchor" href="#key-result-l2-cache-hit-rate" aria-label="Link to key-result-l2-cache-hit-rate">#</a></h3>
+
+<p><img src="/assets/2511.02132/fig13-l2-hitrate.png" alt="Figure 13: L2 hit rates — Swizzled Head-first sustains 90-97% while baselines collapse"></p>
+
+<p><em>Paper's Figure 13, verbatim (caption: "L2 Cache hit rates for MHA across varying batch sizes (1-8) and sequence lengths (2K-128K)").</em></p>
+
+<p>This is the most diagnostic figure in the paper. It directly visualizes the mechanism: Swizzled Head-first keeps K/V in L2 by serving one ACC at a time, while Block-first forces each XCD to context-switch between ACCs faster than L2 can retain their working sets.</p>
+
+<h3 id="gqa-results-llama-3-family">GQA results (Llama-3 family) <a class="heading-anchor" href="#gqa-results-llama-3-family" aria-label="Link to gqa-results-llama-3-family">#</a></h3>
+
+<p>For GQA with 8 KV groups = 8 XCDs, both Swizzled Block-first and Swizzled Head-first achieve near-identical performance. Naive Block-first still degrades significantly (to 0.75× at H_Q=128, 128K). Naive Head-first shows instability at 0.90–0.95× for high N/batch.</p>
+
+<h3 id="deepseek-v3-case-study">DeepSeek-V3 case study <a class="heading-anchor" href="#deepseek-v3-case-study" aria-label="Link to deepseek-v3-case-study">#</a></h3>
+
+<p>MHA with $H_Q = 128$, $H_K = 128$, $d = 56$. This is the worst case for NUMA-unaware scheduling: 128 independent heads (no KV sharing). Block-first drops below 0.65× at 128K. Swizzled Head-first is strictly optimal.</p>
+
+<h3 id="backward-pass">Backward pass <a class="heading-anchor" href="#backward-pass" aria-label="Link to backward-pass">#</a></h3>
+
+<p>Gains capped at ~10% (other approaches at 0.91–0.94×). The paper hypothesizes scalar operation bottlenecks in the backward kernel limit the cache-utilization benefit. This is the one regime where the optimization underdelivers relative to the forward pass.</p>
+
+<h3 id="training-recipe-scale">Training recipe & scale <a class="heading-anchor" href="#training-recipe-scale" aria-label="Link to training-recipe-scale">#</a></h3>
+
+<p>Not applicable — this is a kernel scheduling algorithm, not a training recipe. No training is involved.</p>
+
+<hr>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Logic</th></tr>
+<tr><td>1</td><td>Modern chiplet GPUs have private-per-XCD L2 caches creating NUMA effects</td><td>MI300X architecture spec: 8 XCDs × 4 MB private L2</td><td>Architectural fact</td></tr>
+<tr><td>2</td><td>FA2 workgroups within one head all read the same K/V (forming an ACC)</td><td>FA2 algorithm definition (Fig 4): each WG reads full K^T and V</td><td>Algorithmic property</td></tr>
+<tr><td>3</td><td>Default round-robin scheduling (chunk=1) distributes one ACC's WGs across all XCDs</td><td>Fig 2 + driver behavior documentation</td><td>Observed hardware behavior</td></tr>
+<tr><td>4</td><td>Cross-XCD ACC distribution forces each XCD to independently load K/V → L2 thrashing</td><td>8 copies of K/V in 8 L2s vs. 1 copy in 1 L2; L2 capacity saturated by concurrent ACCs</td><td>Memory hierarchy reasoning</td></tr>
+<tr><td>5</td><td>Swizzled Head-first remaps WG IDs so all blocks of one head → one XCD</td><td>Fig 10/11: head_offset calculation assigns consecutive heads to consecutive XCDs; blocks within head stay on same XCD</td><td>Code logic</td></tr>
+<tr><td>6</td><td>Co-located ACC enables K/V L2 reuse: one load amortized across all WGs in that head</td><td>Measured L2 hit 90–97% (Fig 13) vs ~1% baseline</td><td>Hardware counter measurement</td></tr>
+<tr><td>7</td><td>Higher L2 hit rate → fewer HBM accesses → higher effective bandwidth → up to 50% speedup</td><td>Fig 12: performance tracks L2 hit rate improvements</td><td>Bandwidth-bound kernel argument</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<h3 id="amd-aiter-repository">AMD AITER repository <a class="heading-anchor" href="#amd-aiter-repository" aria-label="Link to amd-aiter-repository">#</a></h3>
+
+<p>The Swizzled Block-first variant (not Swizzled Head-first) is deployed in AMD's AITER repository (<code>AMD, 2025a</code>) for the FA2 backward pass kernel. The paper's proposed Swizzled Head-first mapping is described as a novel extension not yet merged into a public production repository at time of writing.</p>
+
+<h3 id="triton-implementation">Triton implementation <a class="heading-anchor" href="#triton-implementation" aria-label="Link to triton-implementation">#</a></h3>
+
+<p>The complete swizzle logic is shown in Figure 11 (§3.3). Key code:</p>
+
+<pre><code class="language-python">
+wid = tl.program_id(0)
+wid_per_batch = wid // BATCH
+heads_per_xcd = NUM_Q_HEADS // NUM_XCD
+blocks_per_head = (SEQLEN_Q + BLOCK_M - 1) // BLOCK_M
+chunk_size = NUM_XCD * blocks_per_head
+
+head_offset = ((wid_per_batch % NUM_XCD) * heads_per_xcd
+               + wid_per_batch // (NUM_XCD * blocks_per_head))
+block_offset = (wid_per_batch % chunk_size) // NUM_XCD
 batch_offset = (wid // (blocks_per_head * NUM_Q_HEADS)) % BATCH
 </code></pre>
 
-<p><strong>核心机制</strong>: <code>wid % NUM_XCD</code> 决定 XCD 编号 → <code>heads_per_xcd</code> 个 head 被绑定到该 XCD → 同一 head 的所有 blocks 共享该 XCD 的 L2 cache。<strong>极简但有效</strong>。</p>
+<p>The existing chiplet-aware swizzle baseline (Figure 3, §2.2) in Triton:</p>
 
-<h4 id="10c-data-layout-memory-access-patterns">10c. Data Layout & Memory Access Patterns <a class="heading-anchor" href="#10c-data-layout-memory-access-patterns" aria-label="Link to 10c-data-layout-memory-access-patterns">#</a></h4>
-<ul>
-<li>Q/K/V: 标准 [B, H, N, D] layout (row-major)</li>
-<li>同一 head 内：FA2 的 tiled access → 每个 WG 处理一个 Q row block (BLOCK_M=128 rows)，需访问完整 K/V</li>
-<li>Swizzled Head-first 保证同 head 的 WGs 在同一 XCD → K/V 的 tiled blocks 在 L2 中被逐块缓存和复用</li>
-<li>无额外 bank conflict 或 coalescing 问题（纯调度优化，不改数据布局）</li>
+<pre><code class="language-python">
+@triton.jit()
+def swizzle_chiplet(wgid, grid, NUM_XCD: tl_constexpr):
+    wgids_per_xcd = grid // NUM_XCD
+    xcd = wgid % NUM_XCD
+    local_wgid = wgid // NUM_XCD
+    new_wgid = xcd * wgids_per_xcd + local_wgid
+    return new_wgid
+</code></pre>
+
+<h3 id="核心技术壁垒-detailed">核心技术壁垒 (detailed) <a class="heading-anchor" href="#核心技术壁垒-detailed" aria-label="Link to 核心技术壁垒-detailed">#</a></h3>
+
+<p>The technical barrier is not the code itself (~15 lines) but the <strong>architectural insight</strong> required to arrive at it: understanding that (a) ACC is the correct unit of locality for attention (not tile, not batch), (b) head-first iteration must be coupled with spatial swizzling (either alone is insufficient), and (c) the driver's round-robin policy is chunk=1 and mutable, so the kernel must own its placement. Without profiling infrastructure (ROCProfiler L2 counters) and architectural knowledge of XCD-private L2, one would never identify the ~1% hit rate failure mode or know that the fix is so simple.</p>
+
+<h3 id="关键実装细节">关键実装细节 <a class="heading-anchor" href="#关键実装细节" aria-label="Link to 关键実装细节">#</a></h3>
+
+<ol>
+<li><strong>NUM_Q_HEADS must be divisible by NUM_XCD</strong> for the integer division <code>heads_per_xcd = NUM_Q_HEADS // NUM_XCD</code> to distribute evenly. When this doesn't hold (e.g., H_Q=12, NUM_XCD=8), the paper doesn't discuss the fallback — likely requires padding or partial-XCD assignment.</li>
 </ul>
 
-<h3 id="11-infrastructure-impact">11. Infrastructure Impact <a class="heading-anchor" href="#11-infrastructure-impact" aria-label="Link to 11-infrastructure-impact">#</a></h3>
-<table>
-<tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>"ACC-to-XCD mapping" 原则可泛化到任何 chiplet GPU 上的 tiled kernel</td></tr>
-<tr><td>Framework</td><td>MI300X 上 vLLM/SGLang 的 prefill attention 可直接加速；AITER 可 upstream</td></tr>
-<tr><td>LLM</td><td>MHA 高 head 数模型（DeepSeek-V3）收益最大；GQA 模型收益取决于 KV groups vs XCD 数</td></tr>
-<tr><td>Agent</td><td>Prefill 加速 → TTFT 降低 → 改善交互延迟</td></tr>
-</table>
+<ol>
+<li><strong>Backward pass scalar bottleneck</strong>: The backward kernel's lower gains (~10% vs 50%) suggest that once L2 hit rate is high, the kernel becomes compute-bound on scalar operations (online softmax correction, gradient accumulation). This means the optimization has diminishing returns for compute-dense kernel variants.</li>
+</ul>
+
+<h3 id="reproducibility">Reproducibility <a class="heading-anchor" href="#reproducibility" aria-label="Link to reproducibility">#</a></h3>
+
+<ul>
+<li>Training code: N/A (no model training)</li>
+<li>Kernel code: Not publicly released as standalone; the swizzle logic is fully specified in Figures 3 and 11</li>
+<li>Closest open reference: Triton's default FA kernel (<code>triton-lang/triton</code>) + AITER (<code>ROCm/aiter</code>) for the Block-first variant</li>
+<li>Community reproduction: No known independent replication at time of writing</li>
+<li>Production usage: AITER deploys Swizzled Block-first for backward pass; Swizzled Head-first proposed for forward pass but deployment status unclear</li>
+</ul>
 
 </div>
 </div>

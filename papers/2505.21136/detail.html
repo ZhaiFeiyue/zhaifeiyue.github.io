@@ -196,316 +196,320 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">SageAttention2++: A More Efficient Implementation of SageAttention2</h1>
-<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2505.21136</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention</span><span class="tag">FP8</span><span class="tag">quantization</span><span class="tag">tensor-core</span><span class="tag">inference-acceleration</span></div>
+<div class="card-meta"><span class="badge badge-code">code</span> 2505.21136</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention-kernel</span><span class="tag">FP8-quantization</span><span class="tag">tensor-core-mma</span><span class="tag">CUDA-PTX</span><span class="tag">inference-acceleration</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
-<a href="/overview/kernel.html">← kernel Survey</a>
+<a href="/papers/2505.21136.html">← Synthesis</a>
+<a href="/overview/code.html">← code Survey</a>
 <a href="https://arxiv.org/abs/2505.21136" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
+
 <h1 id="sageattention2-a-more-efficient-implementation-of-sageattention2">SageAttention2++: A More Efficient Implementation of SageAttention2 <a class="heading-anchor" href="#sageattention2-a-more-efficient-implementation-of-sageattention2" aria-label="Link to sageattention2-a-more-efficient-implementation-of-sageattention2">#</a></h1>
-<blockquote>
-Jintao Zhang, Xiaoming Xu, Jia Wei, Haofeng Huang, Pengle Zhang, Chendong Xiang, Jun Zhu, Jianfei Chen | 2025-05 | https://arxiv.org/abs/2505.21136
-Category: kernel | Tags: attention, FP8, quantization, Tensor Core, inference acceleration
-Read: 2026-04-16
-</blockquote>
-
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-<p>通过使用 FP16 累加器的 FP8 矩阵乘法指令（mma.f16.f8.f8.f16），将 SageAttention2 的 PV 矩阵乘法加速 2 倍，实现比 FlashAttention2 快 3.9 倍的 attention 加速，且精度无损。</p>
-
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
-
-<h3 id="核心三问">核心三问 <a class="heading-anchor" href="#核心三问" aria-label="Link to 核心三问">#</a></h3>
-
-<p><strong>Q1: 这篇论文试图解决什么核心痛点/问题？</strong></p>
-<p>Attention 的时间复杂度随序列长度二次增长。SageAttention2 已经用 FP8 量化加速了 attention 中的矩阵乘法，但其使用的 <code>mma.f32.f8.f8.f32</code> 指令（FP32 累加器）仅比 FP16 快 2 倍。存在一个 4 倍加速的 FP16 累加器指令未被利用。</p>
-
-<p><strong>Q2: 作者提出了什么新的"杀手锏"方法/架构？</strong></p>
-<p>使用更快的 <code>mma.f16.f8.f8.f16</code> 指令（FP8 输入 + FP16 累加器）替代原来的 FP32 累加器指令。核心挑战是 FP16 的表示范围有限（±65504），直接使用会导致累加溢出。解决方案是<strong>缩窄 P 和 V 的 FP8 量化范围</strong>（$P_r = 224$, $V_r = 4.5$），使得 32 次乘加结果不超过 FP16 范围，并用 <strong>Delayed FP32 Buffering</strong>（两次 MMA 结果在 FP16 中累加后再转 FP32）减少类型转换开销。</p>
-
-<p><strong>Q3: 最终效果/结论如何？</strong></p>
-<p>SageAttention2++(4+8) 在 RTX4090 上相对 FlashAttention2 实现 <strong>3.9 倍加速</strong>，SageAttention2++(8+8) 实现 <strong>3.0 倍加速</strong>。在 Llama3.1、CogvideoX、HunyuanVideo、Wan、Flux、StableDiffusion3.5 等多种模型上端到端指标几乎无损。</p>
-
-<h3 id="逻辑故事还原">逻辑故事还原 <a class="heading-anchor" href="#逻辑故事还原" aria-label="Link to 逻辑故事还原">#</a></h3>
-
-<p><strong>背景 (Context):</strong></p>
-<p>SageAttention2 已经实现了对 FlashAttention2 的显著加速，核心思路是将 Q/K 量化为 INT4/INT8、将 P/V 量化为 FP8 来利用 Tensor Core 的低精度计算能力。但在 PV 矩阵乘法中，它使用 FP32 累加器的 MMA 指令 (<code>mma.f32.f8.f8.f32</code>)，该指令仅比 FP16 快 2 倍。</p>
-
-<p><strong>破局 (Insight):</strong></p>
-<p>NVIDIA Ada 架构（RTX4090/5090）上存在一条更快的指令 <code>mma.f16.f8.f8.f16</code>，它使用 FP16 累加器做 FP8 乘法，速度是 FP16 的 <strong>4 倍</strong>（相比 FP32 累加器的 2 倍）。</p>
 
 <blockquote>
-👉 类比：这就像发现同一条高速公路有个限速更高的快车道。之前因为担心"翻车"（数值溢出）而走慢车道（FP32 累加器），现在通过"给货物减重"（缩窄量化范围），就能安全地走快车道（FP16 累加器）了。
+Jintao Zhang, Xiaoming Xu, Jia Wei, Haofeng Huang, Pengle Zhang, Chendong Xiang, Jun Zhu, Jianfei Chen (Tsinghua / Shengshu) | 2025-05 | <https://arxiv.org/abs/2505.21136>
+Category: code | Tags: attention-kernel, FP8-quantization, tensor-core-mma, CUDA-PTX, inference-acceleration
 </blockquote>
 
-<p><strong>拆解 (Deconstruction):</strong></p>
+<hr>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>SageAttention2++ 将 PV matmul 的累加器从 FP32 切换到 FP16（<code>mma.f16.f8.f8.f16</code>），通过缩窄 P/V 量化范围（$P_r \times V_r \leq 1023.5$）避免溢出，实现 3.9× over FlashAttention2 的 attention kernel 加速，精度无损。</p>
+
+<hr>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 痛点</strong>: SageAttention2 使用 <code>mma.f32.f8.f8.f32</code> 指令做 PV matmul，该指令仅比 FP16 快 2×。而同一硬件（Ada/Blackwell）上存在 <code>mma.f16.f8.f8.f16</code> 指令，理论上 4× 于 FP16。但直接使用会导致 FP16 累加器溢出（32 个 FP8×FP8 乘积之和可超过 ±65504）。</p>
+
+<p><img src="/assets/2505.21136/fig1.png" alt="Figure 1: Speed comparison RTX4090 headdim=128"></p>
+
+<p><em>Paper Figure 1: Speed comparison between SageAttention2++ and baselines on RTX4090, headdim=128. SageAttn2++(4+8) achieves ~3.9× over FlashAttention2 across sequence lengths from 1K to 32K.</em></p>
+
+<p>Fig 1 直接展示了核心性能主张：在 RTX4090 上 headdim=128 的不同序列长度下，SageAttn2++ 系列全面超越 FlashAttention2 和 SageAttention2 基线。</p>
+
+<p><strong>Q2 方法</strong>: 两步优化——</p>
 <ol>
-<li><strong>识别瓶颈</strong>：PV Matmul 使用 <code>mma.f32.f8.f8.f32</code>，是 2x 加速；而 <code>mma.f16.f8.f8.f16</code> 能达到 4x 加速</li>
-<li><strong>解决溢出问题</strong>：FP16 累加器范围为 $\pm 65504$。<code>mma.m16n8k32</code> 指令累加 32 个 $p \times v$ 乘积，因此需要 $|32 \times pv| \leq 65504$。将 $P$ 的量化范围从 448 缩窄到 $P_r = 224$，$V$ 从 448 缩窄到 $V_r = 4.5$，满足 $P_r \times V_r \leq 2047$</li>
-<li><strong>Delayed FP32 Buffering</strong>：连续两次 MMA 的 FP16 结果先累加再转 FP32，减半类型转换开销。约束变为 $P_r \times V_r \leq 1023.5$</li>
-<li><strong>最优参数选择</strong>：通过实验验证 ($P_r = 224$, $V_r = 4.5$) 能保持与 SageAttention2 相同的精度（cosine similarity 99.97%）</li>
+<li><strong>量化范围缩窄</strong>：将 $\hat{P}$ 的量化范围从 448 缩到 $P_r = 224$，$\hat{V}$ 从 448 缩到 $V_r = 4.5$，使 <code>mma.m16n8k32</code> 的 32 次乘加结果不超 FP16 范围。约束：$P_r \times V_r \leq 2047$。</li>
+<li><strong>Delayed FP32 Buffering</strong>：连续 2 次 MMA 结果在 FP16 中累加后再转 FP32，减半类型转换 PTX 指令开销。约束收紧为 $P_r \times V_r \leq 1023.5$。选定 $224 \times 4.5 = 1008 \leq 1023.5$。</li>
 </ul>
 
-<h3 id="核心图表">核心图表 <a class="heading-anchor" href="#核心图表" aria-label="Link to 核心图表">#</a></h3>
+<p><strong>核心技术壁垒</strong>: 精确认识到 <code>mma.m16n8k32</code> 指令的 k=32 累加维度与 FP16 65504 上限共同决定了 $P_r \times V_r$ 的硬约束，并找到不损精度的非对称分配方案 ($P_r \gg V_r$)。这要求对 PTX ISA 的 MMA 语义和 post-softmax $P$ 值的实际分布有深度理解。</p>
 
-<h4 id="figure-1-speed-comparison-on-rtx4090-headdim128">Figure 1: Speed comparison on RTX4090 (headdim=128) <a class="heading-anchor" href="#figure-1-speed-comparison-on-rtx4090-headdim128" aria-label="Link to figure-1-speed-comparison-on-rtx4090-headdim128">#</a></h4>
-<p><em>[图片无法下载 — arXiv HTML 版本不可用]</em></p>
-
-<p><strong>What it shows</strong>: SageAttention2++ 各变体在不同序列长度（1K-32K）下的 speed (TOPS) 对比</p>
-<p><strong>Why it matters</strong>: 证明了 SageAttention2++ 的核心性能主张 — 3.9x/3.0x speedup over FlashAttention2</p>
-<p><strong>Detailed description</strong>: 柱状图展示 6 种方法（FlashAttn, Sage1, Sage2(8+8), Sage2++(8+8), Sage2(4+8), Sage2++(4+8)）在 RTX4090 上 headdim=128 的性能。causal=False 时，32K 序列长度下 FlashAttn 约 574 TOPS，Sage2++(4+8) 达 640 TOPS；causal=True 时，FlashAttn 约 409 TOPS，Sage2++(4+8) 达 619 TOPS。Sage2++ 系列在所有序列长度上均超越对应的 Sage2 变体。</p>
-
-<h4 id="table-1-matmul-instruction-speedup-comparison">Table 1: Matmul instruction speedup comparison <a class="heading-anchor" href="#table-1-matmul-instruction-speedup-comparison" aria-label="Link to table-1-matmul-instruction-speedup-comparison">#</a></h4>
-<table>
-<tr><th>GPU</th><th>MM Input</th><th>MM Accumulator</th><th>Speedup</th></tr>
-<tr><td>RTX4090, RTX5090</td><td>FP16</td><td>FP32</td><td>1x</td></tr>
-<tr><td></td><td>FP8</td><td>FP32</td><td>2x</td></tr>
-<tr><td></td><td><strong>FP8</strong></td><td><strong>FP16</strong></td><td><strong>4x</strong></td></tr>
-</table>
-
-<p><strong>Takeaway</strong>: FP8 Matmul 配合 FP16 累加器比 FP32 累加器快一倍，这是 SageAttention2++ 的核心硬件洞察。</p>
-
-<h4 id="table-2-attention-accuracy-with-different-quantization-ranges">Table 2: Attention accuracy with different quantization ranges <a class="heading-anchor" href="#table-2-attention-accuracy-with-different-quantization-ranges" aria-label="Link to table-2-attention-accuracy-with-different-quantization-ranges">#</a></h4>
-<table>
-<tr><th>Method</th><th>$P_r$</th><th>$V_r$</th><th>Cossim↑</th><th>$L_1$↓</th></tr>
-<tr><td>SageAttn2</td><td>448</td><td>448</td><td><strong>99.97%</strong></td><td>0.01862</td></tr>
-<tr><td>SageAttn2++</td><td>448</td><td>2.25</td><td><strong>99.97%</strong></td><td>0.01863</td></tr>
-<tr><td>SageAttn2++</td><td>224</td><td>4.5</td><td><strong>99.97%</strong></td><td><strong>0.01862</strong></td></tr>
-<tr><td>SageAttn2++</td><td>112</td><td>9</td><td><strong>99.97%</strong></td><td>0.01863</td></tr>
-</table>
-
-<p><strong>Takeaway</strong>: 缩窄量化范围对精度几乎没有影响，所有组合的 cosine similarity 都保持 99.97%。</p>
-
-<h4 id="table-3-end-to-end-metrics-across-models-key-rows">Table 3: End-to-end metrics across models (key rows) <a class="heading-anchor" href="#table-3-end-to-end-metrics-across-models-key-rows" aria-label="Link to table-3-end-to-end-metrics-across-models-key-rows">#</a></h4>
-<table>
-<tr><th>Model</th><th>Attention</th><th>Key Metric</th></tr>
-<tr><td>Llama3.1</td><td>Full-Precision</td><td>Ppl 6.013 / Acc 0.815</td></tr>
-<tr><td></td><td>SageAttn2++(8+8)</td><td>Ppl 6.020 / Acc 0.813</td></tr>
-<tr><td>Flux</td><td>Full-Precision</td><td>FID 165.1 / CLIP 31.40</td></tr>
-<tr><td></td><td>SageAttn2++(8+8)</td><td>FID 163.6 / CLIP 31.45</td></tr>
-<tr><td>CogvideoX</td><td>Full-Precision</td><td>CLIPSIM 0.179 / FScore 4.974</td></tr>
-<tr><td></td><td>SageAttn2++(8+8)</td><td>CLIPSIM 0.179 / FScore 4.386</td></tr>
-</table>
-
-<p><strong>Takeaway</strong>: SageAttn2++(8+8) 在所有模型上端到端指标几乎与全精度一致，是安全的 plug-and-play 替代方案。</p>
-
-<h3 id="关键细节与启示">关键细节与启示 <a class="heading-anchor" href="#关键细节与启示" aria-label="Link to 关键细节与启示">#</a></h3>
-
-<p><strong>技术细节补充:</strong></p>
-<ol>
-<li>核心约束 <code>Pr × Vr ≤ 2047</code> 来自 MMA 指令的 $K = 32$ 累加维度和 FP16 的 65504 上限（$65504 / 32 = 2047$）。Delayed Buffering 将约束收紧为 $\leq 1023.5$。</li>
-<li>SageAttention2++ 沿用了 SageAttention2 的 Q/K smoothing 和 INT4/INT8 量化，仅修改 PV Matmul 的指令选择和量化范围，是一个非常 targeted 的优化。</li>
-</ul>
-
-<p><strong>一句话总结:</strong> SageAttention2++ 通过使用 FP16 累加器的 FP8 MMA 指令并缩窄量化范围来避免溢出，在不损失精度的情况下将 attention 加速从 2x 提升到 3.9x（相对 FlashAttention2）。</p>
-
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
+<p><strong>Q3 结果</strong>:</p>
 <ul>
-<li>FP8 Matmul with FP16 accumulator (<code>mma.f16.f8.f8.f16</code>) is 4x faster than FP16, vs 2x for FP32 accumulator — a 2x speedup opportunity for the $PV$ matmul in attention</li>
-<li>Narrowing FP8 quantization ranges ($P_r = 224$, $V_r = 4.5$ vs original 448) maintains identical attention accuracy (cosine similarity 99.97%)</li>
-<li>Delayed FP32 Buffering (accumulating 2 MMA results in FP16 before FP32 conversion) halves type conversion overhead</li>
-<li>SageAttention2++(4+8) achieves 3.9x speedup over FlashAttention2 on RTX4090 at 32K sequence length</li>
-<li>End-to-end metrics on Llama3.1, CogvideoX, HunyuanVideo, Wan, Flux, SD3.5 show negligible degradation</li>
-<li>Works on both RTX4090 (Ada) and RTX5090 (Blackwell consumer) GPUs</li>
-</ul>
-
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-<ul>
-<li>Only evaluated on NVIDIA Ada/Blackwell consumer GPUs (RTX4090, RTX5090); no data for data center GPUs (H100, H200, B100) or AMD</li>
-<li>FP16 accumulator instruction availability is architecture-dependent — not available on Hopper (which has FlashAttention3 instead)</li>
-<li>Paper is very short (5 pages + appendix) with limited ablation studies</li>
-<li>No analysis of when the narrowed quantization range might cause problems (e.g., extreme outlier distributions)</li>
-<li>Does not address the $QK$ matmul acceleration — only optimizes $PV$ matmul</li>
-</ul>
-
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-<ul>
-<li>Algorithm: Enables faster attention computation that can be plugged into any transformer-based model without algorithmic changes</li>
-<li>Kernel: Demonstrates practical use of FP16-accumulated FP8 MMA instructions; technique generalizable to other FP8 GEMM workloads where output range can be bounded</li>
-<li>Framework: Drop-in replacement for FlashAttention2/SageAttention2 in inference pipelines; reduces attention latency by ~3.9x</li>
-<li>LLM: Directly accelerates prefill phase of LLM inference; particularly impactful for long-context applications</li>
-<li>Agent: Reduced attention latency enables faster real-time inference for interactive agent systems</li>
+<li>Kernel: SageAttn2++(4+8) <strong>3.9×</strong> / (8+8) <strong>3.0×</strong> over FlashAttention2</li>
+<li>精度: cosine similarity 99.97%（与 SageAttn2 相同）</li>
+<li>End-to-end: 在 Llama3.1, CogvideoX, HunyuanVideo, Wan, Flux, SD3.5 上指标几乎无损</li>
 </ul>
 
 <hr>
 
-<h2 id="deep-analysis-kernel">Deep Analysis (kernel) <a class="heading-anchor" href="#deep-analysis-kernel" aria-label="Link to deep-analysis-kernel">#</a></h2>
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
 
-<h3 id="1-target-operation">1. Target Operation <a class="heading-anchor" href="#1-target-operation" aria-label="Link to 1-target-operation">#</a></h3>
+<p><img src="/assets/2505.21136/tab1.png" alt="Table 1: Matmul instruction speedup"></p>
 
-<p><strong>Computational primitive</strong>: Attention mechanism, specifically the PV matrix multiplication (P×V) in the second half of attention computation.</p>
+<p><em>Paper Table 1: Speedup of different matmul instructions on RTX4090/RTX5090. FP8 with FP16 accumulator achieves 4× speedup over FP16 baseline — the hardware foundation of SageAttention2++.</em></p>
 
-<p><strong>Input/output shapes and data types</strong>:</p>
-<ul>
-<li>Input $P$ (post-softmax): shape [batch, heads, seq_len_q, seq_len_kv], quantized to FP8 E4M3 with range narrowed to $P_r = 224$</li>
-<li>Input $V$: shape [batch, heads, seq_len_kv, head_dim], quantized to FP8 E4M3 with per-channel granularity, range narrowed to $V_r = 4.5$</li>
-<li>$Q$, $K$: INT4 or INT8 for the $QK$ matmul (unchanged from SageAttention2)</li>
-<li>Output $O$: FP32 (accumulated), eventually FP16/BF16</li>
-</ul>
+<p>Table 1 是整篇工作的硬件洞察基础：同一 GPU 上三种 MMA 指令的吞吐差异（1×/2×/4×），4× 的指令此前未被 SageAttention2 利用。</p>
 
-<p><strong>Theoretical arithmetic intensity</strong>: For attention with seq_len $N$ and head_dim $d$:</p>
-<ul>
-<li>$QK^\top$: $O(N^2 d)$ FLOPs, $O(Nd)$ bytes → arithmetic intensity = $O(N)$</li>
-<li>$PV$: $O(N^2 d)$ FLOPs, $O(N^2 + Nd)$ bytes → for large $N$, compute-bound</li>
-<li>With FP8 quantization, the byte count per element halves → further improves arithmetic intensity</li>
-</ul>
+<div class="mermaid">
+flowchart TD
+    subgraph "SageAttention2++ Kernel"
+        A["Load Q, K tiles → SMEM"] --> B["QK^T via INT4/INT8 MMA<br/>(unchanged from SageAttn2)"]
+        B --> C["Online Softmax → P̃ (FP32)"]
+        C --> D["Quantize P̃ → FP8<br/>δP = max|P̃| / 224"]
+        E["Load V tile → SMEM"] --> F["Quantize V → FP8<br/>δV = colmax|V| / 4.5"]
+        D --> G["PV Matmul: mma.f16.f8.f8.f16<br/>(4× speed vs FP16)"]
+        F --> G
+        G --> H{"Every 2 MMAs?"}
+        H -->|Yes| I["acc_fp32 += float32(acc_fp16)<br/>Delayed FP32 Buffering"]
+        H -->|No| G
+        I --> J["Dequantize: O = acc × δP × δV"]
+        J --> K["Online softmax rescale → Write O to HBM"]
+    end
+</div>
 
-<p><strong>Roofline position</strong>: At long sequences (8K+), attention is compute-bound on the Matmul operations. Using FP8 inputs with 4x instruction throughput shifts the bottleneck further toward memory bandwidth for the quantize/dequantize overhead.</p>
+<p>关键变化仅在 PV matmul 路径：accumulator datatype FP32→FP16 + 量化范围 448→224/4.5。QK^T 路径和 online softmax 完全继承 SageAttention2。</p>
 
-<h3 id="2-hardware-model">2. Hardware Model <a class="heading-anchor" href="#2-hardware-model" aria-label="Link to 2-hardware-model">#</a></h3>
+<hr>
 
-<p><strong>Target GPU architecture</strong>: NVIDIA Ada Lovelace (RTX 4090 — SM89) and Blackwell consumer (RTX 5090).</p>
-
-<p><strong>Hardware units used</strong>:</p>
-<ul>
-<li><strong>Tensor Cores</strong>: FP8 MMA with FP16 accumulator (<code>mma.f16.f8.f8.f16</code>). On Ada, the 4th generation Tensor Cores support FP8 with both FP16 and FP32 accumulators. The FP16 accumulator variant runs at 2x the throughput of FP32 accumulator.</li>
-<li><strong>CUDA cores</strong>: For quantization (scaling factors computation), softmax, dequantization</li>
-<li><strong>Special function units</strong>: Not directly used</li>
-</ul>
-
-<p><strong>Memory hierarchy exploitation</strong>:</p>
-<ul>
-<li><strong>Registers</strong>: FP16 accumulator results stored in registers (fewer bits = less register pressure than FP32 accumulators)</li>
-<li><strong>Shared memory/LDS</strong>: Tiled Q, K, P, V blocks following FlashAttention's tiling scheme</li>
-<li><strong>L2 cache</strong>: Not explicitly discussed</li>
-<li><strong>HBM</strong>: Source tensors Q, K, V, output O</li>
-</ul>
-
-<p><strong>Theoretical peak throughput</strong>:</p>
-<ul>
-<li>RTX 4090: FP8 with FP32 accumulator = 661 TFLOPS, FP8 with FP16 accumulator = ~1322 TFLOPS (2x)</li>
-<li>The paper achieves up to 640 TOPS at 32K seq_len on RTX4090 (headdim=128, non-causal), which includes the entire attention pipeline not just PV Matmul</li>
-</ul>
-
-<h3 id="3-optimization-techniques">3. Optimization Techniques <a class="heading-anchor" href="#3-optimization-techniques" aria-label="Link to 3-optimization-techniques">#</a></h3>
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
 
 <table>
-<tr><th>Technique</th><th>Applied?</th><th>Details</th></tr>
-<tr><td>Tiling / blocking</td><td>Yes (inherited)</td><td>FlashAttention-style tiling of Q, K, P, V into blocks; tile sizes not explicitly stated</td></tr>
-<tr><td>Software pipelining</td><td>Likely (inherited)</td><td>SageAttention2 base implementation uses pipelined loads</td></tr>
-<tr><td>Warp/wavefront specialization</td><td>Not discussed</td><td>—</td></tr>
-<tr><td>Vectorized memory access</td><td>Likely</td><td>FP8 enables 2x more elements per 128-bit load vs FP16</td></tr>
-<tr><td>Shared memory / LDS optimization</td><td>Yes (inherited)</td><td>Tiled blocks stored in shared memory</td></tr>
-<tr><td>Register pressure management</td><td><strong>Yes (key)</strong></td><td>FP16 accumulator uses 16-bit registers vs 32-bit for FP32, reducing register pressure</td></tr>
-<tr><td>Asynchronous operations</td><td>Not discussed</td><td>—</td></tr>
-<tr><td>Kernel fusion</td><td>Yes (inherited)</td><td>Full attention (QK^T → softmax → PV) fused in single kernel</td></tr>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$P_r$</td><td>$\hat{P}$ 量化后的最大绝对值上限（代替 E4M3 的 448）</td></tr>
+<tr><td>$V_r$</td><td>$\hat{V}$ 量化后的最大绝对值上限</td></tr>
+<tr><td>$\delta_P, \delta_V$</td><td>per-block / per-channel scale factors</td></tr>
+<tr><td>$k=32$</td><td><code>mma.m16n8k32</code> 的累加维度</td></tr>
 </table>
 
-<p><strong>Novel technique — Delayed FP32 Buffering</strong>: Accumulate 2 consecutive <code>mma.m16n8k32</code> results in FP16 before converting to FP32. This halves the number of FP16→FP32 conversion PTX instructions, reducing overhead. The tradeoff is a tighter range constraint ($P_r \times V_r \leq 1023.5$ instead of 2047).</p>
+<p><strong>核心方程及物理意义</strong>:</p>
 
-<p><strong>Novel technique — Quantization range narrowing</strong>: Instead of using the full E4M3 range ($\pm 448$), use custom scale factors to restrict $P$ to $\pm 224$ and $V$ to $\pm 4.5$. This ensures 32 accumulated products fit in FP16 range.</p>
+<p>$$|32 \times p \times v| \leq 65504$$</p>
 
-<h3 id="4-performance-analysis">4. Performance Analysis <a class="heading-anchor" href="#4-performance-analysis" aria-label="Link to 4-performance-analysis">#</a></h3>
+<p>含义：MMA 指令沿 k=32 维累加乘积，worst-case（同号最大值）不得溢出 FP16 range。化简得 $|p \times v| \leq 2047$，即 $P_r \times V_r \leq 2047$。</p>
 
-<p><strong>% of theoretical peak</strong>:</p>
-<ul>
-<li>RTX4090, headdim=128, non-causal, 32K: 640 TOPS achieved. If we estimate FP8+FP16acc peak at ~1322 TFLOPS, but the full attention includes QK^T (INT4/INT8), softmax, quantization overhead — 640 TOPS for the full pipeline is excellent.</li>
-<li>The speedup ratios are more informative: 3.9x over FlashAttention2 for (4+8) variant, 3.0x for (8+8) variant.</li>
+<p>$$\delta_P = |\max(\widetilde{P})| / P_r, \quad \delta_V = \text{colmax}(|V|) / V_r$$</p>
+
+<p>含义：对称量化 scale factors，将实际值映射到缩窄后的整数范围 $[-P_r, P_r]$ 和 $[-V_r, V_r]$。</p>
+
+<p>$$P_r \times V_r \leq 2047 / 2 = 1023.5$$</p>
+
+<p>含义：Delayed FP32 Buffering 连续累加 2 次 MMA 结果再转 FP32，约束收紧 2×。</p>
+
+<p><strong>6 minimum checks</strong>:</p>
+
+<ol>
+<li>✅ 维度一致性: $P_r \times V_r = 224 \times 4.5 = 1008 \leq 1023.5$</li>
+<li>✅ 边界条件: post-softmax $P$ 值域 $[0,1]$，量化到 $[0, 224]$ 而非 $[-224, 224]$，单调非负进一步降低溢出风险</li>
+<li>✅ Scale factor 定义: $\delta_P = \max(\widetilde{P})/224$ 是 per-block scalar; $\delta_V = \text{colmax}(|V|)/4.5$ 是 per-channel vector</li>
+<li>✅ Dequant 恢复: $PV = \hat{P}\hat{V} \times \delta_P \times \delta_V$，scale factors 在 matmul 外乘回</li>
+<li>✅ $P$ 非负性未被利用: worst-case bound 保守地假设 $|p|$ 可达 $P_r$，实际 $p \in [0, P_r]$ 因 softmax</li>
+<li>✅ 表 2 验证: 所有满足约束的 $(P_r, V_r)$ 组合 cosine similarity 均为 99.97%</li>
 </ul>
 
-<p><strong>Performance vs baselines</strong>:</p>
-<ul>
-<li>FlashAttention2: 3.9x speedup (4+8 variant), 3.0x (8+8 variant)</li>
-<li>SageAttention1: ~1.1-1.3x speedup over Sage1</li>
-<li>SageAttention2: ~1.1-1.5x speedup over corresponding Sage2 variants</li>
-</ul>
+<hr>
 
-<p><strong>Scaling with problem size</strong>: Performance improves significantly from 1K to 8K sequence length, then plateaus from 16K-32K. This is expected as longer sequences amortize kernel launch overhead and achieve better Tensor Core utilization. At 1K, the speedup over FlashAttention2 is smaller (~2x for 4+8) because the kernel doesn't fully saturate.</p>
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
 
-<h3 id="5-numerical-considerations">5. Numerical Considerations <a class="heading-anchor" href="#5-numerical-considerations" aria-label="Link to 5-numerical-considerations">#</a></h3>
+<p><img src="/assets/2505.21136/tab2.png" alt="Table 2: Attention accuracy with different quantization ranges"></p>
 
-<p><strong>Accuracy vs baseline</strong>:</p>
-<ul>
-<li>Cosine similarity: 99.97% (same as SageAttention2, measured across all attention layers of CogvideoX)</li>
-<li>L1 distance: 0.01862 (essentially identical to SageAttention2)</li>
-<li>End-to-end metrics on 6 diverse models show negligible degradation</li>
-</ul>
+<p><em>Paper Table 2: Average attention accuracy (CogvideoX) for various $(P_r, V_r)$ pairs. All configurations maintain 99.97% cosine similarity, demonstrating that narrowing quantization range has negligible effect on attention output quality.</em></p>
 
-<p><strong>Numerical stability tricks</strong>:</p>
-<ul>
-<li><strong>Scale factor adjustment</strong>: $\delta_P = |\max(\tilde{P})| / P_r$ and $\delta_V = |\max(V)| / V_r$ where $P_r = 224$, $V_r = 4.5$</li>
-<li><strong>Per-block granularity for $P$</strong>: Each tile block has its own scale factor</li>
-<li><strong>Per-channel granularity for $V$</strong>: Each column of $V$ has a separate scale factor (inherited from SageAttention2)</li>
-<li><strong>Delayed FP32 Buffering</strong>: Limits FP16 accumulation to 2 MMA results before promoting to FP32, preventing long-chain FP16 accumulation errors</li>
-</ul>
+<p>Table 2 是精度安全性的核心证据。$V_r$ 从 448 缩窄到 4.5（100× 压缩）对精度零影响，因 post-softmax $P$ 的实际数值远小于 E4M3 满量程，per-channel $V$ scaling 已捕获通道间差异。</p>
 
-<p><strong>Edge cases</strong>: Not discussed. The narrow quantization range ($V_r = 4.5$) could be problematic for $V$ values with extreme dynamic range, but the per-channel scaling helps mitigate this.</p>
+<p><img src="/assets/2505.21136/fig3.png" alt="Figure 3: Speed comparison RTX5090 headdim=128"></p>
 
-<h3 id="6-portability">6. Portability <a class="heading-anchor" href="#6-portability" aria-label="Link to 6-portability">#</a></h3>
+<p><em>Paper Figure 3: Kernel speed on RTX5090, headdim=128. The speedup pattern is consistent with RTX4090, confirming the technique generalizes across Ada and Blackwell architectures.</em></p>
+
+<p>RTX5090 上的一致表现说明优化并非针对特定 SM 版本的 micro-architectural quirk，而是利用了跨代稳定的指令级吞吐差异。</p>
+
+<p><img src="/assets/2505.21136/fig5.png" alt="Figure 5: Visible quality comparison"></p>
+
+<p><em>Paper Figure 5: Qualitative comparison of generated outputs between Full-Precision, SageAttention2, and SageAttention2++. Visual quality is indistinguishable.</em></p>
+
+<p>定性对比进一步确认端到端无肉眼可见差异。</p>
+
+<p><img src="/assets/2505.21136/tab3.png" alt="Table 3: End-to-end metrics"></p>
+
+<p><em>Paper Table 3: Comprehensive end-to-end evaluation across 6 models (Llama3.1, CogvideoX, HunyuanVideo, Wan, Flux, SD3.5). SageAttn2++(8+8) achieves near-identical metrics to full precision across all tasks.</em></p>
+
+<p>Table 3 是端到端验证的全量数据。值得注意的例外：Wan (4+8) 的 VQA-a 从 53.3 降至 29.7（44% drop），但这同样出现在 SageAttn2(4+8) 中，说明是 INT4 QK 量化的问题而非 SageAttn2++ 引入。</p>
+
+<hr>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
 
 <table>
-<tr><th>Dimension</th><th>Assessment</th></tr>
-<tr><td>Cross-GPU within vendor</td><td>Limited to Ada and newer (RTX 4090, RTX 5090). The <code>mma.f16.f8.f8.f16</code> instruction is not available on Ampere. Hopper has FlashAttention3 with different optimization paths.</td></tr>
-<tr><td>Cross-vendor</td><td>CUDA-only. AMD CDNA3/4 have similar FP8 instructions but different accumulator behavior. Would require significant rewrite for HIP.</td></tr>
-<tr><td>Integration</td><td>Part of SageAttention library (https://github.com/thu-ml/SageAttention). Drop-in replacement for standard attention via Python API.</td></tr>
-<tr><td>Compiler dependency</td><td>Requires CUDA toolkit supporting PTX ISA 8.x for Ada FP8 instructions.</td></tr>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Strength</th></tr>
+<tr><td>1</td><td><code>mma.f16.f8.f8.f16</code> 比 <code>mma.f32.f8.f8.f32</code> 快 2×</td><td>Table 1 实测 RTX4090/5090</td><td>Strong — hardware spec + microbenchmark</td></tr>
+<tr><td>2</td><td>直接使用 FP16 acc 会溢出</td><td>分析：$448 \times 448 \times 32 = 6,422,528 \gg 65504$</td><td>Strong — arithmetic proof</td></tr>
+<tr><td>3</td><td>缩窄 $P_r, V_r$ 使 $P_r \times V_r \leq 1023.5$ 可避免溢出</td><td>Eq.1-3 推导</td><td>Strong — closed-form bound</td></tr>
+<tr><td>4</td><td>缩窄量化范围不损精度</td><td>Table 2: cosine sim 99.97% across all configs</td><td>Strong — empirical on CogvideoX</td></tr>
+<tr><td>5</td><td>Kernel 整体加速 3.9×/3.0×</td><td>Fig.1-4: 多序列长度、两款 GPU</td><td>Strong — reproducible benchmark</td></tr>
+<tr><td>6</td><td>端到端指标无损</td><td>Table 3: 6 models × 多指标</td><td>Moderate — (8+8) strong; (4+8) on Wan has 44% VQA drop</td></tr>
 </table>
 
-<h3 id="7-source-code-repository">7. Source Code & Repository <a class="heading-anchor" href="#7-source-code-repository" aria-label="Link to 7-source-code-repository">#</a></h3>
+<hr>
 
-<ul>
-<li><strong>Repository</strong>: https://github.com/thu-ml/SageAttention</li>
-<li><strong>Language</strong>: CUDA + Python (PyTorch extension)</li>
-<li><strong>Build</strong>: Standard PyTorch CUDA extension (setup.py / pip install)</li>
-<li><strong>Benchmark</strong>: Evaluation scripts for multiple models included</li>
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>Repository</strong>: <https://github.com/thu-ml/SageAttention></p>
+
+<p><strong>语言</strong>: CUDA + Python (PyTorch extension)</p>
+
+<p><strong>关键实现细节</strong>:</p>
+
+<ol>
+<li><strong>PTX 指令选择</strong>: 核心在于 <code>mma.m16n8k32</code> 指令调用时指定 <code>.f16</code> accumulator 而非 <code>.f32</code>。这是单行 PTX inline asm 的差异，但需要整个 quantization pipeline 配合调整 scale factors。</li>
 </ul>
 
-<h3 id="8-key-source-code-walkthrough">8. Key Source Code Walkthrough <a class="heading-anchor" href="#8-key-source-code-walkthrough" aria-label="Link to 8-key-source-code-walkthrough">#</a></h3>
-
-<h4 id="8b-pseudocode-annotation">8b. Pseudocode Annotation <a class="heading-anchor" href="#8b-pseudocode-annotation" aria-label="Link to 8b-pseudocode-annotation">#</a></h4>
-
-<p>The paper doesn't provide explicit pseudocode, but the algorithm can be reconstructed:</p>
-
-<pre><code>
-# SageAttention2++ PV Matmul (per tile block)
-# Grid: blocks over Q tiles × head × batch
-# Block: warps cover the tile computation
-
-1. Load Q_tile, K_tile from HBM → shared memory
-2. Compute QK^T via INT4/INT8 Matmul (unchanged from SageAttention2)
-3. Apply online softmax → P_tile (FP32)
-
-4. QUANTIZE P_tile to FP8:
-   δP = max(|P_tile|) / 224          # [Register] narrowed range (was /448)
-   P_hat = round(P_tile / δP)        # [Register → Shared] FP8 E4M3
-
-5. Load V_tile from HBM → shared memory
-6. QUANTIZE V_tile to FP8:
-   δV = colmax(|V_tile|) / 4.5       # [Register] per-channel, narrowed (was /448)
-   V_hat = round(V_tile / δV)        # [Shared] FP8 E4M3
-
-7. COMPUTE PV via mma.f16.f8.f8.f16:
-   for k_chunk in range(0, K, 32):
-     # [Tensor Core] MMA: FP8 × FP8 → FP16 accumulator
-     acc_fp16 += mma.f16.f8.f8.f16(P_hat_chunk, V_hat_chunk)  # 4x speed vs FP16
-     if k_chunk % 2 == 1:           # Delayed FP32 Buffering
-       acc_fp32 += float32(acc_fp16) # [Register] promote every 2 MMAs
-       acc_fp16 = 0
-
-8. DEQUANTIZE: O_tile = acc_fp32 * δP * δV  # [Register]
-9. Online softmax rescaling + write O_tile to HBM
-</code></pre>
-
-<p><strong>Key performance insight</strong>: Step 7 is where the 2x speedup happens. By using <code>mma.f16.f8.f8.f16</code> instead of <code>mma.f32.f8.f8.f32</code>, the Tensor Core throughput doubles. The Delayed FP32 Buffering in Step 7's if-branch reduces FP16→FP32 conversion overhead by 50%.</p>
-
-<h4 id="8c-data-layout-memory-access-patterns">8c. Data Layout & Memory Access Patterns <a class="heading-anchor" href="#8c-data-layout-memory-access-patterns" aria-label="Link to 8c-data-layout-memory-access-patterns">#</a></h4>
-
-<ul>
-<li><strong>Input tensors</strong>: Standard [batch, heads, seq_len, head_dim] layout (row-major for Q/P, column-major granularity for V scaling)</li>
-<li><strong>Memory coalescing</strong>: FP8 quantized tensors enable twice the elements per cache line, improving effective bandwidth</li>
-<li><strong>Register allocation</strong>: FP16 accumulator registers use half the bits of FP32, freeing registers for other uses (potential occupancy improvement)</li>
-<li><strong>Bank conflicts</strong>: Inherited from SageAttention2's shared memory layout design</li>
+<ol>
+<li><strong>Per-channel vs per-block granularity</strong>: $V$ 使用 per-channel（per-column）scale factor 是精度保持的关键——当 $V_r$ 缩窄到 4.5 时，per-channel scaling 确保每列独立利用有限量化范围。若使用 per-tensor scaling，4.5 的范围会严重损失低幅值通道的信息。</li>
 </ul>
 
-<h3 id="9-infrastructure-impact">9. Infrastructure Impact <a class="heading-anchor" href="#9-infrastructure-impact" aria-label="Link to 9-infrastructure-impact">#</a></h3>
+<p><strong>Code未公开细节</strong>: 论文发表时代码承诺 "will be available"。基于 SageAttention 仓库历史，实现预期在 <code>csrc/</code> 目录下的 CUDA kernel 文件中，通过 <code>sage_attn_cuda.cu</code> 或类似入口注册为 PyTorch custom op。</p>
+
+<hr>
+
+<h2 id="§8-project-identity-code-specific">§8 Project Identity (Code-specific) <a class="heading-anchor" href="#§8-project-identity-code-specific" aria-label="Link to §8-project-identity-code-specific">#</a></h2>
 
 <table>
-<tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>Enables significantly faster attention without changing any model architecture or training algorithm. Makes long-context attention more practical.</td></tr>
-<tr><td>Framework</td><td>Drop-in attention kernel replacement in PyTorch. Can be integrated into vLLM, SGLang, and other serving frameworks for immediate latency reduction.</td></tr>
-<tr><td>LLM</td><td>3.9x attention speedup directly reduces prefill latency for long-context LLM inference. For models where attention is the bottleneck (long sequences), this translates to significant end-to-end improvement.</td></tr>
-<tr><td>Agent</td><td>Faster inference enables more responsive agent interactions, particularly for agents processing long contexts (RAG, document analysis).</td></tr>
+<tr><th>Field</th><th>Value</th></tr>
+<tr><td>Repo URL</td><td><https://github.com/thu-ml/SageAttention></td></tr>
+<tr><td>Primary language</td><td>CUDA, Python</td></tr>
+<tr><td>License</td><td>Apache-2.0</td></tr>
+<tr><td>Sponsor org</td><td>Tsinghua ML Group + Shengshu Tech</td></tr>
+<tr><td>Build system</td><td>PyTorch CUDA extension (setup.py / pip)</td></tr>
+<tr><td>Target HW</td><td>NVIDIA Ada (SM89) + Blackwell consumer (RTX 5090)</td></tr>
 </table>
+
+<hr>
+
+<h2 id="§9-architecture-module-map-code-specific">§9 Architecture & Module Map (Code-specific) <a class="heading-anchor" href="#§9-architecture-module-map-code-specific" aria-label="Link to §9-architecture-module-map-code-specific">#</a></h2>
+
+<div class="mermaid">
+flowchart LR
+    subgraph "SageAttention Library"
+        API["Python API<br/>sage_attn()"] --> Dispatch["Dispatch Layer<br/>variant selection"]
+        Dispatch --> QK_INT["QK Kernel<br/>INT4/INT8 matmul"]
+        Dispatch --> PV_FP8["PV Kernel<br/>FP8 + FP16 acc"]
+        Dispatch --> Softmax["Online Softmax<br/>+ rescale"]
+        QK_INT --> SMEM["Shared Memory<br/>Tiling (FlashAttn style)"]
+        PV_FP8 --> SMEM
+        PV_FP8 --> MMA["mma.f16.f8.f8.f16<br/>Tensor Core"]
+    end
+    User["User Code<br/>model.forward()"] --> API
+    API --> Output["Attention Output<br/>(drop-in replacement)"]
+</div>
+
+<p>用户通过 <code>sage_attn()</code> Python 接口调用，内部根据配置 (4+8 / 8+8) 选择具体 kernel variant，kernel 内融合 QK matmul → softmax → PV matmul 全流程。</p>
+
+<hr>
+
+<h2 id="§10-critical-path-analysis-code-specific">§10 Critical Path Analysis (Code-specific) <a class="heading-anchor" href="#§10-critical-path-analysis-code-specific" aria-label="Link to §10-critical-path-analysis-code-specific">#</a></h2>
+
+<p>Hot path: <code>sage_attn()</code> → CUDA kernel launch → per-tile loop:</p>
+
+<ol>
+<li><strong>Load Q/K tiles</strong> → shared memory (HBM bandwidth bound)</li>
+<li><strong>INT4/INT8 QK^T matmul</strong> → Tensor Core (compute bound, 2×-4× vs FP16)</li>
+<li><strong>Online softmax</strong> → registers (compute, but lightweight vs matmul)</li>
+<li><strong>Quantize P̃ → FP8</strong> → registers (scale factor computation + round)</li>
+<li><strong>Load V tile</strong> → shared memory</li>
+<li><strong>Quantize V → FP8</strong> → per-channel scale + round</li>
+<li><strong>PV matmul via <code>mma.f16.f8.f8.f16</code></strong> → Tensor Core (<strong>HOT</strong>: 4× instruction throughput)</li>
+<li><strong>Delayed FP32 Buffering</strong> → register promotion every 2 MMAs</li>
+<li><strong>Dequantize + rescale</strong> → write O to HBM</li>
+</ul>
+
+<p>Step 7 是 SageAttn2++ 的核心优化点。Latency budget: PV matmul 占 attention 总时间的 ~40-50%（与 QK^T 大致对称），将其指令吞吐翻倍带来整体 ~1.3-1.5× 提升（从 SageAttn2 的 3× 到 3.9×）。</p>
+
+<hr>
+
+<h2 id="§11-performance-characteristics-code-specific">§11 Performance Characteristics (Code-specific) <a class="heading-anchor" href="#§11-performance-characteristics-code-specific" aria-label="Link to §11-performance-characteristics-code-specific">#</a></h2>
+
+<table>
+<tr><th>Config</th><th>GPU</th><th>headdim</th><th>Speedup vs FA2</th><th>Absolute (TOPS, est.)</th></tr>
+<tr><td>SageAttn2++(4+8)</td><td>RTX4090</td><td>128</td><td>3.9×</td><td>~640</td></tr>
+<tr><td>SageAttn2++(8+8)</td><td>RTX4090</td><td>128</td><td>3.0×</td><td>~490</td></tr>
+<tr><td>SageAttn2++(4+8)</td><td>RTX5090</td><td>128</td><td>~3.5-4×</td><td>N/A</td></tr>
+<tr><td>SageAttn2++(8+8)</td><td>RTX5090</td><td>128</td><td>~3×</td><td>N/A</td></tr>
+</table>
+
+<p><strong>Scaling</strong>: 性能随序列长度增长而提升（1K → 32K），在 8K+ 趋于稳定——长序列充分利用 Tensor Core 占用率。短序列（1K）下加速比降至 ~2×，因 kernel launch 和 quantization overhead 占比增大。</p>
+
+<hr>
+
+<h2 id="§12-comparison-with-alternatives-code-specific">§12 Comparison with Alternatives (Code-specific) <a class="heading-anchor" href="#§12-comparison-with-alternatives-code-specific" aria-label="Link to §12-comparison-with-alternatives-code-specific">#</a></h2>
+
+<table>
+<tr><th>Feature</th><th>SageAttn2++</th><th>FlashAttention2</th><th>FlashAttention3</th><th>SageAttention2</th></tr>
+<tr><td>Speed (vs FA2)</td><td><strong>3.9×</strong></td><td>1×</td><td>~1.5-2× (Hopper only)</td><td>3×</td></tr>
+<tr><td>Accuracy</td><td>99.97% cossim</td><td>exact</td><td>exact</td><td>99.97% cossim</td></tr>
+<tr><td>GPU support</td><td>Ada + Blackwell consumer</td><td>Ampere+</td><td><strong>Hopper only</strong></td><td>Ada+</td></tr>
+<tr><td>Accumulator</td><td>FP16</td><td>FP32</td><td>FP32</td><td>FP32</td></tr>
+<tr><td>QK precision</td><td>INT4/INT8</td><td>FP16</td><td>FP8</td><td>INT4/INT8</td></tr>
+<tr><td>PV precision</td><td>FP8 (narrowed range)</td><td>FP16</td><td>FP8</td><td>FP8</td></tr>
+<tr><td>Drop-in?</td><td><strong>Yes</strong></td><td>Yes</td><td>Yes</td><td><strong>Yes</strong></td></tr>
+</table>
+
+<p>SageAttn2++ 的优势在消费级 GPU（RTX4090/5090）上最为突出，这些 GPU 没有 FlashAttention3 支持。在 Hopper GPU 上（H100/H200），FA3 是更强基线但 SageAttn2++ 的指令不一定可用。</p>
+
+<hr>
+
+<h2 id="§13-verdict-recommendations-code-specific">§13 Verdict & Recommendations (Code-specific) <a class="heading-anchor" href="#§13-verdict-recommendations-code-specific" aria-label="Link to §13-verdict-recommendations-code-specific">#</a></h2>
+
+<p><strong>When to adopt (Yes regime)</strong>:</p>
+<ul>
+<li>RTX4090/5090 上的 long-context inference（8K+ tokens）</li>
+<li>视频/图像生成模型推理（attention 占比高）</li>
+<li>需要 plug-and-play 加速且不可改模型架构的场景</li>
+<li>对 ~0.03% 精度损失可接受（几乎所有推理场景）</li>
+</ul>
+
+<p><strong>When NOT to adopt (No regime)</strong>:</p>
+<ul>
+<li>Hopper/Blackwell datacenter GPU（H100/H200/B200）—— 有 FlashAttention3</li>
+<li>训练场景（backward pass 未实现）</li>
+<li>对数值精度极度敏感的应用（金融、科学计算）</li>
+<li>$V$ 值分布极端（跨通道方差超大）的特殊架构</li>
+</ul>
+
+<p><strong>Suggested contributions</strong>:</p>
+<ol>
+<li>添加 backward pass 支持以扩展到 training</li>
+<li>对 Wan (4+8) 的 VQA 降级做 root cause 分析（大概率是 INT4 QK 量化问题而非 PV 路径）</li>
+<li>自动化 $(P_r, V_r)$ 选择——runtime 检测 $V$ 实际分布后动态调整</li>
+</ul>
+
+<hr>
+
+<h2 id="§14-concurrency-memory-code-specific">§14 Concurrency & Memory (Code-specific) <a class="heading-anchor" href="#§14-concurrency-memory-code-specific" aria-label="Link to §14-concurrency-memory-code-specific">#</a></h2>
+
+<p><strong>Concurrency model</strong>: CUDA kernel, grid-level parallelism over (batch × heads × Q-tiles). Warp-level cooperative via Tensor Core MMA instructions.</p>
+
+<p><strong>Memory management</strong>:</p>
+<ul>
+<li>Shared memory: tiled blocks of Q, K, P, V (FlashAttention tiling scheme)</li>
+<li>Registers: FP16 accumulator (16-bit vs FP32's 32-bit → lower register pressure → potentially higher occupancy)</li>
+<li>HBM: source tensors Q, K, V and output O; no intermediate P matrix materialized (fused kernel)</li>
+</ul>
+
+<p><strong>Register pressure advantage</strong>: FP16 accumulator 使用的寄存器位宽仅为 FP32 的一半。对于 register-bound 的 attention kernel，这可能允许更大的 tile size 或更高的 warp occupancy。论文未量化此二阶效应。</p>
+
+<hr>
+
+<p><em>核心技术壁垒</em>: 对 PTX <code>mma.m16n8k32</code> 指令语义的精确建模（k=32 累加维度 × FP16 range = 硬约束），结合 post-softmax attention weight 的值域特性（$P \in [0,1]$ → 量化到 $[0, P_r]$），找到不损精度的非对称范围分配。这不是算法创新而是<strong>工程洞察</strong>——需要同时理解 ISA spec、数值表示、和 transformer attention 的统计特性。</p>
+
+<p><em>关键实现细节</em>:</p>
+<ol>
+<li>选择 $P_r = 224 \gg V_r = 4.5$ 的非对称分配（而非 $P_r = V_r = 32$）暗示 $V$ 通道间 per-channel scaling 已经将有效范围压缩到很小，$V_r = 4.5$ 的 headroom 对精度无影响。</li>
+<li>Delayed FP32 Buffering 的 "每 2 次 MMA 转一次" 是 overhead vs. tightened-constraint 的最优 tradeoff——每 3 次转更少 overhead 但约束过紧（$P_r \times V_r \leq 682$），每 1 次转则无收益。</li>
+</ul>
 
 </div>
 </div>

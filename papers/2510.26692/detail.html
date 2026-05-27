@@ -197,414 +197,460 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">Kimi Linear: An Expressive, Efficient Attention Architecture</h1>
 <div class="card-meta"><span class="badge badge-model">model</span> 2510.26692</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">kernel</span><span class="tag">algorithm</span><span class="tag">framework</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">linear-attention</span><span class="tag">delta-rule</span><span class="tag">hybrid-architecture</span><span class="tag">MoE</span><span class="tag">KV-cache-efficiency</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2510.26692.html">← Synthesis</a>
 <a href="/overview/model.html">← model Survey</a>
 <a href="https://arxiv.org/abs/2510.26692" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
-<h1 id="kimi-linear-an-expressive-efficient-attention-architecture">Kimi Linear: An Expressive, Efficient Attention Architecture <a class="heading-anchor" href="#kimi-linear-an-expressive-efficient-attention-architecture" aria-label="Link to kimi-linear-an-expressive-efficient-attention-architecture">#</a></h1>
+
+<h1 id="kimi-linear-an-expressive-efficient-attention-architecture-—-l2-deep-distill">Kimi Linear: An Expressive, Efficient Attention Architecture — L2 Deep Distill <a class="heading-anchor" href="#kimi-linear-an-expressive-efficient-attention-architecture-—-l2-deep-distill" aria-label="Link to kimi-linear-an-expressive-efficient-attention-architecture-—-l2-deep-distill">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Kimi Linear 是首个在短/长/RL 三大场景全面超越 full attention 的混合线性注意力架构。核心模块 KDA 将 channel-wise 细粒度遗忘门与 delta rule 结合，配合 3:1 KDA-to-MLA 混合结构实现 75% KV cache 节约与 6.3× 解码加速（1M context）。48B 总参 / 3B 激活的 MoE 模型在 1.4T tokens 训练下全面超过纯 MLA baseline。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>Softmax attention 在 agent / RL test-time scaling 场景下面临二次计算复杂度和线性增长 KV cache 的双重瓶颈。现有线性注意力（含 GDN）因有限状态容量在长上下文精确检索和表达力方面受限，而 scalar decay 过于粗粒度无法精确管理 RNN 记忆。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>Kimi Delta Attention (KDA)</strong>：在 Gated DeltaNet 的 scalar $\alpha_t$ 基础上引入 per-channel diagonal decay $\text{Diag}(\boldsymbol{\alpha}_t)$，使每个特征维度拥有独立遗忘率。核心递推：</p>
+
+<p>$$S_t = (I - \beta_t k_t k_t^\top) \text{Diag}(\boldsymbol{\alpha}_t) S_{t-1} + \beta_t k_t v_t^\top$$</p>
+
+<p>同时将 DPLR 低秩向量 $\mathbf{a} = \mathbf{b} = \sqrt{\beta} \cdot \mathbf{k}$ 绑定到 key，使 chunkwise 算法减少 4→2 二级分块矩阵运算 + 消除 3 次额外矩阵乘法，算子速度比通用 DPLR 提升 ~100%。</p>
+
+<p>混合架构采用 layerwise 3:1 KDA-to-MLA 比例，MLA 层使用 NoPE（无显式位置编码），将位置信息完全委托给 KDA 的隐式数据依赖衰减。</p>
+
+<p><strong>核心技术壁垒</strong>：将 DPLR 低秩向量绑定到 $\mathbf{k}$（$\mathbf{a}=\mathbf{b}=\sqrt{\beta}\mathbf{k}$）是 expressivity-efficiency Pareto 的关键——它保留了 fine-grained DPLR 的表达力，同时通过代数简化将 chunkwise kernel 的非 matmul FLOPs 减半，使 Tensor Core 利用率接近纯 matmul 操作。这个 constrained parameterization 是使 channel-wise gated delta rule 在实际硬件上可行的唯一已知路径。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<table>
+<tr><th>指标</th><th>Kimi Linear</th><th>MLA baseline</th><th>提升</th></tr>
+<tr><td>MMLU-Pro</td><td>51.0</td><td>47.2</td><td>+3.8</td></tr>
+<tr><td>GPQA-Diamond</td><td>62.1</td><td>57.1</td><td>+5.0</td></tr>
+<tr><td>RULER (128K)</td><td>84.3</td><td>81.3</td><td>+3.0</td></tr>
+<tr><td>MRCR (128K)</td><td>29.6</td><td>22.6</td><td>+7.0</td></tr>
+<tr><td>TPOT @ 1M tokens</td><td>1.84ms</td><td>11.48ms</td><td>6.3×</td></tr>
+<tr><td>KV cache</td><td>25%</td><td>100%</td><td>75% 节约</td></tr>
+<tr><td>Scaling law efficiency</td><td>—</td><td>—</td><td>1.16×</td></tr>
+</table>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2510.26692/fig3.png" alt="Figure 3: Kimi Linear architecture showing N×KDA blocks interleaved with MLA blocks, each followed by MoE"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "Illustration of our Kimi Linear model architecture, which consists of a stack of blocks containing a token mixing layer followed by a MoE channel-mixing layer. Specifically, we interleave N KDA layers with one MLA layer for token mixing, where N is set to 3 in our implementation.").</em></p>
+
+<p>该图展示了 Kimi Linear 的分层混合结构：每 3 个 KDA 层后接 1 个 MLA 层，所有层后接 MoE FFN（8/256 routed + 1 shared expert）。Layer 0 使用 dense FFN 保障训练稳定性。MLA 层采用 NoPE，位置编码完全由 KDA 层的 data-dependent diagonal decay 隐式提供。</p>
+
+<p><img src="/assets/2510.26692/fig1.png" alt="Figure 1: Performance vs acceleration Pareto and TPOT comparison"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "(a) Performance vs. acceleration. With strict fair comparisons with 1.4T training tokens, on MMLU-Pro (4k context length, red stars), Kimi Linear leads performance (51.0) at similar speed. On RULER (128k context length, blue circles), it is Pareto-optimal, achieving top performance (84.3) and 3.98× acceleration. (b) Time per output token (TPOT) vs. decoding length.").</em></p>
+
+<p>Figure 1a 展示 Kimi Linear 在 MMLU-Pro 和 RULER 两个维度均为 Pareto 最优；1b 展示 TPOT 随序列长度增长中 KDA 的 O(1) per-token 特性 vs MLA 的 O(n) 增长。</p>
+
+<h3 id="kda-数据流-from-code-modelingkimi-py-kimideltaattention">KDA 数据流 (from code: <code>modeling_kimi.py:KimiDeltaAttention</code>) <a class="heading-anchor" href="#kda-数据流-from-code-modelingkimi-py-kimideltaattention" aria-label="Link to kda-数据流-from-code-modelingkimi-py-kimideltaattention">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Input
+        X["x ∈ ℝ^(B×T×2304)"]
+    end
+
+    subgraph Projections
+        QP["q_proj: Linear(2304→4096)"]
+        KP["k_proj: Linear(2304→4096)"]
+        VP["v_proj: Linear(2304→4096)"]
+    end
+
+    subgraph ShortConv["ShortConvolution (kernel=4, silu)"]
+        QC["q_conv1d"]
+        KC["k_conv1d"]
+        VC["v_conv1d"]
+    end
+
+    subgraph Gates
+        FA["f_a_proj: Linear(2304→128)"]
+        FB["f_b_proj: Linear(128→4096)"]
+        FGATE["fused_kda_gate(g, A_log, dt_bias)"]
+        BP["b_proj: Linear(2304→32) → sigmoid → β"]
+    end
+
+    subgraph KDA_Core["chunk_kda / fused_recurrent_kda"]
+        CORE["S_t = (I - β k kᵀ) Diag(α) S_{t-1} + β k vᵀ"]
+    end
+
+    subgraph OutputGate
+        GA["g_a_proj: Linear(2304→128)"]
+        GB["g_b_proj: Linear(128→4096)"]
+        ONORM["FusedRMSNormGated(128, sigmoid)"]
+        OP["o_proj: Linear(4096→2304)"]
+    end
+
+    X --> QP --> QC
+    X --> KP --> KC
+    X --> VP --> VC
+    X --> FA --> FB --> FGATE
+    X --> BP
+
+    QC -->|"q: 32 heads × 128d"| CORE
+    KC -->|"k: 32 heads × 128d"| CORE
+    VC -->|"v: 32 heads × 128d"| CORE
+    FGATE -->|"g (α per-channel)"| CORE
+    BP -->|"β (per-head scalar)"| CORE
+
+    CORE -->|"o"| ONORM
+    X --> GA --> GB -->|"gate"| ONORM
+    ONORM --> OP
+</div>
+
+<h3 id="mla-数据流-from-code-modelingkimi-py-kimimlaattention">MLA 数据流 (from code: <code>modeling_kimi.py:KimiMLAAttention</code>) <a class="heading-anchor" href="#mla-数据流-from-code-modelingkimi-py-kimimlaattention" aria-label="Link to mla-数据流-from-code-modelingkimi-py-kimimlaattention">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Input
+        X2["x ∈ ℝ^(B×T×2304)"]
+    end
+
+    subgraph Q_Path
+        QP2["q_proj: Linear(2304→32×192=6144)"]
+        QSPLIT["split → q_nope(128d) + q_rope(64d)"]
+    end
+
+    subgraph KV_Path["Latent KV (MLA)"]
+        KVA["kv_a_proj_with_mqa: Linear(2304→576)"]
+        KVSPLIT["split → c_kv(512d) + k_rope(64d)"]
+        NORM["kv_a_layernorm(512)"]
+        KVB["kv_b_proj: Linear(512→32×256=8192)"]
+        KVSPLIT2["split → k_nope(128d) + v(128d)"]
+    end
+
+    subgraph Attention["Full Softmax Attention (NoPE: no RoPE applied)"]
+        ATT["scaled_dot_product(Q, K, V)"]
+    end
+
+    subgraph Output
+        OPROJ["o_proj: Linear(4096→2304)"]
+    end
+
+    X2 --> QP2 --> QSPLIT
+    X2 --> KVA --> KVSPLIT
+    KVSPLIT -->|"c_kv"| NORM --> KVB --> KVSPLIT2
+    KVSPLIT -->|"k_rope"| ATT
+    QSPLIT --> ATT
+    KVSPLIT2 --> ATT
+    ATT --> OPROJ
+</div>
+
 <blockquote>
-Kimi Team: Yu Zhang, Zongyu Lin, Xingcheng Yao et al. (60 authors) | 2025-10 | https://arxiv.org/abs/2510.26692
-Category: llm | Tags: linear-attention, hybrid, MoE, KDA, MLA, NoPE, kimi
-Read: 2026-04-18
+代码来源：https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct/blob/main/modeling_kimi.py
 </blockquote>
 
-<h2 id="模型架构互动图">模型架构互动图 <a class="heading-anchor" href="#模型架构互动图" aria-label="Link to 模型架构互动图">#</a></h2>
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
 
-<p>4 页：(1) 27 层中 KDA / MLA 的交错布局，(2) KDA 块内部（线性注意力 + 通道门 + 短卷积），(3) MLA 块（NoPE 模式），(4) 训练管线 + 与对照对比。</p>
-
-
-<p><!-- Source: former drawio page "1. Layer Interleaving (KDA + MLA)" (10 nodes, 4 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    kl_in["Embedding vocab=163 840 · d=2304"]
-    kl_pat["Layer Pattern (27 total): KDA, KDA, KDA, MLA, KDA, KDA, KDA, MLA, KDA, KDA, KDA, MLA, KDA, KDA, KDA, MLA, KDA, KDA, KDA, MLA, KDA, KDA, KDA, MLA, KDA, KDA, MLA → 20 KDA + 7 MLA (≈ 2.86:1, paper says 3:1)"]
-    kl_legend["● KDA = Kimi Delta Attention (linear, fixed-size state) ● MLA = Multi-head Latent Attention (full attention, NoPE) KV cache footprint: KDA layer: O(d_k · d_v) per head, fixed MLA layer: O(T · 512+64) per token (latent..."]
-    kl_dec["Each layer: RMSNorm → (KDA &vert; MLA) → +Res RMSNorm → MoE FFN → +Res MoE: 256 routed + 1 shared, top-8 moe_intermediate=1024, dense=9216 Layer 0 dense (first_k_dense_replace=1)"]
-    kl_lmh["RMSNorm + LM Head Lin(2304 → 163 840)"]
-    kl_out["Logits"]
-    kl_ctx["Context support: 1 048 576 (1M) NoPE on MLA + recency via KDA gates → no RoPE extrapolation issues"]
-    t_t1["Kimi Linear — Hybrid 20 KDA + 7 MLA layers (released 48B-A3B-Instruct)"]
-    kl_in -->|" "| kl_pat
-    kl_pat -->|" "| kl_dec
-    kl_dec -->|" "| kl_lmh
-    kl_lmh -->|" "| kl_out
-</div>
-
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-
-<p>第一个在<strong>公平对比下全面超越 Full Attention</strong> 的混合线性注意力架构。核心构件 <strong>KDA (Kimi Delta Attention)</strong> 把 Gated DeltaNet 的 <strong>scalar forget gate</strong> 替换成 <strong>per-channel diagonal gate</strong> \(\text{Diag}(\alpha_t)\)，让每个特征维度有独立的遗忘率；通过把转移矩阵约束为 <strong>DPLR 的特例 (a = b = k)</strong> 让 chunkwise kernel 比通用 DPLR 快 ~2×。<strong>层级混合</strong>：每 3 层 KDA 后插 1 层 MLA（NoPE），实测 3:1 比例最优。</p>
-
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
-
-<p>Kimi Linear 解决线性注意力多年的"质量-效率"两难。其核心 <strong>KDA</strong> 模块的递推：</p>
-
-<p>$$S_t = \bigl(I - \beta_t k_t k_t^\top\bigr) \cdot \text{Diag}(\alpha_t) \cdot S_{t-1} + \beta_t k_t v_t^\top, \qquad o_t = S_t^\top q_t$$</p>
-
-<p>相比 Mamba2 的 scalar gate、GLA 的全 channel gate，KDA 的 diagonal gate 给出"中间地带"——每 channel 一个遗忘率但保持 rank-1 delta 修正，因此可以用约束 DPLR 推导出 <strong>chunkwise kernel</strong>，在 H100/MI300X 上比通用 DPLR 快 2× 且与 delta rule 数值一致。</p>
-
-<p><strong>层级 hybrid 设计</strong>：</p>
-<ul>
-<li><strong>设计</strong>：每 3 个 KDA 层 + 1 个 MLA 层（3:1 比例）</li>
-<li><strong>释出 27 层模型实际布局</strong>：20 KDA + 7 MLA（≈ 2.86:1，不是完美 3:1，因为 27 不被整除）</li>
-<li>KDA 层（1-based config）: 1, 2, 3, <strong>5</strong>, 6, 7, <strong>9</strong>, 10, 11, <strong>13</strong>, 14, 15, <strong>17</strong>, 18, 19, <strong>21</strong>, 22, 23, <strong>25</strong>, 26</li>
-<li>MLA 层（1-based）: 4, 8, 12, 16, 20, 24, <strong>27</strong></li>
-</ul>
-
-<p><strong>MLA 层用 NoPE</strong>——不施加 RoPE。位置/recency 完全靠 KDA 层的 data-dependent gate + short conv 提供。这让 model_max_length 拉到 <strong>1 048 576 (1M)</strong> 而无 RoPE 外推问题。</p>
-
-<p><strong>MoE backbone</strong>：48B total / 3B active；256 routed + 1 shared, top-8；layer 0 dense；vocab 163840；hidden 2304；FFN dense=9216, MoE expert=1024。</p>
-
-<p><strong>训练</strong>：Pretrain (fair) 1.4T @ 4K · MuonClip + WSD lr=1.1e-3 · global batch 32M。Pretrain (release) 5.7T。SFT 两段（IF → reasoning）。RL 用 K1.5 算法 + PTX loss + truncated importance sampling + dynamic KL。</p>
-
-<p><strong>推理优势</strong>：长上下文 decode 吞吐 +75%；KV cache 减 ~75%（KDA 层无 per-token KV，只有 fixed 128×128 state）。</p>
-
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
-
-<ul>
-<li><strong>KDA 公式</strong>：\(S_t = (I − β_t k_t k_t^\top)\text{Diag}(α_t) S_{t-1} + β_t k_t v_t^\top\) — diagonal gate 替代 scalar gate</li>
-<li><strong>Hybrid 比例</strong>：3:1 最优（消融证）；pure MLA (0:1) 最差，过疏 (15:1) 退化</li>
-<li><strong>NoPE on MLA</strong> > RoPE on MLA（Table 5），KDA 提供隐式 recency 已足够</li>
-<li><strong>Output gate sigmoid > Swish > none</strong>（消融）</li>
-<li><strong>ShortConv (k=4) 必需</strong>（消融），施加在 q/k/v 各路径上 + Swish</li>
-<li><strong>L2 norm on q,k</strong>（每 head 每 channel）— 训练稳定性关键</li>
-<li><strong>DPLR 约束 (a = b = k)</strong> 让 chunkwise 算法跳过 secondary chunk 的部分 matmul → ~2× speedup</li>
-<li><strong>Released 模型实际布局</strong>：27L 中 <strong>20 KDA + 7 MLA</strong>，不是完美 3:1（27 不整除）</li>
-<li><strong>Per-head state size 128×128</strong> = 16 384 floats / head，32 heads → ~524K floats / layer (KDA 部分)</li>
-<li><strong>MLA layers 用 latent KV</strong>（512+64 = 576 floats / token），相对标准 MHA 减 14×</li>
-<li><strong>Pretrain：1.4T fair / 5.7T release</strong>，MuonClip + WSD</li>
-<li><strong>Long context 1M</strong>：NoPE + KDA gates，not RoPE/YaRN</li>
-<li><strong>Decode throughput +75%</strong> on long context（论文 Fig. 2）</li>
-<li><strong>AttnRes 已用</strong>（与 Attention Residuals 论文协同）</li>
-</ul>
-
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-
-<ul>
-<li>与 Moonlight (5.7T tokens, 16B total / 3B active) 公平比较不严谨（48B vs 16B total）</li>
-<li>KDA chunkwise kernel 对 chunk size 64 优化，其他尺寸性能未知</li>
-<li>pure linear attention 仍不可行 — 需要 MLA 层兜底（论文也承认）</li>
-<li>1M context 是设计支持，但实测在多少长度仍可用未给完整 needle 测试</li>
-</ul>
-
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-
-<ul>
-<li><strong>Algorithm</strong>: KDA recurrence + 3:1 hybrid pattern + NoPE-on-MLA 都是新 design choice</li>
-<li><strong>Kernel</strong>: KDA Triton kernel (<code>fla/ops/kda/</code>)；secondary chunking in log domain；fused_kda_gate</li>
-<li><strong>Framework</strong>: vLLM (<code>KimiDeltaAttention</code>, <code>chunk_kda</code> / <code>fused_recurrent_kda</code>) 和 SGLang 都已支持</li>
-<li><strong>LLM</strong>: 证明线性注意力可在 production scale (48B) 全面超越 full attention</li>
-<li><strong>Hardware</strong>: 长上下文 KV 节省 75% → 单卡可服务更长 context</li>
-</ul>
-
-<hr>
-
-<h2 id="deep-analysis-llm-extends-phase-2">Deep Analysis (llm, extends Phase 2) <a class="heading-anchor" href="#deep-analysis-llm-extends-phase-2" aria-label="Link to deep-analysis-llm-extends-phase-2">#</a></h2>
-
-<h3 id="1-architecture-with-drawio-per-page">1. Architecture (with drawio per page) <a class="heading-anchor" href="#1-architecture-with-drawio-per-page" aria-label="Link to 1-architecture-with-drawio-per-page">#</a></h3>
-
-<h4 id="1a-layer-interleaving-top-level">1a. Layer interleaving (top-level) <a class="heading-anchor" href="#1a-layer-interleaving-top-level" aria-label="Link to 1a-layer-interleaving-top-level">#</a></h4>
-
-<p>详见上方互动图第 1 页。<strong>每层选 KDA 或 MLA 由 <code>is_kda_layer(layer_idx)</code> 决定</strong>（vLLM 路由）：</p>
-
-<pre><code class="language-python">
-# from vllm/transformers_utils/configs/kimi_linear.py
-def is_kda_layer(self, layer_idx: int):
-    return (layer_idx + 1) in self.linear_attn_config[&quot;kda_layers&quot;]
-</code></pre>
-
-<p><code>kda_layers</code> 配置（HF config.json）使用 1-based 索引：</p>
-<pre><code>
-kda_layers      = [1,2,3,5,6,7,9,10,11,13,14,15,17,18,19,21,22,23,25,26]  # 20 层
-full_attn_layers = [4,8,12,16,20,24,27]                                     # 7 层
-</code></pre>
-
-<p>每个 transformer 层都有完整 (RMSNorm → attn → +Res → RMSNorm → MoE FFN → +Res) 结构，只是 attn 类型不同。</p>
-
-<h4 id="1b-kda-block-linear-attention-with-channel-wise-gates">1b. KDA Block (Linear attention with channel-wise gates) <a class="heading-anchor" href="#1b-kda-block-linear-attention-with-channel-wise-gates" aria-label="Link to 1b-kda-block-linear-attention-with-channel-wise-gates">#</a></h4>
-
-
-<p><!-- Source: former drawio page "2. KDA (Kimi Delta Attention) Block" (22 nodes, 18 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    kda_in["Hidden [B, T, 2304]"]
-    kda_n["RMSNorm"]
-    kda_q["q_proj Lin(2304 → 32·128)"]
-    kda_k["k_proj Lin(2304 → 32·128)"]
-    kda_v["v_proj Lin(2304 → 32·128)"]
-    kda_b["β_proj Lin(2304 → 32) → σ(·)"]
-    kda_a["α path (low-rank): • α_proj_a Lin(2304 → r) • α_proj_b Lin(r → 32) → fused_kda_gate: g = -exp(A_log) · softplus(α + dt_bias)"]
-    kda_cq["ShortConv1D k=4 + Swish (causal)"]
-    kda_ck["ShortConv1D k=4 + Swish (causal)"]
-    kda_cv["ShortConv1D k=4 + Swish (causal)"]
-    kda_norm_qk["L2 normalize Q, K (per head, per channel)"]
-    kda_core["KDA Recurrence (per token t): S_t = (I − β_t · k_t k_tᵀ) · Diag(α_t) · S_{t-1} + β_t · k_t v_tᵀ o_t = S_tᵀ · q_t State size per head: d_k × d_v = 128 × 128 Constrained DPLR form (a=b=k) → ~2× faster than generic DPLR ..."]
-    kda_norm_o["FusedRMSNormGated (σ(gate) · RMSNorm(o)) • output gate = sigmoid (not Swish)"]
-    kda_op["o_proj Lin(32·128 → 2304)"]
-    kda_res["Residual Add"]
-    kda_state_note["Cache (per layer): • recurrent state S: 32·128·128 = 524 288 floats • short conv state: 3 timesteps × proj_size (q, k, v each) → FIXED size, independent of seq_len ⇒ this is the source of KV memory savings"]
-    t_t2["KDA Block — Linear-attention layer with channel-wise gates + delta rule"]
-    kda_in -->|" "| kda_n
-    kda_n -->|" "| kda_q
-    kda_n -->|" "| kda_k
-    kda_n -->|" "| kda_v
-    kda_n -->|" "| kda_b
-    kda_n -->|" "| kda_a
-    kda_q -->|" "| kda_cq
-    kda_k -->|" "| kda_ck
-    kda_v -->|" "| kda_cv
-    kda_cq -->|" "| kda_norm_qk
-    kda_ck -->|" "| kda_norm_qk
-    kda_norm_qk -->|" "| kda_core
-    kda_cv -->|" "| kda_core
-    kda_b -->|" "| kda_core
-    kda_a -->|" "| kda_core
-    kda_core -->|" "| kda_norm_o
-    kda_norm_o -->|" "| kda_op
-    kda_op -->|" "| kda_res
-</div>
-
-<p><strong>完整内部流程</strong>：</p>
-<ol>
-<li><strong>RMSNorm(2304)</strong></li>
-<li><strong>投影</strong>: <code>q_proj</code>, <code>k_proj</code>, <code>v_proj</code> Lin(2304 → 32·128)；<code>β_proj</code> Lin(2304 → 32) → sigmoid；<code>α path</code> 是 low-rank（<code>α_proj_a</code> Lin(d, r), <code>α_proj_b</code> Lin(r, 32)）</li>
-<li><strong>fused_kda_gate</strong>: <code>g = -exp(A_log) · softplus(α + dt_bias)</code> → 这是 channel-wise 遗忘率（log domain）</li>
-<li><strong>ShortConv1D (k=4) + Swish</strong> 在 q/k/v 各路径上独立</li>
-<li><strong>L2 normalize Q, K</strong> per head per channel — 稳定性关键</li>
-<li><strong>KDA Recurrence</strong>：上述 \(S_t\) 公式，状态 \(S \in \mathbb{R}^{128 \times 128}\) per head</li>
-<li><strong>FusedRMSNormGated</strong> — 输出门是 <strong>sigmoid</strong>，不是 Swish</li>
-<li><code>o_proj</code> Lin(32·128 → 2304) + Residual</li>
-</ul>
-
-<p><strong>关键设计点</strong>：</p>
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
 
 <table>
-<tr><th>设计点</th><th>数值 / 选择</th><th>为什么</th></tr>
-<tr><td>Diagonal gate \(\text{Diag}(\alpha_t)\)</td><td>每 channel 独立遗忘率</td><td>scalar gate 表达力不够，full gate 太贵；diagonal 最佳折中</td></tr>
-<tr><td>DPLR 约束 a = b = k</td><td>转移矩阵特殊形式</td><td>让 chunkwise 跳过 secondary chunk 的部分计算 → 2× kernel 加速</td></tr>
-<tr><td>Per-head state 128×128</td><td>d_k = d_v = 128</td><td>head_dim 128 是 H100 flash kernel 友好；状态 16K floats per head</td></tr>
-<tr><td>Output gate sigmoid</td><td>不是 Swish</td><td>Swish 输出可正可负，破坏 RMSNorm 假设</td></tr>
-<tr><td>L2 norm on q, k</td><td>per head per channel</td><td>稳定 KDA 数值（state 累积放大噪声）</td></tr>
-<tr><td>ShortConv k=4</td><td>causal Conv1D + Swish</td><td>给 q/k/v 加局部时序，避免纯 token-wise</td></tr>
-<tr><td>α 用 low-rank</td><td><code>α_proj_a</code> then <code>α_proj_b</code></td><td>直接 Lin(d, n_heads) 太多参数；low-rank 更高效</td></tr>
+<tr><th>符号</th><th>含义</th><th>维度</th></tr>
+<tr><td>$S_t$</td><td>关联记忆状态</td><td>$\mathbb{R}^{d_k \times d_v}$</td></tr>
+<tr><td>$\boldsymbol{\alpha}_t$</td><td>Per-channel 遗忘门</td><td>$[0,1]^{d_k}$</td></tr>
+<tr><td>$\beta_t$</td><td>Scalar 学习率</td><td>$[0,1]$</td></tr>
+<tr><td>$\mathbf{P}_{[t]}^r$</td><td>Chunk 内累积状态转移矩阵</td><td>$\mathbb{R}^{d_k \times d_k}$</td></tr>
+<tr><td>$\mathbf{H}_{[t]}^r$</td><td>Chunk 内 KV 贡献累积</td><td>$\mathbb{R}^{d_k \times d_v}$</td></tr>
+<tr><td>$\gamma_{[t]}^r$</td><td>累积衰减 $\prod_{k=1}^r \alpha_{[t]}^k$</td><td>$\mathbb{R}^{d_k}$</td></tr>
+<tr><td>$\mathbf{w}_t, \mathbf{u}_t$</td><td>WY 表示的辅助校正向量</td><td>$\mathbb{R}^{d_k}, \mathbb{R}^{d_v}$</td></tr>
 </table>
 
-<p><strong>vLLM 实现路径</strong>：</p>
-<ul>
-<li><code>vllm/vllm/model_executor/layers/kda.py</code> — <code>KimiDeltaAttention</code> 主类</li>
-<li><code>flash-linear-attention/fla/ops/kda/</code> — Triton kernel</li>
-<li><code>chunk.py</code>: prefill 用的 chunkwise 算法</li>
-<li><code>fused_recurrent.py</code>: decode 用的逐 token recurrence</li>
-<li><code>gate.py</code>: <code>fused_kda_gate</code> 实现</li>
-<li><code>naive.py</code>: PyTorch reference (好读)</li>
-</ul>
-
-<h4 id="1c-mla-block-nope">1c. MLA Block (NoPE) <a class="heading-anchor" href="#1c-mla-block-nope" aria-label="Link to 1c-mla-block-nope">#</a></h4>
-
-
-<p><!-- Source: former drawio page "3. MLA Block (NoPE)" (14 nodes, 9 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    mla_in["Hidden [B, T, 2304]"]
-    mla_n["RMSNorm"]
-    mla_q["q_proj Lin(2304 → 32 · (128+64)) =6 144 (no q_lora_rank)"]
-    mla_kva["kv_a_proj Lin(2304 → 512 + 64) (latent kv + RoPE k) + RMSNorm(latent)"]
-    mla_kvb["kv_b_proj Lin(512 → 32·(128+128)) =8 192"]
-    mla_qsplit["Q split: Q_nope [32,128] + Q_rope [32,64] — but mla_use_nope=True → drop RoPE! → in NoPE mode Q_rope is unused"]
-    mla_attn["MLA Attention (NoPE) 32 heads · head_dim=192 effective NO position bias → recency must come from data-dependent gating in KDA layers"]
-    mla_op["o_proj Lin(32·128 → 2304)"]
-    mla_res["Residual Add"]
-    mla_kv_note["MLA KV cache: per token: 512 (latent) + 64 (rope k) = 576 floats vs standard MHA: 32·128·2 = 8 192 → 14× reduction even in MLA layers → KDA layers have NO per-token cache → overall ~75% KV reduction"]
-    mla_nope_note["NoPE rationale: RoPE forces a fixed positional decay that doesn't extrapolate cleanly past training context. Combined with KDA layers' data-dependent recency, NoPE on MLA layers gives: • cleaner long-context behaviour..."]
-    t_t3["MLA Block (NoPE) — used in 7 of 27 layers"]
-    mla_in -->|" "| mla_n
-    mla_n -->|" "| mla_q
-    mla_n -->|" "| mla_kva
-    mla_kva -->|" "| mla_kvb
-    mla_q -->|" "| mla_qsplit
-    mla_qsplit -->|" "| mla_attn
-    mla_kvb -->|" "| mla_attn
-    mla_attn -->|" "| mla_op
-    mla_op -->|" "| mla_res
-</div>
-
-<p><strong>Kimi Linear 的 MLA 与 K2.5 的 MLA 主要差异</strong>：</p>
-<ul>
-<li><strong>NoPE 模式</strong>（<code>mla_use_nope=True</code>）：放弃 RoPE 部分，只用 Q_nope 和 K_nope 计算 attention</li>
-<li>没有 q_lora_rank（直接 q_proj）— K2.5 用 1536, Kimi Linear 用 None</li>
-<li>Latent KV 仍然 512 (kv_lora_rank) + 64 (qk_rope_head_dim)，但 RoPE k 部分实际不参与（NoPE 模式下）</li>
-</ul>
-
-<p><strong>KV cache 对照</strong>：</p>
-<ul>
-<li>KDA layer: <strong>NO per-token KV cache</strong> — 只有 fixed 128×128 recurrent state + 3-step conv state</li>
-<li>MLA layer (Kimi Linear): <strong>576 floats / token</strong> (latent + nope k)</li>
-<li>假设 27 层中 7 层 MLA：长上下文 decode 时 KV cache 比纯 MLA 减 ~75%</li>
-</ul>
-
-<h4 id="1d-architecture-comparison-vs-moonlight-mamba2">1d. Architecture comparison vs Moonlight, Mamba2 <a class="heading-anchor" href="#1d-architecture-comparison-vs-moonlight-mamba2" aria-label="Link to 1d-architecture-comparison-vs-moonlight-mamba2">#</a></h4>
-
-<table>
-<tr><th>组件</th><th>Kimi Linear</th><th>Moonlight (DeepSeek V2 lineage)</th><th>Mamba2</th></tr>
-<tr><td>Attention</td><td>KDA 20L + MLA(NoPE) 7L</td><td>MLA × 27</td><td>Mamba2 (SSM) all layers</td></tr>
-<tr><td>Linear attn family</td><td>Gated DeltaNet + diag gate</td><td>None (full MLA)</td><td>SSM (S6)</td></tr>
-<tr><td>Pos encoding</td><td>NoPE on MLA + KDA gates</td><td>RoPE on MLA</td><td>implicit (SSM)</td></tr>
-<tr><td>MoE</td><td>256E top-8 + 1 shared</td><td>64E top-6</td><td>dense</td></tr>
-<tr><td>Total / Active</td><td>48B / 3B</td><td>16B / 3B</td><td>varies</td></tr>
-<tr><td>Vocab</td><td>163840</td><td>102400</td><td>50K-ish</td></tr>
-</table>
-
-<h3 id="2-training-methodology">2. Training methodology <a class="heading-anchor" href="#2-training-methodology" aria-label="Link to 2-training-methodology">#</a></h3>
-
-<p>详见互动图第 4 页：</p>
-
-
-<p><!-- Source: former drawio page "4. Training Pipeline" (9 nodes, 4 edges) --></p>
-<div class="mermaid">
-flowchart TB
-    kt_p1["Pretrain (fair-comparison) 1.4 T tokens · 4K context MuonClip + WSD LR lr=1.1e-3 · global batch=32 M tokens K2 corpus, K2 long-context schedule"]
-    kt_p2["Pretrain (release scale) 5.7 T tokens (match Moonlight) Up to 1 M context support"]
-    kt_sft1["SFT Stage 1 — General IF from K2 SFT base"]
-    kt_sft2["SFT Stage 2 — Reasoning-heavy more CoT / math / code"]
-    kt_rl["RL Kimi K1.5 algorithm • Rule + RM rewards • PTX auxiliary loss (capability anti-collapse) • Truncated importance sampling • Dynamic KL • Dynamic minibatch size"]
-    kt_abl["Key ablations (Table 1): • Output gate sigmoid > Swish > none • ShortConv > no ShortConv • 3:1 hybrid > 0:1 (pure MLA) > 15:1 • NoPE on MLA > RoPE on MLA (Table 5)"]
-    kt_speed["Speedups (paper Fig. 2): • KDA chunk kernel ~2× generic DPLR • Decoding throughput +75% on long context • ~75% KV memory reduction • Cache state per KDA layer: 32 heads · 128² + 3·d_proj (fixed)"]
-    kt_arch_note["Backbone reuse: • MLA design = DeepSeek V3 family • Attention Residuals (paper 2603.15031) used at production scale • MoonViT + multimodal = optional (different release)"]
-    t_t4["Kimi Linear — Training + Comparative Notes"]
-    kt_p1 -->|" "| kt_p2
-    kt_p2 -->|" "| kt_sft1
-    kt_sft1 -->|" "| kt_sft2
-    kt_sft2 -->|" "| kt_rl
-</div>
-
-<h4 id="2a-规模">2a. 规模 <a class="heading-anchor" href="#2a-规模" aria-label="Link to 2a-规模">#</a></h4>
-
-<table>
-<tr><th>维度</th><th>数值</th></tr>
-<tr><td>Total params</td><td>48 B</td></tr>
-<tr><td>Active params</td><td>3 B</td></tr>
-<tr><td>Layers</td><td>27</td></tr>
-<tr><td>d_model</td><td>2304</td></tr>
-<tr><td>Heads</td><td>32</td></tr>
-<tr><td>KDA head_dim</td><td>128 (state 128×128)</td></tr>
-<tr><td>MLA: kv_lora_rank</td><td>512</td></tr>
-<tr><td>MLA: qk_nope/rope/v_head_dim</td><td>128 / 64 / 128</td></tr>
-<tr><td>ShortConv kernel</td><td>4</td></tr>
-<tr><td>MoE</td><td>256 routed + 1 shared, top-8</td></tr>
-<tr><td>Expert hidden (MoE)</td><td>1024</td></tr>
-<tr><td>Dense FFN hidden</td><td>9216</td></tr>
-<tr><td>Vocab</td><td>163 840</td></tr>
-<tr><td>Model max length</td><td>1 048 576</td></tr>
-<tr><td>First k dense</td><td>1</td></tr>
-</table>
-
-<h4 id="2b-多阶段训练">2b. 多阶段训练 <a class="heading-anchor" href="#2b-多阶段训练" aria-label="Link to 2b-多阶段训练">#</a></h4>
-
-<table>
-<tr><th>Stage</th><th>数据</th><th>Tokens</th><th>Seq</th><th>LR</th><th>备注</th></tr>
-<tr><td><strong>Pretrain (fair-cmp)</strong></td><td>K2 corpus</td><td><strong>1.4 T</strong></td><td><strong>4K</strong></td><td><strong>1.1e-3</strong> WSD</td><td>global batch 32 M tokens, MuonClip</td></tr>
-<tr><td><strong>Pretrain (release)</strong></td><td>K2 corpus expanded</td><td><strong>5.7 T</strong></td><td>up to 1M</td><td>WSD</td><td>match Moonlight scale</td></tr>
-<tr><td><strong>SFT-1 General IF</strong></td><td>from K2 SFT base</td><td>n/a</td><td>n/a</td><td>n/a</td><td>broad instruction-following</td></tr>
-<tr><td><strong>SFT-2 Reasoning</strong></td><td>reasoning-heavy</td><td>n/a</td><td>n/a</td><td>n/a</td><td>math / code / CoT</td></tr>
-<tr><td><strong>RL</strong></td><td>math + code + STEM</td><td>n/a</td><td>n/a</td><td>n/a</td><td>Kimi K1.5 algorithm</td></tr>
-</table>
-
-<h4 id="2c-rl-细节">2c. RL 细节 <a class="heading-anchor" href="#2c-rl-细节" aria-label="Link to 2c-rl-细节">#</a></h4>
-
-<p><strong>Kimi K1.5 算法</strong>（不是 PPO/DPO/GRPO）：</p>
-<ul>
-<li><strong>PTX loss</strong>（来自 K2）— 防止 capability 崩塌</li>
-<li><strong>Truncated importance sampling</strong> — 解决 off-policy 偏差</li>
-<li><strong>Dynamic KL</strong> — 根据 KL 偏移自适应调系数</li>
-<li><strong>Dynamic minibatch size</strong> — 训练效率</li>
-</ul>
-
-<h4 id="2d-训练技术清单">2d. 训练技术清单 <a class="heading-anchor" href="#2d-训练技术清单" aria-label="Link to 2d-训练技术清单">#</a></h4>
-
-<table>
-<tr><th>类别</th><th>Kimi Linear</th></tr>
-<tr><td>并行</td><td><strong>[论文未披露]</strong></td></tr>
-<tr><td>数值精度</td><td><strong>[论文未披露]</strong>，推测 BF16</td></tr>
-<tr><td>Optimizer</td><td><strong>MuonClip</strong></td></tr>
-<tr><td>LR schedule</td><td><strong>WSD</strong> (Warmup-Stable-Decay)</td></tr>
-<tr><td>LR peak</td><td><strong>1.1e-3</strong></td></tr>
-<tr><td>Global batch</td><td><strong>32 M tokens</strong></td></tr>
-<tr><td>Stability (KDA)</td><td>L2 norm on q,k + ShortConv + sigmoid output gate</td></tr>
-<tr><td>Stability (training)</td><td>MuonClip clip + RMSNorm everywhere</td></tr>
-<tr><td>MoE balancing</td><td>aux-loss + bias tuning（具体细节论文未披露）</td></tr>
-<tr><td>Long context</td><td><strong>NoPE on MLA</strong> + KDA gates（无 YaRN 需求）</td></tr>
-<tr><td>RL</td><td>Kimi K1.5 + PTX + truncated IS + dynamic KL</td></tr>
-</table>
-
-<h4 id="2e-核心训练壁垒">2e. 核心训练壁垒 <a class="heading-anchor" href="#2e-核心训练壁垒" aria-label="Link to 2e-核心训练壁垒">#</a></h4>
-
-<p>最难复现的一件事：<strong>KDA chunkwise kernel 的数值正确性 + 速度</strong>。</p>
-
-<p>线性注意力的难点不在于训练 loss（容易）而在于：</p>
-<ol>
-<li>长序列下 \(S_t\) 状态会数值漂移</li>
-<li>Chunkwise 算法用 secondary chunk 减少 \(O(T^2)\)，但 secondary chunk 的累积矩阵要在 log domain 处理才稳定</li>
-<li>KDA 用 DPLR a=b=k 约束跳过部分 matmul，但<strong>正确性证明非平凡</strong>（论文 §3.2, §6.2）</li>
-<li><code>chunk_size=64</code> 是论文实测最佳，其他尺寸需重新调</li>
-</ul>
-
-<p>第二壁垒：<strong>1.4T tokens 公平 pretrain 配合 MuonClip + WSD + 1.1e-3 LR</strong>。这套配方对 attention 类型敏感——直接换 attention 算法可能让相同配方 diverge。</p>
-
-<h3 id="3-performance">3. Performance <a class="heading-anchor" href="#3-performance" aria-label="Link to 3-performance">#</a></h3>
-
-<ul>
-<li><strong>Long context</strong>: decode throughput <strong>+75%</strong> vs MLA-only stack</li>
-<li><strong>KV memory</strong>: ~75% reduction</li>
-<li><strong>Quality (1.4T fair-cmp)</strong>: matches or beats MLA baseline on most benchmarks</li>
-<li><strong>Long-context Table 5</strong>: NoPE-MLA + KDA > RoPE-MLA + KDA</li>
-<li><strong>Ablation Table 1</strong>: 3:1 hybrid > 0:1 pure MLA > 15:1 too sparse</li>
-</ul>
-
-<h3 id="4-open-questions">4. Open Questions <a class="heading-anchor" href="#4-open-questions" aria-label="Link to 4-open-questions">#</a></h3>
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
 
 <ol>
-<li>KDA 在 100B+ scale 是否仍能保持质量优势？（目前仅 48B）</li>
-<li>NoPE on MLA 在超长 context (1M+) 真实任务的 needle test 成绩？</li>
-<li>3:1 比例是 Kimi 偏好还是普适，DeepSeek 风格 backbone 也适用？</li>
-<li>KDA chunkwise kernel 对 AMD MI300X / MI355X 的移植成本？</li>
-<li>Attention Residuals 是否在 Kimi Linear 中也用了？论文没明说</li>
+<li><strong>Eq. 1 (KDA 递推)</strong>：$S_t = (I - \beta_t k_t k_t^\top) \text{Diag}(\boldsymbol{\alpha}_t) S_{t-1} + \beta_t k_t v_t^\top$。物理含义：先按 channel 独立衰减旧记忆（$\text{Diag}(\alpha)$），再通过 Householder 变换 $(I - \beta kk^\top)$ 沿当前 key 方向投影擦除旧 value，最后写入新 $k \to v$ 映射。这是在线梯度下降 + L2 正则化的统一形式。</li>
 </ul>
 
-<h3 id="5-position-in-landscape">5. Position in Landscape <a class="heading-anchor" href="#5-position-in-landscape" aria-label="Link to 5-position-in-landscape">#</a></h3>
-
-<ul>
-<li><strong>首个 production-scale 在 fair-comparison 下超越 full attention 的混合线性方案</strong></li>
-<li>把"线性注意力质量不够"的标签摘掉</li>
-<li>与 Mamba2 / Mamba in the Llama / Jamba 的差异：<strong>chunkwise kernel + diagonal gate + DPLR 约束</strong> 是 Kimi 独家</li>
-<li>已开源 KDA kernel (<code>fla/ops/kda/</code>)，社区可复用</li>
+<ol>
+<li><strong>Eq. 9 (输出计算)</strong>：$O_{[t]} = (\Gamma Q) S_{[t]} + \text{Tril}((\Gamma Q)(K/\Gamma)^\top)(U - W S_{[t]})$。物理含义：输出由「查询持久记忆」（inter-chunk）和「chunk 内因果注意力」（intra-chunk，带 pseudo-value 校正）两部分组成。</li>
 </ul>
 
-<hr>
+<ol>
+<li><strong>DPLR 绑定</strong> (§6.2)：令 $\mathbf{a} = \mathbf{b} = \sqrt{\beta} \cdot \mathbf{k}$，将通用 DPLR 的 4 自由度压缩为 2，代数上等价于 delta rule 但可利用对称性减半计算。</li>
+</ul>
 
-<h2 id="implementation-references">Implementation references <a class="heading-anchor" href="#implementation-references" aria-label="Link to implementation-references">#</a></h2>
+<h3 id="6-项最低检查">6 项最低检查 <a class="heading-anchor" href="#6-项最低检查" aria-label="Link to 6-项最低检查">#</a></h3>
 
 <table>
-<tr><th>来源</th><th>路径</th><th>用途</th></tr>
-<tr><td>论文</td><td>https://arxiv.org/abs/2510.26692 (v2)</td><td>公式 + 消融 + 训练配方</td></tr>
-<tr><td>Official repo</td><td>https://github.com/MoonshotAI/Kimi-Linear</td><td>README, weights links</td></tr>
-<tr><td>HF config</td><td>https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct/raw/main/config.json</td><td>所有维度的 ground truth</td></tr>
-<tr><td>Local repo</td><td><code>Kimi-Linear/</code> (GitHub)</td><td>README + assets</td></tr>
-<tr><td>KDA kernel</td><td><code>flash-linear-attention/fla/ops/kda/</code></td><td>Triton chunk + decoded</td></tr>
-<tr><td>vLLM model</td><td><code>vllm/vllm/model_executor/models/kimi_linear.py</code></td><td>完整模型路径</td></tr>
-<tr><td>vLLM KDA</td><td><code>vllm/vllm/model_executor/layers/kda.py</code></td><td>KimiDeltaAttention class</td></tr>
-<tr><td>vLLM config</td><td><code>vllm/vllm/transformers_utils/configs/kimi_linear.py</code></td><td>KimiLinearConfig + is_kda_layer</td></tr>
-<tr><td>SGLang model</td><td><code>sglang/python/sglang/srt/models/kimi_linear.py</code></td><td>从 vLLM 移植</td></tr>
+<tr><th>#</th><th>检查项</th><th>结果</th></tr>
+<tr><td>1</td><td>维度一致性（Eq.1 $d_k \times d_v$ 输出验证）</td><td>✓ $(I - \beta kk^\top)$ 是 $d_k \times d_k$，$\text{Diag}(\alpha)$ 是 $d_k \times d_k$，$S$ 是 $d_k \times d_v$，$kv^\top$ 是 $d_k \times d_v$</td></tr>
+<tr><td>2</td><td>Chunk 边界一致性（$S_{[t+1]} = S_{[t]}^C$）</td><td>✓ Eq.8 的输出作为下一 chunk 的初始状态</td></tr>
+<tr><td>3</td><td>WY 表示正确性（Eq.3 与 Eq.4-5 可逆性）</td><td>✓ 论文引用 Comba [40] 证明，UT 变换通过前代消去法避免显式逆</td></tr>
+<tr><td>4</td><td>DPLR 特殊化（Eq.1 → 通用 DPLR with $a=b=\sqrt{\beta}k$）</td><td>✓ §6.2 推导完整</td></tr>
+<tr><td>5</td><td>数值稳定性（fine-grained decay 除法精度）</td><td>✓ §3.2 讨论了 $K/\Gamma$ 的精度问题及 KDA 绑定如何缓解</td></tr>
+<tr><td>6</td><td>参数量验证（3B activated / 48B total）</td><td>✓ config.json: 256 experts × 3 × 2304×1024 + overhead ≈ 48B; 8 activated + shared ≈ 3B</td></tr>
 </table>
 
-<p><strong>Paper × code 对照</strong>：</p>
+<h3 id="scaling-law-fit">Scaling-law fit <a class="heading-anchor" href="#scaling-law-fit" aria-label="Link to scaling-law-fit">#</a></h3>
+
+<p>MLA: $L = 2.3092 \times C^{-0.0536}$; Kimi Linear: $L = 2.2879 \times C^{-0.0527}$。两者 exponent 接近 (-0.054 vs -0.053)，但 KDA 的 prefactor 更低，表明相同 FLOPs 下 loss 更低。~1.16× compute efficiency 意味着 KDA 可用 86% 的计算达到相同 loss。论文坦言未对 KDA 单独调参，实际增益可能更大。</p>
+
+<h3 id="parameter-breakdown">Parameter breakdown <a class="heading-anchor" href="#parameter-breakdown" aria-label="Link to parameter-breakdown">#</a></h3>
+
+<table>
+<tr><th>模块</th><th>每层参数</th><th>层数</th><th>小计</th></tr>
+<tr><td>KDA attention</td><td>~39M</td><td>20</td><td>780M</td></tr>
+<tr><td>MLA attention</td><td>~29M</td><td>7</td><td>203M</td></tr>
+<tr><td>MoE FFN (256 experts)</td><td>~1.82B</td><td>26</td><td>47.3B</td></tr>
+<tr><td>Dense FFN (layer 0)</td><td>~64M</td><td>1</td><td>64M</td></tr>
+<tr><td>Embedding + LM head</td><td>377M × 2</td><td>—</td><td>754M</td></tr>
+<tr><td><strong>Total</strong></td><td></td><td></td><td><strong>~49B</strong></td></tr>
+<tr><td><strong>Activated</strong></td><td></td><td></td><td><strong>~3.5B</strong></td></tr>
+</table>
+
+<p>与论文声称的 48B total / 3B activated 基本一致（差异来自 LayerNorm、bias、gate 权重等小项）。</p>
+
+<h3 id="kv-cache-capacity-budget">KV cache capacity budget <a class="heading-anchor" href="#kv-cache-capacity-budget" aria-label="Link to kv-cache-capacity-budget">#</a></h3>
+
 <ul>
-<li>论文 §3 KDA recurrence → <code>fla/ops/kda/naive.py:naive_recurrent_kda</code> 一一对应</li>
-<li>论文 §3.2 chunkwise + DPLR a=b=k → <code>fla/ops/kda/chunk.py</code> Triton 实现</li>
-<li>论文 §4 hybrid 3:1 ratio → vLLM <code>is_kda_layer</code> 路由 + <code>kda_layers</code> config 列表</li>
-<li>论文 §4 NoPE on MLA → <code>mla_use_nope=True</code> in HF config + vLLM MLA path</li>
-<li>论文 Table 1 ablation gate=sigmoid → vLLM <code>FusedRMSNormGated(activation="sigmoid")</code></li>
+<li><strong>MLA layer KV</strong>: compressed KV 为 $(512 + 64) = 576$ 维（kv_lora_rank + rope_dim），BF16 下每 token 1.15 KB/layer × 7 layers = 8.05 KB/token</li>
+<li><strong>KDA layer</strong>: 解码时仅需 recurrent state $S \in \mathbb{R}^{128 \times 128}$ per head × 32 heads = 524K per layer（固定，不随序列增长）+ conv state 3×4096×4 = 49K/layer</li>
+<li><strong>总 KV</strong>: 7 MLA layers × 1.15 KB/token = 8.05 KB/token（vs 纯 MLA 27 layers × 1.15 = 31 KB/token → 74% 节约）</li>
 </ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="scaling-law">Scaling Law <a class="heading-anchor" href="#scaling-law" aria-label="Link to scaling-law">#</a></h3>
+
+<p><img src="/assets/2510.26692/fig5.png" alt="Figure 5: Fitted scaling law curves showing Kimi Linear achieves lower loss than MLA at same compute"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "The fitted scaling law curves for MLA and Kimi Linear.").</em></p>
+
+<p>5 个模型尺度 (653M–1.7B activated) 在相同 FLOPs 下，Kimi Linear 的 loss 曲线始终低于 MLA。拟合显示 ~1.16× compute efficiency 优势。值得注意的是所有超参使用 MLA 的最优值，未针对 KDA 调优。</p>
+
+<h3 id="synthetic-tasks">Synthetic Tasks <a class="heading-anchor" href="#synthetic-tasks" aria-label="Link to synthetic-tasks">#</a></h3>
+
+<p><img src="/assets/2510.26692/fig4.png" alt="Figure 4: Synthetic task results showing KDA superiority over GDN and Mamba2"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "Results on synthetic tasks: palindrome, multi query associative recall, and the state tracking.").</em></p>
+
+<p>在 Palindrome（逆序复制）、MQAR（多查询关联回忆）、Stack（LIFO 栈模拟）三个任务上，KDA 在所有序列长度 (256–2048) 取得最高精度且收敛最快。Mamba2（仅乘性衰减无 delta rule）在所有任务完全失败——证明 delta rule 的自校正机制是精确检索的必要条件，而 fine-grained gating 进一步提升了记忆利用效率。</p>
+
+<h3 id="rl-post-training">RL Post-Training <a class="heading-anchor" href="#rl-post-training" aria-label="Link to rl-post-training">#</a></h3>
+
+<p><img src="/assets/2510.26692/fig6.png" alt="Figure 6: RL training curves showing Kimi Linear consistently outperforms MLA"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "The training and test accuracy curves for Kimi Linear@1.4T and MLA@1.4T during Math RL training. Kimi Linear consistently outperforms the full attention baseline by a sizable margin during the whole RL process.").</em></p>
+
+<p>在 RLVR 数学训练中，Kimi Linear 的训练集/测试集精度增长率持续高于 MLA，AIME 2025 和 MATH500 上差距随训练逐步扩大。这表明 KDA 的高效长序列处理在 RL 长 trajectory 场景具有结构性优势。</p>
+
+<h3 id="decoding-speed">Decoding Speed <a class="heading-anchor" href="#decoding-speed" aria-label="Link to decoding-speed">#</a></h3>
+
+<p><img src="/assets/2510.26692/fig7.png" alt="Figure 7: Prefill and decode latency comparison"></p>
+
+<p><em>Paper's Figure 7, verbatim (caption: "(a) The prefilling time of MLA (full attention), hybrid GDN-H and our Kimi Linear. (b) The time per output token (TPOT) for MLA, GDN-H and Kimi Linear during decoding.").</em></p>
+
+<p>Prefill 阶段 KDA 引入的额外开销相对 GDN-H 几乎可忽略。Decode 阶段 KDA/GDN-H 维持 O(1) TPOT 而 MLA 为 O(n)：在 1M tokens 处达到 6.3× 加速 (1.84ms vs 11.48ms)。</p>
+
+<h3 id="long-context-key-results">Long-Context Key Results <a class="heading-anchor" href="#long-context-key-results" aria-label="Link to long-context-key-results">#</a></h3>
+
+<table>
+<tr><th>Benchmark</th><th>MLA</th><th>GDN-H</th><th>Kimi Linear</th><th>Δ vs MLA</th></tr>
+<tr><td>RULER (128K)</td><td>81.3</td><td>80.5</td><td><strong>84.3</strong></td><td>+3.0</td></tr>
+<tr><td>MRCR</td><td>22.6</td><td>23.9</td><td><strong>29.6</strong></td><td>+7.0</td></tr>
+<tr><td>HELMET-ICL</td><td>88.0</td><td>85.5</td><td><strong>90.0</strong></td><td>+2.0</td></tr>
+<tr><td>RepoQA</td><td>63.0</td><td>63.0</td><td><strong>68.5</strong></td><td>+5.5</td></tr>
+<tr><td>Average (8 tasks)</td><td>52.2</td><td>51.2</td><td><strong>54.5</strong></td><td>+2.3</td></tr>
+</table>
+
+<p>GDN-H 在长上下文退化至 MLA 以下，而 Kimi Linear（仅 scalar→channel gating 差异）反而超越 MLA——证明 channel-wise decay 对长程记忆管理的临界重要性。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>论据</th><th>证据</th><th>逻辑衔接</th></tr>
+<tr><td>1</td><td>Softmax attention 在长序列 decode 场景有 O(n) KV cache + O(n) TPOT 瓶颈</td><td>已知事实 + Fig.7b MLA 曲线</td><td>建立痛点</td></tr>
+<tr><td>2</td><td>线性注意力通过有限状态 RNN 实现 O(1) decode，但受限于记忆容量导致表达力不足</td><td>Mamba2 在合成任务完全失败 (Fig.4)</td><td>说明 vanilla 线性注意力不够</td></tr>
+<tr><td>3</td><td>Delta rule 提供自校正记忆（在线梯度下降视角），但 scalar gating 对记忆管理过于粗粒度</td><td>GDN-H 在长上下文退化至 MLA 以下 (Table 5)</td><td>动机：需要 fine-grained gating</td></tr>
+<tr><td>4</td><td>KDA 引入 per-channel $\text{Diag}(\boldsymbol{\alpha}_t)$ 实现每维度独立遗忘率 + 绑定 DPLR $a=b=\sqrt{\beta}k$ 保持硬件效率</td><td>Fig.2 kernel 速度 2× > DPLR; §6.2 推导</td><td>方法核心 + 效率保证</td></tr>
+<tr><td>5</td><td>3:1 混合比 + NoPE MLA 是 Pareto 最优配置</td><td>Table 1 ablation: 3:1 最低 val PPL; NoPE 长上下文优势</td><td>架构设计验证</td></tr>
+<tr><td>6</td><td>全流程验证：pretrain→SFT→long-context→RL 四阶段全面超过 MLA</td><td>Tables 3-5 + Fig.6</td><td>全面性证据</td></tr>
+<tr><td>7</td><td>6.3× decode 加速 + 75% KV cache 节约使 1M context serving 实际可行</td><td>Fig.7b 实测 TPOT</td><td>实用性论证</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<h3 id="代码仓库">代码仓库 <a class="heading-anchor" href="#代码仓库" aria-label="Link to 代码仓库">#</a></h3>
+
+<ul>
+<li><strong>KDA kernel</strong>: https://github.com/fla-org/flash-linear-attention/tree/main/fla/ops/kda (<code>chunk_kda</code>, <code>fused_recurrent_kda</code>)</li>
+<li><strong>Model code</strong>: https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct/blob/main/modeling_kimi.py</li>
+<li><strong>Config</strong>: https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct/blob/main/config.json</li>
+</ul>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>L2Norm in kernel</strong>: <code>use_qk_l2norm_in_kernel=True</code> — Q、K 的 L2 归一化融合在 KDA kernel 内部（<code>modeling_kimi.py:KimiDeltaAttention.forward</code>），避免额外 kernel launch 且保证数值稳定性。代码中 <code>q_conv1d</code> 和 <code>k_conv1d</code> 的 <code>activation='silu'</code> 对应论文的 Swish 激活。</li>
+</ul>
+
+<ol>
+<li><strong>Gate 融合</strong>: <code>fused_kda_gate(g, self.A_log, self.head_dim, g_bias=self.dt_bias)</code> 将低秩 gate 投影与 log-domain decay 计算融合为单个 CUDA op（<code>fla/ops/kda/gate.py</code>），对应论文中 $f(\mathbf{W}_\alpha^\uparrow \mathbf{W}_\alpha^\downarrow x)$ 的高效实现。<code>A_log</code> 初始化为 <code>log(Uniform(1,16))</code>，对应 Mamba 风格的对数空间衰减参数化。</li>
+</ul>
+
+<ol>
+<li><strong>Recurrent vs Chunk mode 切换</strong>: <code>mode = 'fused_recurrent' if q_len <= 64 else self.mode</code>（<code>modeling_kimi.py</code> line in <code>KimiDeltaAttention.forward</code>）——短序列（decode）使用纯递推模式避免 chunk overhead，长序列使用 chunkwise 并行。</li>
+</ul>
+
+<h3 id="核心技术壁垒（§7-专段）">核心技术壁垒（§7 专段） <a class="heading-anchor" href="#核心技术壁垒（§7-专段）" aria-label="Link to 核心技术壁垒（§7-专段）">#</a></h3>
+
+<p>DPLR $a=b=\sqrt{\beta}k$ 绑定的实现难点在于：chunkwise 算法的 WY 表示（Eq.3-5）要求在 $O(C^2 d)$ 内完成辅助向量 $w, u$ 的前代求解，而 general DPLR 的 $a \neq b$ 需要 4 组独立的二级分块矩阵运算。绑定后 $w$ 和 $u$ 共享内积 $k_i^\top \text{Diag}(\gamma^{i\to r}) k_r$，使计算量减半且 memory bandwidth 需求降低。这一简化直接决定了 KDA kernel 能否在 A100/H100 上达到接近 roofline 的效率——没有此绑定，fine-grained decay 的 chunkwise kernel 将被非 matmul 操作主导，无法超越 FlashAttention-2 的 prefill 性能。</p>
+
+<h2 id="§5-training-recipe-model-specific">§5 Training Recipe (model-specific) <a class="heading-anchor" href="#§5-training-recipe-model-specific" aria-label="Link to §5-training-recipe-model-specific">#</a></h2>
+
+<table>
+<tr><th>Stage</th><th>Goal</th><th>Data (tokens + mix)</th><th>LR schedule</th><th>Context</th><th>Techniques</th></tr>
+<tr><td>Pre-training</td><td>Language modeling</td><td>1.4T tokens, shared data mix</td><td>WSD (warmup-stable-decay)</td><td>4,096</td><td>MuonClip optimizer, all models same recipe</td></tr>
+<tr><td>Mid-training (context extension)</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>up to 1M</td><td>[论文未披露具体长上下文训练细节]</td></tr>
+<tr><td>SFT</td><td>Instruction following</td><td>Curated: general knowledge + reasoning (math/code) + Chinese</td><td>[论文未披露]</td><td>[论文未披露]</td><td>Same recipe across all models</td></tr>
+<tr><td>RL (RLVR)</td><td>Math reasoning</td><td>In-house math training set from [50], moderate difficulty</td><td>[论文未披露]</td><td>[论文未披露]</td><td>Same algorithm + hyperparams as MLA baseline</td></tr>
+<tr><td>Quantization-aware training</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>—</td><td>[论文未披露]</td></tr>
+</table>
+
+<p><strong>最难复现的训练 trick</strong>: NoPE on MLA layers — 去除全注意力层的位置编码，完全依赖 KDA 层的 data-dependent decay 提供位置信息。这不是常规做法（RoPE 是 MLA 标配），需要从零开始训练以建立正确的位置-注意力耦合。论文显示 NoPE 在长上下文显著优于 RoPE 变体 (Table 5: 54.5 vs 51.8 avg)，但此设计在其他架构上是否 transferable 不明。</p>
+
+<h2 id="§8-serving-deployment-considerations">§8 Serving Deployment Considerations <a class="heading-anchor" href="#§8-serving-deployment-considerations" aria-label="Link to §8-serving-deployment-considerations">#</a></h2>
+
+<table>
+<tr><th>配置</th><th>GPU 需求</th><th>KV cache/token</th><th>Max concurrency @ 128K</th></tr>
+<tr><td>BF16</td><td>~4× H100 80GB (48B params)</td><td>8 KB/token (仅 7 MLA layers)</td><td>~2,500 requests</td></tr>
+<tr><td>FP8 (weights)</td><td>~2× H100</td><td>~8 KB/token (KV 仍 BF16)</td><td>~5,000 requests</td></tr>
+<tr><td>[FP4 not disclosed]</td><td>[论文未披露]</td><td>—</td><td>—</td></tr>
+</table>
+
+<ul>
+<li><strong>KV cache</strong>: 仅 7/27 层需要 KV cache (MLA layers)，每层 576 维 × BF16 = 1.15 KB/token/layer → 总 8.05 KB/token。对比纯 MLA (27 layers): 31 KB/token → <strong>74% 节约</strong></li>
+<li><strong>KDA state</strong>: 固定大小 $32 \text{ heads} \times 128 \times 128 \times$ BF16 = 1 MB/layer × 20 layers = 20 MB/request（与序列长度无关）</li>
+<li><strong>Prefill</strong>: KDA 层近似 O(n) (chunkwise)；MLA 层 O(n²) 但仅 7/27 → prefill 加速 ~4× (Fig.7a)</li>
+<li><strong>Decode</strong>: KDA O(1)/token; MLA O(n) 但层数少 → 整体 TPOT 大幅降低</li>
+<li><strong>Continuous batching</strong>: 完全兼容——KDA 的 recurrent state 是固定大小，不影响 batching scheduler。论文明确声称 "drop-in compatible with existing full-attention pipelines"</li>
+<li><strong>Prefix caching</strong>: MLA 层可正常使用 prefix cache；KDA 层需要保存 conv_state + recurrent_state 作为 "prefix"，大小固定不随 prefix 长度增长</li>
+</ul>
+
+<h2 id="§9-open-questions">§9 Open Questions <a class="heading-anchor" href="#§9-open-questions" aria-label="Link to §9-open-questions">#</a></h2>
+
+<ol>
+<li><strong>Scale saturation</strong>: KDA 的 per-channel gating 优势在更大模型（如 600B+）是否持续？更多 heads + 更大 head_dim 可能使 fine-grained control 的边际收益递减。</li>
+<li><strong>Modality transfer</strong>: KDA 的 data-dependent positional encoding 是否适用于 vision tokens（2D 结构）或 audio（连续时间序列）？NoPE 设计在 multimodal 设置中需要什么修改？</li>
+<li><strong>Hardware affinity</strong>: FP8/FP4 量化对 KDA kernel 的影响未知——chunkwise 算法中的 $K/\Gamma$ 除法对低精度格式是否产生额外数值误差？</li>
+<li><strong>RL 优势机制</strong>: 论文观察到 Kimi Linear 在 RL 中显著优于 MLA 但未解释机制。猜测：KDA 的 O(1) decode 允许更长 rollout 而不触发 OOM，或 fixed-size state 提供更稳定的梯度信号？</li>
+<li><strong>GDN-H 长上下文退化</strong>: scalar gate 为何在短上下文表现正常但长上下文退化？可能是 scalar decay 无法为不同频率的信息分配不同保留时间，导致高频细节与低频语义互相干扰。</li>
+</ul>
+
+<h2 id="appendix-模型架构图（代码驱动）">Appendix: 模型架构图（代码驱动） <a class="heading-anchor" href="#appendix-模型架构图（代码驱动）" aria-label="Link to appendix-模型架构图（代码驱动）">#</a></h2>
+
+<blockquote>
+代码来源：https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct/blob/main/modeling_kimi.py
+</blockquote>
+
+<h3 id="a1-top-level">A1: Top-Level <a class="heading-anchor" href="#a1-top-level" aria-label="Link to a1-top-level">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Embedding
+        EMB["nn.Embedding(163840, 2304)"]
+    end
+
+    subgraph Blocks["27 × KimiDecoderLayer"]
+        L0["Layer 0: MLA + Dense MLP"]
+        L1["Layer 1: KDA + MoE(8/256+1shared)"]
+        L2["Layer 2: KDA + MoE"]
+        L3["Layer 3: KDA + MoE"]
+        L4["Layer 4: MLA + MoE"]
+        LDOTS["... (3:1 pattern repeats)"]
+        L26["Layer 26: KDA + MoE"]
+    end
+
+    subgraph Head
+        NORM["RMSNorm(2304)"]
+        LMH["lm_head: Linear(2304→163840)"]
+    end
+
+    EMB --> L0 --> L1 --> L2 --> L3 --> L4 --> LDOTS --> L26
+    L26 --> NORM --> LMH
+</div>
+
+<h3 id="a2-single-transformer-block">A2: Single Transformer Block <a class="heading-anchor" href="#a2-single-transformer-block" aria-label="Link to a2-single-transformer-block">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    IN["hidden_states"] --> RES1["residual = x"]
+    RES1 --> LN1["input_layernorm: RMSNorm(2304)"]
+    LN1 --> ATTN["self_attn (KDA or MLA)"]
+    ATTN --> ADD1["x = residual + attn_out"]
+    ADD1 --> RES2["residual = x"]
+    RES2 --> LN2["post_attention_layernorm: RMSNorm(2304)"]
+    LN2 --> FFN["MoE: gate(256) → top-8 experts(2304→1024→2304) + shared_expert(2304→1024→2304)"]
+    FFN --> ADD2["x = residual + ffn_out"]
+    ADD2 --> OUT["output"]
+</div>
+
+<h3 id="a3-kda-attention-variant">A3: KDA Attention Variant <a class="heading-anchor" href="#a3-kda-attention-variant" aria-label="Link to a3-kda-attention-variant">#</a></h3>
+
+<p>见 §3 中的 KDA 数据流 Mermaid 图。关键维度：</p>
+<ul>
+<li>Q/K: 32 heads × 128 dim = 4096 total</li>
+<li>V: 32 heads × 128 dim = 4096 total</li>
+<li>Gate (α): low-rank 2304→128→4096 + fused with A_log (log-space decay)</li>
+<li>Beta: 2304→32 (per-head scalar)</li>
+<li>Output gate: low-rank 2304→128→4096 + FusedRMSNormGated(sigmoid)</li>
+<li>Recurrent state: $S \in \mathbb{R}^{32 \times 128 \times 128}$ (BF16, 固定 1MB/layer)</li>
+</ul>
+
+<h3 id="a4-mla-attention-variant-辅-attention">A4: MLA Attention Variant (辅 Attention) <a class="heading-anchor" href="#a4-mla-attention-variant-辅-attention" aria-label="Link to a4-mla-attention-variant-辅-attention">#</a></h3>
+
+<p>见 §3 中的 MLA 数据流 Mermaid 图。关键维度（from config.json）：</p>
+<ul>
+<li>Q: 32 heads × (128 nope + 64 rope) = 6144</li>
+<li>KV latent: kv_lora_rank=512, expanded to 32×(128+128)=8192</li>
+<li>k_rope: 64 dim (shared across heads, MQA-style)</li>
+<li>NoPE: <code>mla_use_nope=true</code> — 不对 Q/K 应用 RoPE（尽管 config 中保留了 rope 参数兼容性）</li>
+<li>KV cache per token: 576 × BF16 = 1.15 KB/layer</li>
+</ul>
+
+<h3 id="a5-moe-gate-routing">A5: MoE Gate/Routing <a class="heading-anchor" href="#a5-moe-gate-routing" aria-label="Link to a5-moe-gate-routing">#</a></h3>
+
+<div class="mermaid">
+flowchart LR
+    X["x ∈ ℝ^2304"] --> GATE["Linear(2304→256) → sigmoid"]
+    GATE --> BIAS["+e_score_correction_bias"]
+    BIAS --> GROUP["group_scores (topk_group=1)"]
+    GROUP --> TOPK["top-8 experts selected"]
+    TOPK --> RENORM["renormalize weights × routed_scaling_factor=2.446"]
+    RENORM --> DISPATCH["dispatch to 8 experts"]
+    DISPATCH --> AGG["weighted sum + shared_expert output"]
+</div>
+
+<h3 id="a6-residual-connection">A6: Residual Connection <a class="heading-anchor" href="#a6-residual-connection" aria-label="Link to a6-residual-connection">#</a></h3>
+
+<p>N/A — 模型使用标准 Pre-Norm residual connection（<code>x = residual + layer(norm(x))</code>），无 mHC / Highway / DenseNet 变体。</p>
+
+<h3 id="代码-图对照表">代码-图对照表 <a class="heading-anchor" href="#代码-图对照表" aria-label="Link to 代码-图对照表">#</a></h3>
+
+<table>
+<tr><th>代码构件</th><th>对应图</th><th>关键实现细节</th></tr>
+<tr><td><code>KimiDeltaAttention</code></td><td>A3</td><td><code>chunk_kda</code>/<code>fused_recurrent_kda</code> 切换阈值 q_len=64</td></tr>
+<tr><td><code>KimiMLAAttention</code></td><td>A4</td><td><code>use_nope=True</code> 跳过 RoPE；q_lora_rank=None（无 Q 压缩）</td></tr>
+<tr><td><code>KimiSparseMoeBlock</code></td><td>A5</td><td>sigmoid gating + bias correction + group topk</td></tr>
+<tr><td><code>KimiDecoderLayer</code></td><td>A2</td><td><code>is_kda_layer()</code> 决定 attention 类型</td></tr>
+<tr><td><code>KimiLinearModel</code></td><td>A1</td><td><code>first_k_dense_replace=1</code> → layer 0 无 MoE</td></tr>
+<tr><td><code>KimiDynamicCache</code></td><td>—</td><td>conv_states + recurrent_states (KDA) / key_cache + value_cache (MLA)</td></tr>
+<tr><td><code>FusedRMSNormGated</code></td><td>A3 output</td><td>sigmoid gate 融合到 RMSNorm 内</td></tr>
+<tr><td><code>ShortConvolution(kernel=4, silu)</code></td><td>A3 input</td><td>depthwise conv on Q/K/V 各自独立</td></tr>
+</table>
 
 </div>
 </div>
