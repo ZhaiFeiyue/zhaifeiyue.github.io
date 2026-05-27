@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: SageAttention2: Efficient Attention with Thorough Outlier Smoothing and Per-thread INT4 Quantization — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">SageAttention2: Efficient Attention with Thorough Outlier Smoothing and Per-thread INT4 Quantization</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2411.10958 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2411.10958/detail.html">→ Detail (L2)</a>
+<a href="/overview/kernel.html">← kernel Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="l3-synthesis-sageattention2-2411-10958">L3 Synthesis: SageAttention2 (2411.10958) <a class="heading-anchor" href="#l3-synthesis-sageattention2-2411-10958" aria-label="Link to l3-synthesis-sageattention2-2411-10958">#</a></h1>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<table>
+<tr><th>论文</th><th>关联维度</th><th>关联强度</th></tr>
+<tr><td>2404.16811 (FilM-7B)</td><td>长上下文利用——SageAttention2 在 100K token Llama3.1 推理中实现 1.72× 加速，直接服务于长上下文 QA 场景</td><td>中</td></tr>
+<tr><td>2412.10079 (Lost-in-Between)</td><td>多跳 QA 的位置偏置——SageAttention2 的量化误差是否放大或缩小了 position-dependent attention decay</td><td>中</td></tr>
+<tr><td>2502.05167 (NoLiMa)</td><td>注意力稀释诊断——NoLiMa 揭示的 attention dilution 是 SageAttention2 量化精度的压力测试场景</td><td>高</td></tr>
+<tr><td>2502.13965 (Autellix)</td><td>Agent serving 基础设施——SageAttention2 降低 per-call latency 直接提升 program-level throughput</td><td>低</td></tr>
+<tr><td>2506.08371 (PCD)</td><td>RoPE 频率与注意力衰减——PCD 发现 gold token 排名退化（PSA）为 attention quantization 的精度要求定义了下界</td><td>高</td></tr>
+<tr><td>2510.08377 (UniVideo)</td><td>视频生成 attention 密集型负载——SageAttention2 在 HunyuanVideo 等 DiT 上验证，UniVideo 使用相同 backbone</td><td>中</td></tr>
+<tr><td>2511.05850 (Retrieval at Context Limit)</td><td>前沿模型已消除 LITM——暗示 attention quantization 在最新架构上的精度需求可能放松</td><td>低</td></tr>
+<tr><td>2601.15300 (Intelligence Degradation)</td><td>上下文阈值退化——SageAttention2 的精度损失是否会左移 critical threshold</td><td>高</td></tr>
+</table>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="与长上下文退化研究的交叉">与长上下文退化研究的交叉 <a class="heading-anchor" href="#与长上下文退化研究的交叉" aria-label="Link to 与长上下文退化研究的交叉">#</a></h3>
+
+<p>SageAttention2 在 Llama3.1 100K token 推理中 NIAH 表现与 full-precision 完全一致 <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a>，这与 2601.15300 发现的 Qwen2.5-7B 在 43.2% 容量处的悬崖式退化形成对比 <a href="/papers/2601.15300/detail.html#实验与数据" class="ref-link" title="L2:2601.15300#实验与数据">[L2:2601.15300]</a>。关键区别在于：退化的根源是 attention dispersion 和 RoPE aliasing <a href="/papers/2601.15300/detail.html#作者证明" class="ref-link" title="L2:2601.15300#作者证明">[L2:2601.15300]</a>，而 SageAttention2 的量化误差是 additive noise，不改变 attention pattern 的拓扑结构（top-K 排序不变）。SageAttention2 实测 CosSim 99.45% <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a> 意味着量化噪声远小于 PSA 导致的 salience 衰减（从 0.49 跌到 0.22）<a href="/papers/2506.08371/detail.html#实验与数据" class="ref-link" title="L2:2506.08371#实验与数据">[L2:2506.08371]</a>。</p>
+
+<h3 id="与-pcd-的互补性">与 PCD 的互补性 <a class="heading-anchor" href="#与-pcd-的互补性" aria-label="Link to 与-pcd-的互补性">#</a></h3>
+
+<p>PCD 发现 gold token 绝对排名始终在 top-8 内，仅需"翻几位"即可纠正 <a href="/papers/2506.08371/detail.html#痛点·方法·结果" class="ref-link" title="L2:2506.08371#痛点·方法·结果">[L2:2506.08371]</a>。SageAttention2 的 per-thread 量化在最差层仍保持 96.72% CosSim <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a>——这意味着 SageAttention2 的量化误差远不足以将 gold token 从 top-8 挤出，因此<strong>SageAttention2 + PCD 理论上可叠加使用</strong>：前者加速 attention 计算，后者在解码时修正 long-range salience 衰减，两者作用在正交维度上。</p>
+
+<h3 id="与-nolima-的精度-检索交互">与 NoLiMa 的精度-检索交互 <a class="heading-anchor" href="#与-nolima-的精度-检索交互" aria-label="Link to 与-nolima-的精度-检索交互">#</a></h3>
+
+<p>NoLiMa 揭示模型在缺乏 literal match 线索时，long-context 检索严重退化（GPT-4o 32K 仅 69.7%）<a href="/papers/2502.05167/detail.html#实验与数据" class="ref-link" title="L2:2502.05167#实验与数据">[L2:2502.05167]</a>。SageAttention2 在 FlashAttention3(fp8) 上的精度优势恰好在此场景中至关重要：FA3(fp8) 在 HunyuanVideo 上 VQA-a 从 82.5 跌至 4.4 <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a>，而 SageAttn2-8b 保持 81.8——说明 FP8 的粗粒度量化（per-tensor static scale）在需要精细 attention 检索的场景下失败，SageAttention2 的 per-thread fine-grained quantization + smoothing 是关键差分。</p>
+
+<h3 id="与视频生成生态的位置">与视频生成生态的位置 <a class="heading-anchor" href="#与视频生成生态的位置" aria-label="Link to 与视频生成生态的位置">#</a></h3>
+
+<p>UniVideo 使用 HunyuanVideo-13B 作为 MMDiT backbone <a href="/papers/2510.08377/detail.html#核心三问" class="ref-link" title="L2:2510.08377#核心三问">[L2:2510.08377]</a>，而 SageAttention2 在 HunyuanVideo 上实现了 1.55× 端到端加速（2221s → 1435s）且 VQA-a 仅损失 1.0 <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a>。这意味着 SageAttention2 可直接 plug into UniVideo 的 MMDiT 分支，加速视频生成而不破坏双流架构的身份保持能力（SC 0.88 → 理论不变，因 attention output 近无损）。</p>
+
+<h3 id="与-agent-serving-的间接关系">与 agent serving 的间接关系 <a class="heading-anchor" href="#与-agent-serving-的间接关系" aria-label="Link to 与-agent-serving-的间接关系">#</a></h3>
+
+<p>Autellix 发现 agent program 延迟由 wait time 主导 <a href="/papers/2502.13965/detail.html#Q1痛点" class="ref-link" title="L2:2502.13965#Q1痛点">[L2:2502.13965]</a>。SageAttention2 将单次 attention call 延迟降低 3×，对于 100-call MCTS program（单 engine 仅 ~0.2 programs/sec）而言，attention 加速直接增加稳态 call 处理率，但效果取决于 attention 在总 forward 中的占比（长序列场景下通常 >50%）。</p>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<h3 id="攻击点-1-int4-精度在-multi-hop-latent-reasoning-中是否足够？">攻击点 1: INT4 精度在 multi-hop latent reasoning 中是否足够？ <a class="heading-anchor" href="#攻击点-1-int4-精度在-multi-hop-latent-reasoning-中是否足够？" aria-label="Link to 攻击点-1-int4-精度在-multi-hop-latent-reasoning-中是否足够？">#</a></h3>
+
+<p>SageAttention2 仅在 NIAH 和单跳 QA（LongBench）上验证精度 <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a>。NoLiMa 的 two-hop latent reasoning 场景中，模型需要在无表面线索时通过多步联想定位 needle <a href="/papers/2502.05167/detail.html#核心三问" class="ref-link" title="L2:2502.05167#核心三问">[L2:2502.05167]</a>——此时 attention score 差异极小（gold token 仅微弱领先 distractor），SageAttention2 的 99.45% CosSim 可能不够。反驳假设：若 attention output 的 RMSE=0.0313 <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a> 转化为 softmax 后的 top-K 排序扰动，在 NoLiMa 这种 margin 极小的场景中可能将 gold 从 rank-3 推到 rank-5，导致生成质量下降。<strong>目前无实验验证此假设。</strong></p>
+
+<h3 id="攻击点-2-fp22-累加器问题是否被过度渲染？">攻击点 2: FP22 累加器问题是否被过度渲染？ <a class="heading-anchor" href="#攻击点-2-fp22-累加器问题是否被过度渲染？" aria-label="Link to 攻击点-2-fp22-累加器问题是否被过度渲染？">#</a></h3>
+
+<p>SageAttention2 发现 NVIDIA FP8 mma 累加器实际为 FP22 并提出两级累加方案 <a href="/papers/2411.10958/detail.html#核心三问" class="ref-link" title="L2:2411.10958#核心三问">[L2:2411.10958]</a>。但 DeepSeek-V3 在 FP8 训练中已独立实现了类似的 tile-wise accumulation <a href="/papers/2411.10958/detail.html#逻辑故事还原" class="ref-link" title="L2:2411.10958#逻辑故事还原">[L2:2411.10958]</a>，且 CUTLASS 早已包含此优化。SageAttention2 的"首次发现"声明 (§3.4) 更多是对已有工程实践的学术化描述，而非全新洞察。</p>
+
+<h3 id="攻击点-3-端到端加速的归因不完全">攻击点 3: 端到端加速的归因不完全 <a class="heading-anchor" href="#攻击点-3-端到端加速的归因不完全" aria-label="Link to 攻击点-3-端到端加速的归因不完全">#</a></h3>
+
+<p>CogvideoX 1.8× 端到端加速 <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a> 隐含了 attention 在总计算中占比高的假设。但 CogvideoX 是 DiT 架构，FFN 占比 ~2/3——3× kernel 加速只转化为 1.8× 端到端加速，Amdahl's law 限制明显。对于 attention 占比更低的模型（如大 FFN 比例的 MoE），SageAttention2 的端到端收益会进一步稀释。</p>
+
+<h3 id="攻击点-4-cogvideox-1-5-上-sageattention-的全面失败未充分解释">攻击点 4: CogvideoX 1.5 上 SageAttention 的全面失败未充分解释 <a class="heading-anchor" href="#攻击点-4-cogvideox-1-5-上-sageattention-的全面失败未充分解释" aria-label="Link to 攻击点-4-cogvideox-1-5-上-sageattention-的全面失败未充分解释">#</a></h3>
+
+<p>Table 2 中 SageAttention (INT8 per-block) 在 CogvideoX 1.5-5B 上全部标记为 ✗ <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a>，而"精度更低"的 SageAttn2-4b 却工作良好。论文将此归因于"不同的 outlier patterns"，但未提供 per-layer 分析证明 CogvideoX 1.5 的 Q/K 分布为何对 INT8 per-block 不友好但对 INT4 per-thread + smoothing 友好。这可能暗示 per-block INT8 在某些特定层有系统性量化误差积累，但论文未深入。</p>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<h3 id="范式定位">范式定位 <a class="heading-anchor" href="#范式定位" aria-label="Link to 范式定位">#</a></h3>
+
+<p>SageAttention2 处于 <strong>"量化 attention kernel"</strong> 的先行者位置——在 FlashAttention 系列（精确 attention 的访存优化）与 sparse attention（近似 attention 的计算节省）之间开辟了第三条路径：<strong>保持精确 attention 语义但用低精度计算</strong>。这一路线在 2024-2025 年从"实验性"走向"工程可用"，SageAttention2 是该路线的技术高点。</p>
+
+<h3 id="采纳证据">采纳证据 <a class="heading-anchor" href="#采纳证据" aria-label="Link to 采纳证据">#</a></h3>
+
+<ul>
+<li>GitHub 仓库 thu-ml/SageAttention 公开，已被 CogVideoX、HunyuanVideo 的开源社区集成</li>
+<li>SageAttention2 匹配 FlashAttention3(fp8) 速度但精度远优的定位使其成为 Hopper 上 FP8 attention 的更优替代</li>
+<li>视频生成社区（CogVideoX、Mochi 使用者）是主要用户群：这些模型的 attention 占比高、序列长、且对质量敏感</li>
+</ul>
+
+<h3 id="与竞品的位置关系">与竞品的位置关系 <a class="heading-anchor" href="#与竞品的位置关系" aria-label="Link to 与竞品的位置关系">#</a></h3>
+
+<table>
+<tr><th>方案</th><th>速度</th><th>精度</th><th>GPU 覆盖</th><th>位置</th></tr>
+<tr><td>FlashAttention2</td><td>1× (baseline)</td><td>精确</td><td>所有 NVIDIA</td><td>通用默认</td></tr>
+<tr><td>FlashAttention3</td><td>1.4× (Hopper only)</td><td>精确/FP8</td><td>Hopper only</td><td>Hopper 默认</td></tr>
+<tr><td>FlashAttention3(fp8)</td><td>2.6× (Hopper)</td><td>低 (视频生成崩溃)</td><td>Hopper only</td><td>不推荐生成</td></tr>
+<tr><td>SageAttention (INT8)</td><td>2×</td><td>高 (部分模型失败)</td><td>多数 NVIDIA</td><td>被 v2 替代</td></tr>
+<tr><td><strong>SageAttention2</strong></td><td><strong>3×</strong></td><td><strong>高</strong> (near-lossless)</td><td>Ada + Hopper</td><td><strong>生成场景首选</strong></td></tr>
+<tr><td>Sparse attention (MInference等)</td><td>1.5-4×</td><td>模型/任务依赖</td><td>所有</td><td>正交可组合</td></tr>
+</table>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<h3 id="5-1-sageattention2-×-contrastive-decoding">5.1 SageAttention2 × Contrastive Decoding <a class="heading-anchor" href="#5-1-sageattention2-×-contrastive-decoding" aria-label="Link to 5-1-sageattention2-×-contrastive-decoding">#</a></h3>
+
+<p>PCD 需要两次 forward（standard + local-aware）<a href="/papers/2506.08371/detail.html#痛点·方法·结果" class="ref-link" title="L2:2506.08371#痛点·方法·结果">[L2:2506.08371]</a>，但两次 forward 的 attention 部分可以共用 SageAttention2 kernel（仅 RoPE base 不同）。Fused dual-base SageAttention2 kernel 可将 PCD 的推理开销从 2× 压缩到 ~1.3×，同时兼获 attention 加速和 long-range salience 修复。</p>
+
+<h3 id="5-2-quantization-aware-long-context-threshold">5.2 Quantization-Aware Long-Context Threshold <a class="heading-anchor" href="#5-2-quantization-aware-long-context-threshold" aria-label="Link to 5-2-quantization-aware-long-context-threshold">#</a></h3>
+
+<p>2601.15300 的 critical threshold (43.2%) 在 full-precision attention 下测得 <a href="/papers/2601.15300/detail.html#实验与数据" class="ref-link" title="L2:2601.15300#实验与数据">[L2:2601.15300]</a>。在 SageAttention2 下，attention 量化噪声是否会左移该阈值？理论上 per-thread CosSim 99.45% 的误差在 threshold 附近（F1 变化 slope 最大处）可能被放大。需要在 Qwen2.5-7B 上用 SageAttention2 重新标定阈值，验证安全余量是否足够。</p>
+
+<h3 id="5-3-per-thread-quantization-在-amd-cdna4-上的移植">5.3 Per-Thread Quantization 在 AMD CDNA4 上的移植 <a class="heading-anchor" href="#5-3-per-thread-quantization-在-amd-cdna4-上的移植" aria-label="Link to 5-3-per-thread-quantization-在-amd-cdna4-上的移植">#</a></h3>
+
+<p>SageAttention2 的 per-thread 量化设计严格绑定 NVIDIA PTX mma.m16n8k64 指令布局 <a href="/papers/2411.10958/detail.html#核心三问" class="ref-link" title="L2:2411.10958#核心三问">[L2:2411.10958]</a>。AMD CDNA4 (MI355X) 的 MFMA 指令有不同的 thread-data mapping（64-wide wavefront vs 32-wide warp），需要重新设计量化分组策略才能实现零开销反量化。</p>
+
+<h3 id="5-4-adaptive-precision-关键层-int8-非关键层-int4">5.4 Adaptive Precision: 关键层 INT8 + 非关键层 INT4 <a class="heading-anchor" href="#5-4-adaptive-precision-关键层-int8-非关键层-int4" aria-label="Link to 5-4-adaptive-precision-关键层-int8-非关键层-int4">#</a></h3>
+
+<p>2601.15300 发现退化集中在特定 context length 区间 <a href="/papers/2601.15300/detail.html#实验与数据" class="ref-link" title="L2:2601.15300#实验与数据">[L2:2601.15300]</a>；SageAttention2 的 worst-case 层 CosSim 为 96.72% vs average 99.45% <a href="/papers/2411.10958/detail.html#实验与数据" class="ref-link" title="L2:2411.10958#实验与数据">[L2:2411.10958]</a>——暗示某些 attention 层对量化更敏感。Adaptive precision（per-layer 选择 INT4/INT8）可在保持几乎全部 INT4 速度的同时兜住最差层精度，类似于 mixed-precision training 的思路应用于 inference attention。</p>
+
+<h3 id="5-5-nolima-style-压力测试">5.5 NoLiMa-Style 压力测试 <a class="heading-anchor" href="#5-5-nolima-style-压力测试" aria-label="Link to 5-5-nolima-style-压力测试">#</a></h3>
+
+<p>当前 SageAttention2 的精度验证覆盖了标准 benchmarks（NIAH、LongBench、MMLU）但未触及 NoLiMa 定义的"无 literal match"检索场景 <a href="/papers/2502.05167/detail.html#核心三问" class="ref-link" title="L2:2502.05167#核心三问">[L2:2502.05167]</a>。在 attention margin 极小时（gold vs distractor 差异仅在 softmax 后第 3-4 位小数），INT4 量化的 rounding 行为是否引入系统性偏置需要专门验证。</p>
+
+<hr>
+
+<p><em>Built from L2 hashes listed in frontmatter.</em></p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2410.02367.html">2410.02367</a> (related) 
+<a href="/papers/2505.21136.html">2505.21136</a> (related) 
+<a href="/papers/2505.11594.html">2505.11594</a> (related) 
+<a href="/papers/2502.01563.html">2502.01563</a> (related) 
+<a href="/papers/2512.02189.html">2512.02189</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

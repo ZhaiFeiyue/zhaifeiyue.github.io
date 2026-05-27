@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ICaRus: Identical Cache Reuse across Models for Multi-Model LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">ICaRus: Identical Cache Reuse across Models for Multi-Model LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2603.13281</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">multi-model-serving</span><span class="tag">prefix-caching</span><span class="tag">lora</span><span class="tag">agent-inference</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2603.13281" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="icarus-identical-cache-reuse-across-models-for-multi-model-llm-serving">ICaRus: Identical Cache Reuse across Models for Multi-Model LLM Serving <a class="heading-anchor" href="#icarus-identical-cache-reuse-across-models-for-multi-model-llm-serving" aria-label="Link to icarus-identical-cache-reuse-across-models-for-multi-model-llm-serving">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>ICaRus decomposes decoder-only Transformers into a frozen logical encoder (KV generation) and task-specific logical decoders (next-token prediction), enabling identical KV cache sharing across multiple specialized models. With 8 agents it achieves 11.1× P95 latency reduction and 3.8× throughput gain while matching or exceeding fine-tuned accuracy.</p>
+
+<hr>
+
+<h2 id="§2-q1-·-q2-·-q3">§2 Q1 · Q2 · Q3 <a class="heading-anchor" href="#§2-q1-·-q2-·-q3" aria-label="Link to §2-q1-·-q2-·-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>Multi-model inference — where task-specialized models (math, coding, reasoning) collaborate within agentic workflows — forces each model to maintain its own KV cache even when processing identical prompts. This causes three compounding problems:</p>
+
+<ol>
+<li><strong>Memory explosion</strong>: KV cache memory grows as $\mathcal{O}(N)$ with model count $N$, saturating GPU memory far earlier than single-model serving.</li>
+<li><strong>Eviction cascading</strong>: once GPU memory saturates, serving systems (vLLM, SGLang) evict cached prefixes → when the evicted model is invoked again, its entire prefix must be recomputed from scratch.</li>
+<li><strong>No cross-model prefix caching</strong>: KV caches are model-specific, so even though multiple models see the identical prompt, each must independently run prefill. Prefix caching — the standard optimization for identical prefixes — is inherently per-model.</li>
+</ul>
+
+<p>Prior approaches attack only part of the problem: H2O / KVQuant / SwiftKV reduce single-model KV size; KVFlow schedules eviction/prefetching based on agent workflow but remains single-model; DroidSpeak shares non-sensitive layers between base and fine-tuned variants but must recompute sensitive layers.</p>
+
+<p><img src="/assets/2603.13281/fig1.png" alt="Figure 1: KV cache sharing and cross-model prefix caching in ICaRus vs conventional"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "Comparison of KV cache management strategies and effectiveness in multi model scenarios between conventional approaches and ICaRus").</em> Sub-figure (a) shows how ICaRus eliminates per-model KV duplication by sharing a single cache; sub-figure (b) shows cross-model prefix caching enabling one prefill to serve all models.</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>Core insight</strong>: a decoder-only Transformer can be decomposed into a <em>logical encoder</em> $E$ (generates KV caches) and a <em>logical decoder</em> $D$ (predicts the next token from the KV cache). In standard fine-tuning, both $E$ and $D$ are updated, making each model's KV cache unique. ICaRus freezes $E_{\text{base}}$ (the pretrained encoder) and fine-tunes only $D_{\text{task}}$ per task:</p>
+
+<p>$$K_{1:i}, V_{1:i} = E_{\text{base}}(x_{1:i}) \quad\text{(frozen, shared across all tasks)}$$</p>
+
+<p>$$x_{i+1} = D_{\text{task}}(x_i, K_{1:i}, V_{1:i}) \quad\text{(task-specific decoder)}$$</p>
+
+<p>Since all task models share $E_{\text{base}}$, the KV cache for any given input is identical across models → direct sharing without approximation. Training explicitly accounts for the shared-KV setting: input is duplicated to both encoder and decoder, encoder generates KV, decoder attends to it and computes loss. This KV-sharing-aware training ensures robustness at inference time.</p>
+
+<p>Inference optimization: during decoding, ICaRus concatenates query representations from the encoder and decoder along the head dimension and executes a single GQA attention call, reading the shared KV cache only once. Combined with shared base-model parameters, this keeps per-token latency comparable to a single model despite running both encoder and decoder.</p>
+
+<p><strong>核心技术壁垒</strong>: Freezing the entire logical encoder — half the model's parameters — does NOT degrade task accuracy. On Qwen3-8B/14B, ICaRus actually <em>outperforms</em> conventional fine-tuning (87.3 vs 85.4 on GSM8K for Qwen3-8B). The paper attributes this to "implicit regularization" from the frozen encoder: all task specialization must flow through the decoder, preventing overfitting. This counter-intuitive result is the core barrier to replication — one must believe (or verify) that encoder freezing is not merely lossless but beneficial.</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<table>
+<tr><th>Dimension</th><th>Result</th></tr>
+<tr><td>Accuracy (Qwen3-8B, GSM8K)</td><td>ICaRus 87.3 vs baseline 85.4 (+1.9)</td></tr>
+<tr><td>Accuracy (Qwen3-14B, GSM8K)</td><td>ICaRus 88.8 vs baseline 85.6 (+3.2)</td></tr>
+<tr><td>Accuracy (LLaMA-3.1-8B, GSM8K)</td><td>ICaRus 67.9 vs baseline 69.7 (−1.8)</td></tr>
+<tr><td>P95 latency (8 models, ReAct)</td><td>11.1× reduction vs conventional</td></tr>
+<tr><td>Throughput (8 models, ReAct)</td><td>3.8× improvement vs conventional</td></tr>
+<tr><td>P95 latency (swap-based, 8 models)</td><td>12.1× reduction</td></tr>
+<tr><td>Models validated</td><td>LLaMA-3.1-8B, Qwen3-1.7B/8B/14B/32B</td></tr>
+</table>
+
+<p>ICaRus wins on Qwen3 variants but loses slightly on LLaMA-3.1-8B math (67.9 vs 69.7). System gains grow super-linearly with agent count: throughput improvement from 1.4× (2 models) to 3.8× (8 models).</p>
+
+<hr>
+
+<h2 id="§3-架构-方法図">§3 架构 / 方法図 <a class="heading-anchor" href="#§3-架构-方法図" aria-label="Link to §3-架构-方法図">#</a></h2>
+
+<h3 id="system-scope">System scope <a class="heading-anchor" href="#system-scope" aria-label="Link to system-scope">#</a></h3>
+
+<table>
+<tr><th>Dimension</th><th>ICaRus</th></tr>
+<tr><td>Serving stage</td><td>Both prefill and decode</td></tr>
+<tr><td>Serving mode</td><td>Continuous batching (vLLM integration)</td></tr>
+<tr><td>Parallelism owned</td><td>None (orthogonal to TP/PP/EP)</td></tr>
+<tr><td>Deployment</td><td>Single node (evaluated on 8×A100 80GB)</td></tr>
+<tr><td>Adaptation method</td><td>LoRA (rank 128, α=256); agnostic to adapter type</td></tr>
+</table>
+
+<h3 id="architecture-overview">Architecture overview <a class="heading-anchor" href="#architecture-overview" aria-label="Link to architecture-overview">#</a></h3>
+
+<p><img src="/assets/2603.13281/fig3.png" alt="Figure 3: ICaRus architecture overview"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "Overview of the ICaRus architecture. The base model, a pretrained decoder-only Transformer, serves as the logical encoder, while the adapter-tuned model (consisting of the base model and a tunable adapter) serves as the logical decoder. The blue and orange lines indicate computations performed by the base model and the adapter-tuned model, respectively. The purple square denotes that the same base model generates the KV cache during both the prefill and decoding phases.").</em> The figure shows how during decoding, the encoder and decoder share base-model parameters and the KV cache is written only by the encoder path. Queries from both paths are concatenated along the head dimension for a single GQA attention call.</p>
+
+<h3 id="request-lifecycle">Request lifecycle <a class="heading-anchor" href="#request-lifecycle" aria-label="Link to request-lifecycle">#</a></h3>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant vLLM as vLLM Scheduler
+    participant Enc as Logical Encoder (frozen base)
+    participant KV as Shared KV Cache
+    participant Dec as Logical Decoder (base + LoRA)
+
+    Client->>vLLM: Request (prompt, task_id)
+    vLLM->>KV: Check prefix cache hit
+    alt Cache hit (same or different model)
+        KV-->>vLLM: Reuse cached KV
+    else Cache miss
+        vLLM->>Enc: Prefill prompt
+        Enc->>KV: Write KV cache (all layers)
+    end
+    loop Decode each token
+        vLLM->>Enc: Encode x_i → (k_i, v_i)
+        Enc->>KV: Append (k_i, v_i)
+        vLLM->>Dec: Concat queries along head dim
+        Dec->>KV: Single GQA attention (shared read)
+        Dec-->>vLLM: x_{i+1}
+    end
+    vLLM-->>Client: Generated tokens
+</div>
+
+<p>Key structural points:</p>
+
+<ul>
+<li><strong>Prefill</strong>: only the base model (logical encoder) runs; no adapter overhead. Generates KV cache and produces the first token.</li>
+<li><strong>Decode</strong>: both encoder and decoder run in parallel. Encoder writes the new KV entry; decoder predicts the next token. Queries concatenated along head dimension for a single GQA call.</li>
+<li><strong>Cross-model reuse</strong>: any subsequent request (from any model) hitting the same prefix reuses the existing KV cache. This is possible because all models share the identical encoder.</li>
+</ul>
+
+<hr>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$F$</td><td>Decoder-only Transformer (full model)</td></tr>
+<tr><td>$E$, $D$</td><td>Logical encoder, logical decoder</td></tr>
+<tr><td>$E_{\text{base}}$</td><td>Frozen pretrained logical encoder</td></tr>
+<tr><td>$D_{\text{task}}$</td><td>Task-specific fine-tuned logical decoder</td></tr>
+<tr><td>$x_i$</td><td>$i$-th token</td></tr>
+<tr><td>$K_{1:i}$, $V_{1:i}$</td><td>Accumulated key and value sets up to position $i$</td></tr>
+<tr><td>$N$</td><td>Number of task-specific models (agents)</td></tr>
+<tr><td>$M$</td><td>Base model parameter count</td></tr>
+<tr><td>$L_i$</td><td>Input prompt length</td></tr>
+<tr><td>$L_o$</td><td>Output tokens per turn</td></tr>
+<tr><td>$t$</td><td>Interaction turns per adapter</td></tr>
+<tr><td>$L_t = L_i + tL_o$</td><td>Total sequence length</td></tr>
+</table>
+
+<h3 id="equations-and-physical-meaning">Equations and physical meaning <a class="heading-anchor" href="#equations-and-physical-meaning" aria-label="Link to equations-and-physical-meaning">#</a></h3>
+
+<p><strong>Eq 1</strong> — Transformer as KV-conditioned predictor:</p>
+
+<p>$$x_{i+1} = F(x_i, K_{1:i}, V_{1:i})$$</p>
+
+<p>Next-token prediction depends only on the current token and accumulated KV cache, not on re-reading all previous tokens. This is the standard justification for KV caching.</p>
+
+<p><strong>Eq 2–3</strong> — Encoder-decoder decomposition:</p>
+
+<p>$$K_{1:i}, V_{1:i} = E(x_{1:i})$$</p>
+
+<p>$$x_{i+1} = D(x_i, K_{1:i}, V_{1:i})$$</p>
+
+<p>Any decoder-only Transformer $F$ can be split into an encoder $E$ (KV generation) and decoder $D$ (next-token prediction). The standard model is the special case where $E$ and $D$ share identical parameters.</p>
+
+<p><strong>Eq 4–5</strong> — ICaRus sharing constraint:</p>
+
+<p>$$K_{1:i}, V_{1:i} = E_{\text{base}}(x_{1:i})$$</p>
+
+<p>$$x_{i+1} = D_{\text{task}}(x_i, K_{1:i}, V_{1:i})$$</p>
+
+<p>Freezing $E_{\text{base}}$ guarantees that for a given input sequence, the KV cache is deterministic and model-independent. Multiple $D_{\text{task}}$ variants attend to the same cache.</p>
+
+<h3 id="complexity-model-table-1">Complexity model (Table 1) <a class="heading-anchor" href="#complexity-model-table-1" aria-label="Link to complexity-model-table-1">#</a></h3>
+
+<p><img src="/assets/2603.13281/tab1.png" alt="Table 1: Complexity comparison"></p>
+
+<p><em>Paper's Table 1, verbatim (caption: complexity comparison between single model and multi model scenarios).</em> ICaRus eliminates the $N$ factor from both memory and prefill, reducing multi-model overhead to single-model equivalence.</p>
+
+<table>
+<tr><th>Metric</th><th>Baseline (N models)</th><th>ICaRus</th><th>Reduction</th></tr>
+<tr><td>Memory</td><td>$\mathcal{O}(M + NL_t)$</td><td>$\mathcal{O}(M + L_t)$</td><td>$N\times$</td></tr>
+<tr><td>Prefill latency</td><td>$\mathcal{O}(N(ML_t + L_t^2))$</td><td>$\mathcal{O}(ML_t + L_t^2)$</td><td>$N\times$</td></tr>
+<tr><td>Decode memory access</td><td>$\mathcal{O}(M + L_t)$</td><td>$\mathcal{O}(M + L_t)$</td><td>1×</td></tr>
+<tr><td>Decode compute</td><td>$\mathcal{O}(M + L_t)$</td><td>$\mathcal{O}(2M + 2L_t)$</td><td>0.5× (2× cost)</td></tr>
+</table>
+
+<h3 id="6-verification-checks">6 verification checks <a class="heading-anchor" href="#6-verification-checks" aria-label="Link to 6-verification-checks">#</a></h3>
+
+<table>
+<tr><th>#</th><th>Claim</th><th>Verification</th><th>Status</th></tr>
+<tr><td>1</td><td>Eq 1–3 decomposition: $F = D \circ E$</td><td>Standard KV cache semantics in decoder-only Transformers; $E$ extracts KV, $D$ uses it. The special case $E \equiv D$ recovers $F$.</td><td>✓ valid</td></tr>
+<tr><td>2</td><td>Eq 4: frozen $E_{\text{base}}$ ⇒ identical KV</td><td>Deterministic forward pass with fixed parameters and identical input yields identical output. Requires no stochastic layers (dropout=0 at inference).</td><td>✓ valid</td></tr>
+<tr><td>3</td><td>Memory $\mathcal{O}(M + L_t)$ eliminates $N$</td><td>Single shared KV store serves all decoders; each decoder only adds lightweight adapter weights ($\ll M$).</td><td>✓ valid</td></tr>
+<tr><td>4</td><td>Prefill $\mathcal{O}(ML_t + L_t^2)$ eliminates $N$</td><td>One prefill pass generates KV for all models; subsequent models skip prefill entirely via cache hit.</td><td>✓ valid</td></tr>
+<tr><td>5</td><td>Decode memory access $\mathcal{O}(M + L_t)$ despite 2× compute</td><td>Encoder and decoder share base parameters (loaded once) and read KV cache once via concatenated queries. Memory traffic ≈ single model.</td><td>✓ valid in memory-bound regime; no per-token latency measurement provided</td></tr>
+<tr><td>6</td><td>Training convergence: decoder-only fine-tuning matches full fine-tuning</td><td>Fig 2 shows loss curves overlap. "Implicit regularization" explanation is intuitive but lacks formal proof or ablation isolating the regularization effect.</td><td>✓ empirically validated; theoretical gap</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§5-実験与数据">§5 実験与数据 <a class="heading-anchor" href="#§5-実験与数据" aria-label="Link to §5-実験与数据">#</a></h2>
+
+<h3 id="accuracy-across-tasks-and-models">Accuracy across tasks and models <a class="heading-anchor" href="#accuracy-across-tasks-and-models" aria-label="Link to accuracy-across-tasks-and-models">#</a></h3>
+
+<p><img src="/assets/2603.13281/tab2.png" alt="Table 2: Accuracy comparison on diverse tasks"></p>
+
+<p><em>Paper's Table 2, verbatim (caption: "Comparison of conventional methods and ICaRus on diverse datasets").</em> ICaRus achieves parity or better on Qwen3-8B across all tasks. On LLaMA-3.1-8B, ICaRus trails by 1.8 points on GSM8K but gains on GPQA (+1.5) and HumanEval+ (+2.4).</p>
+
+<p>Key observations:</p>
+<ul>
+<li>Qwen3-8B shows consistent ICaRus advantage: +1.9 GSM8K, +1.4 GSM+, +4.9 HumanEval, +4.3 HumanEval+.</li>
+<li>LLaMA-3.1-8B math is the only clear loss case: 67.9 vs 69.7 on GSM8K.</li>
+<li>The "implicit regularization" effect appears model-dependent — stronger on Qwen3 than LLaMA.</li>
+</ul>
+
+<h3 id="scaling-with-model-size">Scaling with model size <a class="heading-anchor" href="#scaling-with-model-size" aria-label="Link to scaling-with-model-size">#</a></h3>
+
+<p><img src="/assets/2603.13281/tab3.png" alt="Table 3: Scaling across Qwen3 model sizes"></p>
+
+<p><em>Paper's Table 3, verbatim (caption: comparison across Qwen3-1.7B/8B/14B on MetaMathQA-40K).</em> ICaRus advantage grows with model size: +0.8 at 1.7B, +1.9 at 8B, +3.2 at 14B on GSM8K.</p>
+
+<h3 id="p95-latency-and-throughput-main-result">P95 latency and throughput (main result) <a class="heading-anchor" href="#p95-latency-and-throughput-main-result" aria-label="Link to p95-latency-and-throughput-main-result">#</a></h3>
+
+<p><img src="/assets/2603.13281/fig4.png" alt="Figure 4: P95 latency and throughput under ReAct with LLaMA-3.1-8B"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "P95 latency and throughput of ICaRus compared with multiple task-specific agents fine-tuned from the LLaMA-3.1-8B base model under the ReAct pattern").</em> Left: P95 latency across QPS for 2/4/8 agents. Right: throughput across QPS. ICaRus curves remain flat or improving while baseline degrades at moderate QPS due to KV eviction cascading.</p>
+
+<p>Headline numbers at baseline's peak-throughput QPS:</p>
+
+<table>
+<tr><th>Agent count</th><th>P95 latency reduction</th><th>Max throughput gain</th></tr>
+<tr><td>2</td><td>3.8×</td><td>1.4×</td></tr>
+<tr><td>4</td><td>5.1×</td><td>2.3×</td></tr>
+<tr><td>8</td><td>11.1×</td><td>3.8×</td></tr>
+</table>
+
+<p>The super-linear scaling with agent count is the key system result: each additional model in the baseline adds $\mathcal{O}(L_t)$ KV memory, accelerating memory saturation and eviction. ICaRus keeps KV at $\mathcal{O}(L_t)$ regardless of $N$.</p>
+
+<h3 id="performance-across-diverse-workflows-and-models">Performance across diverse workflows and models <a class="heading-anchor" href="#performance-across-diverse-workflows-and-models" aria-label="Link to performance-across-diverse-workflows-and-models">#</a></h3>
+
+<p><img src="/assets/2603.13281/fig5.png" alt="Figure 5: P95 latency and throughput across models and agentic patterns"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "Comparison of P95 latency and maximum throughput across QPS for LLaMA3.1-8B and Qwen-3-14B Base under ReAct and Reflexion patterns").</em> ICaRus advantages generalize across model sizes (8B vs 14B) and agentic patterns (ReAct vs Reflexion). Qwen3-14B shows up to 7.4× latency reduction and 3.6× throughput gain.</p>
+
+<h3 id="workload-regime-analysis">Workload regime analysis <a class="heading-anchor" href="#workload-regime-analysis" aria-label="Link to workload-regime-analysis">#</a></h3>
+
+<table>
+<tr><th>Workload regime</th><th>ICaRus</th><th>Baseline</th><th>Why</th></tr>
+<tr><td>Many models ($N \geq 4$), moderate-high QPS</td><td>Large win (3.8–11.1× latency)</td><td>Memory saturates → eviction cascade</td><td>ICaRus eliminates $N\times$ KV growth</td></tr>
+<tr><td>Few models ($N = 2$), low QPS</td><td>Moderate win (1.4× throughput)</td><td>KV fits in memory</td><td>Both fit; ICaRus saves prefix recompute</td></tr>
+<tr><td>Skewed/random agent invocation</td><td>Large win (up to 15× P95 at $N = 2$)</td><td>Hot model evicts cold model's cache</td><td>ICaRus shares cache regardless of invocation order</td></tr>
+<tr><td>Single model</td><td>No benefit</td><td>Standard serving</td><td>No cross-model sharing to exploit; decode overhead is pure cost</td></tr>
+<tr><td>Short prompts, low concurrency</td><td>Minimal win</td><td>Low KV pressure</td><td>Less prefix to share</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§6-論証鏈">§6 論証鏈 <a class="heading-anchor" href="#§6-論証鏈" aria-label="Link to §6-論証鏈">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
+<tr><td>1</td><td>A decoder-only Transformer decomposes into logical encoder $E$ (KV generation) and logical decoder $D$ (next-token prediction).</td><td>Eqs 1–3: standard KV cache semantics. The special case $E \equiv D$ recovers $F$.</td><td>Transformer architecture definition</td></tr>
+<tr><td>2</td><td>Freezing $E_{\text{base}}$ and fine-tuning only $D_{\text{task}}$ preserves task accuracy.</td><td>Table 2: ICaRus matches or exceeds conventional fine-tuning on 4/5 benchmarks (Qwen3-8B). Fig 2: training loss curves overlap.</td><td>Step 1 (decomposition must be valid)</td></tr>
+<tr><td>3</td><td>Shared $E_{\text{base}}$ guarantees identical KV caches across models for identical inputs.</td><td>Eq 4: deterministic forward pass with frozen parameters. No approximation or layer selection needed (unlike DroidSpeak).</td><td>Step 2 (encoder must be frozen)</td></tr>
+<tr><td>4</td><td>Identical KV caches enable cross-model prefix caching and eliminate $N\times$ memory/prefill overhead.</td><td>Table 1: memory $\mathcal{O}(M + L_t)$ vs $\mathcal{O}(M + NL_t)$; prefill latency eliminates factor $N$.</td><td>Step 3 (KV identity guarantee)</td></tr>
+<tr><td>5</td><td>Query concatenation along head dimension enables parallel encoder–decoder execution with single KV read.</td><td>Fig 3, Algorithm 3 (Appendix B.2): concatenated queries → single GQA call. Memory access $\mathcal{O}(M + L_t)$ matches single-model.</td><td>Step 3 (shared KV) + GQA mechanics</td></tr>
+<tr><td>6</td><td>End-to-end system gains grow super-linearly with agent count.</td><td>Fig 4: 1.4×/2.3×/3.8× throughput at $N$ = 2/4/8. Baseline throughput degrades at lower QPS as $N$ increases (eviction onset earlier).</td><td>Steps 4 + 5 (memory + latency benefits compound)</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§7-実現-cross-reference">§7 実現 cross-reference <a class="heading-anchor" href="#§7-実現-cross-reference" aria-label="Link to §7-実現-cross-reference">#</a></h2>
+
+<p>[実現未公開] — the paper does not release source code. Implementation details are described at pseudocode level in Appendix B (Algorithms 1–3) and the system is evaluated within vLLM, but no repository URL or patch is provided.</p>
+
+<h3 id="関鍵実装細節">関鍵実装細節 <a class="heading-anchor" href="#関鍵実装細節" aria-label="Link to 関鍵実装細節">#</a></h3>
+
+<ol>
+<li><strong>Query concatenation for parallel GQA</strong>: during decode, encoder and decoder queries are concatenated along the head dimension (shape $[2, 1, H, d_k] \to [1, 2H, d_k]$), fed through a single GQA attention call, then reshaped back. This avoids reading the KV cache twice and is the mechanism that keeps decode latency comparable to single-model despite 2× compute. The reshape-concat-reshape sequence must preserve head ordering to avoid mixing encoder and decoder attention outputs (Algorithm 3, Appendix B.2).</li>
+</ul>
+
+<ol>
+<li><strong>Prefill = encoder only</strong>: during the prefill phase, no adapter weights are loaded or computed. The base model runs standard prefill and writes KV cache. This means prefill latency is identical to single-model serving — the 2× compute overhead only applies during decode. This asymmetry is easy to miss: ICaRus's prefill is strictly cheaper than baseline multi-model prefill (1× vs $N\times$), while its decode is at most 2× in compute but ~1× in memory access.</li>
+</ul>
+
+<h3 id="deployment-context">Deployment context <a class="heading-anchor" href="#deployment-context" aria-label="Link to deployment-context">#</a></h3>
+
+<ul>
+<li><strong>Serving stage</strong>: both prefill and decode, with asymmetric behavior (prefill = encoder only, decode = encoder + decoder)</li>
+<li><strong>Concurrency regime</strong>: evaluated at 2–8 concurrent agents; benefits grow with agent count</li>
+<li><strong>Hardware affinity</strong>: evaluated on A100 80GB; memory-bound decode regime favors GPUs with high HBM bandwidth</li>
+<li><strong>Ecosystem integration</strong>: implemented within vLLM; requires (a) model loading to separate encoder/decoder paths, (b) LoRA adapter hot-swapping for decoders, (c) modified attention kernel supporting concatenated queries. Migration cost: non-trivial vLLM modification (not a config flag)</li>
+<li><strong>API</strong>: standard vLLM API; ICaRus is transparent to the client (same OpenAI-compatible endpoint)</li>
+</ul>
+
+<h3 id="open-gaps">Open gaps <a class="heading-anchor" href="#open-gaps" aria-label="Link to open-gaps">#</a></h3>
+
+<ul>
+<li>No DroidSpeak head-to-head comparison in experiments (only conceptual discussion)</li>
+<li>LoRA rank ablation missing — whether lower rank (e.g., 16 or 32) preserves accuracy is unknown</li>
+<li>Heterogeneous base model support (mixing LLaMA + Qwen) not evaluated</li>
+<li>Per-token decode latency overhead not empirically measured (only argued via memory-bound analysis)</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
