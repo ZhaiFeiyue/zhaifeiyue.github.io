@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>FastDecode: High-Throughput GPU-Efficient LLM Serving using Heterogeneous Pipelines — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">FastDecode: High-Throughput GPU-Efficient LLM Serving using Heterogeneous Pipelines</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2403.11421</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">heterogeneous-pipeline</span><span class="tag">cpu-gpu</span><span class="tag">decode-offloading</span><span class="tag">high-throughput</span><span class="tag">llm-serving</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2403.11421.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2403.11421" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>FastDecode 将 Transformer 分解为 S-Part（GPU 密集线性层）和 R-Part（CPU 侧 attention+KVCache），彻底移除 GPU 内存中的 KVCache 以支持极大 batch size。使用分布式远程 CPU 的聚合带宽执行 attention，配合 load-stabilizing schedule 和性能模型，在 A10 GPU 上达到 vLLM 的 1.88×–5.04× 吞吐。</p>
+
+<h2 id="§2-痛点-方法-结果">§2 痛点 / 方法 / 结果 <a class="heading-anchor" href="#§2-痛点-方法-结果" aria-label="Link to §2-痛点-方法-结果">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>LLM decode 阶段是 gemv 操作（矩阵×向量），GPU 利用率极低。扩大 batch size 是唯一可行的提升手段，但 KVCache 内存占用随 batch 和序列长度线性增长，很快超出 GPU 容量。直接将 KVCache offload 到 CPU 内存后仍需要每步 swap 回 GPU，PCIe 带宽成为瓶颈。</p>
+
+<p>核心 insight（同 Neo）：GPU 和 CPU 在算力上差距巨大（~100×），但在内存带宽上差距远小（~3×）。decode attention 恰好是 memory-bandwidth-bounded——应该 <strong>compute near data on CPU</strong> 而非 move data to GPU。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>S-Part / R-Part 分解</strong>：</p>
+
+<ul>
+<li><strong>S-Part（GPU）</strong>：所有线性层（QKV projection、FFN、output projection）——compute-bound，GPU 最优。</li>
+<li><strong>R-Part（CPU）</strong>：attention 操作（$QK^\top$ + softmax + $PV$）——memory-bandwidth-bound，KVCache 留在 CPU 内存。</li>
+</ul>
+
+<p>传输内容从 KVCache（$O(B \times L \times d)$ 每步）变为 activation tensor Q/O（$O(B \times d)$ 每步），量级缩小数十到数百倍。</p>
+
+<p><strong>分布式 R-Worker 架构</strong>：</p>
+<ul>
+<li><strong>S-Worker</strong>（GPU 节点）：持有模型权重，执行 S-Part。产出 $Q_i, K_i, V_i$ 后发送到 R-Workers；接收 $O_i$ 继续后续层。</li>
+<li><strong>R-Workers</strong>（多台远程 CPU 节点）：各自维护一份 KVCache partition，接收 QKV 后执行 attention 并返回 O。通过 InfiniBand 通信。</li>
+<li>Batch size 可达百万级（仅受分布式 CPU 内存总量限制）。</li>
+</ul>
+
+<p><strong>Load-stabilizing schedule</strong>：</p>
+<p>R-Part 延迟随序列增长而增长（每步多读一行 KVCache），但 S-Part 延迟不变。简单 2-stage pipeline 会出现 R-Worker 成为瓶颈的 bubble。方案：控制新序列的注入时机，混合长短序列使 R-Worker 总序列长度稳定，减小延迟波动。带来最高 20% 吞吐提升。</p>
+
+<p><strong>Performance model-guided orchestration</strong>：</p>
+<p>给定模型和 GPU 配置，通过微基准测试估算所需最小聚合 CPU 带宽，指导 R-Worker 数量选择。</p>
+
+<p><strong>核心技术壁垒</strong>：将 QKV activation 而非 KVCache 作为跨设备传输对象的设计选择。这使 GPU 内存完全释放给 batch，throughput 可随 batch size 线性增长直到 S-Part 饱和。代价是 R-Worker 的聚合带宽必须匹配 GPU 的处理速率。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li><strong>Llama-7b</strong>：2279 tok/s（batch=1024）vs vLLM 452 tok/s → <strong>5.04×</strong></li>
+<li><strong>Llama-13b</strong>：1441 tok/s（batch=1024）vs vLLM 350 tok/s → <strong>4.12×</strong></li>
+<li>Scaling efficiency（1024 token seq）：72.8%（7b）/ 84.1%（13b）at 8 sockets</li>
+<li>短序列（128 token）scaling 退化：8 sockets 反而低于 4 sockets（S-Worker 成为瓶颈）</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant SW as S-Worker (GPU)
+    participant R1 as R-Worker 1 (CPU)
+    participant R2 as R-Worker 2 (CPU)
+    participant R3 as R-Worker 3 (CPU)
+
+    Note over SW: Holds all model weights (S-Part)
+    Note over R1,R3: Each holds KVCache partition
+
+    loop Per layer l
+        SW->>SW: Compute QKV projections (S-Part)
+        par Send Q,K,V to R-Workers
+            SW->>R1: Q₁, K₁, V₁ (partition 1)
+            SW->>R2: Q₂, K₂, V₂ (partition 2)
+            SW->>R3: Q₃, K₃, V₃ (partition 3)
+        end
+        par R-Workers compute attention
+            R1->>R1: Append KV to cache, compute attention
+            R2->>R2: Append KV to cache, compute attention
+            R3->>R3: Append KV to cache, compute attention
+        end
+        par Return O
+            R1->>SW: O₁
+            R2->>SW: O₂
+            R3->>SW: O₃
+        end
+        SW->>SW: Continue S-Part (FFN, next QKV proj)
+    end
+</div>
+
+<p><strong>Pipeline 机制</strong>：S-Worker 维护两个 mini-batch A 和 B。S-Part(A) 执行期间，R-Workers 处理 R-Part(B)，反之亦然。理想情况 S-Part 和 R-Part 延迟匹配时无 bubble。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="性能模型概述">性能模型概述 <a class="heading-anchor" href="#性能模型概述" aria-label="Link to 性能模型概述">#</a></h3>
+
+<p>论文提出 model-guided orchestration 但 workshop 版本未给出完整公式推导。核心逻辑：</p>
+
+<ul>
+<li>$T_S$ = S-Part 延迟（固定，与 batch size 成正比但与序列长度无关）</li>
+<li>$T_R$ = R-Part 延迟（与序列总长度成正比：$\sum_{i} \text{seq\_len}_i$）</li>
+<li>Pipeline throughput ≈ $\frac{\text{batch\_size}}{\max(T_S, T_R)}$</li>
+<li>最小 R-Worker 数量 = 使 $T_R \leq T_S$ 的最少 CPU sockets</li>
+</ul>
+
+<h3 id="6-项检查">6 项检查 <a class="heading-anchor" href="#6-项检查" aria-label="Link to 6-项检查">#</a></h3>
+
+<ol>
+<li><strong>S-Part/R-Part 分解正确</strong>：attention 是唯一依赖 KVCache 的操作，其余线性层仅需 activation——分解边界清晰。</li>
+<li><strong>传输量缩减</strong>：Q/O activation size $O(B \times d)$ vs KVCache $O(B \times L_{seq} \times d)$——论文声称 "orders of magnitude" 但未给出具体比值公式。</li>
+<li><strong>Scaling efficiency 验证</strong>：Figure 7 展示 1→8 sockets scaling，13b-1024 达 84.1%。短序列退化（37.6%）符合 S-Worker 瓶颈预测。</li>
+<li><strong>Layer reduction 的评估方法</strong>：评测使用减层模型并外推到原始模型——外推方法未详述，是方法论弱点。</li>
+<li><strong>Load-stabilizing 贡献量化</strong>：声称最高 20% gain，但未单独消融。</li>
+<li><strong>无 prefill 处理</strong>：论文完全忽略 prefill 阶段，仅讨论 decode。实际 serving 中 prefill 仍需 GPU 执行。</li>
+</ul>
+
+<p><strong>无形式化解析模型</strong> — workshop 版本仅描述性能模型框架，full arxiv 版本（15页）可能包含完整推导。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="吞吐对比（fig-5）">吞吐对比（Fig 5） <a class="heading-anchor" href="#吞吐对比（fig-5）" aria-label="Link to 吞吐对比（fig-5）">#</a></h3>
+
+<table>
+<tr><th>System</th><th>Llama-7b (tok/s)</th><th>Llama-13b (tok/s)</th></tr>
+<tr><td>vLLM</td><td>452</td><td>350</td></tr>
+<tr><td>TensorRT-LLM</td><td>233</td><td>204</td></tr>
+<tr><td>FastLLM</td><td>175</td><td>143</td></tr>
+<tr><td>Vanilla</td><td>194</td><td>103</td></tr>
+<tr><td>FastDecode (128)</td><td>1052</td><td>660</td></tr>
+<tr><td>FastDecode (256)</td><td>1542</td><td>1026</td></tr>
+<tr><td>FastDecode (512)</td><td>2202</td><td>1363</td></tr>
+<tr><td><strong>FastDecode (1024)</strong></td><td><strong>2279</strong></td><td><strong>1441</strong></td></tr>
+</table>
+
+<p>Batch 128→1024（8×）仅带来 ~2× throughput——收益递减，因 R-Part 延迟线性增长。</p>
+
+<h3 id="scaling-efficiency（fig-7）">Scaling efficiency（Fig 7） <a class="heading-anchor" href="#scaling-efficiency（fig-7）" aria-label="Link to scaling-efficiency（fig-7）">#</a></h3>
+
+<table>
+<tr><th># Sockets</th><th>7b-1024 Efficiency</th><th>13b-1024 Efficiency</th><th>13b-128 Efficiency</th></tr>
+<tr><td>1</td><td>100%</td><td>100%</td><td>100%</td></tr>
+<tr><td>2</td><td>~85%</td><td>~90%</td><td>~80%</td></tr>
+<tr><td>4</td><td>~78%</td><td>~88%</td><td>75.9%</td></tr>
+<tr><td>8</td><td>72.8%</td><td>84.1%</td><td>37.6%*</td></tr>
+</table>
+
+<p>*8 sockets 低于 4 sockets throughput — S-Worker 瓶颈。</p>
+
+<h3 id="延迟（fig-6）">延迟（Fig 6） <a class="heading-anchor" href="#延迟（fig-6）" aria-label="Link to 延迟（fig-6）">#</a></h3>
+
+<p>FastDecode(1024) 的平均 token 生成延迟约为 FastDecode(128) 的 3.5×——throughput-latency trade-off 明显。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Strength</th></tr>
+<tr><td>1</td><td>KVCache 是 GPU batch size 的绑定约束</td><td>Fig 1 (memory breakdown)</td><td>Strong — 定量清晰</td></tr>
+<tr><td>2</td><td>GPU-CPU 带宽差距远小于算力差距</td><td>Fig 2 (hardware spec comparison)</td><td>Strong — 硬件事实</td></tr>
+<tr><td>3</td><td>S-Part/R-Part 分解将传输量从 KVCache 降至 activation</td><td>定性论证 ("orders of magnitude")</td><td>Medium — 缺少具体比值</td></tr>
+<tr><td>4</td><td>分布式 CPU 聚合带宽可饱和 GPU</td><td>Fig 7 scaling + performance model 框架</td><td>Medium — 模型未完整给出</td></tr>
+<tr><td>5</td><td>Load-stabilizing schedule 提供额外 20% gain</td><td>声称值，无消融图</td><td>Weak — 未独立验证</td></tr>
+<tr><td>6</td><td>端到端 1.88×–5.04× over vLLM</td><td>Fig 5, 6, 7</td><td>Strong — 多模型验证</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<ul>
+<li>S-Worker：PyTorch，GPU 上执行</li>
+<li>R-Worker：C++ 实现，AVX-2 intrinsics 优化混合精度 attention</li>
+<li>通信：InfiniBand 网络</li>
+<li>评测硬件：A10 GPU (24GB) + 最多 4 节点 dual-socket AMD EPYC CPU</li>
+<li>代码：<code>[实现未公开]</code>（论文未给出开源链接）</li>
+</ul>
+
+<p><strong>关键实现细节</strong>：</p>
+
+<ol>
+<li><strong>R-Worker 的 C++ attention kernel</strong>：使用 AVX-2 intrinsic 实现 paged attention 的变体，mixed-precision（FP16 KVCache + FP32 accumulator），contiguous memory access ordering 最大化 CPU cache line 利用率。</li>
+<li><strong>Pipeline bubble 源于 temporal workload heterogeneity</strong>：S-Part 延迟固定但 R-Part 延迟随序列增长。Load-stabilizing schedule 通过混合长短序列保持 $\sum \text{seq\_len}$ 稳定，但只能部分缓解——根本矛盾无法消除。</li>
+</ul>
+
+<h2 id="框架特定分析">框架特定分析 <a class="heading-anchor" href="#框架特定分析" aria-label="Link to 框架特定分析">#</a></h2>
+
+<h3 id="系统范围">系统范围 <a class="heading-anchor" href="#系统范围" aria-label="Link to 系统范围">#</a></h3>
+
+<ul>
+<li><strong>阶段覆盖</strong>：仅 decode（prefill 未讨论）</li>
+<li><strong>Serving 模式</strong>：offline-like throughput 优化（无 SLO 约束讨论）</li>
+<li><strong>并行维度</strong>：S-Worker 可用多 GPU TP；R-Worker 跨节点 data parallelism</li>
+<li><strong>部署模式</strong>：多节点异构（1 GPU node + N CPU nodes）</li>
+</ul>
+
+<h3 id="调度与资源管理">调度与资源管理 <a class="heading-anchor" href="#调度与资源管理" aria-label="Link to 调度与资源管理">#</a></h3>
+
+<ul>
+<li><strong>调度粒度</strong>：sequence-level（控制新序列注入时机）</li>
+<li><strong>抢占策略</strong>：无（batch 形成后不可抢占）</li>
+<li><strong>过载策略</strong>：未讨论</li>
+<li><strong>KVCache 管理</strong>：完全驻留在 R-Worker CPU 内存，分 partition 到各 R-Worker</li>
+<li><strong>Swap</strong>：无（KVCache 从不在 GPU 侧）</li>
+</ul>
+
+<h3 id="胜负场景">胜负场景 <a class="heading-anchor" href="#胜负场景" aria-label="Link to 胜负场景">#</a></h3>
+
+<table>
+<tr><th>Workload Regime</th><th>FastDecode</th><th>vLLM</th><th>Why</th></tr>
+<tr><td>长序列 (1024+)，高吞吐优先</td><td><strong>5.04×</strong></td><td>基线</td><td>GPU 完全释放给 batch，R-Worker 带宽充足</td></tr>
+<tr><td>短序列 (128)，多 R-Workers</td><td>比少 R-Workers 差</td><td>基线</td><td>S-Worker 成为瓶颈，多余 CPU 浪费</td></tr>
+<tr><td>延迟敏感在线场景</td><td>延迟 3.5× baseline</td><td>低延迟</td><td>大 batch 必然增加延迟</td></tr>
+<tr><td>Prefill 密集负载</td><td>无方案</td><td>基线</td><td>FastDecode 未处理 prefill 阶段</td></tr>
+</table>
+
+<h3 id="部署上下文">部署上下文 <a class="heading-anchor" href="#部署上下文" aria-label="Link to 部署上下文">#</a></h3>
+
+<ul>
+<li><strong>Serving stage</strong>：仅 decode</li>
+<li><strong>硬件亲和性</strong>：需要 InfiniBand 连接的 CPU 节点集群，CPU 带宽是绑定约束</li>
+<li><strong>生态集成</strong>：独立系统，不是 vLLM 插件</li>
+<li><strong>迁移路径</strong>：需搭建 CPU 集群 + InfiniBand 网络 + 部署 R-Worker 进程</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

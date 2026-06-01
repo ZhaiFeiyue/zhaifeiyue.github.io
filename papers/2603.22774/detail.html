@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Characterizing CPU-Induced Slowdowns in Multi-GPU LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Characterizing CPU-Induced Slowdowns in Multi-GPU LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-cluster">cluster</span> 2603.22774</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">LLM-inference</span><span class="tag">CPU-bottleneck</span><span class="tag">multi-GPU</span><span class="tag">tensor-parallelism</span><span class="tag">tokenization</span><span class="tag">shared-memory-IPC</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2603.22774.html">← Synthesis</a>
+<a href="/overview/cluster.html">← cluster Survey</a>
+<a href="https://arxiv.org/abs/2603.22774" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Multi-GPU LLM 推理中，CPU 资源不足是隐藏的主导瓶颈：tokenization 占 TTFT 高达 50%，shared-memory broadcast dequeue 延迟膨胀 19×，barrier 同步将单核延迟放大为全局 GPU 停顿。增加 CPU 核心可在 ~1.5% 额外成本下获得 1.36–5.40× TTFT 改善。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 痛点</strong>：Multi-GPU LLM 推理中，GPU 利用率低下的根因常被误归于 GPU 自身能力不足。实际上，CPU 在承担 tokenization、kernel dispatch、IPC 调度三类关键任务时，由于核心数不足产生 oversubscription，导致 GPU 空转。生产集群日志（4.65M 条 salloc 记录，覆盖 ~1,400 节点 / ~35,000 CPU 核心 / 数百 GPU）显示 H100 节点 P25 的 CPU-to-GPU ratio 仅为 0.25（1 核服务 4 GPU）。即便 vLLM V1 做了进程级隔离（API server / EngineCore / GPU workers 分属独立进程），所有进程仍竞争同一有限 CPU 核心池。</p>
+
+<p><strong>Q2 方法</strong>：本文通过 attacker-victim 实验设计系统性量化 CPU 瓶颈——向 vLLM v0.11.1 服务发送高负载 attacker 请求（1.8k–114k tokens，8/16 RPS），观测 victim 请求的 TTFT 退化。实验变量为 CPU 核心数（#GPUs+1 到 8×#GPUs）、GPU 数量（4/8）、模型（Llama 3.1 8B / Qwen 2.5 14B）、平台（H100 / H200 / RTX Pro 6000 Blackwell）。所有 GPU 侧优化开启：CUDA Graphs（full-and-piecewise）、chunked prefill、prefix caching、torch.compile、custom all-reduce。</p>
+
+<p>根因分析识别两个结构性瓶颈：</p>
+
+<ol>
+<li><strong>Barrier 同步放大</strong>：NCCL all_reduce 要求所有 rank 同步到达 barrier。CPU oversubscription 使任一 rank 的 kernel dispatch 延迟 $\delta$ 即导致全部 GPU busy-wait $\geq \delta$，单核延迟被放大 $N$ 倍（$N$ = TP degree）。</li>
+<li><strong>Shared-memory broadcast 竞争</strong>：vLLM V1 的 EngineCore → GPU worker IPC 使用 1-writer-N-reader 的 lock-free broadcast queue（POSIX <code>/dev/shm</code>）。Writer 必须 busy-wait 确认所有 $N$ 个 reader 已消费前一条消息才能写入下一条。CPU 核心不足时 writer 的 busy-wait 与 reader 进程争 CPU 时间，reader flag 更新延迟 → writer spin 更久 → 级联放大。竞争程度与 tensor parallelism degree 成正比。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：broadcast 竞争是 1-writer-N-reader 模式的结构性属性——仅增加 CPU 核心无法完全消除，需要 async scheduling pipeline（IPC 与 GPU 执行重叠）、persistent GPU kernel（GPU 侧轮询 device-side queue）或 device-to-device signaling（绕过 CPU control plane）等架构变革。</p>
+
+<p><strong>Q3 结果</strong>：从最少 CPU（#GPUs+1 核）到充足 CPU，TTFT 改善 1.36–5.40×，跨三个平台 × 两个模型一致复现。5 核 → 32 核使 4-GPU 任务总时间从 68.4s 降至 7.7s（~9×，GPU 数量不变）。AWS pricing 下增加 16 vCPU 仅增加 ~1.5% 实例成本（$0.80/hr vs $55.04/hr）。CPU 不足配置下多个场景触发 200s timeout，表明系统进入 pathological state 而非仅仅变慢。</p>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+flowchart TD
+    subgraph CPU_HOST["CPU Host · shared core pool"]
+        API["API Server\ntokenization · Rayon thread pool\nHTTP handling"]
+        EC["EngineCore\nscheduling · batching\nmemory management"]
+        W0["Worker 0"]
+        W1["Worker 1"]
+        W2["Worker 2"]
+        W3["Worker 3"]
+    end
+
+    subgraph IPC["IPC Layer"]
+        ZMQ["ZeroMQ\nAPI → EngineCore"]
+        SHM["Shared Memory Broadcast\n/dev/shm · lock-free\n1-writer · N-reader"]
+    end
+
+    subgraph GPU_PLANE["GPU Plane"]
+        G0["GPU 0"]
+        G1["GPU 1"]
+        G2["GPU 2"]
+        G3["GPU 3"]
+        NCCL["NCCL all_reduce\nbarrier sync"]
+    end
+
+    API -->|requests| ZMQ
+    ZMQ -->|schedule| EC
+    EC -->|broadcast| SHM
+    SHM -->|dequeue| W0 & W1 & W2 & W3
+    W0 -->|kernel launch| G0
+    W1 -->|kernel launch| G1
+    W2 -->|kernel launch| G2
+    W3 -->|kernel launch| G3
+    G0 & G1 & G2 & G3 <-->|NVLink| NCCL
+</div>
+
+<p>vLLM V1 架构下 CPU→GPU 的关键路径。CPU Host 内 API Server 的 Rayon 线程池执行 tokenization 后，EngineCore 通过 ZeroMQ 接收请求、经 shared-memory broadcast 向 $N$ 个 GPU worker 广播调度元数据。每个 worker 独立发起 kernel launch 驱动 GPU，GPU 间通过 NCCL all_reduce 做 barrier 同步。CPU 核心不足时：(a) Rayon 线程与 engine 进程争核心 → tokenization 延迟 + kernel launch 延迟；(b) broadcast 的 writer busy-wait 与 reader 争核心 → dequeue 膨胀；(c) barrier 将任一 rank 的延迟放大为全局停顿。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p>无形式化数学证明 — 本文以系统性实证 + 机理分析为主。</p>
+
+<p><strong>机理论证验证</strong>：</p>
+
+<table>
+<tr><th>#</th><th>检查项</th><th>验证结果</th></tr>
+<tr><td>1</td><td><strong>Straggler 放大一致性</strong>：单 rank 延迟 $\delta$ → 全局 barrier 延迟 $\geq \delta$。Fig.12 profiling trace 确认 4 GPU 共用 1–2 核心时 kernel launch 串行化、GPU busy-wait，与机理预测一致</td><td>✓ trace 匹配</td></tr>
+<tr><td>2</td><td><strong>Broadcast 竞争 ∝ TP</strong>：writer 轮询 $N$ 个 reader flag，$N$ 越大竞争越严重。Fig.13 在 TP=4 下 dequeue 12 ms → 228 ms（19×）；Fig.7 中 8-GPU 比 4-GPU 更易 timeout</td><td>✓ 定性一致</td></tr>
+<tr><td>3</td><td><strong>Tokenization $O(L)$ 缩放</strong>：BPE 分词复杂度线性于输入长度 $L$。Fig.5 中 SL 1.6k→102.4k 时 tokenization 占 TTFT 持续 ~50%，与 chunked prefill 使 GPU 端也近线性一致</td><td>✓ 比值稳定</td></tr>
+<tr><td>4</td><td><strong>进程隔离不等于资源隔离</strong>：vLLM V1 将 API server / EngineCore / workers 拆分为独立进程，但共享 CPU 核心池。Fig.10 确认 5 核配置下 CPU 长时间 ~100%</td><td>✓ 实验确认</td></tr>
+<tr><td>5</td><td><strong>Cost-effectiveness 算术</strong>：16 vCPU × \$0.05/hr = \$0.80/hr ÷ \$55.04/hr ≈ 1.5%</td><td>✓ 数值正确</td></tr>
+<tr><td>6</td><td><strong>CUDA Graphs 覆盖边界</strong>：Graphs 可捕获静态 kernel 序列但无法覆盖 decode step 的动态控制流（EOS 检测、stop-condition、agent tool-call）。vLLM piecewise CUDA Graphs 仅部分覆盖；tokenization 完全在 CPU 侧不受 Graphs 影响</td><td>✓ 架构约束成立</td></tr>
+</table>
+
+<p><strong>Bandwidth budget（cluster-specific）</strong>：本文不提出新 collective 算法，而是观测 CPU 延迟如何叠加到 NCCL all_reduce 上。Barrier 同步使 collective 完成时间 = $\max(T_{\text{GPU-compute}}, T_{\text{slowest-CPU-dispatch}})$；当后者主导时 GPU 空转。Fig.11 验证此关系：5 核时 GPU 利用率极低（GPU 大部分时间等待 CPU dispatch），32 核时 GPU 满载（CPU dispatch 不再是瓶颈）。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="实验-1：tokenization-占-ttft-比重">实验 1：Tokenization 占 TTFT 比重 <a class="heading-anchor" href="#实验-1：tokenization-占-ttft-比重" aria-label="Link to 实验-1：tokenization-占-ttft-比重">#</a></h3>
+
+<p>Llama 3.1 8B, 4×H200, 16 CPU 核心。</p>
+
+<table>
+<tr><th>Batch × SL</th><th>Tokenization 占比</th><th>说明</th></tr>
+<tr><td>1 × 1.6k</td><td>~15%</td><td>短序列时 GPU prefill 主导</td></tr>
+<tr><td>1 × 102.4k</td><td>~50%</td><td>长序列时 tokenization 与 GPU 等量</td></tr>
+<tr><td>16 × 25.6k</td><td>~45%</td><td>大 batch 放大 CPU 负载</td></tr>
+</table>
+
+<p>Chunked prefill + FlashAttention 使 GPU prefill 近线性缩放（非二次），因此 tokenization 占比不随序列增长而下降——两端同步线性增长。</p>
+
+<h3 id="实验-2：attacker-victim-ttft-加速比">实验 2：Attacker-Victim TTFT 加速比 <a class="heading-anchor" href="#实验-2：attacker-victim-ttft-加速比" aria-label="Link to 实验-2：attacker-victim-ttft-加速比">#</a></h3>
+
+<p>vLLM v0.11.1，从最少 CPU（#GPUs+1 核）到最佳 CPU 配置的加速比，Blackwell 平台：</p>
+
+<table>
+<tr><th>模型 / GPU 数 / RPS</th><th>加速比</th></tr>
+<tr><td>Llama-8B / 4 GPU / 8 RPS</td><td>4.45×</td></tr>
+<tr><td>Llama-8B / 4 GPU / 16 RPS</td><td>4.38×</td></tr>
+<tr><td>Llama-8B / 8 GPU / 8 RPS</td><td>1.84×</td></tr>
+<tr><td>Llama-8B / 8 GPU / 16 RPS</td><td>3.14×</td></tr>
+<tr><td>Qwen-14B / 4 GPU / 8 RPS</td><td>5.40×（最大加速）</td></tr>
+<tr><td>Qwen-14B / 4 GPU / 16 RPS</td><td>3.51×</td></tr>
+<tr><td>Qwen-14B / 8 GPU / 8 RPS</td><td>2.29×</td></tr>
+<tr><td>Qwen-14B / 8 GPU / 16 RPS</td><td>1.36×（最小加速）</td></tr>
+</table>
+
+<p>H100 / H200 跨平台一致复现。最少 CPU 配置下多个场景触发 200s timeout（Fig.7 / Fig.9 红 × / ∞ 标记）。</p>
+
+<h3 id="实验-3：cpu-核数-vs-任务时间">实验 3：CPU 核数 vs 任务时间 <a class="heading-anchor" href="#实验-3：cpu-核数-vs-任务时间" aria-label="Link to 实验-3：cpu-核数-vs-任务时间">#</a></h3>
+
+<p>4-GPU Llama 配置，attacker 负载下：</p>
+
+<table>
+<tr><th>CPU 核数</th><th>任务总时间</th><th>CPU 100% 持续</th><th>GPU 行为</th></tr>
+<tr><td>5</td><td>68.4s</td><td>~100s 持续饱和</td><td>利用率极低，长期空转</td></tr>
+<tr><td>8</td><td>9.3s</td><td>短暂尖峰</td><td>利用率显著提升</td></tr>
+<tr><td>16</td><td>8.3s</td><td>极短尖峰</td><td>接近满载</td></tr>
+<tr><td>32</td><td>7.7s</td><td>几乎无饱和</td><td>满载运行</td></tr>
+</table>
+
+<p>5→32 核心约 9× 加速，GPU 数量始终为 4。边际收益递减：8→16 仅 12% 提升，16→32 仅 8%。</p>
+
+<h3 id="实验-4：shared-memory-broadcast-dequeue-延迟">实验 4：Shared-memory broadcast dequeue 延迟 <a class="heading-anchor" href="#实验-4：shared-memory-broadcast-dequeue-延迟" aria-label="Link to 实验-4：shared-memory-broadcast-dequeue-延迟">#</a></h3>
+
+<p>H100, TP=4, 5 RPS × 100k tokens：</p>
+
+<table>
+<tr><th>指标</th><th>无负载</th><th>有负载</th><th>膨胀倍数</th></tr>
+<tr><td>dequeue() 延迟</td><td>~12 ms</td><td>228 ms（峰值）</td><td>19×</td></tr>
+<tr><td>decode phase</td><td>44 ms</td><td>44 ms</td><td>1×（GPU 不变）</td></tr>
+<tr><td>dequeue / decode 比值</td><td>0.27×</td><td>5.2×</td><td>—</td></tr>
+</table>
+
+<p>CPU control plane（dequeue）耗时从 GPU compute 的 27% 膨胀至 520%，完全主导 critical path。</p>
+
+<h3 id="实验-5：集群日志统计">实验 5：集群日志统计 <a class="heading-anchor" href="#实验-5：集群日志统计" aria-label="Link to 实验-5：集群日志统计">#</a></h3>
+
+<p>4.65M salloc 记录，2024 年全年，两个机构集群：</p>
+
+<table>
+<tr><th>集群</th><th>GPU 类型</th><th>P25 ratio</th><th>P50 ratio</th><th>关键发现</th></tr>
+<tr><td>教学集群</td><td>H100</td><td>0.25</td><td>1.00</td><td>1 核服务 4 GPU</td></tr>
+<tr><td>教学集群</td><td>A100</td><td>1.00</td><td>2.00</td><td>半数用户 ≤2 核/GPU</td></tr>
+<tr><td>科研集群</td><td>H100</td><td>—</td><td>8.00</td><td>~60% 任务 ratio < 8</td></tr>
+</table>
+
+<p>教学集群不强制 CPU-to-GPU 比例（Slurm 默认 <code>--cpus-per-task=1</code>），科研集群强制比例分配但仍有大量低 ratio 任务。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>论点</th><th>支撑证据</th><th>逻辑连接</th></tr>
+<tr><td>1</td><td>CPU 在 LLM 推理中承担 tokenization、kernel dispatch、IPC 三类关键工作，位于 GPU 计算的 critical path 上</td><td>§2-A 架构分析；Fig.1 系统概览；Fig.2 推理流水线分解</td><td>建立 CPU 非旁观者的前提</td></tr>
+<tr><td>2</td><td>生产集群中 CPU 普遍配置不足</td><td>4.65M salloc 记录；H100 P25 ratio=0.25（Fig.3）；~60% 任务 ratio<8（Fig.4）</td><td>Step 1 的理论风险在实践中广泛存在</td></tr>
+<tr><td>3</td><td>CPU 不足时 tokenization 主导 TTFT</td><td>Fig.5：tokenization 占 TTFT 高达 50%；BPE $O(L)$ 与 chunked prefill 均线性 → 比值不随 SL 下降</td><td>量化第一类 CPU 工作的延迟贡献</td></tr>
+<tr><td>4</td><td>CPU oversubscription 通过 NCCL barrier 同步放大为全局 GPU 停顿</td><td>Fig.12 profiling trace：kernel launch 串行化 → GPU busy-wait；单 rank $\delta$ → 全局 $\geq \delta$</td><td>揭示第一个结构性根因（straggler 效应）</td></tr>
+<tr><td>5</td><td>Shared-memory broadcast 的 1-writer-N-reader 竞争导致 IPC 延迟膨胀，且与 TP degree 成正比</td><td>Fig.13：dequeue 19× 膨胀（12→228 ms），是 GPU decode 的 5×</td><td>揭示第二个结构性根因</td></tr>
+<tr><td>6</td><td>增加 CPU 核心是高性价比的缓解手段</td><td>Fig.7/8/9：1.36–5.40× TTFT 改善；Fig.11：~9× 任务加速；AWS：~1.5% 成本增加</td><td>将根因分析转化为可操作建议</td></tr>
+<tr><td>7</td><td>Broadcast 竞争的结构性问题无法仅靠加核心解决，需要架构级变革</td><td>§5-B 机理：lock-free busy-wait 即使核心充足仍有竞争，TP 越高越严重；提出 persistent GPU kernel / device signaling 等方向</td><td>限定 Step 6 适用边界，指出长期解法</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>vLLM V1 shared-memory broadcast</strong>（论文直接引用的代码路径）：</p>
+
+<ul>
+<li><code>vllm/distributed/device_communicators/shm_broadcast.py</code>：1-writer-N-reader broadcast queue。<code>dequeue()</code> 和 <code>acquire_read()</code> 是 Fig.13 profiling 的目标函数。Writer 通过 per-entry metadata flags + memory fence 实现 lock-free；reader 通过 busy-wait 轮询 writer flag。</li>
+<li><code>vllm/v1/engine/</code>：V1 engine 架构，API server（tokenization + HTTP）与 EngineCore（scheduling）通过 ZeroMQ IPC 分离，EngineCore 到 GPU workers 通过 <code>/dev/shm</code> broadcast。</li>
+</ul>
+
+<p><strong>HuggingFace Tokenizers</strong>：</p>
+
+<ul>
+<li><code>tokenizers</code> crate（Rust）：BPE / SentencePiece 实现，<code>TOKENIZERS_PARALLELISM=true</code> 启用 Rayon 多线程加速 subword 分割。多请求场景下 Rayon 线程数 × 并发请求数远超可用核心，形成 oversubscription。</li>
+</ul>
+
+<p><strong>NCCL barrier 同步</strong>：</p>
+
+<ul>
+<li>NCCL <code>ncclAllReduce</code> 要求所有 rank 同步到达。论文使用 PyTorch Profiler 在 4 GPU / 1–2 核心配置下捕获 kernel launch 串行化与 GPU busy-wait 行为（Fig.12）。</li>
+</ul>
+
+<p><strong>关键实现细节</strong>：</p>
+
+<ol>
+<li><strong>Broadcast busy-wait 反馈环</strong>：vLLM V1 的 broadcast writer 必须轮询所有 $N$ 个 reader 完成 flag 才能写入下一条消息。Lock-free 设计避免了 mutex 但 busy-wait 本身消耗 CPU 时间——writer spin 抢占 reader 的 CPU 份额 → reader flag 更新延迟 → writer spin 更久。Continuous batching 使每个 decode step 触发一次 broadcast，该路径是 per-iteration hot path。</li>
+</ul>
+
+<ol>
+<li><strong>Tokenizer 并行度默认行为</strong>：<code>TOKENIZERS_PARALLELISM</code> 默认为 <code>true</code>，每次调用可 spawn 与物理核心数相当的 Rayon 线程。论文未测试 <code>TOKENIZERS_PARALLELISM=false</code> 或限制线程数的效果，留下一条未验证的低成本缓解路径。</li>
+</ul>
+
+<p><strong>硬件层启示</strong>：论文 §6-A 指出三类架构解法方向：(1) GPU-initiated networking（NVSHMEM），GPU 直接发起通信绕过 CPU dispatch；(2) persistent GPU kernel，GPU 侧常驻 kernel 轮询 device-side queue 消除 per-step 的 CPU→GPU launch 开销；(3) GPU System Processor（NVIDIA RISC-V GSP），利用 GPU 片上控制处理器接管部分编排职责。共同目标是将 critical path 从 CPU control plane 迁移到 device 侧。</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

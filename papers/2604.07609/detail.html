@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Blink: CPU-Free LLM Inference by Delegating the Serving Stack to GPU and SmartNIC — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Blink: CPU-Free LLM Inference by Delegating the Serving Stack to GPU and SmartNIC</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2604.07609</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">cpu-free-inference</span><span class="tag">smartnic-offload</span><span class="tag">persistent-gpu-kernel</span><span class="tag">cuda-graph</span><span class="tag">rdma</span><span class="tag">serving-system</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2604.07609.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2604.07609" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="blink-cpu-free-llm-inference-—-l2">Blink: CPU-Free LLM Inference — L2 <a class="heading-anchor" href="#blink-cpu-free-llm-inference-—-l2" aria-label="Link to blink-cpu-free-llm-inference-—-l2">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Blink removes host CPU from LLM inference critical path via SmartNIC (DPU) frontend + GPU-resident persistent scheduler, achieving up to 8.47× P99 TTFT reduction and complete interference immunity where baselines degrade 1–2 orders of magnitude.</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>Current LLM serving stacks (vLLM, SGLang, TRT-LLM) keep host CPU on every-token critical path for scheduling, batching, KV-cache management, and CUDA kernel dispatch. Even with CUDA Graphs and overlapped scheduling, the scheduler must return to host after every decode step. This creates two compounding problems:</p>
+
+<ol>
+<li><strong>CPU interference vulnerability</strong>: colocated workloads cause TLB invalidations and LLC pollution, triggering cross-address-space amplification — page walks that previously hit LLC now proceed to DRAM, driving LLC stall cycles up 11.2×. Under pbzip2 interference on vLLM+H100, throughput drops 3.8× and P99 TTFT inflates 139× (from 150 ms to 20,959 ms).</li>
+</ul>
+
+<ol>
+<li><strong>Standard mitigations are insufficient</strong>: huge pages reduce dTLB misses by only 16% with no latency improvement. Core pinning consumes all available cores (6 cores/GPU × 8 GPUs = 48 cores on dual-socket Xeon). LLC partitioning via Intel CAT fully eliminates LLC contention but improves P99 ITL by less than 4% — host-side scheduling jitter and CUDA dispatch overhead persist regardless.</li>
+</ul>
+
+<p>The fundamental issue is architectural: a fragile, interference-sensitive CPU sits on the critical path of every generated token.</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p>Blink redesigns the inference serving stack around two principles: (1) the host CPU becomes a provisioning plane (loads model and captures CUDA graphs at startup, then exits entirely); (2) steady-state operation uses only DPU + GPU.</p>
+
+<p><strong>DPU frontend</strong> (NVIDIA BlueField-3, 16 ARM Cortex-A78 cores):</p>
+
+<ul>
+<li>Receives HTTP requests, tokenizes via SIMD-optimized tokenizer (merge rules in 64-byte-aligned flat hash table, ARM NEON at 16 bytes/cycle; 8–19.7× faster than HuggingFace on Xeon)</li>
+<li>Maintains local slot availability cache via periodic bulk RDMA reads</li>
+<li>Writes tokenized prompts into GPU-resident ring buffer via one-sided RDMA</li>
+<li>Polls for generated tokens and streams responses via SSE</li>
+</ul>
+
+<p><strong>GPU backend</strong> (persistent scheduler):</p>
+
+<ul>
+<li>A single CUDA kernel occupying one thread block (256 threads) runs indefinitely</li>
+<li>Control loop: scan ring buffer → claim via atomic CAS → select/launch CUDA graph → poll for completion → publish tokens</li>
+<li>256 threads scan all 4096 ring buffer slots in 1–5 µs</li>
+<li>Device-side CUDA graph launch: fire-and-forget at ≈2 µs (5–8× faster than host launch), with window-based tail-launch recovery for the 120-launch hard limit</li>
+<li>Continuous batching with inline prefill: while decode graph executes asynchronously, 256 threads scan for pending prompts; new requests admitted within one decode step</li>
+</ul>
+
+<p><strong>Communication</strong>: GPU-resident lock-free ring buffer with per-slot state machine (empty → prefill_pending → prefill_processing → decode_processing → decode_completed → empty, plus decode_paused for preemption). DPU and GPU coordinate exclusively through this buffer; ownership transferred via atomic CAS with RDMA-visible memory fences.</p>
+
+<p><strong>System scope</strong>: both prefill and decode with continuous batching. Single-GPU, single-node. FCFS scheduling. Paged KV-cache managed entirely on GPU. OpenAI-compatible HTTP API with SSE streaming.</p>
+
+<p><strong>核心技术壁垒</strong>: the persistent GPU-resident scheduler. Replacing the entire host-driven decode loop with a single indefinitely-running CUDA kernel requires solving three deeply coupled problems: (a) device-side CUDA graph launch via fire-and-forget with tail-launch recovery for the undocumented 120-launch hard limit (exceeding it produces undefined behavior); (b) completion detection via device-side polling since fire-and-forget provides no host-side callbacks; (c) lock-free coordination with an external DPU through RDMA-visible memory fences without any CPU mediation. This is not offloading a function — it restructures who owns the inference control loop.</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<p>Evaluated on 4 models (Llama-3 8B, Phi-4 15B, Qwen-3 32B, Qwen-3 30B-A3B) against TRT-LLM v1.1.0, vLLM v0.13.0, SGLang v0.5.8 on NVIDIA H100.</p>
+
+<p><strong>Isolation</strong>: P99 TTFT reduced up to 8.47× (vs SGLang on Qwen-3 30B-A3B), P99 TPOT reduced up to 3.40×, decode throughput improved up to 2.1× (1437 tok/s vs 730 tok/s on MoE), energy per token reduced up to 48.6%. Highest or tied-highest saturation throughput on every model.</p>
+
+<p><strong>Under CPU interference</strong> (pbzip2 + Ninja LLVM build on 90 host cores): Blink maintains TTFT inflation 0.92–1.14×, TPOT inflation 0.97–1.04×, throughput retention 99–100%. Baselines: TTFT inflation 1.54–18.84×, throughput retention 28–64%. Blink plateau throughput 1.69–4.08× higher than baselines under interference. Energy per token reduced 41.4–70.7% vs baselines.</p>
+
+<p>MoE models show amplified benefits: Qwen-3 30B-A3B activates only 3B of 30B parameters per token, so each decode step completes quickly on GPU but CPU orchestration cost remains constant, making scheduling overhead a larger fraction of step time.</p>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant D as DPU Frontend<br/>(BlueField-3 ARM)
+    participant R as Ring Buffer<br/>(GPU Memory)
+    participant S as Persistent Scheduler<br/>(256-thread CUDA Kernel)
+    participant E as CUDA Graph Engine<br/>(TensorRT)
+
+    Note over D,E: Host loads model + captures CUDA graphs at startup, then exits
+
+    C->>D: HTTP request
+    D->>D: Tokenize (ARM NEON SIMD)
+    D->>D: Find slot (local cache + circular scan)
+    D->>R: One-sided RDMA write (prompt → slot)
+    S->>R: 256-thread parallel scan + atomic CAS claim
+    S->>E: Select graph from O(1) lookup table
+    S->>E: Fire-and-forget device launch (≈2 µs)
+    E->>E: Inference + token sampling
+    E->>R: Write generated token to slot
+    D->>R: RDMA read (poll results)
+    D->>D: Detokenize
+    D->>C: SSE streaming response
+
+    Note over S: Infinite loop: scan → claim → launch → poll → publish
+    Note over S: At 120 launches: tail-launch recovery resets window
+</div>
+
+<p><strong>Request lifecycle</strong>: Client → DPU HTTP server → tokenize → RDMA write to ring buffer → GPU persistent scheduler claims slot → selects and launches precompiled CUDA graph → inference executes → token written to ring buffer → DPU polls via RDMA → detokenize → stream to client. Host CPU participates in none of these steps after initialization.</p>
+
+<p><strong>Ring buffer</strong>: resides entirely in GPU memory. 4096 fixed slots with shared arenas for input/generated tokens. Per-slot metadata tracks prompt identity, token counts, generation progress. State machine governs ownership: DPU writes only to <code>empty</code> slots, GPU claims via CAS transition to <code>prefill_pending</code>, and only the GPU advances through processing states. Memory fences ensure RDMA-visible updates.</p>
+
+<p><strong>Scheduling</strong>: FCFS with pause-and-resume continuous batching. While a decode graph executes asynchronously, the scheduler's 256 threads scan the ring buffer for pending prefills. Three conditions gate pausing: (1) pending prefills detected, (2) free batch-slot capacity, (3) sufficient fire-and-forget launch-window headroom. New requests admitted within one decode step.</p>
+
+<p><strong>CUDA graph cache</strong>: precompiled TensorRT engines compiled into graphs for dense grid of (batch size, sequence length) pairs. Each graph consumes only 2–3 MB. Cache of 650–1000 graphs fits within 2–4 GB. Runtime selection via precomputed lookup table indexed by (batch, seq_len) in $O(1)$. Token sampling (Top-P with temperature) captured inside each graph.</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证</strong></p>
+
+<p>This paper contains no numbered equations and no formal analytical or performance model. The argument rests entirely on controlled systems experiments:</p>
+
+<ul>
+<li>§2.2: controlled interference measurements on vLLM + H100 with hardware performance counters (IPC, LLC miss rate, dTLB misses, LLC stall cycles, CPU migrations)</li>
+<li>§3.1–3.2: systematic evaluation of each standard mitigation (huge pages, core pinning, LLC partitioning, scheduling priority) with quantified residual effects</li>
+<li>§6: comprehensive benchmarks across 4 models × 3 baselines × 2 conditions (isolated + interference) × 13 load levels</li>
+</ul>
+
+<p>A formal model would have clarified:</p>
+
+<ol>
+<li><strong>Throughput bound</strong>: theoretical maximum as function of ring buffer slot count $N$, RDMA bandwidth $B_{\text{RDMA}}$, and graph launch latency $t_{\text{launch}}$ — is the system ring-buffer-limited or compute-limited, and at what concurrency does it transition?</li>
+<li><strong>Graph cache sizing</strong>: optimal number of precompiled (batch, seq_len) pairs vs GPU memory budget — the paper uses 650–1000 graphs empirically but provides no principled tradeoff analysis</li>
+<li><strong>Latency decomposition</strong>: closed-form $T_{\text{TTFT}} = t_{\text{RDMA}} + t_{\text{scan}} + t_{\text{launch}} + t_{\text{prefill}}$ and $T_{\text{TPOT}} = t_{\text{launch}} + t_{\text{decode}} + t_{\text{poll}}$ to predict which term dominates at different model sizes</li>
+<li><strong>DPU sensitivity</strong>: the DPU frontend runs on ARM cores — a model quantifying when DPU-side contention begins degrading Blink's isolation guarantees would strengthen the generality claim</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="硬件平台">硬件平台 <a class="heading-anchor" href="#硬件平台" aria-label="Link to 硬件平台">#</a></h3>
+
+<p>NVIDIA H100 (96 GB HBM3), 2× Intel Xeon Gold 6336Y (96 cores @ 2.40 GHz), 256 GB DDR5, ConnectX-6 200 Gbps NIC. Blink frontend on separate BlueField-3 DPU (16 ARM Cortex-A78, 32 GB) connected via 200 Gbps RDMA link (DOCA SDK v3.2.1).</p>
+
+<h3 id="isolated-performance-pre-saturation-geometric-mean">Isolated performance (pre-saturation geometric mean) <a class="heading-anchor" href="#isolated-performance-pre-saturation-geometric-mean" aria-label="Link to isolated-performance-pre-saturation-geometric-mean">#</a></h3>
+
+<table>
+<tr><th>Model</th><th>System</th><th>P99 TTFT (ms)</th><th>P99 TPOT (ms)</th><th>Tput at sat. (req/s)</th></tr>
+<tr><td>Llama-3 8B ($\lambda \leq 12$)</td><td><strong>Blink</strong></td><td><strong>653.8</strong></td><td><strong>15.1</strong></td><td><strong>11.87</strong></td></tr>
+<tr><td></td><td>TRT-LLM</td><td>880.0</td><td>17.7</td><td>10.80</td></tr>
+<tr><td></td><td>vLLM</td><td>1309.6</td><td>24.2</td><td>9.12</td></tr>
+<tr><td></td><td>SGLang</td><td>1747.1</td><td>30.7</td><td>7.88</td></tr>
+<tr><td>Phi-4 15B ($\lambda \leq 7$)</td><td><strong>Blink</strong></td><td><strong>1109.4</strong></td><td><strong>25.0</strong></td><td><strong>6.72</strong></td></tr>
+<tr><td></td><td>TRT-LLM</td><td>1453.8</td><td>29.8</td><td>6.42</td></tr>
+<tr><td></td><td>vLLM</td><td>1683.7</td><td>34.5</td><td>6.05</td></tr>
+<tr><td></td><td>SGLang</td><td>2874.1</td><td>47.9</td><td>5.58</td></tr>
+<tr><td>Qwen-3 32B ($\lambda \leq 2$)</td><td><strong>Blink</strong></td><td><strong>9481.3</strong></td><td><strong>113.4</strong></td><td><strong>2.00</strong></td></tr>
+<tr><td></td><td>TRT-LLM</td><td>9621.4</td><td>115.2</td><td>1.97</td></tr>
+<tr><td></td><td>vLLM</td><td>10862.4</td><td>133.7</td><td>1.88</td></tr>
+<tr><td></td><td>SGLang</td><td>11413.0</td><td>123.3</td><td>1.85</td></tr>
+<tr><td>Qwen-3 30B-A3B MoE ($\lambda \leq 4$)</td><td><strong>Blink</strong></td><td><strong>1397.5</strong></td><td><strong>35.5</strong></td><td><strong>4.85</strong></td></tr>
+<tr><td></td><td>TRT-LLM</td><td>4814.7</td><td>65.8</td><td>3.61</td></tr>
+<tr><td></td><td>vLLM</td><td>8919.2</td><td>90.9</td><td>2.91</td></tr>
+<tr><td></td><td>SGLang</td><td>11839.8</td><td>120.8</td><td>2.62</td></tr>
+</table>
+
+<p>Comparison to TRT-LLM is the cleanest control (same TensorRT inference engines). On Qwen-3 30B-A3B, Blink's P99 TTFT is 3.45× lower than TRT-LLM with 37% higher throughput — the largest gap across all models, driven by MoE's unfavorable compute-to-orchestration ratio.</p>
+
+<h3 id="performance-under-cpu-interference">Performance under CPU interference <a class="heading-anchor" href="#performance-under-cpu-interference" aria-label="Link to performance-under-cpu-interference">#</a></h3>
+
+<table>
+<tr><th>Model</th><th>System</th><th>P99 TTFT inflation</th><th>P99 TPOT inflation</th><th>Tput retention</th></tr>
+<tr><td>Llama-3 8B</td><td>Blink</td><td>1.00×</td><td>1.00×</td><td>100%</td></tr>
+<tr><td></td><td>TRT-LLM</td><td>18.84×</td><td>11.10×</td><td>38%</td></tr>
+<tr><td></td><td>vLLM</td><td>11.12×</td><td>7.35×</td><td>44%</td></tr>
+<tr><td></td><td>SGLang</td><td>8.43×</td><td>5.77×</td><td>48%</td></tr>
+<tr><td>Phi-4 15B</td><td>Blink</td><td>0.92×</td><td>0.98×</td><td>101%</td></tr>
+<tr><td></td><td>TRT-LLM</td><td>10.66×</td><td>6.17×</td><td>41%</td></tr>
+<tr><td></td><td>vLLM</td><td>7.14×</td><td>4.74×</td><td>47%</td></tr>
+<tr><td></td><td>SGLang</td><td>3.82×</td><td>3.15×</td><td>47%</td></tr>
+<tr><td>Qwen-3 32B</td><td>Blink</td><td>0.99×</td><td>1.04×</td><td>102%</td></tr>
+<tr><td></td><td>TRT-LLM</td><td>1.68×</td><td>3.23×</td><td>51%</td></tr>
+<tr><td></td><td>vLLM</td><td>1.54×</td><td>2.64×</td><td>64%</td></tr>
+<tr><td></td><td>SGLang</td><td>1.61×</td><td>3.35×</td><td>59%</td></tr>
+<tr><td>Qwen-3 30B-A3B</td><td>Blink</td><td>1.14×</td><td>0.97×</td><td>99%</td></tr>
+<tr><td></td><td>TRT-LLM</td><td>4.90×</td><td>9.19×</td><td>28%</td></tr>
+<tr><td></td><td>vLLM</td><td>2.02×</td><td>3.04×</td><td>54%</td></tr>
+<tr><td></td><td>SGLang</td><td>1.98×</td><td>3.96×</td><td>45%</td></tr>
+</table>
+
+<p>Interference: pbzip2 (45 threads) + Ninja LLVM build (45 jobs) on 90 host cores, 6 cores reserved per NVIDIA guidelines.</p>
+
+<h3 id="能效">能效 <a class="heading-anchor" href="#能效" aria-label="Link to 能效">#</a></h3>
+
+<table>
+<tr><th>Condition</th><th>Blink range (mJ/tok)</th><th>Best baseline (mJ/tok)</th><th>Blink savings</th></tr>
+<tr><td>Isolation</td><td>363–1306</td><td>502–1580</td><td>13.7–48.6%</td></tr>
+<tr><td>Interference</td><td>423–1584</td><td>1045–3597</td><td>41.4–70.7%</td></tr>
+</table>
+
+<p>All systems draw comparable wall power (1.1–1.4 kW). When CPU contention collapses baseline throughput at constant power, their energy per token inflates 69–182%. Blink's overhead at most 21%.</p>
+
+<h3 id="cpu-interference-root-cause-motivation-measurements">CPU interference root cause (motivation measurements) <a class="heading-anchor" href="#cpu-interference-root-cause-motivation-measurements" aria-label="Link to cpu-interference-root-cause-motivation-measurements">#</a></h3>
+
+<p>vLLM v0.13 + Llama-3 8B on H100, ShareGPT traces, pbzip2 interferer:</p>
+
+<table>
+<tr><th>Metric</th><th>Baseline</th><th>24× interference</th><th>Factor</th></tr>
+<tr><td>Throughput (tok/s)</td><td>7,475</td><td>1,961</td><td>3.8× drop</td></tr>
+<tr><td>P99 TTFT (ms)</td><td>150</td><td>20,959</td><td>139× inflation</td></tr>
+<tr><td>LLC miss rate</td><td>7.0%</td><td>71.6%</td><td>10.2×</td></tr>
+<tr><td>LLC stall cycles</td><td>450 M</td><td>5,037 M</td><td>11.2×</td></tr>
+<tr><td>IPC</td><td>1.53</td><td>0.72</td><td>2.1× drop</td></tr>
+</table>
+
+<h3 id="workload-characterization-—-where-blink-wins-and-loses">Workload characterization — where Blink wins and loses <a class="heading-anchor" href="#workload-characterization-—-where-blink-wins-and-loses" aria-label="Link to workload-characterization-—-where-blink-wins-and-loses">#</a></h3>
+
+<table>
+<tr><th>Regime</th><th>Blink advantage</th><th>Mechanism</th></tr>
+<tr><td>MoE, any load</td><td>3.45× P99 TTFT, 37% throughput vs TRT-LLM</td><td>Low compute-to-orchestration ratio amplifies per-token scheduling savings</td></tr>
+<tr><td>Dense, moderate-to-high load</td><td>1.35× P99 TTFT, 9% throughput vs TRT-LLM</td><td>Per-step CPU round-trip savings compound across output tokens</td></tr>
+<tr><td>Dense, GPU-bound (Qwen-3 32B)</td><td>~parity at P99; diverges at P99.9</td><td>GPU compute dominates; scheduling overhead masked at P99 but surfaces at deep tail</td></tr>
+<tr><td>Any model + CPU interference</td><td>Stable (0.92–1.14×) vs 1.5–18.8× degradation</td><td>CPU entirely removed from critical path</td></tr>
+<tr><td><strong>Models exceeding GPU memory</strong></td><td><strong>Not supported</strong> (baselines use CPU/DRAM offload)</td><td>Blink requires model to fit in GPU memory</td></tr>
+</table>
+
+<p>On Qwen-3 32B, TRT-LLM achieves lower P50 TTFT (531.7 ms vs 786.2 ms) — one of the few metrics where a baseline outperforms Blink, reflecting the GPU-bound regime where scheduling overhead is negligible at median.</p>
+
+<h3 id="decode-level-throughput-at-saturation">Decode-level throughput at saturation <a class="heading-anchor" href="#decode-level-throughput-at-saturation" aria-label="Link to decode-level-throughput-at-saturation">#</a></h3>
+
+<table>
+<tr><th>Model</th><th>Blink (tok/s)</th><th>TRT-LLM (tok/s)</th><th>Δ</th></tr>
+<tr><td>Llama-3 8B</td><td>3880</td><td>3535</td><td>+10%</td></tr>
+<tr><td>Phi-4 15B</td><td>2177</td><td>2044</td><td>+7%</td></tr>
+<tr><td>Qwen-3 32B</td><td>537</td><td>520</td><td>+3%</td></tr>
+<tr><td>Qwen-3 30B-A3B</td><td>1437</td><td>1053</td><td>+36%</td></tr>
+</table>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Type</th></tr>
+<tr><td>1</td><td>Host CPU is on every-token critical path of LLM inference</td><td>vLLM/SGLang/TRT-LLM return control to host after every decode step for scheduling, KV-cache management, kernel dispatch. CPU scheduling consumes up to 50% of e2e latency on fast accelerators (§2.1)</td><td>Architectural analysis + literature</td></tr>
+<tr><td>2</td><td>CPU interference causes severe, compounding degradation</td><td>vLLM+H100 under pbzip2: 3.8× throughput drop, 139× P99 TTFT inflation. TLB invalidation + LLC pollution create cross-address-space amplification — page walks forced to DRAM, LLC stall cycles up 11.2× (§2.2, Table 1)</td><td>Controlled measurement</td></tr>
+<tr><td>3</td><td>Standard mitigations fail to restore isolation</td><td>Huge pages: -16% dTLB misses, no latency improvement. Core pinning: consumes all cores, -18% throughput residual. LLC partitioning via CAT: eliminates LLC contention but <4% P99 ITL improvement (§3, Tables 2–4)</td><td>Systematic elimination</td></tr>
+<tr><td>4</td><td>Root cause is architectural, not resource contention</td><td>After eliminating LLC contention, host orchestration still inflates: attention dispatch +104%, cudaLaunchKernel +115%, KV-cache dispatch +172%. GPU kernel times unchanged (0.41–0.42 ms). Dynamic core systems (Caladan, Shenango) optimize CPU capacity, not whether CPU is on critical path (§3.3)</td><td>Profiling + argument by elimination</td></tr>
+<tr><td>5</td><td>CPU-free inference requires DPU + GPU-resident scheduler co-design</td><td>DPU alone cannot absorb per-token scheduling (limited core count). GPU alone cannot handle network I/O. Blink splits: DPU handles request management + RDMA transport; GPU-persistent kernel handles scheduling + execution (§4.1)</td><td>Design argument</td></tr>
+<tr><td>6</td><td>Persistent GPU scheduler achieves lower overhead than host path</td><td>Device-side CUDA graph launch ≈2 µs vs host 11–17 µs (5–8× faster). 256-thread ring buffer scan in 1–5 µs. CPU path inflates makespan 1.16–1.70× on same workloads (§4.2, Figure 3)</td><td>Microbenchmark</td></tr>
+<tr><td>7</td><td>Blink outperforms all baselines even in isolation</td><td>Same TensorRT engines as TRT-LLM: 1.35–3.45× lower P99 TTFT, up to 37% higher throughput. Highest saturation throughput on every model (§6.2, Table 6)</td><td>Controlled benchmark</td></tr>
+<tr><td>8</td><td>Blink maintains performance under CPU interference</td><td>TTFT inflation 0.92–1.14×, TPOT 0.97–1.04×, throughput 99–100% retention. Baselines: 1.54–18.84× TTFT inflation, 28–64% retention. Plateau 1.69–4.08× higher (§6.3, Table 7)</td><td>Controlled benchmark</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> — no public repository at time of writing.</p>
+
+<ul>
+<li>GPU backend: ≈16,000 lines CUDA/C++ — persistent scheduler, device-side graph launch, continuous batching, KV-cache management, token sampling. Targets CUDA 13.1, TensorRT inference engine.</li>
+<li>DPU frontend: ≈17,000 lines C/C++ — HTTP parsing/validation, RDMA orchestration via DOCA 3.2 SDK, ring buffer coordination, SSE streaming, optional ARM-based tokenization.</li>
+</ul>
+
+<h3 id="核心技术壁垒-—-persistent-gpu-resident-scheduler">核心技术壁垒 — persistent GPU-resident scheduler <a class="heading-anchor" href="#核心技术壁垒-—-persistent-gpu-resident-scheduler" aria-label="Link to 核心技术壁垒-—-persistent-gpu-resident-scheduler">#</a></h3>
+
+<p>The persistent scheduler is a single CUDA kernel that runs indefinitely, replacing the host CPU's role in the decode loop. Three aspects make replication non-trivial:</p>
+
+<ol>
+<li><strong>Device-side CUDA graph launch with 120-launch recovery</strong>: fire-and-forget achieves ≈2 µs but CUDA imposes an undocumented hard limit of 120 outstanding fire-and-forget launches per parent graph execution — exceeding it produces undefined behavior. Blink's window-based tail-launch recovery issues a single tail launch at the 120th iteration, atomically replacing the current graph execution while preserving all state in persistent GPU memory. Amortized overhead: <0.03 µs per step (fire-and-forget for 120/121 iterations).</li>
+</ul>
+
+<ol>
+<li><strong>Completion detection without callbacks</strong>: fire-and-forget provides no host-side completion notification. The scheduler performs polling-based completion detection entirely on device — polling prefill token-extraction buffers and per-step decode buffers. This is architecturally distinct from any host-mediated serving system where completion triggers host-side callback chains.</li>
+</ul>
+
+<ol>
+<li><strong>Lock-free DPU–GPU coordination</strong>: the ring buffer must be simultaneously writable by DPU via one-sided RDMA and readable by the persistent GPU kernel. Ownership transferred via atomic CAS on per-slot metadata, with memory fences ensuring RDMA-visible updates. Benign races tolerated by design — the scheduler may re-scan a slot concurrently freed, but CAS prevents double-claiming.</li>
+</ul>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>TensorRT vs PyTorch graph memory</strong>: TensorRT CUDA graphs consume 2–3 MB each vs hundreds of MB for PyTorch-based graphs, enabling a cache of 650–1000 graphs within 2–4 GB. This ~100× size difference makes $O(1)$ graph selection from a precomputed lookup table practical — PyTorch-based persistent schedulers would hit a memory wall at equivalent cache density.</li>
+</ul>
+
+<ol>
+<li><strong>DPU tokenizer performance</strong>: merge rules in 64-byte-aligned flat hash table (4 KV pairs per L1D cache line), 16-byte-aligned symbol nodes, ARM NEON SIMD for byte classification at 16 bytes/cycle, pre-allocated thread-local buffers (zero heap allocation on request path). Achieves 8–19.7× speedup over HuggingFace tokenizer despite BlueField-3 ARM A78 having lower clock speed than Xeon, revealing how much Python/HuggingFace overhead dominates standard tokenization paths.</li>
+</ul>
+
+<h3 id="api-与部署">API 与部署 <a class="heading-anchor" href="#api-与部署" aria-label="Link to api-与部署">#</a></h3>
+
+<ul>
+<li><strong>API</strong>: OpenAI-compatible HTTP endpoints with SSE streaming. Same TensorRT engine compilation workflow as TRT-LLM.</li>
+<li><strong>Hardware requirements</strong>: NVIDIA GPU (H100 tested) + NVIDIA BlueField-3 DPU + 200 Gbps RDMA link.</li>
+<li><strong>Deployment</strong>: standalone system, not a plugin to existing frameworks. Migration requires full stack replacement + DPU procurement.</li>
+<li><strong>Current scope</strong>: single GPU only (multi-GPU extension discussed as future work via GPU-native collectives or GPU-initiated RDMA). Models must fit in GPU memory. Chunked prefill, prefix caching, speculative decoding described as compatible extensions but not yet implemented.</li>
+</ul>
+
+<h3 id="hardware-implications">Hardware implications <a class="heading-anchor" href="#hardware-implications" aria-label="Link to hardware-implications">#</a></h3>
+
+<p>Blink's design exposes three hardware gaps in current CUDA/NIC architecture:</p>
+
+<ol>
+<li>The 120 fire-and-forget launch limit is an artificial constraint requiring complex workarounds. A proper device-side graph queue API with configurable depth would simplify persistent-kernel designs.</li>
+<li>DPU–GPU coordination relies on RDMA polling. A hardware notification mechanism (GPU-to-NIC doorbell or interrupt) would eliminate polling overhead.</li>
+<li>Device-side graph launch is limited to graphs captured by the same context. Cross-context launch would enable multi-GPU persistent scheduling without host mediation.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

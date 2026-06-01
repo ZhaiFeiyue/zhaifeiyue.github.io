@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>AgentOpt v0.1 Technical Report: Client-Side Optimization for LLM-Based Agent — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">AgentOpt v0.1 Technical Report: Client-Side Optimization for LLM-Based Agent</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2604.06296</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-optimization</span><span class="tag">tool-call-efficiency</span><span class="tag">token-reduction</span><span class="tag">architecture-search</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2604.06296.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2604.06296" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>AgentOpt introduces client-side optimization for AI agents — model combination selection across pipeline roles via bandit-based search (Matrix UCB-E). Cost gap between best and worst combinations reaches 13–32× at matched accuracy; the strongest standalone model (Opus 4.6) is the worst planner in multi-step pipelines; UCB-E recovers near-optimal accuracy at 62–76% budget savings.</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>Server-side agent serving systems (Autellix, ThunderAgent, Continuum, AIOS) optimize how a fixed pipeline is served, but cannot optimize which model assignment to use. Client-side optimization — model choice, tool invocation, budget allocation — remains unexplored. Model selection is the dominant lever: cost gap between near-equivalent combinations is 13–32×, far larger than what infrastructure improvements can recover. Performance rankings do not transfer across roles: Claude Opus 4.6, the strongest standalone model, is the worst planner across all 81 HotpotQA combinations because it bypasses the solver's search tools.</p>
+
+<ul>
+<li>Task class: multi-step agent pipelines (planner–solver, answerer–critic).</li>
+<li>Interaction: offline optimization (search phase) → deployment with fixed combination.</li>
+<li>Autonomy: optimization tool, not an agent itself.</li>
+</ul>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>Client-side optimization formalized</strong> (§2): Pipeline with $N$ roles, candidate model set $\mathcal{M}$. Model combination $\mathbf{c} = (m_1, \dots, m_N) \in \mathcal{M}^N$. Utility: $J(\mathbf{c}) = U(\mathrm{PERF}(\tau(\mathbf{c})), \mathrm{LATENCY}(\tau(\mathbf{c})), \mathrm{COST}(\tau(\mathbf{c})))$. Optimize: $\mathbf{c}^* = \arg\max_{\mathbf{c} \in M^H} J(\mathbf{c})$.</p>
+
+<p><strong>Combo abstraction</strong> (§3.1): The unit of optimization must be the full combination, not individual roles. Model quality is not context-free — assigning a model to stage $t$ changes intermediate computation for all later stages. Agent model selection is a black-box optimization problem over pipeline-level configurations, fundamentally different from per-call LLM routing.</p>
+
+<p><strong>Framework-agnostic implementation</strong> (§4): Intercepts at HTTP transport layer (patching <code>httpx.Client.send</code> / <code>httpx.AsyncClient.send</code>). Attribution via Python <code>contextvars</code>. HTTP-level response caching (keyed by request payload hash). Two-level concurrency (semaphore per combination × per datapoint).</p>
+
+<p><strong>Ten search algorithms</strong> (§5): Brute-force, Random, Matrix UCB-E ($\text{UCB}_i = \bar{s}_i + \sqrt{a/n_i}$ operating on combination-by-datapoint grid), Matrix UCB-E-LRF (low-rank variant), Arm Elimination, Epsilon-LUCB, Threshold Successive Elimination, Hill Climbing (multi-restart local search), Bayesian Optimization (BoTorch, acquisition function $\alpha(\mathbf{c}; g, \mathcal{H})$), LM Proposal (LLM-based shortlisting).</p>
+
+<p><strong>核心技术壁垒</strong>: The empirical demonstration that the "best model" is not a global property — Claude Opus 4.6 as planner produces 31.71% accuracy vs 74.27% when Ministral 3 8B plans and Opus solves. This invalidates the assumption underlying per-call routing: model quality must be evaluated at the combination level for multi-step workflows.</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<table>
+<tr><th>Benchmark</th><th>Best Combination</th><th>Accuracy</th><th>Cost Gap (best vs worst at matched quality)</th></tr>
+<tr><td>HotpotQA</td><td>Ministral 3 8B (planner) + Opus 4.6 (solver)</td><td>74.27%</td><td>—</td></tr>
+<tr><td>MathQA</td><td>Opus 4.6 (answer) + Haiku 4.5 (critic)</td><td>98.84%</td><td>24×</td></tr>
+<tr><td>BFCL</td><td>Opus 4.6 / Kimi / Qwen3 Next (tied at 70%)</td><td>70.00%</td><td>32×</td></tr>
+<tr><td>GPQA Diamond</td><td>Opus 4.6</td><td>74.75%</td><td>—</td></tr>
+</table>
+
+<p><strong>Matrix UCB-E at β=0.2</strong>: HotpotQA 73.54% (vs 74.27% brute-force), 75.9% cost savings. MathQA 98.37% (vs 98.84%), 71.6% savings.</p>
+
+<p><strong>Opus as planner on HotpotQA</strong>: All 9 Opus-as-planner combinations rank 71–81 out of 81; in 7/9 cases <code>role2_never_called</code> — Opus answers from parametric knowledge, bypassing solver tools entirely.</p>
+
+<p><strong>LM Proposal failure</strong>: 34.13% on HotpotQA (vs 74.27% ground truth) — LLM priors about model quality are dramatically wrong in multi-step settings.</p>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+flowchart TD
+    subgraph AgentOpt
+        API[User API<br>agent class + models + eval_fn]
+        INT[HTTP Interception<br>httpx patching + contextvars]
+        CACHE[Response Cache<br>hash-keyed, SQLite persistence]
+        PAR[Parallel Executor<br>2-level concurrency]
+        SEL[Selector Algorithm<br>UCB-E / ArmElim / BO / ...]
+    end
+    API --> SEL
+    SEL -->|select combination c| INT
+    INT --> LLM[LLM API Calls]
+    LLM --> INT
+    INT --> CACHE
+    INT --> PAR
+    PAR -->|metrics: perf, cost, latency| SEL
+    SEL -->|Pareto frontier| Results[SelectionResults<br>ranked tables + CSV + YAML]
+</div>
+
+<p>The optimization loop iteratively selects combinations, executes full pipelines, and aggregates end-to-end metrics. Matrix UCB-E operates on the combination-by-datapoint scoring grid, concentrating budget on promising candidates while abandoning poor ones early.</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p>无形式化作者证明 — 仅实证</p>
+
+<p>The paper formalizes the optimization problem as a black-box combinatorial optimization (§3.1) and frames it as a pure-exploration multi-armed bandit (§5.1), but provides no convergence proofs or regret bounds for the proposed algorithms. The UCB-E analysis relies on standard bandit theory references.</p>
+
+<table>
+<tr><th>Check</th><th>Status</th></tr>
+<tr><td>Formalization of client-side optimization</td><td>✓ Multi-objective utility $J(\mathbf{c})$ (§2–§3.1)</td></tr>
+<tr><td>Search space characterization</td><td>✓ $</td><td>C</td><td>= \prod</td><td>M_i</td><td>$ combinatorial (§5)</td></tr>
+<tr><td>Algorithm convergence guarantees</td><td>Not provided (relies on known bandit bounds)</td></tr>
+<tr><td>Ablation across algorithms</td><td>✓ 10 algorithms compared, 50-seed averages</td></tr>
+<tr><td>Cross-benchmark validation</td><td>✓ 4 benchmarks spanning different workflow structures</td></tr>
+<tr><td>Statistical methodology</td><td>✓ 50 random seeds per algorithm-benchmark pair</td></tr>
+</table>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<p><strong>Cross-benchmark brute force (Table 1)</strong>: Exhaustive evaluation costs range from $4.71 (GPQA, 9 combinations) to $123.87 (MathQA, 81 combinations). Best combination often counter-intuitive (Ministral 3 8B + Opus 4.6 on HotpotQA).</p>
+
+<p><strong>Algorithm comparison (Tables 4–7, 50-seed averages)</strong>:</p>
+<ul>
+<li><strong>Matrix UCB-E</strong> strongest on larger spaces: 73.54% at β=0.2 on HotpotQA (76% savings), 98.37% on MathQA (72% savings).</li>
+<li><strong>Matrix UCB-E-LRF consistently underperforms</strong> plain UCB-E — rigid factorization assumption fails on larger spaces.</li>
+<li><strong>Hill Climbing</strong> excels when topology aligns (BFCL: 100% find rate) but drops to 52% on HotpotQA.</li>
+<li><strong>LM Proposal</strong> fails catastrophically on multi-step benchmarks (34.13% HotpotQA, 44.03% BFCL).</li>
+<li><strong>Bayesian Optimization</strong> competitive on HotpotQA (73.33%) but poor on MathQA (95.41%).</li>
+</ul>
+
+<p><strong>HotpotQA deep dive (Tables 3, 10)</strong>: Bottom 11 combinations all use Opus or Haiku 4.5 as planner. Opus-as-planner produces near-identical accuracy (~31.9%) regardless of solver — confirming it bypasses the solver entirely.</p>
+
+<p><strong>MathQA critic role (Table 11)</strong>: With Opus as answerer, all 9 critic models fall within 2.9 pp range (95.95–98.84%). Critic role is largely decorative in strong-answerer regimes.</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
+<tr><td>1</td><td>Server-side optimization cannot address developer-specific quality/cost/latency tradeoffs</td><td>Structural argument: provider optimizes throughput, not per-application utility</td><td>—</td></tr>
+<tr><td>2</td><td>Model selection is the first-class client-side optimization lever (upstream of all others)</td><td>Structural: model assignment determines computational substrate; empirical: 13–32× cost gap</td><td>Step 1</td></tr>
+<tr><td>3</td><td>Model quality must be evaluated at combination level, not per model</td><td>HotpotQA: Opus best standalone, worst as planner (31.71% vs 74.27%)</td><td>Step 2</td></tr>
+<tr><td>4</td><td>Combinatorial search is necessary but exhaustive search is too expensive</td><td>$</td><td>C</td><td>=</td><td>M</td><td>^N$ grows exponentially; brute-force costs $51–124 per benchmark</td><td>Step 3</td></tr>
+<tr><td>5</td><td>Matrix UCB-E recovers near-optimal at 62–76% budget savings</td><td>Tables 4–7: 50-seed averages across 4 benchmarks</td><td>Step 4</td></tr>
+<tr><td>6</td><td>LLM priors about model quality fail in multi-step settings</td><td>LM Proposal: 34.13% on HotpotQA vs 74.27% brute-force</td><td>Step 3</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>Open-source Python package: https://github.com/AgentOptimizer/agentopt. Framework-agnostic (httpx interception). Agents implemented in LangGraph for benchmarks. 9 models served via AWS Bedrock.</p>
+
+<p><strong>关键实现细节</strong>:</p>
+<ol>
+<li><strong>The Opus planner pathology</strong> — Opus as planner bypasses the solver in 7/9 configurations because it answers directly from parametric knowledge rather than delegating to the search tools. This is detectable only at the combination level; per-call routing would never expose this failure mode because Opus's planner output looks correct in isolation.</li>
+<li><strong>Internal discrepancy</strong>: §8 conclusion names Arm Elimination as providing "the most consistent tradeoff" while §6.2 results more strongly highlight Matrix UCB-E. The evaluation criteria differ (consistency across benchmarks vs. raw efficiency at a given budget fraction) but this is not reconciled.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

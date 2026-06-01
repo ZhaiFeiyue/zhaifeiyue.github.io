@@ -216,8 +216,8 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <p><strong>关联逻辑</strong>：2511.02168（Iris/Three Taxes）和 2510.27656（fabric-lib）是分布式 LLM 通信优化领域的两个互补方向：</p>
 
 <ul>
-<li><strong>Iris/Three Taxes</strong> 在 GPU kernel 内部将 collective communication 融入 compute 逻辑，用 tile-level producer-consumer pipeline 替代 BSP 全局 barrier，目标是消除 intra-node RCCL 调用的三类性能税 <a href="/papers/2511.02168/detail.html#q1-痛点" class="ref-link" title="L2:2511.02168#q1-痛点">[L2:2511.02168]</a>。</li>
-<li><strong>fabric-lib</strong> 在 NIC/网络层提供统一 RDMA P2P 原语，绕开 collective 的四大限制（固定成员、同步初始化、操作有序、均匀缓冲区），目标是为 inter-node 新兴 LLM 工作负载（disaggregated inference、MoE routing、async RL）提供可移植通信 <a href="/papers/2510.27656/detail.html#q1-痛点" class="ref-link" title="L2:2510.27656#q1-痛点">[L2:2510.27656]</a>。</li>
+<li><strong>Iris/Three Taxes</strong> 在 GPU kernel 内部将 collective communication 融入 compute 逻辑，用 tile-level producer-consumer pipeline 替代 BSP 全局 barrier，目标是消除 intra-node RCCL 调用的三类性能税 [ref:2511.02168#q1-痛点]。</li>
+<li><strong>fabric-lib</strong> 在 NIC/网络层提供统一 RDMA P2P 原语，绕开 collective 的四大限制（固定成员、同步初始化、操作有序、均匀缓冲区），目标是为 inter-node 新兴 LLM 工作负载（disaggregated inference、MoE routing、async RL）提供可移植通信 [ref:2510.27656#q1-痛点]。</li>
 </ul>
 
 <p>两者共享一个核心判断：NCCL/RCCL 的 opaque collective 模型在延迟敏感的 LLM 推理中是性能瓶颈。但攻击路径完全正交——Iris 说"collective 的实现方式有问题，应融合进 kernel"；fabric-lib 说"某些负载根本不适合 collective，需要 P2P 原语"。</p>
@@ -228,7 +228,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h3 id="2-1-通信层级与物理范围">2.1 通信层级与物理范围 <a class="heading-anchor" href="#2-1-通信层级与物理范围" aria-label="Link to 2-1-通信层级与物理范围">#</a></h3>
 
-<p>Iris 工作在 GPU kernel 内部（Triton compiler + Iris RMA 原语），通信媒介是 AMD Infinity Fabric XGMI，scope 限于单节点 8 GPU <a href="/papers/2511.02168/detail.html#8-system-scope" class="ref-link" title="L2:2511.02168#8-system-scope">[L2:2511.02168]</a>。fabric-lib 工作在 NIC driver 层（libibverbs / libfabric），通信媒介是 400 Gbps RDMA 网络，实测覆盖多节点集群（最大 EP=DP=64 即 512 GPU）<a href="/papers/2510.27656/detail.html#8-system-scope-cluster-specific" class="ref-link" title="L2:2510.27656#8-system-scope-cluster-specific">[L2:2510.27656]</a>。</p>
+<p>Iris 工作在 GPU kernel 内部（Triton compiler + Iris RMA 原语），通信媒介是 AMD Infinity Fabric XGMI，scope 限于单节点 8 GPU [ref:2511.02168#8-system-scope]。fabric-lib 工作在 NIC driver 层（libibverbs / libfabric），通信媒介是 400 Gbps RDMA 网络，实测覆盖多节点集群（最大 EP=DP=64 即 512 GPU）[ref:2510.27656#8-system-scope-cluster-specific]。</p>
 
 <table>
 <tr><th>维度</th><th>Iris/Three Taxes</th><th>fabric-lib</th></tr>
@@ -240,37 +240,37 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <tr><td>评测规模</td><td>1 node × 8 GPU</td><td>最大 64 nodes × 8 GPU</td></tr>
 </table>
 
-<p><strong>Delta 1</strong>: Iris 对 inter-node 场景完全无解——其 <code>iris.load()</code> 的 sub-µs 延迟假设在跨 NIC 场景下不成立（RDMA RTT 高出 1–2 个数量级）<a href="/papers/2511.02168/detail.html#17-software-hardware-reverse-implication" class="ref-link" title="L2:2511.02168#17-software-hardware-reverse-implication">[L2:2511.02168]</a>。fabric-lib 补充了这一空白，尤其在 MoE all-to-all 和 disaggregated inference 场景中只有 inter-node 方案有实际意义。</p>
+<p><strong>Delta 1</strong>: Iris 对 inter-node 场景完全无解——其 <code>iris.load()</code> 的 sub-µs 延迟假设在跨 NIC 场景下不成立（RDMA RTT 高出 1–2 个数量级）[ref:2511.02168#17-software-hardware-reverse-implication]。fabric-lib 补充了这一空白，尤其在 MoE all-to-all 和 disaggregated inference 场景中只有 inter-node 方案有实际意义。</p>
 
 <h3 id="2-2-对-collective-的态度分歧">2.2 对 collective 的态度分歧 <a class="heading-anchor" href="#2-2-对-collective-的态度分歧" aria-label="Link to 2-2-对-collective-的态度分歧">#</a></h3>
 
-<p>Iris 的立场较为激进：三类税"are not fundamental costs but are artifacts of the rigid BSP programming model"，即使 All-Gather 这类标准 collective 也应被融合进 compute kernel <a href="/papers/2511.02168/detail.html#q2-方法" class="ref-link" title="L2:2511.02168#q2-方法">[L2:2511.02168]</a>。</p>
+<p>Iris 的立场较为激进：三类税"are not fundamental costs but are artifacts of the rigid BSP programming model"，即使 All-Gather 这类标准 collective 也应被融合进 compute kernel [ref:2511.02168#q2-方法]。</p>
 
-<p>fabric-lib 的立场更务实："P2P complements collectives"——对结构化并行（TP、DP），NCCL collective 仍然最优；P2P 是为 collective 不适用的新兴负载提供的补充 <a href="/papers/2510.27656/detail.html#10-collective-communication" class="ref-link" title="L2:2510.27656#10-collective-communication">[L2:2510.27656]</a>。</p>
+<p>fabric-lib 的立场更务实："P2P complements collectives"——对结构化并行（TP、DP），NCCL collective 仍然最优；P2P 是为 collective 不适用的新兴负载提供的补充 [ref:2510.27656#10-collective-communication]。</p>
 
 <p><strong>Delta 2</strong>: 两者对 opaque collective 的批判形成辩证补充。Iris 攻击 collective 的 <em>调用方式</em>（BSP 五阶段模式），fabric-lib 攻击 collective 的 <em>适用范围</em>（四大限制）。如果将两者结合——对于仍需 collective 语义的负载用 Iris 式 fusion 消除 BSP overhead，对于不需要 collective 的负载用 fabric-lib 的 P2P 原语——可以覆盖 LLM 通信优化的全谱系。</p>
 
 <h3 id="2-3-通信发起模型">2.3 通信发起模型 <a class="heading-anchor" href="#2-3-通信发起模型" aria-label="Link to 2-3-通信发起模型">#</a></h3>
 
-<p>Iris 的核心创新是 <strong>GPU-initiated</strong> fine-grained communication：GPU kernel 线程直接通过 <code>iris.load()</code> / <code>iris.store()</code> 发起远程内存访问，无 CPU 参与，无 PCIe round-trip <a href="/papers/2511.02168/detail.html#q2-方法" class="ref-link" title="L2:2511.02168#q2-方法">[L2:2511.02168]</a>。</p>
+<p>Iris 的核心创新是 <strong>GPU-initiated</strong> fine-grained communication：GPU kernel 线程直接通过 <code>iris.load()</code> / <code>iris.store()</code> 发起远程内存访问，无 CPU 参与，无 PCIe round-trip [ref:2511.02168#q2-方法]。</p>
 
-<p>fabric-lib 采用 <strong>host proxy</strong> 模型：GPU 通过 UVM watcher 通知 CPU proxy 线程，proxy 调用 TransferEngine 发起 RDMA transfer <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="L2:2510.27656#q2-方法">[L2:2510.27656]</a>。尽管多了 CPU 中介，fabric-lib 在 MoE decode 上仍匹配/超越 GPU-initiated DeepEP <a href="/papers/2510.27656/detail.html#5-实验与数据" class="ref-link" title="L2:2510.27656#5-实验与数据">[L2:2510.27656]</a>。</p>
+<p>fabric-lib 采用 <strong>host proxy</strong> 模型：GPU 通过 UVM watcher 通知 CPU proxy 线程，proxy 调用 TransferEngine 发起 RDMA transfer [ref:2510.27656#q2-方法]。尽管多了 CPU 中介，fabric-lib 在 MoE decode 上仍匹配/超越 GPU-initiated DeepEP [ref:2510.27656#5-实验与数据]。</p>
 
 <p><strong>Delta 3</strong>: 两者揭示了一个有趣的 trade-off——GPU-initiated communication 消除了 host 介入延迟但要求特定硬件支持（XGMI remote load/store 或 IBGDA），host proxy 增加了 PCIe latency 但获得了跨 NIC vendor 可移植性。Iris 选择了性能优先（绑定 AMD IF），fabric-lib 选择了 portability 优先（跨 ConnectX/EFA）。</p>
 
 <h3 id="2-4-生产成熟度">2.4 生产成熟度 <a class="heading-anchor" href="#2-4-生产成熟度" aria-label="Link to 2-4-生产成熟度">#</a></h3>
 
-<p>fabric-lib 是 production-deployed 系统（Perplexity AI 生产环境，MLSys 2026），有完整错误处理（心跳、取消确认）、CUDA Graph 兼容性、Rust 实现 <a href="/papers/2510.27656/detail.html#14-deployment-context-实践上下文" class="ref-link" title="L2:2510.27656#14-deployment-context-实践上下文">[L2:2510.27656]</a>。</p>
+<p>fabric-lib 是 production-deployed 系统（Perplexity AI 生产环境，MLSys 2026），有完整错误处理（心跳、取消确认）、CUDA Graph 兼容性、Rust 实现 [ref:2510.27656#14-deployment-context-实践上下文]。</p>
 
-<p>Iris 是研究原型（AMD Research），仅在 8 GPU 单节点上验证，batch=1，FP16，无错误处理、无 fault tolerance 讨论 <a href="/papers/2511.02168/detail.html#13-fault-tolerance-reliability" class="ref-link" title="L2:2511.02168#13-fault-tolerance-reliability">[L2:2511.02168]</a>。AG+GEMM 在 M∈[8,64] 时劣于 RCCL+torch.matmul baseline <a href="/papers/2511.02168/detail.html#5-2-all-gather-gemm-fig-9" class="ref-link" title="L2:2511.02168#5-2-all-gather-gemm-fig-9">[L2:2511.02168]</a>。</p>
+<p>Iris 是研究原型（AMD Research），仅在 8 GPU 单节点上验证，batch=1，FP16，无错误处理、无 fault tolerance 讨论 [ref:2511.02168#13-fault-tolerance-reliability]。AG+GEMM 在 M∈[8,64] 时劣于 RCCL+torch.matmul baseline [ref:2511.02168#5-2-all-gather-gemm-fig-9]。</p>
 
-<p><strong>Delta 4</strong>: 从研究到生产的 gap 显著。fabric-lib 的评测直接报告端到端 tok/s（Table 6），Iris 仅报告 isolated kernel speedup ratio，且未给出绝对延迟或置信区间 <a href="/papers/2511.02168/detail.html#5-5-缺失数据点" class="ref-link" title="L2:2511.02168#5-5-缺失数据点">[L2:2511.02168]</a>。生产采用需要解决 Iris 完全未触及的问题：spin-wait deadlock（GPU hang 时无 timeout）、multi-tenant 干扰、batch>1 场景。</p>
+<p><strong>Delta 4</strong>: 从研究到生产的 gap 显著。fabric-lib 的评测直接报告端到端 tok/s（Table 6），Iris 仅报告 isolated kernel speedup ratio，且未给出绝对延迟或置信区间 [ref:2511.02168#5-5-缺失数据点]。生产采用需要解决 Iris 完全未触及的问题：spin-wait deadlock（GPU hang 时无 timeout）、multi-tenant 干扰、batch>1 场景。</p>
 
 <h3 id="2-5-vendor-portability-策略反转">2.5 Vendor portability 策略反转 <a class="heading-anchor" href="#2-5-vendor-portability-策略反转" aria-label="Link to 2-5-vendor-portability-策略反转">#</a></h3>
 
-<p>fabric-lib 的核心技术贡献是 cross-NIC portability——通过找到 RC 和 SRD 的最小公共语义（reliable-unordered + WriteImm）建立统一抽象 <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="L2:2510.27656#q2-方法">[L2:2510.27656]</a>。</p>
+<p>fabric-lib 的核心技术贡献是 cross-NIC portability——通过找到 RC 和 SRD 的最小公共语义（reliable-unordered + WriteImm）建立统一抽象 [ref:2510.27656#q2-方法]。</p>
 
-<p>Iris 完全绑定 AMD 生态——Infinity Fabric XGMI 硬件 + ROCm 软件栈 + RCCL baseline，无 NVIDIA 平台验证 <a href="/papers/2511.02168/detail.html#15-deployment-context" class="ref-link" title="L2:2511.02168#15-deployment-context">[L2:2511.02168]</a>。</p>
+<p>Iris 完全绑定 AMD 生态——Infinity Fabric XGMI 硬件 + ROCm 软件栈 + RCCL baseline，无 NVIDIA 平台验证 [ref:2511.02168#15-deployment-context]。</p>
 
 <p><strong>Delta 5</strong>: 这一策略差异反映了作者身份——Perplexity AI 作为推理服务商需要跨云部署（AWS EFA + 自有 CX-7），portability 是业务刚需；AMD Research 的目标是展示 AMD 生态竞争力，vendor-specific 优化是合理策略。但对于第三方采用者而言，Iris 的 vendor lock-in 是明确的采用障碍。</p>
 
@@ -280,33 +280,33 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h3 id="3-1-three-taxes-框架的定量缺失">3.1 "Three Taxes" 框架的定量缺失 <a class="heading-anchor" href="#3-1-three-taxes-框架的定量缺失" aria-label="Link to 3-1-three-taxes-框架的定量缺失">#</a></h3>
 
-<p>Iris 将 Three Taxes 定位为"analytical framework" <a href="/papers/2511.02168/detail.html#q1-痛点" class="ref-link" title="L2:2511.02168#q1-痛点">[L2:2511.02168]</a>，但从未给出三类税各自的量化占比或 closed-form performance model <a href="/papers/2511.02168/detail.html#4-作者证明" class="ref-link" title="L2:2511.02168#4-作者证明">[L2:2511.02168]</a>。Flash Decode 的渐进式消融（V1→V2→V3→V4）仅显示累积 speedup，无法分离 Kernel Launch Tax 和 Inter-Kernel Tax 各自的贡献——V3→V4 同时消除了两者。</p>
+<p>Iris 将 Three Taxes 定位为"analytical framework" [ref:2511.02168#q1-痛点]，但从未给出三类税各自的量化占比或 closed-form performance model [ref:2511.02168#4-作者证明]。Flash Decode 的渐进式消融（V1→V2→V3→V4）仅显示累积 speedup，无法分离 Kernel Launch Tax 和 Inter-Kernel Tax 各自的贡献——V3→V4 同时消除了两者。</p>
 
-<p><strong>对比攻击</strong>：fabric-lib 的 RL 权重传输给出了精确的瓶颈分解（Table 5：FSDP unsharding 42%、跨 rank 同步 29%、RDMA 2.1%）<a href="/papers/2510.27656/detail.html#5-实验与数据" class="ref-link" title="L2:2510.27656#5-实验与数据">[L2:2510.27656]</a>，直接量化了每个环节的开销。如果 Iris 能类似地报告"Kernel Launch Tax 占总延迟 X%、Bulk Sync Tax 占 Y%、Inter-Kernel Tax 占 Z%"，Three Taxes 的分析价值将远超当前的定性框架。</p>
+<p><strong>对比攻击</strong>：fabric-lib 的 RL 权重传输给出了精确的瓶颈分解（Table 5：FSDP unsharding 42%、跨 rank 同步 29%、RDMA 2.1%）[ref:2510.27656#5-实验与数据]，直接量化了每个环节的开销。如果 Iris 能类似地报告"Kernel Launch Tax 占总延迟 X%、Bulk Sync Tax 占 Y%、Inter-Kernel Tax 占 Z%"，Three Taxes 的分析价值将远超当前的定性框架。</p>
 
 <h3 id="3-2-aggemm-中间尺寸的-regression-暴露-compute-kernel-不成熟">3.2 AG+GEMM 中间尺寸的 regression 暴露 compute kernel 不成熟 <a class="heading-anchor" href="#3-2-aggemm-中间尺寸的-regression-暴露-compute-kernel-不成熟" aria-label="Link to 3-2-aggemm-中间尺寸的-regression-暴露-compute-kernel-不成熟">#</a></h3>
 
-<p>Iris 的 AG+GEMM 在 M∈[8,64] 时性能劣于 RCCL + torch.matmul baseline（最低 ~0.63×），论文归因于 torch.matmul 对这些尺寸有高度优化的 GEMM kernel <a href="/papers/2511.02168/detail.html#5-2-all-gather-gemm-fig-9" class="ref-link" title="L2:2511.02168#5-2-all-gather-gemm-fig-9">[L2:2511.02168]</a>。</p>
+<p>Iris 的 AG+GEMM 在 M∈[8,64] 时性能劣于 RCCL + torch.matmul baseline（最低 ~0.63×），论文归因于 torch.matmul 对这些尺寸有高度优化的 GEMM kernel [ref:2511.02168#5-2-all-gather-gemm-fig-9]。</p>
 
-<p><strong>攻击角度</strong>：这一 regression 暴露了 fusion 方法的一个结构性困境——将 communication 融入 compute kernel 意味着放弃了 vendor-optimized compute library（rocBLAS/cuBLAS）的成熟度。fabric-lib 不存在这个问题，因为它在通信层和计算层之间保持了清晰的解耦——compute kernel 仍然可以调用 cuBLAS <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="L2:2510.27656#q2-方法">[L2:2510.27656]</a>。</p>
+<p><strong>攻击角度</strong>：这一 regression 暴露了 fusion 方法的一个结构性困境——将 communication 融入 compute kernel 意味着放弃了 vendor-optimized compute library（rocBLAS/cuBLAS）的成熟度。fabric-lib 不存在这个问题，因为它在通信层和计算层之间保持了清晰的解耦——compute kernel 仍然可以调用 cuBLAS [ref:2510.27656#q2-方法]。</p>
 
 <p><strong>反驳预期</strong>：Iris 可以通过更好的 Triton autotuning 缩小这一 gap，但这等价于在 Triton 中复现 rocBLAS 数十年的 GEMM 优化——一个不可忽视的工程投入。</p>
 
 <h3 id="3-3-spin-wait-在-straggler-场景下的脆弱性">3.3 Spin-wait 在 straggler 场景下的脆弱性 <a class="heading-anchor" href="#3-3-spin-wait-在-straggler-场景下的脆弱性" aria-label="Link to 3-3-spin-wait-在-straggler-场景下的脆弱性">#</a></h3>
 
-<p>Iris 的 Push Model 和 Flash Decode Fused Kernel 均使用 busy-wait 轮询 flag <a href="/papers/2511.02168/detail.html#q2-方法" class="ref-link" title="L2:2511.02168#q2-方法">[L2:2511.02168]</a>，无 timeout、无 adaptive backoff、无 watchdog。在生产环境中 GPU 可能因为 ECC 错误、thermal throttling 或 NVLink/IF 故障而 straggle。</p>
+<p>Iris 的 Push Model 和 Flash Decode Fused Kernel 均使用 busy-wait 轮询 flag [ref:2511.02168#q2-方法]，无 timeout、无 adaptive backoff、无 watchdog。在生产环境中 GPU 可能因为 ECC 错误、thermal throttling 或 NVLink/IF 故障而 straggle。</p>
 
-<p><strong>对比攻击</strong>：fabric-lib 的 KvCache 传输包含心跳检测和 per-request cancellation token <a href="/papers/2510.27656/detail.html#12-fault-tolerance-reliability" class="ref-link" title="L2:2510.27656#12-fault-tolerance-reliability">[L2:2510.27656]</a>。一个 GPU hang 在 fabric-lib 中触发 timeout→cancel→重新调度；在 Iris 中则导致 consumer kernel 永久 spin-wait，阻塞整个 GPU。</p>
+<p><strong>对比攻击</strong>：fabric-lib 的 KvCache 传输包含心跳检测和 per-request cancellation token [ref:2510.27656#12-fault-tolerance-reliability]。一个 GPU hang 在 fabric-lib 中触发 timeout→cancel→重新调度；在 Iris 中则导致 consumer kernel 永久 spin-wait，阻塞整个 GPU。</p>
 
 <h3 id="3-4-10–20-speedup-在端到端推理中可能被稀释">3.4 10–20% speedup 在端到端推理中可能被稀释 <a class="heading-anchor" href="#3-4-10–20-speedup-在端到端推理中可能被稀释" aria-label="Link to 3-4-10–20-speedup-在端到端推理中可能被稀释">#</a></h3>
 
-<p>Iris 声称 Flash Decode 10–20% speedup <a href="/papers/2511.02168/detail.html#5-3-flash-decode-fig-10" class="ref-link" title="L2:2511.02168#5-3-flash-decode-fig-10">[L2:2511.02168]</a>，但这是 isolated kernel 测量（batch=1，单个 attention decode step）。</p>
+<p>Iris 声称 Flash Decode 10–20% speedup [ref:2511.02168#5-3-flash-decode-fig-10]，但这是 isolated kernel 测量（batch=1，单个 attention decode step）。</p>
 
-<p><strong>对比攻击</strong>：在完整 LLM 推理 pipeline 中，decode 步骤包括 attention（Flash Decode 所在位置）+ FFN + sampling + KV cache management。即使 attention kernel 加速 20%，若 attention 仅占 decode 总时间的 40%，端到端改善仅 ~8%。fabric-lib 直接测量 tok/s（Table 6: 78.4 tok/s）<a href="/papers/2510.27656/detail.html#5-实验与数据" class="ref-link" title="L2:2510.27656#5-实验与数据">[L2:2510.27656]</a>，反映了通信优化在完整 pipeline 中的 <em>实际</em> 价值。</p>
+<p><strong>对比攻击</strong>：在完整 LLM 推理 pipeline 中，decode 步骤包括 attention（Flash Decode 所在位置）+ FFN + sampling + KV cache management。即使 attention kernel 加速 20%，若 attention 仅占 decode 总时间的 40%，端到端改善仅 ~8%。fabric-lib 直接测量 tok/s（Table 6: 78.4 tok/s）[ref:2510.27656#5-实验与数据]，反映了通信优化在完整 pipeline 中的 <em>实际</em> 价值。</p>
 
 <h3 id="3-5-仅验证-fp16-且-batch1-限制了实际适用性">3.5 仅验证 FP16 且 batch=1 限制了实际适用性 <a class="heading-anchor" href="#3-5-仅验证-fp16-且-batch1-限制了实际适用性" aria-label="Link to 3-5-仅验证-fp16-且-batch1-限制了实际适用性">#</a></h3>
 
-<p>Iris 的全部实验均为 FP16 precision、batch=1 <a href="/papers/2511.02168/detail.html#5-5-缺失数据点" class="ref-link" title="L2:2511.02168#5-5-缺失数据点">[L2:2511.02168]</a>。现代 LLM 推理普遍使用 FP8（MI300X 原生支持）或混合精度，且 continuous batching 下 batch>1 是常态。</p>
+<p>Iris 的全部实验均为 FP16 precision、batch=1 [ref:2511.02168#5-5-缺失数据点]。现代 LLM 推理普遍使用 FP8（MI300X 原生支持）或混合精度，且 continuous batching 下 batch>1 是常态。</p>
 
 <p><strong>攻击角度</strong>：batch=1 意味着 GEMM 矩阵极小（M 维度低），此时 Kernel Launch Tax 占比最大——Pull Model 的 speedup 正是在这一区间最高。但 batch>1 时 GEMM 计算量增大，三类税的相对占比缩小，fused approach 的优势可能大幅收窄。论文通过变化 M=1...4096 部分覆盖了这一效应（大 M 时 speedup 更低），但未在完整 serving scenario 下验证。</p>
 
@@ -342,12 +342,12 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <li>开源（github.com/perplexityai/pplx-garden），Perplexity AI 生产环境部署</li>
 <li>MLSys 2026 发表，~55 篇参考文献，系统性对比 DeepEP / NIXL / NVSHMEM / Mooncake</li>
 <li>明确列出可集成框架：vLLM、SGLang、TensorRT-LLM、FlashInfer、OpenRLHF、veRL</li>
-<li>首个在 EFA 上实现 viable MoE decode 的方案 <a href="/papers/2510.27656/detail.html#5-实验与数据" class="ref-link" title="L2:2510.27656#5-实验与数据">[L2:2510.27656]</a></li>
+<li>首个在 EFA 上实现 viable MoE decode 的方案 [ref:2510.27656#5-实验与数据]</li>
 </ul>
 
 <h3 id="4-3-竞争格局中的位置">4.3 竞争格局中的位置 <a class="heading-anchor" href="#4-3-竞争格局中的位置" aria-label="Link to 4-3-竞争格局中的位置">#</a></h3>
 
-<p>Iris 在 AMD 生态中的直接竞争者是 Triton Distributed（同为 Triton 扩展）。Iris 的优势是更 Pythonic 的 API（<code>iris.load()</code> 与 <code>tl.load()</code> 签名一致），劣势是 10–20% 的 isolated kernel speedup 可能不足以驱动 kernel 重写——特别是在中间矩阵尺寸（M∈[8,64]）仍不如 RCCL baseline 的情况下 <a href="/papers/2511.02168/detail.html#5-2-all-gather-gemm-fig-9" class="ref-link" title="L2:2511.02168#5-2-all-gather-gemm-fig-9">[L2:2511.02168]</a>。</p>
+<p>Iris 在 AMD 生态中的直接竞争者是 Triton Distributed（同为 Triton 扩展）。Iris 的优势是更 Pythonic 的 API（<code>iris.load()</code> 与 <code>tl.load()</code> 签名一致），劣势是 10–20% 的 isolated kernel speedup 可能不足以驱动 kernel 重写——特别是在中间矩阵尺寸（M∈[8,64]）仍不如 RCCL baseline 的情况下 [ref:2511.02168#5-2-all-gather-gemm-fig-9]。</p>
 
 <p>在更大的多 GPU 通信优化图景中，Iris 占据了一个狭窄但有价值的生态位：<strong>intra-node kernel-level compute-communication fusion for AMD GPUs</strong>。这是一个 fabric-lib、NIXL、Mooncake 等 library-level 方案完全不覆盖的领域——这些方案在 kernel 边界之外工作，无法消除 Inter-Kernel Data Locality Tax。但这个生态位的价值取决于 AMD GPU 在 LLM 推理市场的份额增长。</p>
 
@@ -357,45 +357,45 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h3 id="5-1-hierarchical-fusion-iris-intra-node-fabric-lib-inter-node">5.1 Hierarchical fusion: Iris intra-node + fabric-lib inter-node <a class="heading-anchor" href="#5-1-hierarchical-fusion-iris-intra-node-fabric-lib-inter-node" aria-label="Link to 5-1-hierarchical-fusion-iris-intra-node-fabric-lib-inter-node">#</a></h3>
 
-<p>Iris 的 tile-level pipeline 在 intra-node XGMI 上效果显著 <a href="/papers/2511.02168/detail.html#q2-方法" class="ref-link" title="L2:2511.02168#q2-方法">[L2:2511.02168]</a>，fabric-lib 的 TransferEngine 在 inter-node RDMA 上达到线速 <a href="/papers/2510.27656/detail.html#5-实验与数据" class="ref-link" title="L2:2510.27656#5-实验与数据">[L2:2510.27656]</a>。一个自然的混合架构：</p>
+<p>Iris 的 tile-level pipeline 在 intra-node XGMI 上效果显著 [ref:2511.02168#q2-方法]，fabric-lib 的 TransferEngine 在 inter-node RDMA 上达到线速 [ref:2510.27656#5-实验与数据]。一个自然的混合架构：</p>
 
 <pre><code>
 GPU kernel (Iris-style fusion) ──[XGMI, sub-µs]──&gt; Node boundary ──[fabric-lib RDMA, ~µs]──&gt; Remote node
 </code></pre>
 
-<p>对于 MoE dispatch/combine，intra-node 部分用 Iris 的 Push Model 将 token 从 compute kernel 直接推到 NVLink/IF peer（消除 Kernel Launch Tax），到达 node boundary 后由 fabric-lib 的 host proxy 发起 inter-node RDMA Write。这比 fabric-lib 当前的方案（intra-node 也通过 host proxy 协调 NVLink）<a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="L2:2510.27656#q2-方法">[L2:2510.27656]</a> 少一次 PCIe round-trip。</p>
+<p>对于 MoE dispatch/combine，intra-node 部分用 Iris 的 Push Model 将 token 从 compute kernel 直接推到 NVLink/IF peer（消除 Kernel Launch Tax），到达 node boundary 后由 fabric-lib 的 host proxy 发起 inter-node RDMA Write。这比 fabric-lib 当前的方案（intra-node 也通过 host proxy 协调 NVLink）[ref:2510.27656#q2-方法] 少一次 PCIe round-trip。</p>
 
-<p><strong>挑战</strong>：需要跨 AMD（Iris）和 NVIDIA（fabric-lib）生态的统一编程模型，目前不存在。但如果 fabric-lib 扩展到 AMD（论文已讨论 AMD NIC 适配可能性 <a href="/papers/2510.27656/detail.html#15-scalability-future-proofing" class="ref-link" title="L2:2510.27656#15-scalability-future-proofing">[L2:2510.27656]</a>），此混合架构在纯 AMD 集群上即可实现。</p>
+<p><strong>挑战</strong>：需要跨 AMD（Iris）和 NVIDIA（fabric-lib）生态的统一编程模型，目前不存在。但如果 fabric-lib 扩展到 AMD（论文已讨论 AMD NIC 适配可能性 [ref:2510.27656#15-scalability-future-proofing]），此混合架构在纯 AMD 集群上即可实现。</p>
 
 <h3 id="5-2-three-taxes-框架对-host-proxy-架构的量化分析">5.2 Three Taxes 框架对 host-proxy 架构的量化分析 <a class="heading-anchor" href="#5-2-three-taxes-框架对-host-proxy-架构的量化分析" aria-label="Link to 5-2-three-taxes-框架对-host-proxy-架构的量化分析">#</a></h3>
 
-<p>Iris 的 Three Taxes 框架 <a href="/papers/2511.02168/detail.html#q1-痛点" class="ref-link" title="L2:2511.02168#q1-痛点">[L2:2511.02168]</a> 可直接应用于分析 fabric-lib host proxy 的开销：</p>
+<p>Iris 的 Three Taxes 框架 [ref:2511.02168#q1-痛点] 可直接应用于分析 fabric-lib host proxy 的开销：</p>
 
 <ul>
-<li><strong>Proxy Launch Tax</strong> ≈ UVM watcher polling 延迟 6.3 µs <a href="/papers/2510.27656/detail.html#5-实验与数据" class="ref-link" title="L2:2510.27656#5-实验与数据">[L2:2510.27656]</a> + CPU→NIC doorbell ~1 µs</li>
+<li><strong>Proxy Launch Tax</strong> ≈ UVM watcher polling 延迟 6.3 µs [ref:2510.27656#5-实验与数据] + CPU→NIC doorbell ~1 µs</li>
 <li><strong>Host-Device Synchronous Tax</strong> ≈ GPU→CPU notification wait（等价于 Bulk Synchronous Tax）</li>
 <li><strong>PCIe Locality Tax</strong> ≈ GPU data → PCIe → CPU → PCIe → NIC 的多次 bus crossing（等价于 Inter-Kernel Tax）</li>
 </ul>
 
-<p>这种分析可以精确指出 fabric-lib 从 host proxy 切换到 GPU-initiated RDMA（future EFA 支持 <a href="/papers/2510.27656/detail.html#15-scalability-future-proofing" class="ref-link" title="L2:2510.27656#15-scalability-future-proofing">[L2:2510.27656]</a>）能带来多大收益，以及收益的主要来源是哪类 "tax"。</p>
+<p>这种分析可以精确指出 fabric-lib 从 host proxy 切换到 GPU-initiated RDMA（future EFA 支持 [ref:2510.27656#15-scalability-future-proofing]）能带来多大收益，以及收益的主要来源是哪类 "tax"。</p>
 
 <h3 id="5-3-adaptive-pull-push-with-runtime-load-feedback">5.3 Adaptive Pull/Push with runtime load feedback <a class="heading-anchor" href="#5-3-adaptive-pull-push-with-runtime-load-feedback" aria-label="Link to 5-3-adaptive-pull-push-with-runtime-load-feedback">#</a></h3>
 
-<p>Iris 发现 Pull Model 在小 workload（M≤128）下更优、Push Model 在大 workload（M≥128）下更优 <a href="/papers/2511.02168/detail.html#5-2-all-gather-gemm-fig-9" class="ref-link" title="L2:2511.02168#5-2-all-gather-gemm-fig-9">[L2:2511.02168]</a>。这一 crossover 源于两种 Infinity Fabric 操作的不同延迟特性（remote load round-trip vs remote store fire-and-forget）<a href="/papers/2511.02168/detail.html#5-实验与数据" class="ref-link" title="L2:2511.02168#5-实验与数据">[L2:2511.02168]</a>。</p>
+<p>Iris 发现 Pull Model 在小 workload（M≤128）下更优、Push Model 在大 workload（M≥128）下更优 [ref:2511.02168#5-2-all-gather-gemm-fig-9]。这一 crossover 源于两种 Infinity Fabric 操作的不同延迟特性（remote load round-trip vs remote store fire-and-forget）[ref:2511.02168#5-实验与数据]。</p>
 
-<p><strong>未探索方向</strong>：在 MoE routing 中，expert 负载天然不均衡。Popular experts 处理大量 token（Push 更优），cold experts 处理少量 token（Pull 可能更优）。一个 per-expert adaptive 策略——runtime 根据路由统计切换 Pull/Push——可以进一步优化 MoE 通信。这需要将 Iris 的 Pull 语义（consumer-initiated remote load）引入 fabric-lib 的 inter-node 场景，但 fabric-lib 刻意排除了 RDMA Read <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="L2:2510.27656#q2-方法">[L2:2510.27656]</a>。折中方案是 "speculative pull"：cold expert 向 dispatcher 发送 ready-to-receive 信号，dispatcher 优先向 ready expert push。</p>
+<p><strong>未探索方向</strong>：在 MoE routing 中，expert 负载天然不均衡。Popular experts 处理大量 token（Push 更优），cold experts 处理少量 token（Pull 可能更优）。一个 per-expert adaptive 策略——runtime 根据路由统计切换 Pull/Push——可以进一步优化 MoE 通信。这需要将 Iris 的 Pull 语义（consumer-initiated remote load）引入 fabric-lib 的 inter-node 场景，但 fabric-lib 刻意排除了 RDMA Read [ref:2510.27656#q2-方法]。折中方案是 "speculative pull"：cold expert 向 dispatcher 发送 ready-to-receive 信号，dispatcher 优先向 ready expert push。</p>
 
 <h3 id="5-4-fused-kernel-portable-nic-abstraction">5.4 Fused kernel + portable NIC abstraction <a class="heading-anchor" href="#5-4-fused-kernel-portable-nic-abstraction" aria-label="Link to 5-4-fused-kernel-portable-nic-abstraction">#</a></h3>
 
-<p>Iris 展示了 kernel fusion 的性能优势但绑定了 AMD IF <a href="/papers/2511.02168/detail.html#核心技术壁垒" class="ref-link" title="L2:2511.02168#核心技术壁垒">[L2:2511.02168]</a>。fabric-lib 展示了 NIC portability 但工作在 kernel 外部 <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="L2:2510.27656#q2-方法">[L2:2510.27656]</a>。一个更远的方向是在 Triton kernel 内部暴露 fabric-lib 的统一 RDMA 接口——让 <code>iris.store()</code> 在跨节点时自动 fallback 到 RDMA Write（通过 host proxy 或 future GPU-initiated RDMA），保持 kernel 代码不变。</p>
+<p>Iris 展示了 kernel fusion 的性能优势但绑定了 AMD IF [ref:2511.02168#核心技术壁垒]。fabric-lib 展示了 NIC portability 但工作在 kernel 外部 [ref:2510.27656#q2-方法]。一个更远的方向是在 Triton kernel 内部暴露 fabric-lib 的统一 RDMA 接口——让 <code>iris.store()</code> 在跨节点时自动 fallback 到 RDMA Write（通过 host proxy 或 future GPU-initiated RDMA），保持 kernel 代码不变。</p>
 
 <p><strong>核心挑战</strong>：延迟差距。XGMI remote store ~100ns，RDMA Write ~10µs。Tile-level spin-wait 在 RDMA 延迟下会浪费 ~10,000 GPU cycles/tile。解决方案可能是 tile granularity 自适应——intra-node 用细粒度 tile（如 128×128），inter-node 用粗粒度 tile（如 4096×4096），在同一 kernel 中根据 destination rank 选择不同粒度。</p>
 
 <h3 id="5-5-congestion-aware-tile-scheduling">5.5 Congestion-aware tile scheduling <a class="heading-anchor" href="#5-5-congestion-aware-tile-scheduling" aria-label="Link to 5-5-congestion-aware-tile-scheduling">#</a></h3>
 
-<p>Iris 和 fabric-lib 均未讨论拥塞控制 <a href="/papers/2511.02168/detail.html#11-congestion-traffic-engineering" class="ref-link" title="L2:2511.02168#11-congestion-traffic-engineering">[L2:2511.02168]</a> <a href="/papers/2510.27656/detail.html#11-congestion-traffic-engineering" class="ref-link" title="L2:2510.27656#11-congestion-traffic-engineering">[L2:2510.27656]</a>。在 Iris 的 Pull Model 中，8 GPU 同时向 7 个 peer 发起 remote load，虽然 XGMI 全连接下无热点 <a href="/papers/2511.02168/detail.html#11-congestion-traffic-engineering" class="ref-link" title="L2:2511.02168#11-congestion-traffic-engineering">[L2:2511.02168]</a>，但未来扩展到非全连接拓扑（如 ring 或 hierarchical）时 link contention 不可忽略。</p>
+<p>Iris 和 fabric-lib 均未讨论拥塞控制 [ref:2511.02168#11-congestion-traffic-engineering] [ref:2510.27656#11-congestion-traffic-engineering]。在 Iris 的 Pull Model 中，8 GPU 同时向 7 个 peer 发起 remote load，虽然 XGMI 全连接下无热点 [ref:2511.02168#11-congestion-traffic-engineering]，但未来扩展到非全连接拓扑（如 ring 或 hierarchical）时 link contention 不可忽略。</p>
 
-<p><strong>未探索方向</strong>：将 Iris 的 tile scheduling（哪个 tile 先 pull/push）与 fabric 拓扑感知结合——优先调度不争用同一 link 的 tile transfer，类似于 ECMP 中的 flowlet scheduling。fabric-lib 的 multi-NIC round-robin 分片已经是朝这个方向的一步 <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="L2:2510.27656#q2-方法">[L2:2510.27656]</a>，但缺乏 per-tile 的动态决策。</p>
+<p><strong>未探索方向</strong>：将 Iris 的 tile scheduling（哪个 tile 先 pull/push）与 fabric 拓扑感知结合——优先调度不争用同一 link 的 tile transfer，类似于 ECMP 中的 flowlet scheduling。fabric-lib 的 multi-NIC round-robin 分片已经是朝这个方向的一步 [ref:2510.27656#q2-方法]，但缺乏 per-tile 的动态决策。</p>
 
 </div>
 <div class="link-area">

@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>NEO: Saving GPU Memory Crisis with CPU Offloading for Online LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">NEO: Saving GPU Memory Crisis with CPU Offloading for Online LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2411.01142</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">cpu-offloading</span><span class="tag">kv-cache</span><span class="tag">gpu-memory</span><span class="tag">online-inference</span><span class="tag">asymmetric-pipelining</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2411.01142.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2411.01142" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Neo 将部分 decode attention 计算和 KVCache 从 GPU 卸载到本机 CPU，通过 asymmetric pipelining（非对称子批次重叠）和 load-aware scheduling（贪心回退到 GPU-only）提升在线推理吞吐。在内存受限的 T4 上达 7.5× 吞吐提升，A10G 上 26%，H100 上 14%，且不牺牲延迟。</p>
+
+<h2 id="§2-痛点-方法-结果">§2 痛点 / 方法 / 结果 <a class="heading-anchor" href="#§2-痛点-方法-结果" aria-label="Link to §2-痛点-方法-结果">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>在线 LLM 推理中 GPU 吞吐高度依赖 batch size，但 KVCache 占用大量 GPU 内存导致实际 batch size 受限，GPU 计算单元严重闲置——这是 "GPU memory crisis"。先前 CPU offloading 方案（FlexGen、PowerInfer、HeteGen）用延迟换吞吐，不适合在线场景；FastDecode 完全卸载到 CPU 但需要 8 台远程 CPU 服务器处理单 GPU 的 attention，成本过高且 CPU 成为瓶颈。</p>
+
+<p>核心 insight：decode attention 是 <strong>memory-bandwidth-bounded</strong>，GPU-CPU 在带宽上的差距（600 vs 200 GB/s）远小于算力差距（125 TFLOPS vs 1.2 TFLOPS），CPU 是 decode attention 的合理卸载目标。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>Asymmetric GPU-CPU pipelining（§3.1）</strong>：</p>
+
+<ol>
+<li>KVCache 分为 GPU-cache 和 CPU-cache；每个请求的 KVCache 完整存放在一处。优先使用 GPU-cache 最大化 GPU 内存利用。</li>
+<li>将请求分为两个 <strong>非对称子批次</strong>：</li>
+<li><strong>Batch-0</strong>：所有 prefill 请求 + GPU-decode 请求 + 少量 CPU-decode 请求（long linear stage on GPU, short CPU attention）</li>
+<li><strong>Batch-1</strong>：大部分 CPU-decode 请求（short linear stage, long CPU attention）</li>
+<li>两个子批次交替执行：batch-0 的 GPU linear stage 与 batch-1 的 CPU attention 重叠，反之亦然。非对称设计使 GPU 始终繁忙，避免 symmetric pipelining 中 GPU 等待 CPU 的 bubble。</li>
+<li>Layer-wise KV swapping：每层计算后立即传输 KV，与下一层计算重叠。</li>
+</ul>
+
+<p><strong>Load-aware scheduling（§3.2）</strong>：</p>
+
+<p>迭代时间模型：</p>
+
+<p>$$T \approx T_{tr} = L \times \left( \max\{T_{po_0} + T_{pr_0},\; T_{ca_1}\} + \max\{T_{po_1} + T_{pr_1} + T_{ga_0},\; T_{ca_0}\} \right)$$</p>
+
+<p>约束条件（GPU 不空等 CPU）：</p>
+
+<p>$$T_{l_0} \geq T_{ca_1} \quad \text{and} \quad T_{l_1} + T_{ga_0} \geq T_{ca_0}$$</p>
+
+<p>调度器每次迭代执行 6 步决策：初始化 → 调度 GPU-decode → 调度 prefill → 调度 CPU-decode → 裁减 prefill（避免 swap-out 开销使 CPU 空等）→ 贪心选择（两批次方案 vs GPU-only 方案取 $T_{tr}/x$ 更大者）。</p>
+
+<p><strong>Greedy 原则</strong>保证 Neo 永远不差于 GPU-only baseline。</p>
+
+<p><strong>核心技术壁垒</strong>：asymmetric batch division 的 insight——将 prefill（GPU 密集）和 CPU-decode 放在互补子批次中，使得两个 max 项中 GPU 端的 linear stage 总是足够长以覆盖 CPU attention，从而消除 pipeline bubble。这要求对每次迭代的 GPU/CPU 时间精确建模并动态调整批次构成。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li><strong>T4 + LLaMA-2-7B</strong>：在线吞吐 <strong>7.5×</strong>（T4 仅 16GB HBM，baseline batch size 极小）</li>
+<li><strong>A10G + LLaMA-3.1-8B</strong>：6.4%–26% throughput 提升，最高 CPU 配置（g5.16xlarge）达 <strong>79.3%</strong></li>
+<li><strong>2×H100 + LLaMA-3.1-70B</strong>：14.3% throughput 提升</li>
+<li>延迟：所有 percentile 与 GPU-only 基线持平</li>
+<li>vs FastDecode+：Neo 始终优于 baseline，FastDecode+ 在长输出时降至 baseline 的 <60%</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Sched as Request Scheduler (CPU)
+    participant PQ as Prefill WaitQueue
+    participant GQ as GPU Decode RunQueue
+    participant CQ as CPU Decode RunQueue
+    participant GPU as GPU (Linear + GPU Attn)
+    participant CPU as CPU (PACPU Attention)
+
+    Sched->>Sched: Per-iteration scheduling (6-step)
+    Sched->>GPU: Batch-0: prefill + GPU-decode + few CPU-decode
+    Sched->>CPU: Batch-1: most CPU-decode requests
+
+    par Batch-0 GPU linear ↔ Batch-1 CPU attention
+        GPU->>GPU: po₀ + pr₀ (linear stage, long)
+        CPU->>CPU: ca₁ (CPU attention, fits under GPU time)
+    end
+    par Batch-1 GPU linear + GPU attn ↔ Batch-0 CPU attention
+        GPU->>GPU: po₁ + pr₁ + ga₀ (linear + GPU attn)
+        CPU->>CPU: ca₀ (CPU attention for batch-0 CPU requests)
+    end
+    GPU->>Sched: Iteration complete, return to scheduling
+</div>
+
+<p><strong>关键组件</strong>：</p>
+
+<ul>
+<li><strong>GPU-cache / CPU-cache</strong>：分页 KVCache，每个请求的 KV 完整存在于 GPU 或 CPU 一侧。GPU-cache 优先分配。</li>
+<li><strong>PACPU (Paged-Attention-for-CPU)</strong>：C++ torch extension → ISPC 编译的向量化 CPU attention kernel，支持 AVX2/AVX512/Neon，paged attention 算法减少碎片。</li>
+<li><strong>Scheduling engine</strong>：每次迭代构建两种方案（asymmetric vs GPU-only），通过 $T_{tr}/x$ 比较选择更优方案（Greedy 原则）。</li>
+</ul>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="记号表">记号表 <a class="heading-anchor" href="#记号表" aria-label="Link to 记号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$T$</td><td>单次迭代总时间</td></tr>
+<tr><td>$T_{tr}$</td><td>Transformer 层时间（占 >95%）</td></tr>
+<tr><td>$L$</td><td>Transformer 层数</td></tr>
+<tr><td>$T_{po_x}$</td><td>Batch-x 的 post-projection 时间</td></tr>
+<tr><td>$T_{pr_x}$</td><td>Batch-x 的 pre-projection 时间</td></tr>
+<tr><td>$T_{ga_x}$</td><td>Batch-x 的 GPU attention 时间</td></tr>
+<tr><td>$T_{ca_x}$</td><td>Batch-x 的 CPU attention 时间</td></tr>
+<tr><td>$T_{l_x}$</td><td>$T_{po_x} + T_{pr_x}$（batch-x linear 时间）</td></tr>
+<tr><td>$x$</td><td>总 batch size</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p>主方程 $T \approx L \times (\max\{T_{l_0}, T_{ca_1}\} + \max\{T_{l_1} + T_{ga_0}, T_{ca_0}\})$：</p>
+
+<p>每层执行两个 pipeline stage。第一个 stage 中 GPU 执行 batch-0 的 linear ops，与 CPU 执行 batch-1 的 attention 重叠——取 max。第二个 stage 中 GPU 执行 batch-1 的 linear + batch-0 的 GPU attention，与 CPU 执行 batch-0 的 CPU attention 重叠。非对称性体现在 batch-0 的 linear stage 天然更长（包含 prefill + GPU-decode），能覆盖 batch-1 的 CPU attention。</p>
+
+<p>约束 $T_{l_0} \geq T_{ca_1}$ 和 $T_{l_1} + T_{ga_0} \geq T_{ca_0}$ 保证 <strong>Hiding CPU</strong> 原则：GPU 永不空等 CPU。</p>
+
+<h3 id="6-项检查">6 项检查 <a class="heading-anchor" href="#6-项检查" aria-label="Link to 6-项检查">#</a></h3>
+
+<ol>
+<li><strong>迭代时间模型可验证</strong>：离线 profiling 估计各组件时间，线性插值。论文承认精度有限（短输出时 Neo 可能略差于 baseline）。</li>
+<li><strong>Greedy 保证</strong>：每次迭代比较两种方案取最优——数学上保证 throughput ≥ GPU-only。实际中由于 profiling 误差和 scheduling 开销，存在轻微违反。</li>
+<li><strong>CPU 带宽是绑定约束</strong>：sensitivity study 证实 throughput gain 正相关于 CPU 内存带宽而非核数（Fig 10a）。</li>
+<li><strong>SwiftLLM vs vLLM 基线验证</strong>：单 GPU 性能持平；2-GPU 差 8.8%——多 GPU 结果存在基线偏弱问题。</li>
+<li><strong>FastDecode+ 对比公平</strong>：作者自行实现 FastDecode+ 并赋予 Neo 的调度优势，仍然因完全卸载导致 CPU 过载。</li>
+<li><strong>层级 KV swap 开销未深度分析</strong>：论文提及 layer-wise swapping 但未定量剥离 PCIe 争用影响。</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="在线延迟-负载曲线（fig-6）">在线延迟-负载曲线（Fig 6） <a class="heading-anchor" href="#在线延迟-负载曲线（fig-6）" aria-label="Link to 在线延迟-负载曲线（fig-6）">#</a></h3>
+
+<table>
+<tr><th>Setting</th><th>Neo Max Throughput Gain</th><th>Latency Profile</th></tr>
+<tr><td>2×H100 + 70B + AC</td><td>14.3% (at 2s latency)</td><td>低 RPS 时持平，高 RPS 时优势明显</td></tr>
+<tr><td>A10G + 8B + AC</td><td>6.4% (at 2s latency)</td><td>类似</td></tr>
+<tr><td>T4 + 7B + OSC</td><td><strong>563%</strong> (at 1s latency)</td><td>T4 HBM 极小，vLLM batch size 受限</td></tr>
+</table>
+
+<h3 id="不同-input-output-长度（fig-9）">不同 input/output 长度（Fig 9） <a class="heading-anchor" href="#不同-input-output-长度（fig-9）" aria-label="Link to 不同-input-output-长度（fig-9）">#</a></h3>
+
+<ul>
+<li>短 output：Neo 可能略差（尝试 offload 的开销 > 收益）</li>
+<li>中等 output：gain 达峰值（GPU/CPU 时间恰好平衡）</li>
+<li>长 output：gain 逐渐下降，回落到接近 baseline</li>
+<li>极长 output：偶尔略差于 baseline（profiling 不精确）</li>
+</ul>
+
+<h3 id="cpu-容量-sensitivity（fig-10a）">CPU 容量 sensitivity（Fig 10a） <a class="heading-anchor" href="#cpu-容量-sensitivity（fig-10a）" aria-label="Link to cpu-容量-sensitivity（fig-10a）">#</a></h3>
+
+<table>
+<tr><th>EC2 Instance</th><th>CPU Cores</th><th>Peak BW Approx</th><th>Max Throughput Gain</th></tr>
+<tr><td>g5.2xlarge</td><td>4</td><td>~100 GB/s</td><td>12.2%</td></tr>
+<tr><td>g5.4xlarge</td><td>8</td><td>~100 GB/s</td><td>13.3%</td></tr>
+<tr><td>g5.8xlarge</td><td>16</td><td>~200 GB/s</td><td>29.7%</td></tr>
+<tr><td>g5.16xlarge</td><td>32</td><td>~400 GB/s</td><td><strong>79.3%</strong></td></tr>
+</table>
+
+<p>带宽翻倍则 gain 近似翻倍——验证了 CPU 内存带宽是绑定约束而非算力。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Strength</th></tr>
+<tr><td>1</td><td>GPU 吞吐受限于 KVCache 导致的 batch size 瓶颈</td><td>Fig 1 (NanoFlow), §2.1 引用 vLLM 数据</td><td>Strong — well-established</td></tr>
+<tr><td>2</td><td>Decode attention 是 memory-bandwidth-bounded，CPU 带宽差距远小于算力差距</td><td>§2.2 定量比较 (600 vs 200 GB/s, 125 vs 1.2 TFLOPS)</td><td>Strong — 硬件规格事实</td></tr>
+<tr><td>3</td><td>Symmetric pipelining (FastDecode) 导致 GPU 内存浪费 + GPU 空等 CPU + 分批困难</td><td>§3.1 三点分析 + Fig 3, 4</td><td>Medium — 分析清晰但缺少 micro-benchmark 验证</td></tr>
+<tr><td>4</td><td>Asymmetric pipelining 消除上述三个问题</td><td>§3.1 Fig 5 pipeline 设计</td><td>Medium — 设计合理但验证主要通过端到端结果</td></tr>
+<tr><td>5</td><td>Load-aware scheduling 保证 never-worse-than-baseline</td><td>§3.2 Greedy 原则 + 方程推导</td><td>Strong — 数学保证（受 profiling 精度限制）</td></tr>
+<tr><td>6</td><td>端到端验证：T4 上 7.5×，A10G 26%，H100 14%</td><td>Fig 6, 9, 10</td><td>Strong — 多硬件、多模型、多 workload</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<ul>
+<li>基于 SwiftLLM 实现（~2K LoC 简化 vLLM），Neo 增加 4K Python + 1.5K C++</li>
+<li>CPU kernel：PACPU (C++ torch extension → ISPC)，支持 AVX2/AVX512/Neon</li>
+<li>GPU kernel：替换 Triton-JIT 为 CUDA C++ 以减少 kernel launch overhead（Python GIL 阻塞问题）</li>
+<li>多 GPU：Ray actors + NCCL，每个 actor 持有独立 CPU KVCache 分区</li>
+<li>开源承诺但未给出 URL</li>
+</ul>
+
+<p><strong>关键实现细节</strong>：</p>
+
+<ol>
+<li><strong>PACPU 的 Flash Decoding 并行策略</strong>：沿 request 维度分 partition，每个 task 访问连续内存 block，dispatch 到不同 CPU 线程，最后 reduce partial output。消除跨线程内存争用。</li>
+<li><strong>Kernel launch overhead 是隐藏瓶颈</strong>：Python GIL 使 CPU data plane kernel 不能与 GPU control plane kernel launching 并行，被迫串行化。替换 Triton → CUDA C++ 是实测后的必要优化。</li>
+</ul>
+
+<h2 id="框架特定分析">框架特定分析 <a class="heading-anchor" href="#框架特定分析" aria-label="Link to 框架特定分析">#</a></h2>
+
+<h3 id="系统范围">系统范围 <a class="heading-anchor" href="#系统范围" aria-label="Link to 系统范围">#</a></h3>
+
+<ul>
+<li><strong>阶段覆盖</strong>：prefill + decode（不分离，共用 GPU 实例）</li>
+<li><strong>Serving 模式</strong>：selective batching（继承 Orca），连续批处理</li>
+<li><strong>并行维度</strong>：TP（多 GPU），CPU offloading 作为额外并行维度</li>
+<li><strong>部署模式</strong>：单节点，仅使用本机 CPU（不使用远程 CPU）</li>
+</ul>
+
+<h3 id="调度与资源管理">调度与资源管理 <a class="heading-anchor" href="#调度与资源管理" aria-label="Link to 调度与资源管理">#</a></h3>
+
+<ul>
+<li><strong>调度粒度</strong>：iteration-level（每次迭代重新决策）</li>
+<li><strong>抢占策略</strong>：支持 GPU↔CPU 间 swap in/out（iteration 间）</li>
+<li><strong>过载策略</strong>：无显式过载处理（非 disaggregated，无 early rejection）</li>
+<li><strong>KVCache 管理</strong>：paged attention 算法（继承 vLLM），GPU-cache + CPU-cache 分开管理</li>
+<li><strong>Swap 触发</strong>：调度器根据 GPU 内存余量决定 swap 方向</li>
+</ul>
+
+<h3 id="胜负场景">胜负场景 <a class="heading-anchor" href="#胜负场景" aria-label="Link to 胜负场景">#</a></h3>
+
+<table>
+<tr><th>Workload Regime</th><th>Neo</th><th>GPU-only Baseline</th><th>Why</th></tr>
+<tr><td>小内存 GPU (T4 16GB)</td><td><strong>7.5× 吞吐</strong></td><td>batch size 极小</td><td>卸载大量 KVCache 到 CPU，释放 GPU batch capacity</td></tr>
+<tr><td>中等 GPU (A10G 24GB)</td><td>6%–26%</td><td>基线</td><td>GPU 内存仍然受限但不极端</td></tr>
+<tr><td>大内存 GPU (H100 80GB)</td><td>14%</td><td>基线</td><td>GPU 已能容纳较大 batch，offloading 边际收益小</td></tr>
+<tr><td>短 output</td><td>持平或略差</td><td>基线</td><td>offloading overhead > 收益</td></tr>
+<tr><td>极长 output</td><td>接近基线</td><td>基线</td><td>大部分迭代回退到 GPU-only 模式</td></tr>
+<tr><td>强 CPU 配置</td><td>最高 <strong>79.3%</strong></td><td>-</td><td>CPU BW 翻倍 → gain 翻倍</td></tr>
+</table>
+
+<h3 id="部署上下文">部署上下文 <a class="heading-anchor" href="#部署上下文" aria-label="Link to 部署上下文">#</a></h3>
+
+<ul>
+<li><strong>Serving stage</strong>：prefill + decode 一体（非 disaggregated）</li>
+<li><strong>硬件亲和性</strong>：内存受限 GPU 受益最大（T4 >> A10G >> H100）；CPU BW 越高越好</li>
+<li><strong>生态集成</strong>：基于 SwiftLLM（简化 vLLM），论文计划集成到 vLLM</li>
+<li><strong>迁移路径</strong>：替换 inference engine → SwiftLLM+Neo；未来可能为 vLLM 插件</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

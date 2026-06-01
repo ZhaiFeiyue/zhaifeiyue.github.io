@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: FlashAttention-4: Algorithm and Kernel Pipelining Co-Design for Asymmetric Hardware Scaling — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">FlashAttention-4: Algorithm and Kernel Pipelining Co-Design for Asymmetric Hardware Scaling</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2603.05451 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2603.05451/detail.html">→ Detail (L2)</a>
+<a href="/overview/kernel.html">← kernel Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="flashattention-4-—-l3-cross-paper-synthesis">FlashAttention-4 — L3 Cross-Paper Synthesis <a class="heading-anchor" href="#flashattention-4-—-l3-cross-paper-synthesis" aria-label="Link to flashattention-4-—-l3-cross-paper-synthesis">#</a></h1>
+
+<h2 id="§1-相关论文">§1 相关论文 <a class="heading-anchor" href="#§1-相关论文" aria-label="Link to §1-相关论文">#</a></h2>
+
+<table>
+<tr><th>Related Entity</th><th>Relation</th><th>Why Related</th></tr>
+<tr><td>FlashAttention-1 (2205.14135)</td><td>predecessor</td><td>FA1 开创了 tiling + kernel fusion 的 IO-aware attention 范式</td></tr>
+<tr><td>FlashAttention-2 (2307.08691)</td><td>predecessor</td><td>FA2 引入 sequence-length parallelism 和更优的 work partitioning</td></tr>
+<tr><td>FlashAttention-3 (2407.08608)</td><td>predecessor</td><td>FA3 利用 Hopper 的 asynchronous execution + warp specialization 实现 FP8 支持</td></tr>
+<tr><td>HipKittens (2511.08083)</td><td>alternative</td><td>AMD GPU 上的 tile-based DSL，用 8-wave ping-pong 替代 NVIDIA 的 wave specialization，解决 chiplet L2 局部性</td></tr>
+<tr><td>AVO (2603.24517)</td><td>successor</td><td>用自主 coding agent 在 FA4 基础上进一步优化 attention kernel，超越 FA4 最高 10.5%</td></tr>
+<tr><td>Fleet (2604.15379)</td><td>alternative</td><td>在 AMD chiplet GPU 上用 persistent megakernel + chiplet-aware 调度替代标准 kernel launch，解决 L2 cache 碎片化</td></tr>
+</table>
+
+<p>FA4 是 FlashAttention 系列的 Blackwell 原生版本。FA1→FA2→FA3 在 Ampere→Hopper 上逐代优化 [ref:2603.05451#核心三问]。HipKittens 代表了同一问题在 AMD CDNA4 架构上的平行解法 [ref:2511.08083#核心三问]。AVO 在 FA4 之上进一步进化 [ref:2603.24517#核心三问]。Fleet 从 megakernel 角度解决 chiplet GPU 的 L2 效率问题 [ref:2604.15379#核心三问]。</p>
+
+<h2 id="§2-本篇-vs-相关论文的-delta">§2 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#§2-本篇-vs-相关论文的-delta" aria-label="Link to §2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="vs-fa1-fa2-fa3-—-代际演化">vs FA1/FA2/FA3 — 代际演化 <a class="heading-anchor" href="#vs-fa1-fa2-fa3-—-代际演化" aria-label="Link to vs-fa1-fa2-fa3-—-代际演化">#</a></h3>
+<p>FA 系列的演化体现了 <strong>算法-硬件 co-design 的必然性</strong>：</p>
+
+<table>
+<tr><th>Generation</th><th>GPU</th><th>Key Bottleneck</th><th>Key Innovation</th></tr>
+<tr><td>FA1 (2022)</td><td>Ampere (A100)</td><td>HBM I/O</td><td>Tiling + kernel fusion</td></tr>
+<tr><td>FA2 (2023)</td><td>Ampere</td><td>Work partitioning</td><td>Sequence-length parallelism</td></tr>
+<tr><td>FA3 (2024)</td><td>Hopper (H100)</td><td>Synchronous execution</td><td>Async exec + warp specialization + FP8</td></tr>
+<tr><td><strong>FA4 (2025)</strong></td><td><strong>Blackwell (B200)</strong></td><td><strong>SMEM bandwidth + MUFU exp</strong></td><td><strong>TMEM pipeline + software exp + 2-CTA</strong></td></tr>
+</table>
+
+<p>FA4 的核心 insight 是 Blackwell 的 <strong>asymmetric hardware scaling</strong>：MMA 翻倍（4096→8192 ops/clock/SM）但 SMEM（128 B/clock）和 MUFU exp（16 ops/clock）不变 [ref:2603.05451#核心三问]。这导致 FA3 在 Blackwell 上无法达到高利用率——FA3 的 warp specialization 方案假设 MMA 和 non-MMA 大致平衡。</p>
+
+<p>FA4 的每项技术都直接对标一个硬件瓶颈：TMEM pipeline 解决 MMA-softmax overlap（利用 Blackwell 新增的 256KB TMEM），software exp emulation 绕过 MUFU 瓶颈（512× 差距），2-CTA MMA 减半 SMEM 流量。</p>
+
+<h3 id="vs-hipkittens">vs HipKittens <a class="heading-anchor" href="#vs-hipkittens" aria-label="Link to vs-hipkittens">#</a></h3>
+<p>FA4 和 HipKittens 分别在 NVIDIA Blackwell 和 AMD CDNA4 上解决相似问题，但面临不同的硬件约束：</p>
+
+<table>
+<tr><th>维度</th><th>FA4 (Blackwell)</th><th>HipKittens (MI355X)</th></tr>
+<tr><td>核心瓶颈</td><td>SMEM BW + MUFU exp</td><td>静态寄存器分区 + LDS bank conflict + chiplet L2</td></tr>
+<tr><td>Overlap 策略</td><td>Ping-pong w/ TMEM (async MMA → TMEM)</td><td>8-wave ping-pong (priority hints + conditional barrier)</td></tr>
+<tr><td>位置编码独立性</td><td>仅影响 TMEM 分区</td><td>需要 per-instruction swizzle pattern</td></tr>
+<tr><td>Cache 优化</td><td>L2 CTA swizzling (scheduler)</td><td>XCD grouping + windowed traversal (Algorithm 1)</td></tr>
+<tr><td>性能</td><td>1613 TFLOPs (71%) on B200</td><td>1610 TFLOPs on MI355X (GEMM)</td></tr>
+</table>
+
+<p>关键差异：FA4 利用 TMEM（Blackwell 特有）实现 MMA 结果的异步写出，使 softmax warpgroup 完全独立于 MMA pipeline [ref:2603.05451#核心三问]。HipKittens 没有 TMEM 等价物，必须通过 8-wave 交替调度和 AGPR pinning 来实现类似效果 [ref:2511.08083#核心三问]。</p>
+
+<p><strong>矛盾发现</strong>：FA4 和 HipKittens 对 wave specialization 的判断相反——FA4 在 Blackwell 上仍使用 producer-consumer 风格的 warpgroup 划分（softmax WG + correction WG + MMA/TMA WG），而 HipKittens 明确证明 wave specialization 在 AMD 上因静态寄存器分区导致严重性能损失（880 vs 1610 TFLOPS）[ref:2511.08083#核心三问]。</p>
+
+<p><strong>矛盾根源</strong>：NVIDIA 的寄存器分配是动态的（每个 warp 独立分配寄存器），而 AMD 是静态的（512 VGPR/SIMD 在 co-resident waves 间均分）。FA4 的 "warp specialization" 实际上是 warpgroup specialization，每个 warpgroup 有独立寄存器预算。AMD 没有这种灵活性——每多驻留一个 wave 就均摊寄存器，compute wave 的可用寄存器减半。两者对 "wave specialization" 一词的使用语义不同，但技术分歧是真实的硬件差异所致。</p>
+
+<h3 id="vs-avo">vs AVO <a class="heading-anchor" href="#vs-avo" aria-label="Link to vs-avo">#</a></h3>
+<p>AVO 以 FA4 为 baseline，通过 7 天自主进化在 B200 上进一步提升 [ref:2603.24517#核心三问]：</p>
+
+<ul>
+<li>MHA causal: +5.0% ~ +10.5% over FA4，峰值 1668 TFLOPs</li>
+<li>MHA non-causal (seq ≥ 16K): +1.8% ~ +2.4% over cuDNN</li>
+</ul>
+
+<p>AVO 的三个代表性优化均需联合推理多个 GPU 子系统（同步/内存序、流水线调度、寄存器分配）——这是 FA4 人类工程师在数月调优中可能遗漏的微观优化。AVO 的存在证明 FA4 的 pipeline 设计仍有 ~10% 的优化空间。</p>
+
+<p>但 AVO 论文也指出 cuDNN v9.13+ 已 incorporate FA4 的技术 [ref:2603.05451#实验与数据]——FA4 的影响力已通过 cuDNN 的采纳扩散到整个 NVIDIA 生态。</p>
+
+<h3 id="vs-fleet">vs Fleet <a class="heading-anchor" href="#vs-fleet" aria-label="Link to vs-fleet">#</a></h3>
+<p>Fleet 从完全不同的抽象层次解决 GPU 效率问题——不是优化单个 attention kernel，而是将整个 LLM decode 的多次 kernel launch（~250 次/token）合并为持久化 megakernel [ref:2604.15379#核心三问]。Fleet 的 chiplet-aware 四级任务抽象（wavefront/CU/Chiplet/device）与 FA4 的 kernel 内 CTA scheduling 是互补的——FA4 优化 kernel 内部 pipeline，Fleet 优化 kernel 间调度。</p>
+
+<p>Fleet 在 AMD MI350 上的结果暴露了 FA4 方法论在 AMD 上不可直接移植的事实——TMEM、2-CTA cooperative MMA 都是 Blackwell 特有特性。AMD 需要 Fleet 式的 chiplet-task abstraction 和 HipKittens 式的 ping-pong scheduling 作为替代。</p>
+
+<h2 id="§3-可攻击面">§3 可攻击面 <a class="heading-anchor" href="#§3-可攻击面" aria-label="Link to §3-可攻击面">#</a></h2>
+
+<ol>
+<li><strong>Benchmark 系统矛盾</strong>：Appendix A.1 列出 "B100 180GB SXM6 (1000W)" 但正文一致说 "B200 GPU" [ref:2603.05451#实验与数据]。B100 和 B200 的 SM 数量、时钟频率可能不同，影响可复现性。</li>
+</ul>
+
+<ol>
+<li><strong>部分 exp 模拟的脆弱性</strong>：仅 10-25% 的 exp 使用软件模拟，更多会导致寄存器 spill [ref:2603.05451#核心三问]。这个比例是经验调优的，缺乏理论指导——不同 tile 配置、head dimension 下的最优比例可能不同，论文未提供系统性 sweep。</li>
+</ul>
+
+<ol>
+<li><strong>条件 rescaling 阈值未 sweep</strong>：$\tau = \log_2(256) = 8.0$ 是固定值，论文未报告不同 $\tau$ 对性能和精度的 sensitivity [ref:2603.05451#核心三问]。在 FP8 workload 或特定 attention pattern（如高 entropy）下，8.0 可能过于宽松或过于保守。</li>
+</ul>
+
+<ol>
+<li><strong>cuDNN 已吸收 FA4 技术</strong>：论文承认 cuDNN v9.13/9.14 已 incorporate FA4 的技术 [ref:2603.05451#实验与数据]，最新 cuDNN 性能 "similar to FA4"。这意味着 FA4 的 1.3× speedup claim 仅在 v9.13 之前的 cuDNN 上成立。</li>
+</ul>
+
+<ol>
+<li><strong>LPT scheduling 仅在 H200 验证</strong>：causal/varlen 的 LPT scheduling 提供 4-14% FLOPS gain，但数据来自 H200 而非 B200 [ref:2603.05451#核心三问]。Blackwell 的 SM 数量和 L2 拓扑不同，增益可能变化。</li>
+</ul>
+
+<h2 id="§4-生态位">§4 生态位 <a class="heading-anchor" href="#§4-生态位" aria-label="Link to §4-生态位">#</a></h2>
+
+<p>FA4 代表了 <strong>kernel-level co-design 的学术-工业协作典范</strong>。其生态位有三个独特属性：</p>
+
+<ol>
+<li><strong>标准制定者</strong>：FA 系列已成为 attention kernel 的事实标准——cuDNN 吸收 FA4 技术意味着每个使用 cuDNN 的框架（PyTorch、TensorRT-LLM、vLLM）都间接受益。FA4 的开源（CuTe-DSL + permissive license）使社区可直接在其上构建扩展。</li>
+</ul>
+
+<ol>
+<li><strong>CuTe-DSL 推动者</strong>：FA4 完全用 CuTe-DSL（Python embedded）实现，22-32× 编译加速 [ref:2603.05451#实验与数据]。这不仅是 FA4 自身的优势，更是 CuTe-DSL 作为 kernel 开发框架的最强验证。FlexAttention 和 block-sparse attention 已在 FA4 框架上构建。</li>
+</ul>
+
+<ol>
+<li><strong>硬件反馈环路</strong>：FA4 的 roofline 分析揭示了 Blackwell 的硬件设计缺陷——MUFU exp 单元 512× 慢于 MMA，SMEM 带宽未 scale。这些发现直接影响硬件设计决策（B300/GB300 将 MUFU 翻倍至 32 ops/clock）[ref:2603.05451#核心三问]。FA4 论文实际上是 NVIDIA 硬件-软件协同设计的公开文档。</li>
+</ul>
+
+<h2 id="§5-未探索方向">§5 未探索方向 <a class="heading-anchor" href="#§5-未探索方向" aria-label="Link to §5-未探索方向">#</a></h2>
+
+<ol>
+<li><strong>Cross-vendor kernel abstraction</strong>：FA4 (Blackwell) 和 HipKittens (CDNA4) 解决同一问题但用完全不同的硬件原语（TMEM vs AGPR pinning，2-CTA MMA vs 8-wave ping-pong）[ref:2511.08083#核心三问]。是否存在一个足够高层次的 DSL 可以从同一规格生成两种 GPU 的最优 kernel？CuTe-DSL 目前是 NVIDIA-only，HipKittens 是 AMD-only。跨 vendor 的 tile-based abstraction 是 compiler 研究的开放问题。</li>
+</ul>
+
+<ol>
+<li><strong>MLA-aware attention kernel</strong>：FA4 假设标准 MHA/GQA 的 attention pattern（$QK^\top$ 后 softmax）。DeepSeek-V2 的 MLA 在推理时将 $W^{UK}$ 吸收进 $W^{UQ}$，使 attention 变为 $\mathbf{q} \cdot \mathbf{c}^{KV}$（压缩 latent 直接参与注意力）[ref:2405.04434#实现 cross-reference]。这种 "absorbed" attention 的最优 tile size 和 pipeline 可能与标准 MHA 不同（$d$ 从 128 变为 512+64=576 维的 latent），FA4 的 roofline 分析需要重做。</li>
+</ul>
+
+<ol>
+<li><strong>自动化 exp 模拟比例调优</strong>：将 AVO 的自主进化方法 [ref:2603.24517#核心三问] 专门用于搜索 FA4 的 exp 模拟比例——不同 $d$、不同 tile 配置、不同 batch size 下的最优比例可能形成一个可预测的函数，而非依赖手动调优。</li>
+</ul>
+
+<ol>
+<li><strong>FA4 + persistent megakernel 融合</strong>：Fleet 证明 persistent megakernel 可消除 kernel launch overhead 并保持 L2 cache 状态 [ref:2604.15379#核心三问]。将 FA4 的 attention kernel 作为 Fleet 式 megakernel 的子任务——在 token 生成循环中 attention 和 FFN 共享 L2 working set——可能进一步提升端到端 decode 性能。</li>
+</ul>
+
+<ol>
+<li><strong>Backward pass 的 sparse attention 适配</strong>：FA4 的 2-CTA backward pass 假设 dense attention。在 DeepSeek-V4 的 CSA（compressed sparse attention）[ref:deepseek-v4#核心三问] 下，sparse pattern 使 backward 的 5 个 MMA 中部分可跳过，但 sparsity 的动态性使静态 pipeline scheduling 失效。需要 dynamic CTA work stealing 而非 FA4 当前的 static grid scheduling。</li>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2405.04434.html">2405.04434</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness</h1>
+<div class="card-meta"><span class="badge badge-kernel">kernel</span> 2205.14135</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">attention-kernel</span><span class="tag">io-awareness</span><span class="tag">tiling</span><span class="tag">memory-efficient</span><span class="tag">gpu-optimization</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2205.14135.html">← Synthesis</a>
+<a href="/overview/kernel.html">← kernel Survey</a>
+<a href="https://arxiv.org/abs/2205.14135" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="flashattention-fast-and-memory-efficient-exact-attention-with-io-awareness">FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness <a class="heading-anchor" href="#flashattention-fast-and-memory-efficient-exact-attention-with-io-awareness" aria-label="Link to flashattention-fast-and-memory-efficient-exact-attention-with-io-awareness">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>通过 tiling + recomputation 将 attention 融合为单个 GPU kernel，避免 $N \times N$ 中间矩阵的 HBM 读写，IO 复杂度从 $\Theta(Nd + N^2)$ 降至最优的 $\Theta(N^2 d^2 / M)$，实现 2–4× 加速和线性内存。</p>
+
+<h2 id="§2-痛点-方法-结果">§2 痛点 / 方法 / 结果 <a class="heading-anchor" href="#§2-痛点-方法-结果" aria-label="Link to §2-痛点-方法-结果">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>标准 attention 实现将 $\mathbf{S} = \mathbf{Q}\mathbf{K}^\top$ 和 $\mathbf{P} = \text{softmax}(\mathbf{S})$ 两个 $N \times N$ 矩阵完整写入 HBM，产生 $O(N^2)$ 内存占用和大量 HBM 读写。在 A100 上，HBM 带宽（1.5–2.0 TB/s）远低于 on-chip SRAM 带宽（~19 TB/s），使 attention 成为 memory-bound 操作。</p>
+
+<p>近似 attention 方法（Reformer、Performer、Linformer 等）降低了 FLOP 复杂度，但未实现 wall-clock 加速，根因是忽略了 IO 开销。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>核心原理——IO-Awareness</strong>：将 attention 视为 memory-bound 操作，优化目标从 FLOP 减少转向 HBM 读写减少。</p>
+
+<p><strong>技术 1——Tiling（在线 softmax）</strong>：</p>
+
+<p>将 $\mathbf{Q}, \mathbf{K}, \mathbf{V}$ 分成大小为 $B_r \times d$ 和 $B_c \times d$ 的 block，外层循环遍历 K/V block（加载至 SRAM），内层循环遍历 Q block。关键是 softmax 可以增量计算：</p>
+
+<p>$$m(x) = \max_i x_i, \quad f(x) = [e^{x_1 - m(x)}, \ldots, e^{x_B - m(x)}], \quad \ell(x) = \sum_i f(x)_i$$</p>
+
+<p>对拼接向量 $x = [x^{(1)}, x^{(2)}]$：</p>
+
+<p>$$m(x) = \max(m(x^{(1)}), m(x^{(2)}))$$</p>
+
+<p>$$\ell(x) = e^{m(x^{(1)}) - m(x)} \ell(x^{(1)}) + e^{m(x^{(2)}) - m(x)} \ell(x^{(2)})$$</p>
+
+<p>维护运行统计量 $(m, \ell)$ 即可逐 block 计算 softmax，无需物化完整 $N \times N$ 矩阵。</p>
+
+<p><strong>技术 2——Recomputation（反向传播）</strong>：</p>
+
+<p>前向传播仅存储 $\mathbf{O}$ 和 softmax 统计量 $(m, \ell)$——$O(N)$ 额外内存。反向传播时从 $\mathbf{Q}, \mathbf{K}, \mathbf{V}$ block 在 SRAM 中重新计算 $\mathbf{S}, \mathbf{P}$。虽然增加 FLOP，但因减少 HBM 读写反而更快。</p>
+
+<p>关键中间量 $D_i = do_i^\top o_i$ 替代了需要 $O(N)$ 向量的 $P_{i:}^\top dP_{i:}$，使反向传播也可 block-wise 进行。</p>
+
+<p><strong>Block-Sparse FlashAttention</strong>：在 FlashAttention 基础上增加 block-level mask $\mathbf{M}$，跳过零 block 的计算，IO 复杂度降至 $\Theta(Nd + N^2 d^2 M^{-1} s)$（$s$ 为非零 block 比例）。</p>
+
+<p><strong>核心技术壁垒</strong>：在保持 exact attention 输出的前提下，将 softmax 的全局归一化分解为可增量更新的局部统计量——这是一个数学非平凡的观察（algebraic aggregation），它使得整个 attention（matmul + softmax + matmul + dropout + mask）可融合为单个 kernel，消除所有中间 HBM 读写。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li><strong>训练加速</strong>：BERT-large 15% faster than MLPerf 1.1 record；GPT-2 3× faster than HuggingFace；LRA 2.4× faster。</li>
+<li><strong>Attention kernel</strong>：7.6× speedup over PyTorch attention（GPT-2，Fig. 1 right）。</li>
+<li><strong>内存</strong>：线性增长（22 MB at seq 128 → 13.4 GB at seq 65536），标准 attention 在 seq 8K 前 OOM。</li>
+<li><strong>长上下文</strong>：首个 Transformer 在 Path-X（seq 16K）上超越随机（61.4%），Path-256（seq 64K）上 63.1%。</li>
+<li><strong>质量</strong>：GPT-2 perplexity 提升 0.7 points（4K 上下文 vs 1K）。</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+flowchart LR
+    subgraph HBM ["GPU HBM (slow, large)"]
+        Q["Q ∈ ℝ^{N×d}"]
+        K["K ∈ ℝ^{N×d}"]
+        V["V ∈ ℝ^{N×d}"]
+        O["O ∈ ℝ^{N×d}"]
+        stats["ℓ, m ∈ ℝ^N"]
+    end
+
+    subgraph SRAM ["On-chip SRAM (fast, small ~192KB/SM)"]
+        Qb["Q_i block"]
+        Kb["K_j block"]
+        Vb["V_j block"]
+        Sb["S_ij = Q_i K_j^T"]
+        Pb["P̃_ij = exp(S_ij - m̃)"]
+        Ob["O_i (accumulator)"]
+    end
+
+    Q -->|"load block i"| Qb
+    K -->|"outer loop: load block j"| Kb
+    V -->|"outer loop: load block j"| Vb
+    Qb --> Sb
+    Kb --> Sb
+    Sb --> Pb
+    Pb -->|"× V_j"| Ob
+    Ob -->|"write back (rescaled)"| O
+    Ob -->|"update stats"| stats
+</div>
+
+<p><strong>数据流</strong>：外层循环遍历 K/V block（红色路径），内层遍历 Q block（蓝色路径）。每次在 SRAM 内完成 $\mathbf{S}_{ij}$ 计算 → 在线 softmax → $\tilde{\mathbf{P}}_{ij} \mathbf{V}_j$ → 累加到 $\mathbf{O}_i$ 并更新 $(m, \ell)$。$N \times N$ 矩阵从不被物化到 HBM。</p>
+
+<h3 id="target-operation">Target operation <a class="heading-anchor" href="#target-operation" aria-label="Link to target-operation">#</a></h3>
+
+<ul>
+<li><strong>输入</strong>：$\mathbf{Q}, \mathbf{K}, \mathbf{V} \in \mathbb{R}^{N \times d}$，head dim $d$ 典型 64/128</li>
+<li><strong>输出</strong>：$\mathbf{O} = \text{softmax}(\mathbf{Q}\mathbf{K}^\top)\mathbf{V} \in \mathbb{R}^{N \times d}$</li>
+<li><strong>精度</strong>：输入 FP16/BF16，累加器 FP32，输出 FP16/BF16</li>
+<li><strong>Causal mask</strong>：支持（跳过上三角 block）</li>
+</ul>
+
+<h3 id="hardware-model">Hardware model <a class="heading-anchor" href="#hardware-model" aria-label="Link to hardware-model">#</a></h3>
+
+<table>
+<tr><th>参数</th><th>A100 值</th></tr>
+<tr><td>HBM 容量 / 带宽</td><td>40–80 GB / 1.5–2.0 TB/s</td></tr>
+<tr><td>SRAM 容量 / 带宽</td><td>192 KB/SM × 108 SMs / ~19 TB/s</td></tr>
+<tr><td>Tensor Core peak (FP16)</td><td>312 TFLOP/s</td></tr>
+<tr><td>Block sizes</td><td>$B_c = \lceil M/(4d) \rceil$, $B_r = \min(\lceil M/(4d) \rceil, d)$</td></tr>
+</table>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$N$</td><td>序列长度</td></tr>
+<tr><td>$d$</td><td>Head dimension</td></tr>
+<tr><td>$M$</td><td>On-chip SRAM 大小</td></tr>
+<tr><td>$B_r, B_c$</td><td>Q 行 block 和 K/V 列 block 大小</td></tr>
+<tr><td>$T_r, T_c$</td><td>Block 数量 $\lceil N/B_r \rceil$, $\lceil N/B_c \rceil$</td></tr>
+<tr><td>$m, \ell$</td><td>在线 softmax 的 running max 和 running sum</td></tr>
+<tr><td>$\mathbf{S}, \mathbf{P}$</td><td>Score matrix 和 attention weight matrix</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Theorem 1（正确性）</strong>：FlashAttention 输出 $\mathbf{O} = \text{softmax}(\mathbf{Q}\mathbf{K}^\top)\mathbf{V}$，FLOPs $O(N^2 d)$，额外内存 $O(N)$。通过对外层循环变量 $j$ 的归纳证明：每步后 $m^{(j)} = \text{rowmax}(\mathbf{S}_{:,:j})$，$\ell^{(j)} = \text{rowsum}(\exp(\mathbf{S}_{:,:j} - m^{(j)}))$，$\mathbf{O}^{(j)} = \mathbf{P}_{:,:j}\mathbf{V}_{:j}$。</p>
+
+<p><strong>Theorem 2（IO 复杂度）</strong>：</p>
+
+<p>$$\text{标准 attention IO} = \Theta(Nd + N^2)$$</p>
+
+<p>$$\text{FlashAttention IO} = \Theta(N^2 d^2 / M)$$</p>
+
+<p>推导：每次加载大小 $\Theta(M)$ 的 K/V block，需要 $T_c = \Theta(Nd/M)$ 次遍历 Q。每次遍历加载 $\Theta(Nd)$，总计 $\Theta(N^2 d^2 / M)$。</p>
+
+<p>对于典型 $d = 64$, $M \approx 100$ KB：$d^2/M \approx 4096/10^5 \approx 0.04 \ll 1$，FlashAttention IO 比标准 attention 少约 $9\times$。</p>
+
+<p><strong>Proposition 3（下界/最优性）</strong>：不存在精确 attention 算法在所有 $M \in [d, Nd]$ 上实现 $o(N^2 d^2 / M)$ IO 复杂度。证明：若存在则在 $M = \Theta(Nd)$ 时实现 $o(Nd)$ IO，但输入输出大小为 $Nd$，矛盾。</p>
+
+<h3 id="roofline-分析">Roofline 分析 <a class="heading-anchor" href="#roofline-分析" aria-label="Link to roofline-分析">#</a></h3>
+
+<p>标准 attention 的 arithmetic intensity = $O(N^2 d) / O(Nd + N^2) \approx O(d)$（当 $N \gg d$），位于 memory-bound 区域。FlashAttention 通过减少 IO 提升 arithmetic intensity 至 $O(M/d)$，推向 compute-bound 边界。</p>
+
+<p>实测数据（A100, GPT-2 medium, seq 1024）：</p>
+
+<table>
+<tr><th></th><th>GFLOPs</th><th>HBM R/W (GB)</th><th>Runtime (ms)</th></tr>
+<tr><td>Standard</td><td>66.6</td><td>40.3</td><td>41.7</td></tr>
+<tr><td>FlashAttention</td><td>75.2</td><td>4.4</td><td>7.3</td></tr>
+</table>
+
+<p>FlashAttention FLOPs 更高（75.2 vs 66.6，因 recomputation）但 HBM 读写少 9.2×，运行快 5.7×——直观证明 FLOPs 是误导性指标。</p>
+
+<h3 id="6-项检查">6 项检查 <a class="heading-anchor" href="#6-项检查" aria-label="Link to 6-项检查">#</a></h3>
+
+<ol>
+<li><strong>正确性归纳</strong>：Theorem 1 通过对 $j$ 归纳证明每步 $(m, \ell, \mathbf{O})$ 正确。✔</li>
+<li><strong>IO 下界</strong>：Proposition 3 证明 FlashAttention IO 渐近最优。✔</li>
+<li><strong>Block size 约束</strong>：$B_c = \lceil M/(4d) \rceil$ 确保 $\mathbf{K}_j, \mathbf{V}_j, \mathbf{Q}_i, \mathbf{O}_i$ 同时放入 SRAM。✔</li>
+<li><strong>反向传播内存</strong>：仅存 $\mathbf{O}, m, \ell$（$O(N)$），反向时重新计算 $\mathbf{S}, \mathbf{P}$。✔</li>
+<li><strong>Dropout 重放</strong>：保存 PRNG state 而非 $O(N^2)$ mask，反向时重新生成。✔</li>
+<li><strong>Block-sparse IO 缩放</strong>：Proposition 4 证明 IO 正比于非零 block 比例 $s$。✔</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="训练速度">训练速度 <a class="heading-anchor" href="#训练速度" aria-label="Link to 训练速度">#</a></h3>
+
+<table>
+<tr><th>模型</th><th>基线</th><th>FlashAttention</th><th>加速</th></tr>
+<tr><td>BERT-large (seq 512)</td><td>20.0 ± 1.5 min (MLPerf)</td><td>17.4 ± 1.4 min</td><td>15%</td></tr>
+<tr><td>GPT-2 small (seq 1K)</td><td>9.5 days (HF)</td><td>2.7 days</td><td>3.5×</td></tr>
+<tr><td>GPT-2 medium (seq 1K)</td><td>21.0 days (HF)</td><td>6.9 days</td><td>3.0×</td></tr>
+<tr><td>LRA (seq 1K–4K)</td><td>—</td><td>—</td><td>2.4×</td></tr>
+</table>
+
+<h3 id="长上下文质量">长上下文质量 <a class="heading-anchor" href="#长上下文质量" aria-label="Link to 长上下文质量">#</a></h3>
+
+<table>
+<tr><th>GPT-2 small</th><th>Context</th><th>Perplexity</th><th>Time</th></tr>
+<tr><td>Megatron-LM</td><td>1K</td><td>18.2</td><td>4.7 days</td></tr>
+<tr><td>FlashAttention</td><td>1K</td><td>18.2</td><td>2.7 days</td></tr>
+<tr><td>FlashAttention</td><td>4K</td><td>17.5</td><td>3.6 days</td></tr>
+</table>
+
+<p>4K 上下文：比 Megatron 1K 快 30% 且 perplexity 低 0.7。</p>
+
+<h3 id="path-x-path-256">Path-X / Path-256 <a class="heading-anchor" href="#path-x-path-256" aria-label="Link to path-x-path-256">#</a></h3>
+
+<p>FlashAttention 是首个在 Path-X（seq 16K）上达到 61.4% 准确率的 Transformer（所有其他方法均为随机水平）。Block-sparse FlashAttention 在 Path-256（seq 64K）上达到 63.1%。</p>
+
+<h3 id="不同-gpu-上的加速">不同 GPU 上的加速 <a class="heading-anchor" href="#不同-gpu-上的加速" aria-label="Link to 不同-gpu-上的加速">#</a></h3>
+
+<table>
+<tr><th>GPU</th><th>典型加速范围</th></tr>
+<tr><td>A100 (hdim 64)</td><td>2–4×</td></tr>
+<tr><td>A100 (hdim 128)</td><td>略低（block 更大，SRAM 压力更高）</td></tr>
+<tr><td>RTX 3090</td><td>2.5–4.5×（内存带宽更低，IO 优化收益更大）</td></tr>
+<tr><td>T4</td><td>加速较低（SRAM 更小 → block 更小）</td></tr>
+</table>
+
+<h3 id="论文承认的弱项">论文承认的弱项 <a class="heading-anchor" href="#论文承认的弱项" aria-label="Link to 论文承认的弱项">#</a></h3>
+
+<ol>
+<li>FlashAttention 反向传播在 seq 128 时比 Apex FMHA 略慢（0.20 vs 0.17 ms），因 recomputation 开销在短序列时占比更高。</li>
+<li>seq ≥ 1K 时 Linformer 前向传播更快（近似方法在极长序列时 FLOP 优势开始体现）。</li>
+</ul>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>步骤</th><th>论点</th><th>证据</th></tr>
+<tr><td>1</td><td>标准 attention 是 memory-bound：FLOPs 不是瓶颈，HBM IO 才是</td><td>§2.1 A100 HBM vs SRAM 带宽差 10×；Fig. 2 table（75.2 vs 66.6 GFLOPs 但 9.2× fewer HBM R/W → 5.7× faster）</td></tr>
+<tr><td>2</td><td>IO-awareness 原则：优化 HBM 读写次数而非 FLOP 数</td><td>§1 引用 IO complexity 文献 [1]；§3.2 Theorem 2 推导 FlashAttention IO = $\Theta(N^2 d^2/M)$</td></tr>
+<tr><td>3</td><td>Tiling + online softmax 使 attention 可逐 block 计算</td><td>§3.1 softmax 增量分解公式；Theorem 1 归纳证明正确性</td></tr>
+<tr><td>4</td><td>Recomputation 以少量额外 FLOP 换取大量 HBM IO 节省</td><td>§3.1 反向传播仅存 $(m, \ell)$；Fig. 2 证明 IO 减少主导 runtime</td></tr>
+<tr><td>5</td><td>IO 复杂度渐近最优</td><td>Proposition 3 下界证明</td></tr>
+<tr><td>6</td><td>实验验证速度和质量双赢</td><td>§4 BERT/GPT-2/LRA 加速 + Path-X 首次解决 + GPT-2 perplexity 提升</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>代码仓库</strong>：<a href="https://github.com/HazyResearch/flash-attention">flash-attention</a></p>
+
+<ul>
+<li><strong>Kernel entry</strong>：CUDA kernel 实现 FlashAttention 前向/反向传播，融合 matmul + softmax + dropout + masking</li>
+<li><strong>Block size 选择</strong>：$B_c = \lceil M/(4d) \rceil$, $B_r = \min(B_c, d)$，根据 SRAM 容量和 head dim 自动确定</li>
+<li><strong>支持范围</strong>：head dim 16/32/64/128，seq 长达 64K，FP16，Turing + Ampere GPU</li>
+<li><strong>与 Apex FMHA 关系</strong>：FlashAttention 扩展 FMHA 增加 tiling + recomputation，解除 seq ≤ 512 / hdim = 64 / A100-only 的限制</li>
+</ul>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Online softmax 的数值稳定性</strong>：每个 block 计算时先减去 block-local max $\tilde{m}_{ij}$，再与全局 running max $m_i$ 合并时乘以 $e^{m_i^{\text{old}} - m_i^{\text{new}}}$ 校正因子——两级 max-subtraction 确保 exp 不溢出。</li>
+<li><strong>Dropout PRNG state 复用</strong>：前向传播保存 PRNG state（而非 $O(N^2)$ mask），反向传播从相同 state 重新生成 mask。这将 dropout 的内存占用从 $O(N^2)$ 降至 $O(1)$。</li>
+</ul>
+
+<h3 id="可移植性">可移植性 <a class="heading-anchor" href="#可移植性" aria-label="Link to 可移植性">#</a></h3>
+
+<p>论文承认 CUDA kernel 方法不可跨 GPU 架构移植（§5），呼吁类似 Halide 的编译器框架。当前仅支持 NVIDIA Turing/Ampere。</p>
+
+<h3 id="部署上下文">部署上下文 <a class="heading-anchor" href="#部署上下文" aria-label="Link to 部署上下文">#</a></h3>
+
+<ul>
+<li><strong>Serving stack</strong>：可替代 PyTorch 标准 attention / Megatron-LM attention / Apex FMHA</li>
+<li><strong>Regime</strong>：prefill（大 batch × $N^2$，compute-intensive）和 training；推理 decode 场景不是本文重点</li>
+<li><strong>Fusion scope</strong>：softmax + matmul + dropout + masking，不含 RoPE / QKV projection / O projection</li>
+</ul>
+
+<h3 id="software-→-hardware-启示">Software → Hardware 启示 <a class="heading-anchor" href="#software-→-hardware-启示" aria-label="Link to software-→-hardware-启示">#</a></h3>
+
+<ul>
+<li><strong>更大 SRAM</strong>：FlashAttention 的 tile size 直接受限于 SRAM 容量；更大 SRAM 意味着更大 block → 更少 HBM trip → 更高性能</li>
+<li><strong>Halide-like attention compiler</strong>：当前每种 attention 变体需手写 CUDA kernel，编译器自动生成 IO-aware kernel 将大幅降低工程成本</li>
+<li><strong>Multi-GPU IO 优化</strong>：论文仅处理单 GPU，multi-GPU attention（如 Ring Attention）引入 GPU 间通信层，需要新的 IO 分析</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

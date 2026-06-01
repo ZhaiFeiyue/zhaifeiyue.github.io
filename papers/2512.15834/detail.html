@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Optimizing Agentic Language Model Inference via Speculative Tool Calls — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Optimizing Agentic Language Model Inference via Speculative Tool Calls</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2512.15834</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">speculative-execution</span><span class="tag">tool-calling</span><span class="tag">agent-latency</span><span class="tag">parallel-execution</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2512.15834.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2512.15834" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="speculative-tool-calls-—-l2">Speculative Tool Calls — L2 <a class="heading-anchor" href="#speculative-tool-calls-—-l2" aria-label="Link to speculative-tool-calls-—-l2">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>用小模型提前投机预测 agent 的下一次 tool call 并异步执行，使工具执行与主模型推理重叠。提出 client-side（无需改引擎）和 engine-side（修改 vLLM 保持 KV-cache 驻留）两种方案，client-side 节省 6-21% 端到端时延，理论上界 < 2×；engine-side 额外节省 2-3%。</p>
+
+<h2 id="§2-q1-·-q2-·-q3">§2 Q1 · Q2 · Q3 <a class="heading-anchor" href="#§2-q1-·-q2-·-q3" aria-label="Link to §2-q1-·-q2-·-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>LM agent 每次 tool call 都会打断推理：生成停止 → 序列从 batch 中驱逐 → 客户端运行工具 → 带工具输出重新调度 → 重新 prefill 不断增长的 prompt。这条严格的顺序依赖链引入三类开销：</p>
+
+<ol>
+<li><strong>工具等待时延</strong>：生成与工具执行完全串行，agent 在等待工具返回期间推理引擎空闲。</li>
+<li><strong>驱逐/重调度开销</strong>：序列被移出 active batch 后 KV-cache 可能被淘汰，重新进入时需重新 prefill（即使有 prefix caching 也要付出调度和 cache 管理成本）。</li>
+<li><strong>多租户竞争</strong>：多个 agent 共享推理引擎时，cache 淘汰更频繁，overhead 被放大。</li>
+</ul>
+
+<p>现有的缓解措施——并行 tool call（模型一次返回多个独立调用）和 prefix caching——只能部分缓解，无法消除顺序依赖本身。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p>核心思路：将 speculative decoding 的"用小模型投机、大模型验证"范式从 token 级别推广到 <strong>tool call 级别</strong>。由于 tool call 的时延远大于几个 token 的 decode 时间（毫秒 vs 秒），传统 speculative decoding 只能 overlap 几个 token 的生成——收益微乎其微。本文的关键洞察是：<strong>tool 应该尽早投机、尽多投机</strong>，而非像 token-level speculation 那样只领先几步。</p>
+
+<p>两个互补方案：</p>
+
+<p><strong>Client-side speculation（Algorithm 2）</strong>：在发送 prompt 给主模型 $M$ 的同时，异步发送给 $\lambda$ 个更小更快的投机模型 $S$。$S$ 先返回时提取 tool call 并异步执行工具，结果缓存在 client 端的 tool cache 中。当 $M$ 返回需要同一个 tool call 时，直接从 cache 取结果，跳过等待。优势：完全不需要修改推理引擎或 API，纯 client 侧实现。</p>
+
+<p><strong>Engine-side speculation（Algorithm 5）</strong>：在推理引擎内部维护 tool cache。客户端将投机工具执行结果通过 <code>POST /cache-tool-output/{response_id}</code> API 提交给引擎。引擎实现三重优化：</p>
+<ul>
+<li><strong>O1</strong>：投机执行工具，掩盖工具时延（与 client-side 同理）</li>
+<li><strong>O2</strong>：检测到 tool call 开始时，从 cache 中取 draft tokens 做 speculative sampling 验证，跳过逐 token decode tool call 参数</li>
+<li><strong>O3</strong>：检测到 tool call 结束且 cache 命中时，直接将 tool output 注入 KV-cache 继续 decode，<strong>避免序列驱逐和重调度</strong></li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：engine-side 的 tool proposer 需要在 token 流中实时检测 tool-call 边界，并在两种 cache lookup 策略之间动态切换——tool-start 时用部分键（tool name）做 early exit speculation，tool-end 时用完整键（name + canonicalized args）做 exact match 注入。这要求深度改造推理引擎的 speculative decoding 基础设施（论文基于 vLLM 的自定义 fork 实现），是复现的主要技术障碍。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li><strong>Client-side</strong>：在 32 并发 gpt-oss-120b agent、xLAM-2-8B 投机模型的配置下，节省 6-21% 端到端时延（取决于工具时延与主模型生成时间的比值），吞吐量提升最高 +196.4 tok/s。</li>
+<li><strong>Engine-side</strong>：在工具时延 < 主模型推理时间的场景下，相比 client-side 额外节省 2-3%（因为省去了驱逐/重调度开销）。</li>
+<li><strong>商业 API 验证</strong>：gpt-5 + gpt-5-nano 的 client-side speculation 中，1 次投机即可获得 ~9.5% 时间节省，额外成本仅 ~$0.025/100 turns（主模型成本的 ~4%）。</li>
+<li><strong>理论上界</strong>：client-side 投机的最大加速比严格 < 2×（Lemma 1 证明），因为只能掩盖生成和工具执行两个阶段中的一个。</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<h3 id="client-side-投机流程">Client-side 投机流程 <a class="heading-anchor" href="#client-side-投机流程" aria-label="Link to client-side-投机流程">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig2.png" alt="Figure 2: Client-side speculative tool calling overview"></p>
+
+<p><em>Paper Figure 2：Client-side speculative tool calling 的时序对比。上方为 baseline（Prefill→Decode→Tool 严格串行），下方为投机方案（投机模型与主模型并行运行，工具执行与主模型生成重叠）。</em></p>
+
+<p>Client-side 方案的核心是时间重叠：投机模型 $S$ 比主模型 $M$ 更快返回 tool call 预测，工具在 $M$ 还在 decode 的过程中已经异步执行完成。当 $M$ 最终也需要同一个 tool call 时，结果已在 cache 中等待，跳过了工具等待时间。</p>
+
+<h3 id="engine-side-投机流程">Engine-side 投机流程 <a class="heading-anchor" href="#engine-side-投机流程" aria-label="Link to engine-side-投机流程">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig4.png" alt="Figure 4: Engine-side speculative tool calling overview"></p>
+
+<p><em>Paper Figure 4：Engine-side speculative tool calling 的架构。相比 client-side 增加了三重优化：(1) 保持序列驻留避免驱逐，(2) 通过 speculative sampling 缩短 tool call 参数的 decode，(3) 直接注入 tool output 继续生成。</em></p>
+
+<p>Engine-side 方案的关键区别在于序列<strong>始终驻留在 batch 中</strong>——tool call 不再触发驱逐。投机的 tool output 通过 HTTP API 提交到引擎内部的 tool cache，引擎的 tool proposer 在检测到 tool-call boundary 时自动查询 cache 进行验证和注入。</p>
+
+<h3 id="agent-循环状态机">Agent 循环状态机 <a class="heading-anchor" href="#agent-循环状态机" aria-label="Link to agent-循环状态机">#</a></h3>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> SubmitPrompt
+    SubmitPrompt --> ParallelInference: send to M and S×λ
+    ParallelInference --> SpecModelReturns: S returns tool call
+    SpecModelReturns --> AsyncToolExec: launch tool async
+    AsyncToolExec --> CacheResult: store in tool cache
+    ParallelInference --> MainModelReturns: M finishes decode
+    MainModelReturns --> CacheHit: tool call matches cache
+    MainModelReturns --> CacheMiss: no match
+    CacheHit --> AppendResult: reuse cached output
+    CacheMiss --> RunTool: execute tool (baseline path)
+    RunTool --> AppendResult
+    AppendResult --> CheckDone
+    CheckDone --> SubmitPrompt: more tool calls needed
+    CheckDone --> [*]: task complete
+    CacheResult --> MainModelReturns
+</div>
+
+<h3 id="tool-cache-约束">Tool cache 约束 <a class="heading-anchor" href="#tool-cache-约束" aria-label="Link to tool-cache-约束">#</a></h3>
+
+<p>投机仅适用于<strong>无状态、低成本</strong>的工具（web search、file read、ls 等）。有副作用的工具（代码执行、文件写入、API 调用改变外部状态）无法安全投机，除非引入 undo/rollback 机制——本文不处理这一场景。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>含义</th><th>来源</th></tr>
+<tr><td>$M$</td><td>主模型（大模型）</td><td>§3</td></tr>
+<tr><td>$S$</td><td>投机模型（小模型）</td><td>§3</td></tr>
+<tr><td>$\lambda$</td><td>每轮投机采样数</td><td>§3.1</td></tr>
+<tr><td>$G$</td><td>主模型平均生成时间</td><td>§3.1.1</td></tr>
+<tr><td>$g$</td><td>投机模型平均生成时间</td><td>§3.1.1</td></tr>
+<tr><td>$T$</td><td>平均工具执行时间</td><td>§3.1.1</td></tr>
+<tr><td>$\alpha$</td><td>投机模型 acceptance rate</td><td>§3.1.1</td></tr>
+<tr><td>$\phi$</td><td>prefill 速率 (s/tok)</td><td>§3.2.1</td></tr>
+<tr><td>$\delta$</td><td>decode 速率 (s/tok)</td><td>§3.2.1</td></tr>
+<tr><td>$X_i$</td><td>第 $i$ 轮 prefill token 数</td><td>§3.2.1</td></tr>
+<tr><td>$R_i$</td><td>第 $i$ 轮 reasoning token 数</td><td>§3.2.1</td></tr>
+<tr><td>$t_i$</td><td>第 $i$ 轮 tool call token 数</td><td>§3.2.1</td></tr>
+<tr><td>$T_i$</td><td>第 $i$ 轮工具执行时间</td><td>§3.2.1</td></tr>
+<tr><td>$o$</td><td>API 和驱逐 overhead</td><td>§3.2.1</td></tr>
+<tr><td>$K$</td><td>agent 连续 turn 数</td><td>§3.2.1</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Client-side 性能模型</strong>：$N$ 次请求的标准时间 $T_{\text{standard}} = N(G + T)$，投机时间 $T_{\text{spec}} = \alpha N \max\{G, g + T\} + (1 - \alpha)N(G + T)$。物理含义：投机成功（概率 $\alpha$）时，工具执行与主模型生成重叠，总时间取两者较大值；投机失败时退化为 baseline。</p>
+
+<p><strong>Lemma 1（加速比上界）</strong>：$S_{\text{spec}}(\alpha) = \frac{G+T}{\alpha \max\{G, g+T\} + (1-\alpha)(G+T)}$。加速比关于 $\alpha$ 严格递增，最大值 $S_{\max} = \frac{G+T}{\max\{G, g+T\}} \leq 2 - \frac{2g}{G+g+T} < 2$。物理含义：client-side 只能掩盖生成和工具执行中的一个阶段，因此永远无法达到 2× 加速。当 $g \to 0^+$ 时趋近 2×。</p>
+
+<p><strong>Engine-side 性能模型</strong>：$T^*_{\text{spec}} = (1-\alpha)2Ko + \phi(X_1 + \sum(t_i + t_{o,i})) + \delta(\alpha K + \sum R_i + (1-\alpha)\sum t_i) + (1-\alpha)\sum T_i$。物理含义：当 $\alpha = 1$ 时，消除所有驱逐 overhead（$2Ko$）、所有工具等待时间（$\sum T_i$）、以及大部分 tool call decode 时间（$\sum t_i - K$ 个 token），仅剩 prefill、reasoning decode 和每轮 1 个 verification token。</p>
+
+<h3 id="6-项检查">6 项检查 <a class="heading-anchor" href="#6-项检查" aria-label="Link to 6-项检查">#</a></h3>
+
+<table>
+<tr><th>#</th><th>检查项</th><th>结果</th></tr>
+<tr><td>1</td><td>Lemma 1 证明逻辑完整性</td><td>✓ 令 $M := \max\{G, g+T\}$，$\Delta := M - (G+T) \leq 0$，分母关于 $\alpha$ 严格递减，加速比严格递增。用 $\max\{a,b\} \geq (a+b)/2$ 建立上界。证明完整。</td></tr>
+<tr><td>2</td><td>Equation (3) 边界条件</td><td>✓ $\alpha = 0 \Rightarrow S = 1$（无加速），$\alpha = 1, g \to 0 \Rightarrow S \to 2$（理论极限），符合物理直觉。</td></tr>
+<tr><td>3</td><td>Equation (6) 边界条件</td><td>✓ $\alpha = 0 \Rightarrow T^*_{\text{spec}} = T_{\text{cached}}$，$\alpha = 1$ 消除所有可投机的开销。</td></tr>
+<tr><td>4</td><td>投机正确性（无输出变更）</td><td>✓ Client-side：cache miss 时退化为 baseline，不影响输出。Engine-side：使用 speculative sampling 验证 draft tokens，拒绝时回退到正常 decode。数学等价性继承自 speculative decoding 的正确性证明。</td></tr>
+<tr><td>5</td><td>约束条件合理性</td><td>✓ 仅投机无状态工具、$g < G$（投机模型比主模型快）、$\alpha > 0$（非零命中率）——三个约束都是实际部署中容易满足的。</td></tr>
+<tr><td>6</td><td>Speedup model vs 实验一致性</td><td>✓ 模型预测最佳 client-side 加速在 $T \approx G$ 时取得——Figure 6 中 tool latency 2.0-2.5s 时间节省最大（~21%），与 gpt-oss-120b 生成时间量级一致。</td></tr>
+</table>
+
+<h3 id="agent-specific-检查">Agent-specific 检查 <a class="heading-anchor" href="#agent-specific-检查" aria-label="Link to agent-specific-检查">#</a></h3>
+
+<ul>
+<li><strong>Success-rate model</strong>：Figure 5 展示 (model size, speculation count, cache hit rate) 的扫描矩阵。沿 model size 轴单调（8B > 3B > 1B），沿 speculation count 轴单调（更多 sample 提高 hit rate），沿 cache hit rate 轴吞吐量单调递增——与理论预测一致。</li>
+<li><strong>Latency budget per turn</strong>：$G$ (主模型生成) + $T$ (工具执行) + overhead ($2o$)。论文声明"interactive latency"的条件是 $T < \delta R_i$（工具在 reasoning 期间完成），在 reasoning model 生成数秒 reasoning trace 的场景下合理。</li>
+<li><strong>Failure mode classification</strong>：两类失败——(1) cache miss（投机模型预测错误的工具/参数），退化为 baseline 无额外开销；(2) stateful tool（无法安全投机），需人工标注工具为 stateless/stateful。论文方法主要解决 (1) 的效率问题。</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="主要结果：吞吐量提升">主要结果：吞吐量提升 <a class="heading-anchor" href="#主要结果：吞吐量提升" aria-label="Link to 主要结果：吞吐量提升">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig1.png" alt="Figure 1: Throughput improvement headline result"></p>
+
+<p><em>Paper Figure 1：32 个 gpt-oss-120b agent 使用 vLLM 推理时，投机方案 vs vanilla 的吞吐量对比。在工具时延 ~1.5s 时获得 +196.4 tok/s 的提升。</em></p>
+
+<p>图中可见投机方案在所有工具时延下都优于 baseline。吞吐量差距随工具时延增大先增后减——符合理论预测的"$T \approx G$ 时最优"。</p>
+
+<h3 id="投机准确率与吞吐量关系">投机准确率与吞吐量关系 <a class="heading-anchor" href="#投机准确率与吞吐量关系" aria-label="Link to 投机准确率与吞吐量关系">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig5.png" alt="Figure 5: Cache hit rate vs throughput"></p>
+
+<p><em>Paper Figure 5：不同投机模型的 cache hit rate 与吞吐量关系。xLAM-2-8B 在 1× speculation 时达到 ~80% 命中率；1B 模型通过 9× sampling 将命中率从 ~35% 提升到 ~55%。</em></p>
+
+<p>关键观察：吞吐量与 $\alpha$ 近似线性正相关（与 Equation 3 一致）。更多投机 sample 对小模型帮助显著——xLAM-2-1B 的 9× 比 1× 命中率提升约 60%——但对 8B 模型提升有限，因为其 1× 准确率已经很高。</p>
+
+<h3 id="理论加速比分布">理论加速比分布 <a class="heading-anchor" href="#理论加速比分布" aria-label="Link to 理论加速比分布">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig3.png" alt="Figure 3: Theoretical speedup heatmaps"></p>
+
+<p><em>Paper Figure 3：Client-side 加速比的理论分布热力图，横轴 $g/G$，纵轴 acceptance rate $\alpha$，五个 panel 对应不同 $T/G$ 比值。</em></p>
+
+<p>五个 panel 直观展示 Lemma 1 的含义：(1) 加速比随 $\alpha$ 增大、$g/G$ 减小而增大；(2) $T \approx G$ 时（中间 panel）获得最大加速空间；(3) 即使 $\alpha = 1, g/G \to 0$，加速比也被限制在 2× 以下。这是 client-side 方案的根本局限。</p>
+
+<h3 id="client-side-时间节省">Client-side 时间节省 <a class="heading-anchor" href="#client-side-时间节省" aria-label="Link to client-side-时间节省">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig6.png" alt="Figure 6: Client-side time saved vs tool latency"></p>
+
+<p><em>Paper Figure 6：32 个异步 gpt-oss-120b agent 在 1× speculation 下，不同工具时延的 percent time saved。xLAM-2-8B 在 2.0-2.5s 工具时延时节省最多（~21%），短工具（~0.5s）也能节省 ~6%。</em></p>
+
+<p>该图验证了核心分析预测：最佳收益在 $T \approx G$ 附近（gpt-oss-120b 的 decode 时间约 2-3s）。工具时延过长时，工具执行主导总时间，投机节省的占比下降。</p>
+
+<h3 id="商业-api-成本效益">商业 API 成本效益 <a class="heading-anchor" href="#商业-api-成本效益" aria-label="Link to 商业-api-成本效益">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig7.png" alt="Figure 7: Cost vs time saved for gpt-5 + gpt-5-nano"></p>
+
+<p><em>Paper Figure 7：使用 gpt-5-nano 为 gpt-5 投机的成本-收益分析。1 次投机节省 ~9.5% 时间，额外成本仅 ~$0.025/100 turns（主模型成本 $0.606/100 turns 的 ~4%）。</em></p>
+
+<p>这是生产部署可行性的关键证据：投机模型的推理成本比主模型低一个数量级以上，成本效益比非常高。9× 投机虽然进一步提升时间节省至 ~13.5%，但成本增至 ~$0.23/100 turns（~38%），边际收益递减。</p>
+
+<h3 id="engine-side-vs-client-side-对比">Engine-side vs Client-side 对比 <a class="heading-anchor" href="#engine-side-vs-client-side-对比" aria-label="Link to engine-side-vs-client-side-对比">#</a></h3>
+
+<p><img src="/assets/2512.15834/fig8.png" alt="Figure 8: Engine-side vs client-side comparison"></p>
+
+<p><em>Paper Figure 8：1 个异步 agent、xLAM-2-8B 投机时，engine-side 与 client-side 的时间节省对比。工具时延 < 1s 时 engine-side 额外节省 2-3%；工具时延 > 1s 时两者趋同。</em></p>
+
+<p>Engine-side 的额外收益来自 O2（省 decode tool call tokens）和 O3（省驱逐/重调度开销）。这两项收益的绝对值固定，在短工具场景下占比更大。当工具时延远超主模型生成时间时，工具等待主导总时间，engine-side 的 O2/O3 优势被稀释。注意该实验受限于 vLLM speculative decoding 在 batch > 1 时的高 overhead，仅展示单 agent 结果。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>论点</th><th>支撑</th><th>评注</th></tr>
+<tr><td>1</td><td>Tool call 引入严格顺序依赖，是 agent 推理的性能瓶颈</td><td>§1 问题分析 + §2.1 工具调用机制</td><td>行业共识，无争议</td></tr>
+<tr><td>2</td><td>传统 speculative decoding 不适合 tool-level speculation：draft 仅领先 3-10 tokens，无法掩盖秒级工具时延</td><td>§2.2 speculative decoding 背景 + §3 关键差异分析</td><td>正确区分了 token-level vs tool-level 的时间尺度差异</td></tr>
+<tr><td>3</td><td>Client-side speculation 可在不修改引擎的前提下，通过异步投机模型 + tool cache 实现工具执行与生成的时间重叠</td><td>Algorithm 2 (§3.1) + Equations 1-3 (§3.1.1)</td><td>方法简洁，工程可行性高</td></tr>
+<tr><td>4</td><td>Client-side 加速比有严格理论上界 < 2×，因为只能掩盖生成和工具执行中的一个阶段</td><td>Lemma 1 证明 (§3.1.1) + Figure 3 热力图</td><td>证明完整，bound tight</td></tr>
+<tr><td>5</td><td>Engine-side speculation 通过保持序列驻留 + speculative validation + tool output 注入，额外消除驱逐开销和部分 decode 开销</td><td>Algorithm 5 (§3.2) + Equations 4-6 (§3.2.1)</td><td>三重优化 O1/O2/O3 各有独立贡献</td></tr>
+<tr><td>6</td><td>实验验证：client-side 节省 6-21%、engine-side 额外 2-3%、商业 API 仅 4% 成本增加</td><td>Figures 1, 5-8 (§6)</td><td>与分析模型预测一致；engine-side 受限于 vLLM 实现成熟度</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<h3 id="实现状态">实现状态 <a class="heading-anchor" href="#实现状态" aria-label="Link to 实现状态">#</a></h3>
+
+<p>论文基于 vLLM 的<strong>自定义 fork</strong>实现 engine-side 算法，client-side 使用 OpenAI async Python client + <code>asyncio</code>。截至论文发表（2025-12），代码未公开发布。</p>
+
+<p>[实现未公开]</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Tool cache keying 使用 canonicalized arguments</strong>：cache 键不使用原始文本，而是将 tool name + 参数进行规范化（canonicalize），以处理参数顺序不同但语义相同的情况。这是 cache hit rate 不被 trivial 格式差异降低的关键——容易被忽略但直接影响 $\alpha$。</li>
+</ul>
+
+<ol>
+<li><strong>Tool proposer 的双阶段 cache lookup</strong>：engine-side 的 tool proposer 在 token 流中检测到 tool-call-start token 时，仅用部分键（tool name）查询 cache 以获取 draft tokens 做 early exit speculation；在检测到 tool-call-end token 时，用完整键（name + canonicalized args）做 exact match 以安全注入 tool output。这种分阶段策略平衡了投机的激进性（尽早开始）和正确性（完整匹配才注入结果）。</li>
+</ul>
+
+<h3 id="llm-backbone-要求">LLM backbone 要求 <a class="heading-anchor" href="#llm-backbone-要求" aria-label="Link to llm-backbone-要求">#</a></h3>
+
+<ul>
+<li><strong>主模型</strong>：gpt-oss-120b（120B reasoning model），reasoning trace 持续数秒，为工具投机提供时间窗口。方法对主模型无特殊要求，仅需支持标准 tool calling format。</li>
+<li><strong>投机模型</strong>：xLAM 系列（1B/3B/8B，基于 Llama 的 tool-calling fine-tuning）。8B 模型在 BFCL 上达到 ~80% tool call 预测准确率。也验证了 gpt-5-nano 作为投机模型。</li>
+<li><strong>backbone 敏感性</strong>：论文未做跨 backbone 家族的消融（未测试 Qwen/Claude），但方法在架构上对 backbone 无特殊假设。关键依赖是投机模型的 tool call 预测准确率 $\alpha$。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

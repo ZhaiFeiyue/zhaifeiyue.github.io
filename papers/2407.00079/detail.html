@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Mooncake: A KVCache-Centric Disaggregated Architecture for LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Mooncake: A KVCache-Centric Disaggregated Architecture for LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2407.00079</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">disaggregated-serving</span><span class="tag">kv-cache</span><span class="tag">prefill-decode-separation</span><span class="tag">distributed-inference</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2407.00079.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2407.00079" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Mooncake 是 Kimi 的生产推理平台，以 KVCache 为调度核心将 prefill 与 decode 分离到独立集群，利用 CPU DRAM/SSD 构建分布式 KVCache 池实现 prefix 复用，并通过预测式 early rejection 应对过载。在真实负载下多处理 75% 请求，模拟长上下文场景吞吐提升达 525%。</p>
+
+<h2 id="§2-痛点-方法-结果">§2 痛点 / 方法 / 结果 <a class="heading-anchor" href="#§2-痛点-方法-结果" aria-label="Link to §2-痛点-方法-结果">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<p>LLM 推理中 prefill 和 decode 阶段资源特征截然不同：prefill 计算密集且随输入长度超线性增长，decode 访存密集且受限于 KVCache 容量。传统耦合部署（如 vLLM）中长上下文 prefill 严重干扰 decode 的 TBT，且 GPU VRAM 不足以缓存大量 prefix KVCache。更关键的是，Kimi 等 MaaS 服务长期处于过载状态，GPU 扩容速度远低于请求增长，如何在 SLO 约束下最大化 goodput 是核心挑战。</p>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>KVCache-centric disaggregated architecture</strong>：</p>
+
+<ol>
+<li><strong>Prefill-decode 分离</strong>：独立的 prefill 和 decode 实例池，Conductor 全局调度器统一分配请求。</li>
+<li><strong>分布式 KVCache 池</strong>：利用 GPU 集群中闲置的 CPU DRAM 和 SSD 作为 KVCache 存储层，通过 GPUDirect RDMA（Messenger 组件）高速传输；哈希去重实现 prefix 复用。</li>
+<li><strong>Chunked Pipeline Parallelism (CPP)</strong>：将长上下文 prefill 的输入切分为 chunk，在多节点上流水线并行执行，仅在 pipeline stage 边界通信——对比 SP 方案通信量更小且无需动态弹性调度。</li>
+<li><strong>Layer-wise prefill</strong>：逐层完成 attention 后立即异步传输 KVCache 到 decode 节点的 CPU 内存，与计算重叠，使 prefill 阶段 VRAM 占用降至单请求级别。</li>
+<li><strong>KVCache-centric scheduling (Algorithm 1)</strong>：对每个请求，遍历 prefill 实例估算 TTFT（= 队列等待 + prefix 传输 + 增量 prefill 时间），选择最优 (prefill, decode) 实例对；超过 SLO 阈值直接拒绝（HTTP 429）。</li>
+<li><strong>Cache load balancing</strong>：启发式热点迁移——当负载高的实例有更长 prefix 匹配时，如果传输代价 < 重算代价则主动复制 KVCache 块，自动均衡热点分布。</li>
+<li><strong>Prediction-based early rejection</strong>：在 prefill 开始前预测 decode 阶段负载，避免已完成 prefill 的请求在 decode 侧被拒绝而浪费算力；系统级预测假设统一 $t_d$，缓解 prefill/decode 负载反相振荡。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：KVCache 热点的自动启发式迁移——无需全局使用量预测模型，仅在调度决策时触发增量复制，将 cache-aware scheduling 与 load balancing 融为一体。这是生产环境中让 prefix caching 真正可用的关键工程洞察。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<ul>
+<li>模拟 128K 长上下文：吞吐提升 <strong>525%</strong>（对比 vLLM，同 SLO 约束）</li>
+<li>公开数据集 ArXiv/L-Eval：20%–40% 吞吐提升</li>
+<li>真实负载（10P+10D vs vLLM 20M）：多处理 <strong>75%</strong> 请求；vLLM TBT SLO 达标率仅 57%，Mooncake 接近 100%</li>
+<li>过载场景：prediction-based early rejection 将拒绝数从 4183 降至 <strong>3589</strong></li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Conductor as Conductor (Global Scheduler)
+    participant PP as Prefill Pool (CPP Groups)
+    participant KV as CPU DRAM KVCache Pool
+    participant Msg as Messenger (RDMA)
+    participant DP as Decoding Pool
+
+    Client->>Conductor: Request (tokenized)
+    Conductor->>Conductor: Algorithm 1: select (p, d) pair<br/>cache-aware + load-balance + SLO check
+    alt SLO unachievable
+        Conductor-->>Client: HTTP 429 (reject)
+    else Accept
+        Conductor->>PP: Dispatch to prefill instance p
+        KV->>PP: Load reusable prefix KVCache (RDMA)
+        PP->>PP: Incremental prefill (CPP if long)
+        PP->>KV: Store new KVCache blocks
+        PP->>Msg: Trigger layer-wise KVCache transfer
+        Msg->>DP: Stream KVCache to decode node d (RDMA)
+        DP->>DP: Join continuous batching
+        DP-->>Client: Stream output tokens
+    end
+</div>
+
+<p><strong>系统组件</strong>：</p>
+
+<ul>
+<li><strong>Conductor</strong>：全局调度器，维护所有实例的 prefix cache 索引和负载状态，执行 Algorithm 1 做请求分配。</li>
+<li><strong>Prefill Pool</strong>：每 X 节点组成一个 CPP 流水线组，处理长上下文 prefill。支持逐层 KVCache 流式传输以最小化 VRAM 占用。</li>
+<li><strong>CPU DRAM KVCache Pool</strong>：分页存储 KVCache block，每个 block 附带 prefix hash 用于去重。使用 LRU 淘汰，热点 block 自动复制到多节点。</li>
+<li><strong>Messenger</strong>：独立进程，管理跨机 RDMA 传输，异步与 prefill 计算重叠。</li>
+<li><strong>Decoding Pool</strong>：连续批处理 decode，从 CPU DRAM 异步加载 KVCache。</li>
+</ul>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="记号表">记号表 <a class="heading-anchor" href="#记号表" aria-label="Link to 记号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$P$</td><td>Prefill 实例池</td></tr>
+<tr><td>$D$</td><td>Decoding 实例池</td></tr>
+<tr><td>$R$</td><td>当前请求</td></tr>
+<tr><td>$B$</td><td>Cache block size (= 512 tokens)</td></tr>
+<tr><td>$T_{queue}$</td><td>估计的 prefill 排队时间</td></tr>
+<tr><td>$T_{prefill}$</td><td>估计的 prefill 执行时间</td></tr>
+<tr><td>$T_{transfer}$</td><td>估计的 KVCache 传输时间</td></tr>
+<tr><td>$l_{ttft}$, $l_{tbt}$</td><td>TTFT / TBT SLO 阈值</td></tr>
+<tr><td>$t_d$</td><td>假设的统一 decode 时长（系统级预测）</td></tr>
+</table>
+
+<h3 id="algorithm-1-物理意义">Algorithm 1 物理意义 <a class="heading-anchor" href="#algorithm-1-物理意义" aria-label="Link to algorithm-1-物理意义">#</a></h3>
+
+<p>调度算法的核心是 <strong>最小化 TTFT</strong>：对每个 prefill 实例计算 TTFT = 排队时间 + 传输时间（如需跨机复制 prefix）+ prefill 执行时间。选择全局 TTFT 最小的实例。关键阈值 <code>kvcache_balancing_threshold</code> 控制是否跳过 cache 最长匹配而直接在负载较低实例重算：当本地 prefix / 远程 prefix 比值超过阈值时，优先就地计算（避免传输开销），并触发热点迁移。</p>
+
+<h3 id="6-项检查">6 项检查 <a class="heading-anchor" href="#6-项检查" aria-label="Link to 6-项检查">#</a></h3>
+
+<ol>
+<li><strong>TTFT/TBT 定义可操作</strong>：$\text{TTFT}_{P90} = 10\times$，$\text{TBT}_{P90} = 5\times$ 基线（单请求无干扰）——定义清晰、可测量。</li>
+<li><strong>Goodput 定义严格</strong>：仅完整执行的请求计入 goodput，部分执行 = 全部浪费。</li>
+<li><strong>TTFT 估计方法</strong>：离线测试拟合 prefill 执行时间模型，误差小（计算模式规律）；队列时间 = 累加队列中所有请求的 prefill 时间。</li>
+<li><strong>Cache 命中率实测</strong>：真实 trace 下最高 ~50%（Table 1），LRU 表现最佳。</li>
+<li><strong>CPP vs SP 定性论证</strong>：CPP 仅在 pipeline stage 边界通信，可与 KVCache 传输带宽共存；SP 每层需跨节点通信，竞争网络资源。缺少定量对比。</li>
+<li><strong>系统级预测的粗糙性</strong>：假设统一 $t_d$ 是明确的简化，论文承认 request-level prediction 留作未来工作。</li>
+</ul>
+
+<p><strong>无形式化吞吐/延迟解析模型</strong> — Algorithm 1 是启发式调度，不存在 closed-form throughput 公式。论文仅在 §7.4 给出系统级负载预测框架。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="端到端性能">端到端性能 <a class="heading-anchor" href="#端到端性能" aria-label="Link to 端到端性能">#</a></h3>
+
+<p><strong>数据集特征（Table 2）</strong>：</p>
+
+<table>
+<tr><th>Dataset</th><th>Avg Input</th><th>Avg Output</th><th>Cache Ratio</th><th>Pattern</th></tr>
+<tr><td>ArXiv Summarization</td><td>8088</td><td>229</td><td>~0%</td><td>Poisson</td></tr>
+<tr><td>L-Eval</td><td>19019</td><td>72</td><td>>80%</td><td>Poisson</td></tr>
+<tr><td>Simulated (16k–128k)</td><td>16k–128k</td><td>512</td><td>50%</td><td>Poisson</td></tr>
+<tr><td>Real Data</td><td>7955</td><td>194</td><td>~50%</td><td>Timestamp</td></tr>
+</table>
+
+<p><strong>关键结果</strong>：</p>
+
+<ul>
+<li><strong>公开数据集</strong>（4 实例，Mooncake [3P+1D] vs vLLM [4M]）：ArXiv +20% throughput，L-Eval +40%。Mooncake [2P+2D] 因 prefill/decode 比例失衡 TTFT 反而更差。</li>
+<li><strong>模拟长上下文</strong>（同集群，50%–525% throughput 提升，Figure 12）：128K 场景下 vLLM 几乎无法服务，Mooncake 仍维持高吞吐——disaggregation 彻底隔离了 prefill 对 decode 的干扰。</li>
+<li><strong>真实负载</strong>（10P+10D vs vLLM 20M，Figure 13）：TTFT 分布基本相同；TBT SLO 达标率 Mooncake ~100% vs vLLM 57%。多处理 75% 请求。</li>
+</ul>
+
+<h3 id="过载实验（table-3）">过载实验（Table 3） <a class="heading-anchor" href="#过载实验（table-3）" aria-label="Link to 过载实验（table-3）">#</a></h3>
+
+<table>
+<tr><th>Strategy</th><th>Rejected Requests</th></tr>
+<tr><td>Baseline (prefill+decode 前判断)</td><td>4183</td></tr>
+<tr><td>Early Rejection</td><td>3771</td></tr>
+<tr><td>Prediction-based Early Rejection</td><td>3589</td></tr>
+</table>
+
+<p>Prediction-based 方案通过减少反相振荡提升有效处理能力。</p>
+
+<h3 id="调度策略消融（figure-8）">调度策略消融（Figure 8） <a class="heading-anchor" href="#调度策略消融（figure-8）" aria-label="Link to 调度策略消融（figure-8）">#</a></h3>
+
+<p>KVCache-centric scheduling（cache-aware + load balancing + 热点迁移）在 TTFT 和 SLO 达标率上均显著优于 random、load-balancing、仅 cache-aware 方案。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Strength</th></tr>
+<tr><td>1</td><td>Prefill 与 decode 资源特征不同，耦合部署互相干扰</td><td>Figure 2 (prefill 超线性 / decode 亚线性); vLLM TBT SLO 仅 57% (Fig 13)</td><td>Strong — 定量验证</td></tr>
+<tr><td>2</td><td>Disaggregation + 分布式 KVCache 池可利用闲置 CPU DRAM 实现高效 prefix caching</td><td>Table 1 (cache 命中率 30%–51%); Architecture (Fig 1, 3, 4)</td><td>Medium — cache 命中率上限 50%，收益有天花板</td></tr>
+<tr><td>3</td><td>CPP 优于 SP 用于多节点 prefill</td><td>定性论证 (通信量更小、无需弹性调度); 无定量对比</td><td>Weak — 缺少 head-to-head benchmark</td></tr>
+<tr><td>4</td><td>Layer-wise prefill 使 VRAM 占用降至单请求级别</td><td>Figure 7 (latency breakdown); 定性论证</td><td>Medium — 展示了 overlap 效果但未量化 VRAM 节省量</td></tr>
+<tr><td>5</td><td>KVCache-centric scheduling 优于简单调度策略</td><td>Figure 8 (4 种策略消融)</td><td>Strong — controlled experiment</td></tr>
+<tr><td>6</td><td>Prediction-based early rejection 缓解反相振荡</td><td>Figure 9, 10 (负载曲线); Table 3 (减少 14% 拒绝)</td><td>Medium — 改进幅度有限(4183→3589)，系统级预测粗糙</td></tr>
+<tr><td>7</td><td>端到端：Mooncake 在长上下文和真实负载下大幅超越 vLLM</td><td>Figures 11–13; Table 3</td><td>Strong — 多场景验证</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<ul>
+<li>开源仓库：https://github.com/kvcache-ai/Mooncake（包含 trace 数据和调度代码）</li>
+<li>评测使用 dummy model（LLaMA2-70B 架构），非生产模型权重</li>
+<li>Testbed: 8×A800-SXM4-80GB per node, RDMA 800 Gbps inter-node</li>
+<li>所有实验基于 replayed trace（23,608 entries, 1-hour sample）</li>
+</ul>
+
+<p><strong>关键实现细节</strong>：</p>
+
+<ol>
+<li><strong>Hash-based prefix dedup</strong>：block size = 512 tokens，每个 block 的 hash 包含自身 token 内容和所有前驱 block 的 hash，形成 prefix chain。这与 vLLM 的 radix tree 不同——hash 方案适合分布式场景（无需共享树结构）。</li>
+<li><strong>Layer-wise KVCache streaming</strong>：prefill 每层 attention 完成后立即 async store 到 CPU DRAM，并触发下一层 async load。关键约束：prefill 实例 VRAM 只需容纳单请求的单层 KVCache + 模型权重。</li>
+</ul>
+
+<p><strong>核心技术壁垒（§2 补充）</strong>：</p>
+
+<p>启发式热点迁移的工程 insight 在于：不需要全局 popularity 预测（动态负载下预测不可靠），而是在每次调度决策时判断"远程最长 prefix 匹配是否值得传输"，如果值得但当前实例负载高，则让备选实例主动拉取 cache block。这个机制同时完成了 cache replication 和 load balancing，是 Mooncake 能在生产中稳定运行的关键。</p>
+
+<h2 id="框架特定分析">框架特定分析 <a class="heading-anchor" href="#框架特定分析" aria-label="Link to 框架特定分析">#</a></h2>
+
+<h3 id="系统范围">系统范围 <a class="heading-anchor" href="#系统范围" aria-label="Link to 系统范围">#</a></h3>
+
+<ul>
+<li><strong>阶段覆盖</strong>：prefill + decode，两阶段分离部署</li>
+<li><strong>Serving 模式</strong>：continuous batching（decode 端），chunked pipeline（prefill 端）</li>
+<li><strong>并行维度</strong>：prefill 内 TP（单节点）+ CPP（跨节点）；decode 端 TP</li>
+<li><strong>部署模式</strong>：多节点 disaggregated prefill-decode</li>
+</ul>
+
+<h3 id="调度与资源管理">调度与资源管理 <a class="heading-anchor" href="#调度与资源管理" aria-label="Link to 调度与资源管理">#</a></h3>
+
+<ul>
+<li><strong>调度粒度</strong>：request-level（全局 Conductor 为每个请求选择实例对）</li>
+<li><strong>抢占策略</strong>：无抢占，SLO 违反时直接拒绝</li>
+<li><strong>过载策略</strong>：prediction-based early rejection（系统级负载预测）</li>
+<li><strong>公平性</strong>：无显式 per-tenant 保证（论文 §10 提及未来方向）</li>
+<li><strong>KVCache 管理</strong>：分页存储，LRU 淘汰，hash 去重，启发式热点复制</li>
+<li><strong>Swap</strong>：KVCache 存储在 CPU DRAM（主存储层），不使用 GPU-side swap</li>
+</ul>
+
+<h3 id="胜负场景">胜负场景 <a class="heading-anchor" href="#胜负场景" aria-label="Link to 胜负场景">#</a></h3>
+
+<table>
+<tr><th>Workload Regime</th><th>Mooncake</th><th>vLLM</th><th>Why</th></tr>
+<tr><td>短 prompt, 低并发</td><td>持平或略差</td><td>基线</td><td>disaggregation overhead 无收益，[2P+2D] 比例失衡会更差</td></tr>
+<tr><td>长 prompt (≥16K), 中/高并发</td><td><strong>50%–525% 吞吐提升</strong></td><td>受 TBT 干扰严重</td><td>prefill 不再阻塞 decode；CPP 降低 TTFT</td></tr>
+<tr><td>高 prefix 复用 (L-Eval >80%)</td><td><strong>40% 提升</strong></td><td>无分布式 prefix cache</td><td>分布式 KVCache 池 + cache-aware scheduling</td></tr>
+<tr><td>过载 (请求量 >> 容量)</td><td>多处理 14% 请求</td><td>大量浪费（先 prefill 后 reject）</td><td>prediction-based early rejection</td></tr>
+</table>
+
+<h3 id="部署上下文">部署上下文 <a class="heading-anchor" href="#部署上下文" aria-label="Link to 部署上下文">#</a></h3>
+
+<ul>
+<li><strong>Serving stage</strong>：prefill + decode 全覆盖的编排层</li>
+<li><strong>硬件亲和性</strong>：A800/H800 集群，依赖 RDMA 网络</li>
+<li><strong>生态集成</strong>：独立系统，非 vLLM/SGLang 插件（但 acknowledge vLLM 社区）</li>
+<li><strong>迁移路径</strong>：需替换整个 serving stack，引入 Conductor 全局调度 + 分布式 KVCache 基础设施</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: NEO: Saving GPU Memory Crisis with CPU Offloading for Online LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">NEO: Saving GPU Memory Crisis with CPU Offloading for Online LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2411.01142 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2411.01142/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="neo-—-l3-cross-paper-synthesis">NEO — L3 Cross-Paper Synthesis <a class="heading-anchor" href="#neo-—-l3-cross-paper-synthesis" aria-label="Link to neo-—-l3-cross-paper-synthesis">#</a></h1>
+
+<h2 id="§1-相关论文">§1 相关论文 <a class="heading-anchor" href="#§1-相关论文" aria-label="Link to §1-相关论文">#</a></h2>
+
+<table>
+<tr><th>Related Entity</th><th>Relation</th><th>Why Related</th></tr>
+<tr><td>FastDecode (2403.11421)</td><td>predecessor/baseline</td><td>NEO 直接引用 FastDecode 为最近的前序工作；两者共享 CPU attention offloading 的核心 insight，但 NEO 批判 FastDecode 的 symmetric pipelining 和全卸载策略</td></tr>
+<tr><td>APEX (2506.03296)</td><td>successor</td><td>APEX 在 NEO 基础上用 deferred cross-iteration synchronization 替代 asymmetric pipelining，进一步解决 decode-heavy workload 下的性能退化</td></tr>
+<tr><td>KVDrive (2605.18071)</td><td>orthogonal</td><td>KVDrive 从 multi-tier storage（HBM/DRAM/SSD）管理 KVCache，与 NEO 的 CPU attention offloading 互补但不直接竞争</td></tr>
+<tr><td>vLLM (2309.06180)</td><td>baseline</td><td>NEO 的 GPU-only baseline；SwiftLLM 是 vLLM 的简化等价实现</td></tr>
+</table>
+
+<p>NEO 是 CPU-GPU 异构在线推理的核心方法论贡献。FastDecode 首先提出 "compute near data on CPU" 的 insight [ref:2403.11421#核心三问]，但其 symmetric pipelining 将所有 decode attention 完全卸载到远程 CPU，导致 GPU 内存浪费和 CPU 瓶颈 [ref:2411.01142#核心三问]。APEX 进一步发现 NEO 的 batch-splitting 在 decode-heavy 场景仍有缺陷，提出 unified-batch + deferred sync [ref:2506.03296#核心三问]。KVDrive 从不同角度解决内存受限问题——通过 attention-aware caching 减少 GPU-CPU 传输而非 offloading 计算 [ref:2605.18071#核心三问]。</p>
+
+<h2 id="§2-本篇-vs-相关论文的-delta">§2 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#§2-本篇-vs-相关论文的-delta" aria-label="Link to §2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="vs-fastdecode">vs FastDecode <a class="heading-anchor" href="#vs-fastdecode" aria-label="Link to vs-fastdecode">#</a></h3>
+<p>NEO 对 FastDecode 的三项核心批判形成其设计动机 [ref:2411.01142#核心三问]：</p>
+
+<ol>
+<li><strong>GPU 内存利用率</strong>：FastDecode 将所有 KVCache 移至 CPU，GPU 仅保留模型权重和运行时 activation——这浪费了 GPU 内存中原本可用于 batch 的空间。NEO 引入 GPU-cache/CPU-cache 二分管理，优先使用 GPU 内存。</li>
+</ul>
+
+<ol>
+<li><strong>GPU-CPU 负载平衡</strong>：FastDecode 的 symmetric pipelining 将 batch 均分为两个相同子批次，但 linear stage（GPU）通常远短于 attention stage（CPU）。NEO 的 asymmetric pipelining 让两个子批次互补——batch-0 有长 linear stage（包含 prefill），batch-1 有长 CPU attention。</li>
+</ul>
+
+<ol>
+<li><strong>成本效率</strong>：FastDecode 需要 8 台 32-core AMD EPYC 服务器处理单 A10G GPU 的 attention [ref:2403.11421#核心三问]。NEO 仅使用本机 CPU（"comes with the GPU as free"），部分卸载控制在 CPU 容量内。</li>
+</ul>
+
+<p><strong>FastDecode 的还击点</strong>：FastDecode 在 throughput-oriented 场景仍有优势——当延迟不敏感时，完全卸载可达 5.04× vLLM 吞吐 [ref:2403.11421#实验与数据]。NEO 的 greedy fallback 保证 never-worse-than-baseline 但也意味着在 GPU 内存充足时完全回退到 GPU-only 模式，收益消失。</p>
+
+<h3 id="vs-apex">vs APEX <a class="heading-anchor" href="#vs-apex" aria-label="Link to vs-apex">#</a></h3>
+<p>APEX 发现 NEO 的 asymmetric pipelining 在 decode-heavy workload 下仍有三个问题 [ref:2506.03296#核心三问]：batch splitting 使 GPU linear ops 翻倍；CPU-GPU 性能差距（10-20×）使平衡约束不可行；pipeline 约束限制 CPU 请求分配导致 idle bubbles。APEX 的 deferred cross-iteration sync 将 CPU compute window 从单次 GPU attention 扩展到整个迭代周期——在 T4 上对比 NEO 提升 72% throughput。</p>
+
+<p><strong>NEO 的防线</strong>：NEO 的 greedy 原则保证数学上 never-worse-than-baseline（受 profiling 精度限制），而 APEX 未提供类似的理论保证。此外 NEO 的 PACPU kernel（ISPC 编译）有更好的跨平台 portability（AVX2/AVX512/Neon），APEX 使用 Llamafile kernel 在某些场景下可能有 compatibility 限制。</p>
+
+<h3 id="vs-kvdrive">vs KVDrive <a class="heading-anchor" href="#vs-kvdrive" aria-label="Link to vs-kvdrive">#</a></h3>
+<p>KVDrive 和 NEO 面对相同的 GPU 内存瓶颈但走了截然不同的路径：NEO 将计算移至 CPU 以释放 GPU 内存给 batch size [ref:2411.01142#核心三问]；KVDrive 用 attention-aware caching 减少需要从 CPU/SSD 传输的 KVCache 量（cache hit rate ~80%），从而在 GPU 内存受限下仍保持高效 [ref:2605.18071#核心三问]。两者可能互补：KVDrive 的 cache 策略可用于 NEO 的 CPU-cache 管理，减少 CPU attention 的 memory footprint。</p>
+
+<h2 id="§3-可攻击面">§3 可攻击面 <a class="heading-anchor" href="#§3-可攻击面" aria-label="Link to §3-可攻击面">#</a></h2>
+
+<ol>
+<li><strong>SwiftLLM 基线偏弱</strong>：NEO 的 base system SwiftLLM 在 2-GPU 设置下比 vLLM 慢 8.8% [ref:2411.01142#实验与数据]。论文声称 "leaving integrating Neo into vLLM as future work"——但这意味着报告的多 GPU 增益是在偏弱基线上测量的。如果集成到 vLLM，实际增益可能缩水。</li>
+</ul>
+
+<ol>
+<li><strong>H100 限制测试条件</strong>：HGX 测试台限制在单 NUMA 节点（1/4 总内存和带宽）进行 2-GPU 实验 [ref:2411.01142#实验与数据]。这人为限制了 NEO 在高端 GPU 上的 CPU 容量。H100 的 14% 增益可能在完整 NUMA 配置下更高（或更低——因为 GPU 内存本身充足，offloading 需求减少）。</li>
+</ul>
+
+<ol>
+<li><strong>短输出时的性能退化</strong>：NEO 在短 output length 时可能略差于 baseline（尝试 offload 的开销 > 收益）[ref:2411.01142#实验与数据]。Greedy 原则理论上保证 never-worse，但 profiling 不精确导致实际中存在轻微违反。这在 agentic workload（大量短 tool call responses）中可能累积为显著开销。</li>
+</ul>
+
+<ol>
+<li><strong>Prefill 阶段处理不完整</strong>：NEO 将 prefill 集成到 GPU 子批次中，但未讨论长 prompt prefill 的处理。当 prefill 占主导时（长上下文首轮），CPU offloading 的收益归零，系统退化为 GPU-only。</li>
+</ul>
+
+<ol>
+<li><strong>CPU 带宽是不可控约束</strong>：NEO 的核心 insight（CPU 带宽差距 < 算力差距）在 GDDR/HBM4 时代可能逆转——未来 GPU 内存容量增长（如 B200 192GB HBM3e）可能使 batch size 瓶颈自然消失，而 CPU 带宽增长缓慢。</li>
+</ul>
+
+<h2 id="§4-生态位">§4 生态位 <a class="heading-anchor" href="#§4-生态位" aria-label="Link to §4-生态位">#</a></h2>
+
+<p>NEO 定义了 <strong>"本地 CPU 作为免费加速器"</strong> 的 serving 范式——与 FastDecode 的 "远程 CPU 集群" 和 Mooncake 的 "PD 分离 + 分布式 KVCache 池" 形成三种异构方案的光谱。</p>
+
+<p><strong>范式坐标</strong>：</p>
+<ul>
+<li><strong>部署复杂度</strong>：NEO（单节点、无需额外硬件）< APEX（同上但需更新 kernel）< FastDecode（需 CPU 集群 + InfiniBand）< Mooncake（需 PD 分离基础设施）</li>
+<li><strong>最大吞吐增益</strong>：FastDecode（5×）> NEO-T4（7.5×）> APEX-T4（96%）> Mooncake-长上下文（525%）</li>
+<li><strong>适用场景</strong>：NEO/APEX 适合 GPU 内存受限的边缘/经济部署；FastDecode 适合 throughput-first 的 batch 场景；Mooncake 适合长上下文生产环境</li>
+</ul>
+
+<p><strong>采用证据</strong>：NEO 承诺开源但未给出 URL。APEX 已在 NEO 基础上进一步迭代，验证了 CPU offloading 作为研究方向的持续活力。CPU 带宽是绑定约束（而非算力）的 insight 已被多个后续工作验证。</p>
+
+<h2 id="§5-未探索方向">§5 未探索方向 <a class="heading-anchor" href="#§5-未探索方向" aria-label="Link to §5-未探索方向">#</a></h2>
+
+<ol>
+<li><strong>NEO + KVDrive 融合</strong>：NEO 的 CPU-cache 使用简单的 paged attention 管理。将 KVDrive 的 attention-based cache management（2D MCKP 优化 per-layer-per-head 窗口）[ref:2605.18071#核心三问] 应用于 NEO 的 CPU-cache 分区，可能显著减少 CPU attention 需要处理的 KVCache 量，从而在更弱的 CPU 上实现更大收益。</li>
+</ul>
+
+<ol>
+<li><strong>GPU 内存增长下的 offloading 价值重估</strong>：NEO 的 T4 7.5× 增益 vs H100 14% 增益呈现强烈的反相关——GPU 内存越大，offloading 收益越小 [ref:2411.01142#实验与数据]。随着 B200（192GB）和 MI355X（288GB HBM3e）普及，需要重新评估 CPU offloading 在高端 GPU 上是否仍有价值——可能仅在 100K+ 长上下文或极大 batch 场景下保留意义。</li>
+</ul>
+
+<ol>
+<li><strong>APEX 的 deferred sync + NEO 的 PACPU kernel</strong>：APEX 使用 Llamafile kernel 替代 NEO 的 ISPC PACPU，但 PACPU 在某些场景下可能更优（跨平台 portability）。将 APEX 的调度策略与 NEO 的 kernel 实现结合可能产生最优方案。</li>
+</ul>
+
+<ol>
+<li><strong>多租户 CPU 争用</strong>：NEO 假设 CPU 资源完全可用于 attention offloading，但在云环境中 CPU 同时运行 batch gathering、tokenization、scheduling 等任务 [ref:2403.11421#核心三问]。需要 CPU 资源隔离或优先级机制来防止 attention offloading 被其他任务干扰。</li>
+</ul>
+
+<ol>
+<li><strong>与 PD 分离的结合</strong>：NEO 和 Mooncake 分别在节点内和节点间优化。在 Mooncake 的 decode 实例上部署 NEO 的 CPU offloading——利用 decode 节点闲置的 CPU 资源进一步扩大 decode batch size——是技术可行但未探索的方向。</li>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2403.11421.html">2403.11421</a> (baseline) 
+<a href="/papers/2407.00079.html">2407.00079</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
