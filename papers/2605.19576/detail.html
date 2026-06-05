@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Library Drift: Diagnosing and Fixing a Silent Failure Mode in Self-Evolving LLM Skill Libraries — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Library Drift: Diagnosing and Fixing a Silent Failure Mode in Self-Evolving LLM Skill Libraries</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2605.19576</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">skill-library</span><span class="tag">library-drift</span><span class="tag">lifecycle-management</span><span class="tag">agent-memory</span><span class="tag">ablation-study</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2605.19576.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2605.19576" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="library-drift-diagnosing-and-fixing-a-silent-failure-mode-in-self-evolving-llm-skill-libraries-—-l2">Library Drift: Diagnosing and Fixing a Silent Failure Mode in Self-Evolving LLM Skill Libraries — L2 <a class="heading-anchor" href="#library-drift-diagnosing-and-fixing-a-silent-failure-mode-in-self-evolving-llm-skill-libraries-—-l2" aria-label="Link to library-drift-diagnosing-and-fixing-a-silent-failure-mode-in-self-evolving-llm-skill-libraries-—-l2">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Self-evolving skill libraries silently degrade via "library drift" — unbounded skill accumulation without outcome-driven lifecycle management causes retrieval dilution and harmful injection. Three governance mechanisms (outcome-driven retirement, bounded active-cap, meta-skill authoring prior) lift held-out pass@1 by +0.328 on hard coding tasks; eight ablations show meta-skill is the single most valuable component and explicit deduplication is unnecessary.</p>
+
+<h2 id="§2-痛点-方法-结果">§2 痛点 / 方法 / 结果 <a class="heading-anchor" href="#§2-痛点-方法-结果" aria-label="Link to §2-痛点-方法-结果">#</a></h2>
+
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+
+<p>Self-evolving skill libraries (Voyager, ExpeL, CASCADE, AutoSkill) let frozen LLM agents accumulate reusable procedural knowledge across tasks. The promise is compounding returns: each solved task deposits a skill that accelerates future ones. Reality is different — SkillsBench (Li et al., 2026) shows LLM-authored skills deliver +0.0pp gain over no-skill baselines while human-curated ones deliver +16.2pp. A survey of 20+ such systems reports that lifecycle management (versioning, conflict detection, deprecation) is "largely neglected." The libraries grow, but the agents do not improve.</p>
+
+<p>The root cause is <strong>library drift</strong>: as skills accumulate without quality gates, the library (1) dilutes retrieval precision with marginal or redundant entries, (2) injects stale or harmful guidance into the solver, and (3) causes performance stagnation or active regression — all without any explicit error signal. The failure is silent, making it indistinguishable from inherent task difficulty variation in end-task metrics alone.</p>
+
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
+
+<p>The paper provides three contributions organized around diagnosis and cure:</p>
+
+<ol>
+<li><strong>Failure definition + reproducible trigger.</strong> Library drift is operationally defined (Eq. 1) and bracketed by two ablations: A1 (no skill injection → flat floor at +0.002) and A4 (harsh retirement → active harm at $-0.019$, below the no-skill baseline).</li>
+</ul>
+
+<ol>
+<li><strong>Trace-level diagnostics.</strong> Three signals expose drift before end-task metrics decline: per-skill contribution score $\hat{c}(s)$, attribution verdicts (helped/hurt/neutral from LLM-as-judge), and router engagement metrics (fraction of tasks assigned a skill vs. none).</li>
+</ul>
+
+<ol>
+<li><strong>Verified fix — "Ratchet."</strong> A minimal governance recipe with three mechanisms: (a) outcome-driven retirement — retire skill $s$ when $n(s) \geq N_{\min}$ trials and $\hat{c}(s) \leq -\tau$; (b) bounded active-cap $C$ — hard limit on active skills, forcing eviction of lowest-contribution skills; (c) meta-skill authoring prior — constrains the synthesizer to produce stylistically consistent skills, reducing harmful births.</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>: The Hoeffding-calibrated evidence floor ($N_{\min} = 100$) that gates retirement decisions. A4 demonstrates that acting on insufficient evidence ($N_{\min} = 20$, Hoeffding $\epsilon \approx 0.44$) collapses the skill bank to 2 active entries and actively harms performance — worse than no governance at all. The insight is that the evidence floor, not the retirement mechanism per se, is the load-bearing design choice: premature eviction of useful skills on unlucky statistical draws is more damaging than retaining marginal ones.</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<p>On MBPP+ hard-100 (100 tasks the model cannot reliably solve, 100 rounds, 3 seeds, Claude Opus 4.7):</p>
+
+<ul>
+<li><strong>Default (full Ratchet)</strong>: baseline 0.258 → peak 0.658, late-window gain <strong>+0.328 ± 0.018</strong> — more than doubling performance on genuinely difficult tasks.</li>
+<li><strong>A1 (no injection)</strong>: +0.002 — the no-skill floor; skill creation without injection produces zero gain.</li>
+<li><strong>A4 (harsh retirement)</strong>: $-0.019 \pm 0.010$ — below no-skill baseline; governance on insufficient evidence causes active harm.</li>
+<li><strong>A3 (no meta-skill)</strong>: +0.187 — removing the authoring prior costs 43% of Default's gain, making it the single most valuable component.</li>
+<li><strong>A5/A6 (no explicit dedup)</strong>: +0.374 / +0.363 — slightly exceed Default; meta-skill subsumes explicit deduplication.</li>
+<li><strong>A7 (cap=100)</strong>: +0.317 — comparable mean but variance balloons from ±0.018 to ±0.110; cap primarily controls variance.</li>
+</ul>
+
+<h2 id="§3-架构-方法図">§3 架构 / 方法図 <a class="heading-anchor" href="#§3-架构-方法図" aria-label="Link to §3-架构-方法図">#</a></h2>
+
+<p><img src="/assets/2605.19576/fig1.png" alt="Figure 1: Ratchet three-layer architecture"></p>
+
+<p><em>Paper Figure 1: The Ratchet loop. Inference layer (top): Router → Solver → Grader → Capsule. Memory layer (middle): Skill Bank, Meta-Skill, Evidence Log. Reflection layer (bottom): Critic → Curator. Without retirement and the bounded cap, the Skill Bank accumulates unchecked and library drift emerges.</em></p>
+
+<p>The architecture operates a five-phase loop per round: (1) <strong>Eval</strong> — route active skills on held-out tasks; (2) <strong>Train</strong> — same pipeline on the train split, generating failure substrate; (3) <strong>Critic</strong> — per-failure attribution verdict via separate LLM call (helped/hurt/neutral/inapplicable + pattern label + confidence); (4) <strong>Synthesizer</strong> — cluster failures by canonical pattern, author new skills from clusters with $\geq 3$ members; (5) <strong>Curator</strong> — compute contribution scores $\hat{c}(s)$, retire under-performers ($n(s) \geq 100$ and $\hat{c}(s) \leq -0.10$), enforce active-cap ($C = 50$).</p>
+
+<p>The Router uses two-stage retrieval ($K = 10$ tf-idf + $K = 10$ embedding via Cohere embed-v4) followed by an LLM gate that selects one skill or none. The gate's ability to decline injection is itself a drift-prevention mechanism — A2 (retrieval-only, bypassing the gate) shows 98% engagement but degraded quality (+0.077 vs. Default's +0.328).</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    direction LR
+    [*] --> Eval: round t
+    Eval --> Train: held-out scores
+    Train --> Critic: failure capsules
+    Critic --> Synthesizer: attribution verdicts
+    Synthesizer --> Curator: candidate skills
+    Curator --> [*]: updated bank
+    state Curator {
+        ComputeC: compute ĉ(s)
+        Retire: retire if n≥100, ĉ≤-0.10
+        Cap: enforce |S|≤50
+        ComputeC --> Retire
+        Retire --> Cap
+    }
+</div>
+
+<p>Three drift sub-modes emerge depending on governance strength: <strong>stagnation</strong> (skills never reach the solver — A1), <strong>bloat</strong> (unbounded growth degrades retrieval — prevented by the cap), and <strong>erosion</strong> (over-aggressive retirement destroys useful skills faster than they accumulate — A4).</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="记号表">记号表 <a class="heading-anchor" href="#记号表" aria-label="Link to 记号表">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Definition</th><th>Introduced</th></tr>
+<tr><td>$\mathcal{S}_{t}$</td><td>Active skill set at round $t$</td><td>§3.1</td></tr>
+<tr><td>$p_{0}$</td><td>No-skill pass rate (baseline)</td><td>§3.1</td></tr>
+<tr><td>$\hat{c}(s)$</td><td>Empirical contribution score for skill $s$</td><td>§4.1</td></tr>
+<tr><td>$n(s)$</td><td>Number of trials where skill $s$ was injected</td><td>§4.1</td></tr>
+<tr><td>$N_{\min}$</td><td>Evidence floor (minimum trials before retirement decision)</td><td>§5.1</td></tr>
+<tr><td>$\tau$</td><td>Retirement threshold on contribution score</td><td>§5.1</td></tr>
+<tr><td>$C$</td><td>Active-cap (max concurrent active skills)</td><td>§5.2</td></tr>
+<tr><td>$\epsilon$</td><td>Hoeffding estimation tolerance at $N_{\min}$ trials</td><td>§5.2</td></tr>
+<tr><td>$\delta$</td><td>Per-skill failure probability (union bound parameter)</td><td>§5.2</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Eq. 1 — Drift condition:</strong></p>
+
+<p>$$\mathbb{E}[\text{pass@1}\mid\mathcal{S}_{t}] < \mathbb{E}[p_{0}]$$</p>
+
+<p>The library's expected performance falls below what the agent achieves without any skills. This operationally defines when a skill library has become net-harmful.</p>
+
+<p><strong>Eq. 2 — Per-skill contribution score:</strong></p>
+
+<p>$$\hat{c}(s) = \frac{\text{successes}(s) - \text{failures}(s)}{\text{trials}(s)}$$</p>
+
+<p>Normalised difference between success and failure counts when skill $s$ was injected, measuring net contribution. A declining mean $\hat{c}$ across the bank is an early-warning signal of drift.</p>
+
+<p><strong>Proposition 1 — Non-divergence bound:</strong></p>
+
+<p>$$\mathbb{E}[\text{pass@1}] \geq \mathbb{E}[p_{0}] - (\tau + \epsilon) - C\delta$$</p>
+
+<p>Under bounded cap $C$ and retirement threshold $\tau$, the governed library cannot degrade arbitrarily below the no-skill floor. With Default values ($\tau = 0.10$, $N_{\min} = 100$, $C = 50$, $\delta = 10^{-3}$): $\epsilon \approx 0.20$, floor $= \mathbb{E}[p_{0}] - 0.35$. The bound is loose at this scale (the system gains +0.328 rather than losing 0.35) but rules out unbounded degradation — a guarantee that prior systems (Voyager, ExpeL, AutoManual) without bounded $C$ and $\tau$ cannot provide.</p>
+
+<h3 id="6-项验证检查">6 项验证检查 <a class="heading-anchor" href="#6-项验证检查" aria-label="Link to 6-项验证检查">#</a></h3>
+
+<table>
+<tr><th>#</th><th>Check</th><th>Result</th></tr>
+<tr><td>1</td><td><strong>Units/dimensions</strong>: $\hat{c}(s)$ is dimensionless (ratio of counts), bounded $[-1, 1]$; Prop 1 bound has consistent units (probability)</td><td>✓ consistent</td></tr>
+<tr><td>2</td><td><strong>Limiting case — $C \to 0$</strong>: no skills active, $\mathbb{E}[\text{pass@1}] = \mathbb{E}[p_{0}]$; Prop 1 recovers this since $C\delta \to 0$ and no skill is injected</td><td>✓ recovers baseline</td></tr>
+<tr><td>3</td><td><strong>Limiting case — $\tau \to \infty$</strong>: all skills immediately retired, equivalent to $C = 0$; system degenerates to no-skill baseline</td><td>✓ consistent with A1</td></tr>
+<tr><td>4</td><td><strong>Ablation correspondence</strong>: A4 ($N_{\min} = 20$, $\tau = 0$) violates Prop 1's implicit requirement of sufficient $N_{\min}$ — Hoeffding $\epsilon \approx 0.44$ at $N_{\min} = 20$ vs. $\epsilon \approx 0.20$ at $N_{\min} = 100$; premature retirement confirmed experimentally</td><td>✓ theory predicts A4 fragility</td></tr>
+<tr><td>5</td><td><strong>Error bars</strong>: all gains reported as mean ± std over 3 seeds; Default ±0.018, A4 ±0.010 — gain signs consistent across all seeds (Table 3)</td><td>✓ significant at $n = 3$</td></tr>
+<tr><td>6</td><td><strong>Claim-evidence coverage</strong>: three claims (drift definition, diagnostics, fix) each have dedicated sections (§3, §4, §5) with experimental validation (§6 ablations A1–A8)</td><td>✓ complete coverage</td></tr>
+</table>
+
+<h3 id="agent-specific-验证">Agent-specific 验证 <a class="heading-anchor" href="#agent-specific-验证" aria-label="Link to agent-specific-验证">#</a></h3>
+
+<ul>
+<li><strong>Failure mode classification</strong>: three drift sub-modes (stagnation, bloat, erosion) identified, with each sub-mode reproduced by a specific ablation — stagnation by A1, erosion by A4; bloat prevented by the cap in Default.</li>
+<li><strong>Success-rate model</strong>: empirical sweep across 9 conditions × 3 seeds; monotonicity holds along the governance axis (no governance < partial < full), except A4 which demonstrates non-monotonicity at the aggressive end.</li>
+<li><strong>Formal guarantees</strong>: Prop 1 provides a probabilistic non-divergence bound — unusual for agent papers. The bound is loose but structurally informative: it shows which knobs ($C$, $\tau$, $N_{\min}$) control worst-case behavior.</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="主结果">主结果 <a class="heading-anchor" href="#主结果" aria-label="Link to 主结果">#</a></h3>
+
+<p><img src="/assets/2605.19576/tab1.png" alt="Table 1: Main results across 9 conditions"></p>
+
+<p><em>Paper Table 1: MBPP+ hard-100, mean ± std over 3 seeds. Default achieves +0.328 gain; A1 (no injection) establishes the floor at +0.002; A4 (harsh retirement) falls below baseline at −0.019. A5/A6 (relaxed dedup) slightly exceed Default, demonstrating that meta-skill subsumes explicit filtering.</em></p>
+
+<p>The Default condition more than doubles pass@1 on genuinely difficult tasks (0.258 → 0.584 late-window mean, peak 0.658). The 73% router engagement indicates the LLM gate is selective — declining injection on ~27% of tasks where no skill is relevant.</p>
+
+<h3 id="学习曲线">学习曲线 <a class="heading-anchor" href="#学习曲线" aria-label="Link to 学习曲线">#</a></h3>
+
+<p><img src="/assets/2605.19576/fig2.png" alt="Figure 2: Held-out pass@1 learning curves"></p>
+
+<p><em>Paper Figure 2: Held-out pass@1 by round (3-seed mean ± 1 std). A1 (flat) and A4 (declining) exhibit library drift. Default, A5, A6, A8 all converge to similar final performance. A7 (doubled cap) shows comparable mean but substantially wider confidence band.</em></p>
+
+<p>The learning curves reveal three regimes: (1) fast initial climb (rounds 0–30) as the first useful skills are synthesized; (2) plateau (rounds 30–60) as the bank approaches the cap and retirement begins competing with synthesis; (3) stable high performance (rounds 60–100) as the bank reaches equilibrium. A4 diverges downward after round 20, coinciding with bank collapse to 2 active skills.</p>
+
+<h3 id="消融分解">消融分解 <a class="heading-anchor" href="#消融分解" aria-label="Link to 消融分解">#</a></h3>
+
+<p><strong>Components that are necessary:</strong></p>
+<ul>
+<li>A1 (no injection): +0.002 — skill creation without injection is useless; the routing + injection pathway is essential.</li>
+<li>A2 (retrieval-only): +0.077 (24% of Default) — the LLM routing gate contributes 76% of the gain beyond raw retrieval.</li>
+<li>A3 (no meta-skill): +0.187 (57% of Default) — the meta-skill authoring prior is the single most valuable component, worth $-0.141$ when removed.</li>
+</ul>
+
+<p><strong>Harsh retirement is harmful:</strong></p>
+<ul>
+<li>A4 ($N_{\min} = 20$, $\tau = 0.0$): $-0.019$ — below no-skill baseline, consistent across all three seeds ($-0.005$, $-0.027$, $-0.025$). At $N_{\min} = 20$, skills with true contribution $c \in [-0.44, 0]$ are prematurely retired on unlucky draws.</li>
+</ul>
+
+<p><strong>Explicit deduplication is unnecessary:</strong></p>
+<ul>
+<li>A5 (no pattern canonicalisation): +0.374; A6 (no cover-guard): +0.363 — both slightly exceed Default (+0.328). The meta-skill's stylistic guidance already prevents enough duplication that the explicit filters' false positives cost more than the duplicates they catch.</li>
+</ul>
+
+<p><strong>Relaxed knobs:</strong></p>
+<ul>
+<li>A7 (cap=100): +0.317 — comparable mean but variance balloons (±0.110 vs. ±0.018). The cap's primary function is variance control.</li>
+<li>A8 (meta-skill refresh every 10 rounds): +0.372 and highest peak (0.725), but 55% more wall time (10.1h vs. 6.5h) — not justified at this scale.</li>
+</ul>
+
+<h3 id="per-seed-一致性">Per-seed 一致性 <a class="heading-anchor" href="#per-seed-一致性" aria-label="Link to per-seed-一致性">#</a></h3>
+
+<p><img src="/assets/2605.19576/tab3.png" alt="Table 3: Per-seed breakdown"></p>
+
+<p><em>Paper Table 3: Per-seed rolling-mean gain. Default is consistent across seeds (0.303–0.343). A4 is consistently negative (−0.005, −0.027, −0.025). A7's high variance is visible in the per-seed spread (0.172–0.440).</em></p>
+
+<h3 id="运行成本">运行成本 <a class="heading-anchor" href="#运行成本" aria-label="Link to 运行成本">#</a></h3>
+
+<p>Default: ~14.5k LLM calls per 100 rounds (10k solver + 4.3k critic + 152 synthesis), 43% more than the no-skill baseline. Wall time: 6.5h (2.8× A1's 2.3h). Solver dominates cost at 63–99% of total calls across conditions.</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Link</th></tr>
+<tr><td>1</td><td>LLM-authored skill libraries fail to improve agents</td><td>SkillsBench: +0.0pp (LLM) vs. +16.2pp (human); survey of 20+ systems reports lifecycle management "largely neglected"</td><td>§1</td></tr>
+<tr><td>2</td><td>The root cause is library drift: unbounded accumulation degrades performance below the no-skill baseline</td><td>Eq. 1 defines drift operationally; mechanism decomposed into 3 stages (accumulation → retrieval degradation → silent injection harm)</td><td>§3.1–3.2</td></tr>
+<tr><td>3</td><td>Drift is reproducibly triggered by ablation</td><td>A1 (no injection) establishes the no-skill floor at +0.002; A4 (harsh retirement) triggers active harm at $-0.019$</td><td>§3.3</td></tr>
+<tr><td>4</td><td>Trace-level diagnostics detect drift before end-task metrics decline</td><td>Per-skill $\hat{c}$, attribution verdicts, and router engagement expose A4's bank collapse at round 30 — before pass@1 shows clear decline</td><td>§4</td></tr>
+<tr><td>5</td><td>Three governance mechanisms jointly fix drift</td><td>Retirement + cap + meta-skill → +0.328 gain; each mechanism targets one drift stage; Prop 1 guarantees finite worst-case degradation</td><td>§5</td></tr>
+<tr><td>6</td><td>Meta-skill is the single most valuable component; explicit dedup is subsumed</td><td>A3 (no meta-skill) loses 43% of gain; A5/A6 (no dedup) slightly exceed Default — meta-skill's stylistic consistency prevents enough duplication that explicit filters' false positives cost more than their catches</td><td>§6.3</td></tr>
+<tr><td>7</td><td>Governance is not uniformly beneficial — evidence floor is load-bearing</td><td>A4 with $N_{\min} = 20$ (Hoeffding $\epsilon \approx 0.44$) collapses bank to 2 skills and harms performance; the calibrated evidence floor ($N_{\min} = 100$, $\epsilon \approx 0.20$) is what makes retirement safe</td><td>§3.3, §6.3</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>[实现未公开]</p>
+
+<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
+
+<p>The Hoeffding-calibrated evidence floor ($N_{\min} = 100$) that separates safe governance from harmful governance. The paper's most counterintuitive result is A4: reducing $N_{\min}$ from 100 to 20 and tightening $\tau$ to 0.0 — ostensibly more aggressive quality control — produces the worst outcome of all conditions. At $N_{\min} = 20$, the Hoeffding tolerance is $\epsilon \approx 0.44$, meaning skills with true contribution anywhere in $[-0.44, 0]$ face substantial probability of premature retirement on unlucky draws. The resulting bank collapse to 2 active skills leaves the router with near-nothing to select — yet the surviving skills are the ones that happened to get lucky early, not necessarily the best. Replicating this calibration requires understanding that the evidence floor and the retirement threshold interact through the Hoeffding bound, and that the floor must be set large enough to make the tolerance $\epsilon$ smaller than the threshold $\tau$.</p>
+
+<h3 id="关键実装細節">关键実装細節 <a class="heading-anchor" href="#关键実装細節" aria-label="Link to 关键実装細節">#</a></h3>
+
+<ol>
+<li><strong>LLM routing gate as drift prevention</strong>: A2 shows retrieval-only routing (bypassing the LLM gate) achieves 98% engagement but only 24% of Default's gain. The gate's ability to select "none" — declining to inject any skill — prevents low-quality injections and is itself a passive drift-prevention mechanism. Systems that always inject the top retrieval hit lack this safety valve.</li>
+</ul>
+
+<ol>
+<li><strong>Meta-skill subsumes deduplication at moderate scale</strong>: A5/A6 demonstrate that explicit pattern canonicalisation and cover-guard filters are not just unnecessary but mildly counterproductive at 100-task scale — their false positives discard useful skills that the meta-skill's authoring guidance would have made sufficiently distinct. The paper cautions this may reverse at larger scale where the meta-skill's implicit consistency pressure becomes insufficient.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

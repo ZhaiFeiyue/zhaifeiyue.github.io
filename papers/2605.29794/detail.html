@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SkillsInjector: Dynamic Skill Context Construction for LLM Agents — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">SkillsInjector: Dynamic Skill Context Construction for LLM Agents</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2605.29794</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">skill-injection</span><span class="tag">context-construction</span><span class="tag">preference-learning</span><span class="tag">adaptive-budgeting</span><span class="tag">knowledge-distillation</span><span class="tag">tool-use</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2605.29794.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2605.29794" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="skillsinjector-dynamic-skill-context-construction-for-llm-agents">SkillsInjector: Dynamic Skill Context Construction for LLM Agents <a class="heading-anchor" href="#skillsinjector-dynamic-skill-context-construction-for-llm-agents" aria-label="Link to skillsinjector-dynamic-skill-context-construction-for-llm-agents">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>SkillsInjector reframes skill injection as per-task context construction: a preference-trained planner admits an adaptive skill set by execution-grounded utility, then a curriculum-distilled 8B renderer adapts descriptions relative to co-selected neighbors — +5.1 pp avg over best baseline across tau2-bench, SkillsBench, ALFWorld.</p>
+
+<h2 id="§2-痛点-方法-结果">§2 痛点 / 方法 / 结果 <a class="heading-anchor" href="#§2-痛点-方法-结果" aria-label="Link to §2-痛点-方法-结果">#</a></h2>
+
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+
+<p>LLM agents rely on skill libraries to extend their capabilities, but scaling the injected skill set degrades rather than helps. Full-library injection collapses pass rate to 24.8% — worse than the 40.2% no-skill baseline. Three factors drive this: (1) existing methods treat skill injection as static retrieval with a fixed budget, (2) each skill description is passed unchanged regardless of what else is co-injected, and (3) surface-similar skills can have opposite execution-grounded effects (a skill sharing the "insurance" keyword with the user query yields $\Delta = -0.20$).</p>
+
+<p><img src="/assets/2605.29794/fig1.png" alt="Figure 1: Scaling bottleneck — static all-injection collapses while SkillsInjector remains stable"></p>
+
+<p><em>Paper Figure 1: Scaling the candidate skill pool on tau2-bench. Static all-injection (red) collapses as pool grows; SkillsInjector (blue) remains stable.</em></p>
+
+<p>The degradation is monotonic for static injection: every additional skill pushes pass rate further down. The widening gap with pool size confirms the problem is structural — retrieval quality alone cannot compensate.</p>
+
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
+
+<p>SkillsInjector decomposes skill injection into two coordinated stages:</p>
+
+<ol>
+<li><strong>Context Planner</strong>: A lightweight MLP over a frozen 0.6B embedding encoder scores each candidate skill by learned execution-grounded utility $\Delta(t,s)$. Scores are normalized per-task; a per-domain threshold $\tau^\star_d$ admits an adaptive number of skills (zero when none clears threshold, many when the task demands it). Training uses dual-loss supervision: KL alignment against a benefit-derived soft target distribution (Eq. 3) plus pairwise preference loss on hard negatives (Eq. 4).</li>
+</ul>
+
+<ol>
+<li><strong>Set-Aware Renderer</strong>: A Qwen3-8B model, distilled from a 235B teacher via a two-epoch Bernoulli curriculum (trace-rich → trace-free), rewrites each selected skill's description conditioned on the task and co-selected neighbor descriptions. The renderer clarifies role boundaries, appends scope clauses, and reduces overlap among similar skills. Skill bodies pass through unchanged; renderer is bypassed when $|\mathcal{C}^*_t| \leq 1$.</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>: The execution-grounded supervision signal $\Delta(t,s)$ — computing the per-skill, per-task benefit requires running every candidate individually against every training task with multiple seeds. This creates a combinatorial data-generation cost ($N_{\text{skills}} \times M_{\text{tasks}} \times K_{\text{seeds}}$ agent rollouts) that dominates training expense and is the bottleneck for replicating or extending the method to new domains.</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<table>
+<tr><th>Benchmark</th><th>Best baseline</th><th>SkillsInjector</th><th>Δ</th></tr>
+<tr><td>tau2-airline</td><td>56.1 (Graph of Skills)</td><td>60.0</td><td>+3.9</td></tr>
+<tr><td>tau2-retail</td><td>60.0 (Graph of Skills)</td><td>61.4</td><td>+1.4</td></tr>
+<tr><td>tau2-telecom</td><td>62.8 (SkillRouter)</td><td>67.0</td><td>+4.2</td></tr>
+<tr><td>SkillsBench</td><td>16.5 (SkillRouter)</td><td>22.6</td><td>+6.1</td></tr>
+<tr><td>ALFWorld</td><td>75.4 (Graph of Skills)</td><td>82.7</td><td>+7.3</td></tr>
+<tr><td><strong>Average</strong></td><td><strong>53.6</strong></td><td><strong>58.7</strong></td><td><strong>+5.1</strong></td></tr>
+</table>
+
+<p>Ablation confirms each component is necessary: removing the planner costs the most (−12.8 to −14.5 pp on tau2), removing adaptive budget costs 4.9–10.9 pp, removing the renderer inflates interaction cost by 6.1–8.2 messages per task.</p>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2605.29794/fig2.png" alt="Figure 2: SkillsInjector pipeline"></p>
+
+<p><em>Paper Figure 2: SkillsInjector pipeline. The planner learns execution-grounded skill utility; the renderer adapts selected descriptions with co-injected skill awareness. At inference, the trained components select an adaptive skill set and inject the rendered context into a frozen agent.</em></p>
+
+<p>The pipeline separates fast embedding-space scoring (planner) from text-space adaptation (renderer). The frozen agent never sees the planner or renderer — it receives only the rendered skill context as part of its prompt.</p>
+
+<div class="mermaid">
+flowchart LR
+    T["Task t"] --> ENC["Frozen Encoder\n(0.6B)"]
+    S["Skill Library S"] --> ENC
+    ENC --> MLP["MLP Scorer\nf_θ(t,s)"]
+    MLP --> THR["Threshold τ*_d"]
+    THR -->|"Adaptive C*_t"| REN["Set-Aware Renderer\nR_φ (8B)"]
+    T --> REN
+    REN -->|"Rendered C̃*_t"| AGT["Frozen Agent\n(235B)"]
+    AGT --> ENV["Environment ε"]
+</div>
+
+<p>The Mermaid diagram highlights two properties: (1) the task representation feeds both the planner and renderer, and (2) the threshold gate is the sole budget mechanism — there is no top-K selection.</p>
+
+<p><strong>Agent loop context</strong>: SkillsInjector operates as a preprocessing step before the agent loop begins. The agent follows a standard multi-turn tool-calling pattern (observe → act → verify) with no modification. Skill context is injected once into the system prompt; the agent is frozen and unaware of the injection mechanism. Interaction pattern: multi-turn dialogue with tool use; autonomy: fully autonomous within each episode.</p>
+
+<p><strong>Memory model</strong>: Short-term only (context window). No long-term memory or episodic trajectory logging at inference. During planner training, execution traces serve as $\Delta$ label sources but are discarded at inference.</p>
+
+<p><strong>Planning style</strong>: The agent backbone uses ReAct-style think-then-act loops. SkillsInjector's contribution is orthogonal — it controls what the agent reads, not how it reasons. No backtracking or branch revisiting; budget is bounded by environment step limits (50 steps for tau2-bench, 30 rounds for ALFWorld).</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Definition</th><th>First appears</th></tr>
+<tr><td>$t$</td><td>Task drawn from distribution $\mathcal{D}$</td><td>Eq. 1</td></tr>
+<tr><td>$\mathcal{S} = \{s_1, \ldots, s_N\}$</td><td>Skill library; each $s_i = (d_i, b_i)$</td><td>§3</td></tr>
+<tr><td>$\mathcal{E}$</td><td>Task execution environment</td><td>Eq. 1</td></tr>
+<tr><td>$\pi_\theta$</td><td>Frozen agent policy</td><td>Eq. 1</td></tr>
+<tr><td>$r(\tau) \in \{0,1\}$</td><td>Binary task success indicator</td><td>Eq. 1</td></tr>
+<tr><td>$\tilde{\mathcal{C}}$</td><td>Injected skill context</td><td>Eq. 1</td></tr>
+<tr><td>$\mathcal{U}(t, \tilde{\mathcal{C}})$</td><td>Execution-grounded utility</td><td>Eq. 1</td></tr>
+<tr><td>$\Delta(t,s)$</td><td>Per-skill execution-grounded benefit</td><td>§3</td></tr>
+<tr><td>$q_\Delta(s \mid t)$</td><td>Benefit-derived soft target distribution</td><td>Eq. 2</td></tr>
+<tr><td>$p_\theta(s \mid t)$</td><td>Scorer-induced distribution</td><td>Eq. 3</td></tr>
+<tr><td>$\beta, \gamma$</td><td>Temperatures for target / scorer distributions</td><td>Eq. 2–3</td></tr>
+<tr><td>$\lambda$</td><td>Pairwise loss weight ($= 0.3$)</td><td>§4.1</td></tr>
+<tr><td>$\tau^\star_d$</td><td>Per-domain admission threshold</td><td>Eq. 5</td></tr>
+<tr><td>$R_\phi$</td><td>Set-aware renderer model</td><td>Eq. 6</td></tr>
+<tr><td>$D_0, D_1, D_2$</td><td>Original / cleaned / set-aware description targets</td><td>Eq. 6</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Eq. 1</strong> — $\mathcal{U}(t, \tilde{\mathcal{C}}) = \mathbb{E}_{\tau \sim \pi_\theta}[r(\tau)]$: Measures a skill context by downstream execution outcome, not by surface similarity. This is the foundational departure from retrieval-based methods — the optimization target is task success, not relevance.</p>
+
+<p><strong>Eq. 2</strong> — $q_\Delta(s \mid t)$: Converts raw per-skill benefit scores into a soft probability distribution via temperature-scaled softmax. Creates a differentiable learning target from discrete rollout outcomes.</p>
+
+<p><strong>Eq. 3</strong> — $\mathcal{L}_{\text{align}} = \text{KL}(q_\Delta \| p_\theta)$: Pulls the scorer's distribution toward the benefit distribution, shaping the global ranking across the full candidate set.</p>
+
+<p><strong>Eq. 4</strong> — $\mathcal{L}_{\text{pref}}$: Odds-ratio pairwise loss on hard negatives. Sharpens local contrasts between semantically similar skills that the global alignment loss averages out. Needs no reference policy.</p>
+
+<p><strong>Eq. 5</strong> — $\mathcal{C}^*_t = \{s : \tilde{f}_\theta(t,s) \geq \tau^\star_d\}$: Budget emerges from the task — when no skill clears the threshold, none are injected; this is the mechanism that prevents full-library degradation.</p>
+
+<p><strong>Eq. 6</strong> — $\mathcal{L}_{\text{rend}}$: Cross-entropy distillation from 235B teacher to 8B student, with curriculum mixing trace-rich ($\rho_1 = 0.1$) and trace-free ($\rho_2 = 0.9$) inputs across two epochs.</p>
+
+<h3 id="6-项检查">6 项检查 <a class="heading-anchor" href="#6-项检查" aria-label="Link to 6-项检查">#</a></h3>
+
+<ol>
+<li><strong>量纲一致性</strong>: $\mathcal{U} \in [0,1]$ (expectation over binary $r$); $\Delta \in [-1,1]$; $y(t,s) \in [0,1]$ after bounding — all consistently bounded. ✓</li>
+<li><strong>边界条件</strong>: $B_t = 0$ when no skill clears $\tau^\star_d$ (→ no-skill); $B_t = |\mathcal{S}_c|$ when all clear (→ full-library). Both extremes collapse to baselines, verified in Fig. 4. ✓</li>
+<li><strong>梯度可通性</strong>: $\mathcal{L}_{\text{align}}$ (KL) and $\mathcal{L}_{\text{pref}}$ (logistic) both differentiable w.r.t. scorer parameters. Threshold $\tau^\star_d$ selected by dev-set grid search (non-differentiable but not back-propagated through). ✓</li>
+<li><strong>训练-推理一致性</strong>: $\Delta$ labels require multi-seed rollouts (training only); inference uses only the trained scorer and renderer. Curriculum explicitly bridges trace-available training ↔ trace-free inference for the renderer. ✓</li>
+<li><strong>消融独立性</strong>: Table 2 ablates planner, renderer, and adaptive budget each independently. Cross-interaction between planner and renderer not isolated (they always co-occur except in the w/o variants). ⚠ partial</li>
+<li><strong>统计置信度</strong>: 5 seeds per (method, task) pair. Standard deviations in Fig. 4 whiskers. Main table reports means without confidence intervals. ⚠ partial</li>
+</ul>
+
+<p><strong>无形式化收敛保证</strong>: No formal convergence or sample-complexity bound provided. The execution-grounded utility framework defines the objective but does not prove convergence of dual-loss training or characterize the minimum rollouts needed for reliable $\Delta$ estimation. All validation is empirical. A bound could characterize the number of rollouts per (task, skill) pair needed for $\Delta$ to converge within $\epsilon$ — the authors acknowledge this implicitly by noting the method is supervision-bottlenecked.</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="主结果">主结果 <a class="heading-anchor" href="#主结果" aria-label="Link to 主结果">#</a></h3>
+
+<p><img src="/assets/2605.29794/tab1.png" alt="Table 1: Main results across all benchmarks"></p>
+
+<p><em>Paper Table 1: Task pass rates (%) across tau2-bench (3 domains), SkillsBench, and ALFWorld. SkillsInjector attains the best score in every column.</em></p>
+
+<p>SkillsInjector achieves 58.7% average, 5.1 pp above Graph of Skills (53.6%). The gap is widest on ALFWorld (+7.3 pp) where skills were LLM-distilled rather than human-curated, suggesting the method handles noisier libraries well. Full-library injection is catastrophic: 24.8% average, 15.4 pp worse than the no-skill baseline.</p>
+
+<h3 id="组件消融">组件消融 <a class="heading-anchor" href="#组件消融" aria-label="Link to 组件消融">#</a></h3>
+
+<p><img src="/assets/2605.29794/tab2.png" alt="Table 2: Component ablation on tau2-bench"></p>
+
+<p><em>Paper Table 2: Component ablation — pass rate (↑) and average messages per task $\bar{M}$ (↓) on tau2-bench domains.</em></p>
+
+<p>The planner is the dominant lever: removing it produces the largest pass-rate drop on every domain (−12.8 pp airline, −10.0 pp retail, −14.5 pp telecom). Removing the renderer has a smaller pass-rate effect but inflates $\bar{M}$ by 6.1–8.2 messages, showing the renderer's primary role is reducing interaction cost rather than improving selection.</p>
+
+<h3 id="自适应预算分布">自适应预算分布 <a class="heading-anchor" href="#自适应预算分布" aria-label="Link to 自适应预算分布">#</a></h3>
+
+<p><img src="/assets/2605.29794/fig3.png" alt="Figure 3: Adaptive budget distribution per domain"></p>
+
+<p><em>Paper Figure 3: Histogram of per-task selected budget $B_t$ across tau2-bench domains.</em></p>
+
+<p>The budget distribution exhibits a consistent three-part structure across all domains: a left mode (tasks rejecting nearly all skills), a broad middle band, and a right spike at $B_{\max}$. This confirms that tasks intrinsically differ in how much skill context they can exploit — a fixed budget would over-inject for left-mode tasks and under-inject for right-spike tasks.</p>
+
+<h3 id="逐技能异质性">逐技能异质性 <a class="heading-anchor" href="#逐技能异质性" aria-label="Link to 逐技能异质性">#</a></h3>
+
+<p><img src="/assets/2605.29794/fig5.png" alt="Figure 5: Per-skill effects on pass rate and interaction cost"></p>
+
+<p><em>Paper Figure 5: Each point is one skill, plotted by its change in pass rate and agent messages against the no-skill baseline. One panel per tau2-bench domain.</em></p>
+
+<p>Skills are heterogeneous along both axes. A long tail actively reduces pass rate even when topically relevant; many useful skills simultaneously raise the message budget. The upper-left quadrant (high pass rate, low messages) is sparse, confirming that the planner must select on predicted execution utility — not surface similarity — to land in this region.</p>
+
+<h3 id="渲染器消融">渲染器消融 <a class="heading-anchor" href="#渲染器消融" aria-label="Link to 渲染器消融">#</a></h3>
+
+<p>The curriculum-trained 8B renderer matches or exceeds the 235B teacher on retail (61.4 vs 60.5) at a fraction of the compute. Prompt-only 8B drops below the no-render baseline on all three domains, demonstrating that set-aware adaptation must be trained. Single-regime distillation (trace-rich only or trace-free only) helps but is insufficient — the Bernoulli curriculum that mixes both regimes is necessary for full performance.</p>
+
+<h3 id="规划器消融">规划器消融 <a class="heading-anchor" href="#规划器消融" aria-label="Link to 规划器消融">#</a></h3>
+
+<p>Both loss terms are necessary: removing $\mathcal{L}_{\text{align}}$ or $\mathcal{L}_{\text{pref}}$ lowers pass rate on every domain. Encoder scaling from 0.6B to 8B yields negligible gain ($\leq 1.9$ pp on any domain), indicating the planner is supervision-bottlenecked (quality/quantity of $\Delta$ labels) rather than representation-bottlenecked.</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Strength</th></tr>
+<tr><td>1</td><td>Static skill injection degrades performance as pool size grows</td><td>Fig. 1: full-library → 24.8% vs 40.2% no-skill; Table 1: full-library worst in every column</td><td>Strong — 15.4 pp average drop across 5 settings</td></tr>
+<tr><td>2</td><td>Execution-grounded utility is a better ranking signal than surface similarity</td><td>Table 1: SkillsInjector (+5.1 pp) > all retrieval baselines; case study: insurance distractor ($\Delta = -0.20$) rejected despite keyword match</td><td>Strong — consistent across 3 benchmarks</td></tr>
+<tr><td>3</td><td>Adaptive budgeting outperforms fixed top-K</td><td>Table 2: w/o adaptive budget loses 4.9–10.9 pp; Fig. 4: both extremes collapse to baselines; Fig. 3: per-task budget genuinely varies</td><td>Strong — ablation isolates budget contribution</td></tr>
+<tr><td>4</td><td>Set-aware rendering reduces interaction cost and improves pass rate</td><td>Table 2: w/o renderer inflates $\bar{M}$ by 6.1–8.2; Table 4: prompt-only 8B < no-render</td><td>Strong — rendering must be trained; interaction cost is primary beneficiary</td></tr>
+<tr><td>5</td><td>Curriculum distillation transfers teacher capability to small model</td><td>Table 4: 8B curriculum ≈ 235B teacher on pass rate; mixed-regime training > single-regime</td><td>Moderate — retail exceeds teacher, airline/telecom slightly below; no formal distillation bound</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>[实现未公开] — 论文未公开代码仓库。</p>
+
+<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
+
+<p>The execution-grounded supervision signal $\Delta(t,s)$ is the single hardest-to-replicate component. For tau2-bench airline alone, computing $\Delta$ requires $82 \times 50 \times 5 = 20{,}500$ agent rollouts (82 skills × 50 tasks × 5 seeds), each involving multi-turn interaction with a 235B model. The paper reports ~240 H200 GPU-hours total for all experiments, dominated by benchmark inference. Extending the method to a new domain requires repeating this data-generation step from scratch — the planner's learned representations do not transfer across domains (separate $\tau^\star_d$ per domain).</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Bernoulli curriculum schedule</strong>: The renderer's two training epochs use per-sample Bernoulli mixing ($\rho_1 = 0.1$ first epoch, $\rho_2 = 0.9$ second epoch) rather than a hard switch between trace-rich and trace-free regimes. This avoids a learning-rate reset and ensures neither epoch contains only one regime, smoothing the train→inference distribution gap.</li>
+</ul>
+
+<ol>
+<li><strong>Hard negative selection for $\mathcal{L}_{\text{pref}}$</strong>: Negatives are drawn from candidates semantically closest to a preferred skill but with lower $\Delta$ — not random negatives. This specifically targets the failure mode where surface similarity misleads the planner (e.g., the insurance-keyword distractor with $\Delta = -0.20$ vs useful policy-reference skills with $\Delta = +0.40$).</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
