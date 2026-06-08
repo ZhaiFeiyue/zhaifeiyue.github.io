@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>IdleSpec: Exploiting Idle Time via Speculative Planning for LLM Agents — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">IdleSpec: Exploiting Idle Time via Speculative Planning for LLM Agents</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2605.22154</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">speculative-planning</span><span class="tag">idle-time-compute</span><span class="tag">agent-inference</span><span class="tag">thompson-sampling</span><span class="tag">tool-use</span><span class="tag">test-time-scaling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2605.22154.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2605.22154" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>IdleSpec 在 LLM Agent 工具执行等待期间并行运行推测性规划（progressive + recovery 双策略），通过 Thompson 采样自适应选择策略并在 observation 到达后以 reference 方式聚合 draft candidates。GAIA+FRAMES 上 Gemini-2.5-Flash 达 55.6% 平均准确率（+5.1%），MLE-Bench Any Medal 率 +9.1%，延迟开销接近零。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 痛点</strong>: LLM Agent 多步推理循环中，工具执行（web 搜索、代码运行、API 调用）产生大量等待时间（idle time）。以 MLE-Bench 为例，工具执行时间是推理时间的 12.5× 以上（Figure 2(a)）。现有方法要么将 idle time 视为不可避免的开销（vanilla agent），要么提出受限方案：Sleep-Time Compute 仅利用了 GAIA 上 13.7% 的 idle time 且假设未来查询可预测，在小模型上反而导致性能下降（Qwen3.5-4B: 33.2→29.4）。单模式推测方法（Speculative Agent Execution、Interactive Speculation）假设当前轨迹将成功，不处理 observation uncertainty。</p>
+
+<p><strong>Q2 方法</strong>: IdleSpec 通过三阶段循环利用 idle time：(a) <strong>Idle-Time Drafting</strong> — 工具执行期间迭代生成 plan candidates，从 Beta 分布 Thompson 采样选择 Progressive（假设 observation 成功，推进当前路径）或 Recovery（假设当前路径失败，探索替代方案）策略；(b) <strong>Draft Aggregation</strong> — observation 到达后，将所有 candidates 作为 reference（非硬约束）聚合进下一步推理；(c) <strong>Posterior Update</strong> — binary forecast 信号更新 Beta 分布 $(\alpha, \beta)$，使策略分布逐步适应任务状态。</p>
+
+<p><strong>核心技术壁垒</strong>: 将 observation uncertainty 建模为 exploitation-exploration 问题并用 Beta-Bernoulli Thompson sampling 求解。关键洞察是 idle time 期间无法预知 observation 结果（可能成功也可能失败），因此需同时准备两种 draft。单一策略均表现不佳（Table 6(a): Prog-only 44.7 vs Rec-only 44.0 vs dual 48.2），缺乏对 observation uncertainty 的覆盖。Thompson sampling 相比 random（63.3）和 direct forecast（60.7）更优（65.3），其随机探索成分避免了 forecast 错误的放大。</p>
+
+<p><strong>Q3 结果</strong>: 跨三个 benchmark（GAIA、FRAMES、MLE-Bench）和三种模型（Gemini-2.5-Flash、Gemma4-E4B、Qwen3.5-4B）一致性提升。Gemini-2.5-Flash 平均 +5.1%，Qwen3.5-4B +6.8%，Gemma4-E4B +4.6%。MLE-Bench Any Medal 率 36.4→45.5%（+9.1%）。延迟开销接近 1×（idle tokens 与工具执行并行生成，不占用关键路径）。</p>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2605.22154/fig1.png" alt="Figure 1: IdleSpec overview — three-phase speculative planning loop"></p>
+
+<p><em>Paper Figure 1: IdleSpec 三阶段概览。左侧 Idle-Time Drafting 展示 agent 在等待 observation 期间从策略分布中采样 Progressive/Recovery 策略并生成 plan candidates；中间 Plan Candidate Set 收集所有 drafts；右侧 Draft Aggregation 在 observation 到达后聚合 candidates 生成下一步 action 并输出 forecast 信号。Strategy Sampling with Posterior Updates 闭环连接 forecast → 策略分布更新。</em></p>
+
+<p>IdleSpec 的核心循环分解为三个阶段：</p>
+
+<p><strong>Phase (a) Idle-Time Drafting</strong>: Agent 发起工具调用后进入等待。IdleSpec 启动迭代 drafting：每轮从当前 $\mathrm{Beta}(\alpha, \beta)$ 分布采样 $\hat{p}$，若 $\hat{p} > 0.5$ 选择 Progressive 策略，否则选择 Recovery 策略。Progressive prompt 要求模型假设当前工具调用成功并规划下一步；Recovery prompt 要求模型假设当前路径受阻并提出替代方案。Drafting 持续到工具返回 observation（idle-aware termination），最终得到候选集：</p>
+
+<p>$$\mathcal{D}_{\text{final}} = \mathcal{D}_{\text{prog}} \cup \mathcal{D}_{\text{rec}}, \quad |\mathcal{D}_{\text{final}}| \leq K = 5$$</p>
+
+<p><strong>Phase (b) Draft Aggregation</strong>: Observation 到达后，agent 将全部 candidates 作为 reference 输入（非强制约束），由模型自主综合或改进，生成最终 action。Reference-based 聚合显著优于 Best-of-N（59.3）和 Mandatory（57.3）方式（Reference: 65.3, Table 6(b)）。</p>
+
+<p><strong>Phase (c) Posterior Update</strong>: 每步结束后，agent 生成 binary forecast $\ell \in \{\text{Prog}, \text{Rec}\}$，据此更新 Beta 后验：</p>
+
+<p>$$(\alpha, \beta) \leftarrow \begin{cases} (\alpha+1, \beta), & \text{if } \ell = \text{Prog} \\ (\alpha, \beta+1), & \text{if } \ell = \text{Rec} \end{cases}$$</p>
+
+<p>初始化 $\alpha = \beta = 1$（uniform prior）。这是标准的 Beta-Bernoulli 共轭更新 + Thompson sampling，自然平衡 exploitation 与 exploration。</p>
+
+<p><img src="/assets/2605.22154/fig2.png" alt="Figure 2: Idle time analysis across benchmarks"></p>
+
+<p><em>Paper Figure 2: (a) 工具执行时间占总时间 81%–92.6%，远超推理时间；(b) 单次工具调用时长呈长尾分布，均值约 7s reasoning time 虚线左侧仍有大量可用 budget；(c) 三种 idle-time 策略对比，仅 Planning 在所有难度级别上一致优于 vanilla。</em></p>
+
+<p>Figure 2(a) 的关键发现：idle time 在三个 benchmark 上占据绝对主导（81%–92.6%），这是 IdleSpec 能够工作的物理前提。Figure 2(c) 直接支持方法选择——Summarization 和 Reflection 在 observation 到达前提交了不完整的解释（reflection 在 GAIA L3 上甚至显著低于 vanilla），而 Planning 通过条件化表述（"if A holds, do X; otherwise Y"）天然容忍 uncertainty。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证。</strong></p>
+
+<p>IdleSpec 没有 formal convergence 或 success-rate guarantee。Beta-Bernoulli Thompson sampling 的 regret bound 由经典 bandit 文献保证，但论文未将其扩展到 agent task 的 success-rate model。以下为 6 项验证性检查：</p>
+
+<table>
+<tr><th>#</th><th>检查项</th><th>结果</th></tr>
+<tr><td>1</td><td>Planning 优于其他 idle-time 策略</td><td>Figure 2(c): Planning 在所有 GAIA 难度级别和 avg 上均 ≥ vanilla；Summarization/Reflection 在 L3 显著下降</td></tr>
+<tr><td>2</td><td>Dual drafting 优于 single-mode</td><td>Table 6(a): Prog+Rec 48.2 avg vs Prog-only 44.7 vs Rec-only 44.0</td></tr>
+<tr><td>3</td><td>Reference 聚合优于替代方案</td><td>Table 6(b): Ref 65.3 vs Best-of-N 59.3 vs Mandatory 57.3</td></tr>
+<tr><td>4</td><td>Thompson sampling 优于替代选择策略</td><td>Table 6(c): Adaptive 65.3 vs Random 63.3 vs Forecast-Direct 60.7</td></tr>
+<tr><td>5</td><td>跨模型一致性</td><td>Table 1: Gemini-2.5-Flash +5.1%, Gemma4-E4B +4.6%, Qwen3.5-4B +6.8% — 增益方向一致</td></tr>
+<tr><td>6</td><td>Idle time 长度与增益正相关</td><td>Table 5: Low ultra-short group +7.0%, Medium +6.0%, High +0.0% — 单调关系成立</td></tr>
+</table>
+
+<p>可被形式化的方向：给定 observation uncertainty 模型（e.g. 工具返回的成功概率分布），证明 progressive/recovery 混合策略的 regret bound 优于 pure strategy。</p>
+
+<p>Agent 维度补充：</p>
+<ul>
+<li><strong>Failure mode classification</strong>: 论文未显式分类失败模式，但隐含两类——(1) progressive draft 与实际 observation 不符导致浪费，(2) recovery 过度导致 thrashing（Table 6(a) recovery-only 退化的原因）。</li>
+<li><strong>Latency budget per turn</strong>: idle-time tokens 5284/step（Table 3），与工具执行并行不影响 wall-clock。Test-time tokens 5966，低于 vanilla 的 7126。</li>
+<li><strong>Backbone sensitivity</strong>: 三种 backbone（4B 级开源 + proprietary）均获增益，但小模型增益更大（Qwen3.5-4B +6.8% vs Gemini-2.5-Flash +5.1%），暗示 idle-time planning 对弱模型的补偿效果更强。</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="主实验：gaia-frames">主实验：GAIA + FRAMES <a class="heading-anchor" href="#主实验：gaia-frames" aria-label="Link to 主实验：gaia-frames">#</a></h3>
+
+<p><img src="/assets/2605.22154/tab1.png" alt="Table 1: Results on General Agent Benchmarks"></p>
+
+<p><em>Paper Table 1: 三种模型在 GAIA（L1/L2/L3）和 FRAMES 上的准确率（%）。IdleSpec（绿色高亮行）在所有 model × benchmark 组合上取得最优。</em></p>
+
+<p>核心数据点：</p>
+<ul>
+<li><strong>Gemini-2.5-Flash</strong>: Vanilla 50.5 → IdleSpec 55.6（+5.1），GAIA L3 上增益最大（25.6→32.1，+6.5）</li>
+<li><strong>Qwen3.5-4B</strong>: Vanilla 33.2 → IdleSpec 40.0（+6.8），增益集中在难题；Sleep-Time Compute 反而降至 29.4</li>
+<li><strong>Gemma4-E4B</strong>: Vanilla 30.9 → IdleSpec 35.5（+4.6）</li>
+</ul>
+
+<p>Sleep-Time Compute 在 Qwen3.5-4B 上的失败机制：该方法在 idle time 期间自由生成 auxiliary context，小模型容易产生 hallucination 并传播到后续推理链。IdleSpec 的 reference-based 聚合机制使模型可以忽略低质量 draft，避免了 hallucination 传播。</p>
+
+<h3 id="mle-bench（长-horizon-任务）">MLE-Bench（长 horizon 任务） <a class="heading-anchor" href="#mle-bench（长-horizon-任务）" aria-label="Link to mle-bench（长-horizon-任务）">#</a></h3>
+
+<p>MLE-Bench Lite（22 competitions，24h budget/task，Gemini-2.5-Flash）: IdleSpec 实现 Any Medal 率 45.5%（Vanilla 36.4，+9.1%）。Made Submission 率从 86.4% 提升至 95.5%，Valid Submission 从 77.3% 至 86.4%。Sleep-Time Compute 在 Gold 率上反而低于 Vanilla（13.6% vs 18.2%），总 medal 率无提升。IdleSpec 在 execution-heavy 场景（代码运行延迟远超推理时间）尤为有效，因为 idle time budget 充裕。</p>
+
+<h3 id="延迟-准确率权衡">延迟-准确率权衡 <a class="heading-anchor" href="#延迟-准确率权衡" aria-label="Link to 延迟-准确率权衡">#</a></h3>
+
+<p><img src="/assets/2605.22154/fig3.png" alt="Figure 3: Latency-Accuracy trade-off on Pareto frontier"></p>
+
+<p><em>Paper Figure 3: Pareto 图（vLLM, NVIDIA A6000）。IdleSpec（绿色星形）位于左上角 Pareto 前沿——准确率最高且延迟接近 1.00×。Sequential Revision 和 Planning 的准确率提升伴随 1.25–1.33× 延迟。Sleep-Time Compute 延迟 ~1× 但准确率低于 Vanilla。</em></p>
+
+<p>IdleSpec 在 GAIA L2（Qwen3.5-4B）上生成 5284 idle-time tokens/step，但这些 tokens 与工具执行并行生成——关键路径延迟不增加。Test-time tokens 从 7126（Vanilla）降至 5966，draft reference 减少了后续推理的探索负担。</p>
+
+<h3 id="消融实验">消融实验 <a class="heading-anchor" href="#消融实验" aria-label="Link to 消融实验">#</a></h3>
+
+<p><img src="/assets/2605.22154/tab6.png" alt="Table 6: Ablation studies — drafting strategy, aggregation, selection"></p>
+
+<p><em>Paper Table 6: (a) 策略消融 — dual drafting 比 single-mode 高 3.5–4.2 avg；(b) 聚合方式 — Reference 最优；(c) 选择策略 — Thompson sampling 最优。</em></p>
+
+<p>三组消融的关键结论：</p>
+<ul>
+<li><strong>策略组合</strong>（Table 6(a)）: 双策略 48.2 avg vs Prog-only 44.7 vs Rec-only 44.0。Recovery-only 比 Progressive-only 更差——直觉上 recovery 应更安全，但实际导致 agent 不断切换方案无法推进</li>
+<li><strong>聚合方式</strong>（Table 6(b)）: Reference 65.3 >> Best-of-N 59.3 > Mandatory 57.3。强制使用 drafted plans 约束了模型在 observation 后的自主决策能力</li>
+<li><strong>选择策略</strong>（Table 6(c)）: Adaptive（Thompson sampling）65.3 > Random 63.3 > Forecast-Direct 60.7。Forecast-Direct 最差因为 forecast 错误会确定性地偏移策略分布</li>
+</ul>
+
+<p>兼容性验证（Table 4）: IdleSpec 可叠加在 test-time scaling 方法上——Sequential Revision 27.9→32.2，Planning 32.2→35.3，说明 idle-time 计算是正交的 scaling 维度。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>步骤</th><th>论点</th><th>证据</th><th>强度</th></tr>
+<tr><td>1</td><td>LLM Agent 工具调用产生大量 idle time（81%–92.6%），且 per-call 分布高度不均（长尾）</td><td>Figure 2(a)(b): 3 benchmarks 实测</td><td>强（实测数据，3 benchmarks 一致）</td></tr>
+<tr><td>2</td><td>Idle time 中 Planning 是唯一一致有效的策略；Summarization/Reflection 因提前 commit 不完整解释而不稳定</td><td>Figure 2(c): 受控策略对比</td><td>强（GAIA 全难度级别对比）</td></tr>
+<tr><td>3</td><td>Observation uncertainty 要求同时准备 progressive（exploitation）和 recovery（exploration）两类 draft</td><td>Table 6(a): dual vs single-mode 消融</td><td>强（GAIA L1–L3 逐级验证）</td></tr>
+<tr><td>4</td><td>Draft 应作为 reference 而非 mandatory constraint，让模型保留综合改进能力</td><td>Table 6(b): 3 种聚合方式对比</td><td>强（FRAMES 上 Δ=8.0 vs mandatory）</td></tr>
+<tr><td>5</td><td>Thompson sampling 比 random 和 direct forecast 更适合策略选择</td><td>Table 6(c): 3 种选择策略对比</td><td>中强（仅 FRAMES + Qwen3.5-4B 一组验证）</td></tr>
+<tr><td>6</td><td>组合三个组件后 IdleSpec 在 3 benchmarks × 3 models 上一致提升，延迟开销 ~0</td><td>Table 1, Table 2, Figure 3</td><td>强（跨 benchmark、跨 model 一致性）</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>[实现未公开]</p>
+
+<p>论文使用已有 agent 框架作为基座：OAgents 用于 GAIA/FRAMES，OpenHands 用于 MLE-Bench。IdleSpec 作为推理层 wrapper 叠加在这些框架之上。</p>
+
+<p>关键实现参数：</p>
+<ul>
+<li>候选数上限 $K = 5$（防止 context window 溢出）</li>
+<li>工具返回时立即中断进行中的 draft 生成，丢弃不完整 draft（idle-aware termination）</li>
+<li>四个 prompt template（progressive drafting、recovery drafting、forecast、aggregation）完整文本见 Appendix C Figures 5–8</li>
+<li>开源模型：16 个 vLLM replicas（NVIDIA A6000 GPU）+ 负载均衡 proxy；Gemini-2.5-Flash 通过 Vertex AI API</li>
+<li>Decoding: temperature 0.6（通用）/ 1.0 + top-k 64（Gemma4-E4B per model card）</li>
+<li>GAIA/FRAMES: 3 random seeds 取均值；MLE-Bench: 单 seed（24h budget 提供足够稳定性）</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>: 将 idle-time 策略选择建模为 bandit 问题，用 Beta-Bernoulli Thompson sampling 在 progressive/recovery 间动态分配计算。这是区别于 Sleep-Time Compute（单模式、忽略 uncertainty）和 Speculative Agent Execution（单模式、假设成功）的根本差异。实现上只需维护两个计数器 $(\alpha, \beta)$，极度轻量。</p>
+
+<p><strong>关键实现细节</strong>:</p>
+<ol>
+<li><strong>Idle-aware termination</strong> — 工具返回时立即终止 drafting（而非固定 budget），使 IdleSpec 自适应不同长度的 idle window。Figure 2(b) 的长尾分布说明固定 budget 策略注定浪费或不足。</li>
+<li><strong>Reference-based aggregation</strong> — draft 作为提示而非约束，保留模型在 observation 到达后的自主决策能力。这是避免 hallucination 传播的关键——小模型（Qwen3.5-4B）上 Sleep-Time Compute 因强制使用 idle-time 产出而降性能 3.8%，IdleSpec 反升 6.8%。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
