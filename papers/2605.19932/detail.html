@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>PEEK: Context Map as an Orientation Cache for Long-Context LLM Agents — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">PEEK: Context Map as an Orientation Cache for Long-Context LLM Agents</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2605.19932</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">long-context</span><span class="tag">context-engineering</span><span class="tag">agent-memory</span><span class="tag">cache-policy</span><span class="tag">prompt-learning</span><span class="tag">llm-agent</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2605.19932.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2605.19932" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="peek-context-map-as-an-orientation-cache-for-long-context-llm-agents">PEEK: Context Map as an Orientation Cache for Long-Context LLM Agents <a class="heading-anchor" href="#peek-context-map-as-an-orientation-cache-for-long-context-llm-agents" aria-label="Link to peek-context-map-as-an-orientation-cache-for-long-context-llm-agents">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>For agents that repeatedly query the <em>same</em> large external context (a 50k-entry feedback corpus, a code repo), PEEK caches the reusable "orientation knowledge" — what the context contains, how it is organized, key entities/constants/schemas — as a small constant-size <strong>context map</strong> kept resident in the system prompt. A programmable cache policy (Distiller → Cartographer → Evictor) maintains it from execution trajectories under a hard token budget. Result: +6.3–34.0% quality with 93–145 fewer iterations and 1.7–5.8× lower cost than ACE.</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-what-problem">Q1 — 痛点 (what problem) <a class="heading-anchor" href="#q1-—-痛点-what-problem" aria-label="Link to q1-—-痛点-what-problem">#</a></h3>
+
+<p>Modern agents over recurring external contexts manage state in ways that each preserve the <em>wrong</em> object:</p>
+
+<ul>
+<li><strong>Shared chat / history compaction</strong> keep the agent's prior trajectory — high-volume, low-density, and persisting full history actually <em>hurts</em> (see §5, Shared Chat row).</li>
+<li><strong>RAG / context offloading / context compaction</strong> keep passive access to raw or condensed material, but never a curated artifact <em>about</em> the context itself.</li>
+<li><strong>Prompt learning</strong> (ACE, Reflexion, GEPA) curates task-level strategies, not knowledge about the recurring context.</li>
+</ul>
+
+<p>The gap: nothing actively maintains <strong>orientation knowledge</strong> about a recurringly-queried external context. The paper formalizes this as the empty <strong>active × external-context</strong> quadrant of a 2×2 design space.</p>
+
+<p><img src="/assets/2605.19932/fig2.png" alt="Figure 2: Design Space of Agent State — two axes (Active/Passive × Agent-Task/External-Context), Context Map fills the active external-context quadrant"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "Design Space of Agent State. Context maps fill the active external-context quadrant."). The horizontal axis splits methods managing agent/task state from those managing external-context state; the vertical axis splits methods that deliberately maintain an artifact across interactions (Active) from those that merely carry/retrieve/summarize on demand (Passive). Every prior method lands in three of four cells; the active/external-context cell is empty and is exactly what PEEK targets.</em></p>
+
+<h3 id="q2-—-方法-the-approach">Q2 — 方法 (the approach) <a class="heading-anchor" href="#q2-—-方法-the-approach" aria-label="Link to q2-—-方法-the-approach">#</a></h3>
+
+<p>A <strong>context map</strong>: a small, constant-sized (default budget B = 1024 tokens) artifact prepended to the agent's system prompt, holding 5 sections — 2 default (Context Roadmap, Context Understanding) + 3 optional (Domain Constants, Reusable Results, Parsing Schema). It begins nearly empty and is grown automatically through interaction by a three-module <strong>programmable cache policy</strong>:</p>
+
+<ul>
+<li><strong>Distiller</strong> — reads the execution trajectory + current map, emits a <em>diagnosis</em> (orientation vs task-specific spend, where it stalled), per-item <em>tags</em> (helpful/harmful/neutral/stale), and <em>cache candidates</em> (only transferable contextual knowledge; task-specific rules discarded). Operates without ground truth, on always-available execution signals.</li>
+<li><strong>Cartographer</strong> — translates the Distiller output into minimal structured edits (ADD / DELETE / REPLACE) against stable item IDs, deduplicating against existing entries.</li>
+<li><strong>Evictor</strong> — enforces the hard budget B by evicting lowest-Distiller-score items first (ties → older first), in inverse section-value order (Parsing Schema → Reusable Results → Domain Constants; Roadmap & Understanding protected last).</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>: the <em>separation of extraction (Distiller) from editing (Cartographer)</em>. Collapsing them into one LLM call ("Monolithic Update") leaks task-specific facts into the cache and produces noisy, duplicative, overwrite-prone updates — costing −7.7% on average (§5 ablation). This split, plus trajectory-only (no-ground-truth) diagnosis, is the hardest-to-replicate insight; naive single-call "summarize the trajectory into the map" variants the authors tried all underperformed or actively hurt (runtime full-swap: −14.86%).</p>
+
+<h3 id="q3-—-结果-what-they-found">Q3 — 结果 (what they found) <a class="heading-anchor" href="#q3-—-结果-what-they-found" aria-label="Link to q3-—-结果-what-they-found">#</a></h3>
+
+<ul>
+<li><strong>Quality</strong>: +6.3–34.0% on OOLONG, +6.0–14.0% solving rate / +7.8–12.1% rubric accuracy on CL-bench over strong baselines; vs SOTA prompt-learning ACE: +7.8–15.0% (OOLONG), +6.0% solve / +9.9% rubric (CL-bench).</li>
+<li><strong>Efficiency</strong>: on iteration–quality and cost–quality Pareto frontiers across all benchmarks; 93–145 fewer iterations than ACE on OOLONG; 1.7–5.8× lower cost (OOLONG) / 1.4× (CL-bench).</li>
+<li><strong>Generalization</strong>: gains hold across base LMs (GPT-5-mini → GPT-5.5, Qwen3-Coder-Next-FP8) and a different backbone agent (RLM → production-grade OpenAI Codex), without changing PEEK's algorithm or prompts.</li>
+</ul>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p>PEEK treats the map as a CPU-cache-style fast store sitting next to the agent: a small piece of curated information supplied <em>in addition to</em> the (arbitrarily large) external context. Two coupled mechanisms: (1) the constant-sized context map in the system prompt; (2) a cache-management policy that, after each query completes, inspects the trajectory and updates the map for the next query.</p>
+
+<p><img src="/assets/2605.19932/fig3.png" alt="Figure 3: The PEEK System — Long Context + User Query feed the Agent, producing a Trajectory consumed by the PEEK Cache Policy (Distiller → Cartographer → Evictor) which updates the Context Map for the Next Query"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "The PEEK System. ... PEEK caches orientation knowledge in a context map and updates it through a modular process consisting of a Distiller, a Cartographer, and an Evictor."). The red-boxed context map lives inside the agent's system prompt; the green-starred dashed box is the cache policy that runs after each query. Note the loop: the updated map flows back into the next query's prompt, so orientation knowledge compounds across queries on the same context.</em></p>
+
+<p>The agent loop and map-evolution loop, as a state machine:</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Init: map ← Init() (near-empty headers)
+    Init --> AgentRun: prepend map to sys prompt
+    AgentRun --> Trajectory: AgentLoop([sys+map, Q_i], C)
+    Trajectory --> Distill: i ≤ m ?
+    Distill --> Cartograph: diag, tags, cands
+    Cartograph --> Evict: structured edits (ADD/DELETE/REPLACE)
+    Evict --> AgentRun: map within budget B, next query
+    Trajectory --> AgentRun: i > m (frozen, reuse map)
+    AgentRun --> [*]
+</div>
+
+<p>Map evolution can be frozen after as few as m = 1 query; m = n gives fully online adaptation. The map schema itself uses stable per-item IDs (e.g. <code>[cr-00001]</code>) so edits stay local and traceable.</p>
+
+<p><img src="/assets/2605.19932/fig4.png" alt="Figure 4: Example Context Map generated by PEEK (partially shown) — structured sections with stable item IDs"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "Example Context Map Generated by PEEK (Partially Shown). The map stores contextual knowledge in structured sections with stable item IDs, enabling consistent cache updates."). A Context Roadmap entry such as "[cr-00001] Single text block (∼38k chars) containing 388 records of the form..." is a navigational summary any future query reuses without re-discovering — the concrete payload of "orientation knowledge."</em></p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证</strong>. PEEK is an agent system; it has no convergence or success-rate guarantee. The only numbered equation is the OOLONG partial-credit scoring rule (a benchmark metric, not a PEEK theorem). What <em>could</em> have been bounded — e.g. a monotonicity guarantee of map value vs queries, or a regret bound on eviction — is left entirely empirical.</p>
+
+<h3 id="notation">Notation <a class="heading-anchor" href="#notation" aria-label="Link to notation">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$C$</td><td>the recurring external context (corpus / repo), arbitrarily large</td></tr>
+<tr><td>$Q_{1:n}$</td><td>sequence of $n$ user queries over the same $C$</td></tr>
+<tr><td>$B$</td><td>hard token budget of the context map (default 1024)</td></tr>
+<tr><td>$m \le n$</td><td>number of leading queries during which the map is updated; $m=n$ = full online adaptation</td></tr>
+<tr><td>$\text{map}$</td><td>the constant-sized prompt-resident artifact</td></tr>
+<tr><td>$a_i, \text{traj}$</td><td>answer and execution trajectory of query $i$</td></tr>
+<tr><td>$\hat{y}, y$</td><td>model numerical prediction / gold numerical answer (OOLONG metric)</td></tr>
+</table>
+
+<h3 id="core-procedure-algorithm-1">Core procedure (Algorithm 1) <a class="heading-anchor" href="#core-procedure-algorithm-1" aria-label="Link to core-procedure-algorithm-1">#</a></h3>
+
+<p>For $i = 1 \dots n$: run $a_i, \text{traj} \leftarrow \text{AgentLoop}([\text{sys}+\text{map}, Q_i], C)$; if $i \le m$, then $(\text{diag}, \text{tags}, \text{cands}) \leftarrow \text{Distiller}(\text{traj}, \text{map})$, $\text{edits} \leftarrow \text{Cartographer}(\text{diag}, \text{tags}, \text{cands}; \text{map})$, $\text{map} \leftarrow \text{Apply}(\text{map}, \text{edits})$, $\text{map} \leftarrow \text{Evictor}(\text{map}, B)$.</p>
+
+<h3 id="the-one-numbered-equation-—-oolong-scoring">The one numbered equation — OOLONG scoring <a class="heading-anchor" href="#the-one-numbered-equation-—-oolong-scoring" aria-label="Link to the-one-numbered-equation-—-oolong-scoring">#</a></h3>
+
+<p>$$\text{score}(\hat{y}) = 0.75^{\,|y - \hat{y}|}$$</p>
+
+<p>Physical meaning: exponential-decay partial credit. An exact numeric match ($|y-\hat{y}|=0$) scores 1.0; each unit of absolute error multiplies the score by 0.75, so near-misses earn graded credit rather than a hard 0/1. Non-numerical answers use exact match. (Reconstructed: the PDF dropped the exponent superscript; restored per OOLONG [7] convention — see issues.)</p>
+
+<h3 id="6-empirical-sanity-checks-in-lieu-of-formal-proof">6 empirical sanity checks (in lieu of formal proof) <a class="heading-anchor" href="#6-empirical-sanity-checks-in-lieu-of-formal-proof" aria-label="Link to 6-empirical-sanity-checks-in-lieu-of-formal-proof">#</a></h3>
+
+<ol>
+<li><strong>Static-map lower bound</strong>: even with eviction disabled and the map frozen at budget, PEEK still beats base RLM by large margins (Table 3, "No Eviction") — confirms the <em>presence</em> of orientation knowledge is the dominant effect, not the maintenance machinery.</li>
+<li><strong>Maintenance gain is real</strong>: the full policy adds +10.2% on average over the frozen-at-budget variant — eviction/updating contributes a measurable, separable increment.</li>
+<li><strong>Separation is necessary</strong>: Monolithic Update (Distiller+Cartographer merged) trails the full pipeline by −7.7% avg — the architectural split is load-bearing, not cosmetic.</li>
+<li><strong>Budget robustness</strong>: across B ∈ {512, 1024, 2048} (a 4× range) all budgets beat base RLM (avg +15.5% at 512, +20.3% at 2048); presence of a map matters more than its exact size.</li>
+<li><strong>Overhead accounting closes</strong>: PEEK maintenance is 6.2–17.9% of total cost (Distiller ≈ ⅔ of it), and because the map keeps iterations productive, total iteration counts stay at/below base RLM on 3 of 4 benchmarks — the overhead is partially self-offsetting (Tables 4–7).</li>
+<li><strong>Negative-control battery</strong>: 5 alternative map fills (raw prefix +0.73%, sub-goal retrieval +4.92%, retrieval-playbook +0.73%, runtime full-swap −14.86%, behavioral nudges +5.65%) all underperform PEEK, isolating <em>curated orientation knowledge</em> as the active ingredient (Appendix B.2).</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p>Built on the official RLM agent (externalizes context as REPL variables); GPT-5-mini as the main base LM. Benchmarks: <strong>OOLONG</strong> (long-context reasoning/aggregation; 3 hardest splits trec_coarse / agnews / yahoo) and <strong>CL-bench</strong> (context learning; up to 12 tasks/context, GPT-5.1 judge, solve rate + rubric accuracy). Baselines: RLM, RLM+Shared Chat, RLM+RAG, RLM+Compaction Agent (MemAgent), RLM+ACE (SOTA prompt learning).</p>
+
+<p><img src="/assets/2605.19932/fig1.png" alt="Figure 1: Performance Snapshot with GPT-5-mini — PEEK achieves highest scores across long-context tasks vs strong baselines"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "Performance Snapshot (GPT-5-mini as the Base LM). PEEK ... consistently achieves the highest scores across long-context tasks compared with strong baselines."). The headline one-glance claim: PEEK dominates every baseline on every benchmark shown.</em></p>
+
+<p><img src="/assets/2605.19932/tab1.png" alt="Table 1: Results across long-context benchmarks, GPT-5-mini base LM — PEEK best on every metric, with absolute deltas over base RLM"></p>
+
+<p><em>Paper's Table 1, verbatim (caption: "Results of Different Methods Across Long-context Benchmarks ... PEEK outperforms all baselines across every metric."). Key numbers (absolute Δ vs base RLM in parentheses):</em></p>
+
+<table>
+<tr><th>Method</th><th>TREC-coarse↑</th><th>AGNews↑</th><th>Yahoo↑</th><th>Solve↑</th><th>Rubric↑</th></tr>
+<tr><td>RLM</td><td>30.3</td><td>46.5</td><td>23.0</td><td>14.0</td><td>54.5</td></tr>
+<tr><td>RLM + Shared Chat</td><td>32.0 (+1.7)</td><td>49.6 (+3.1)</td><td>23.0 (0)</td><td>12.0 (−2.0)</td><td>51.3 (−3.2)</td></tr>
+<tr><td>RLM + RAG</td><td>36.6 (+6.3)</td><td>63.1 (+16.6)</td><td>29.0 (+6.0)</td><td>14.0 (0)</td><td>55.6 (+1.1)</td></tr>
+<tr><td>RLM + Compaction</td><td>42.0 (+11.7)</td><td>49.5 (+3.0)</td><td>30.0 (+7.0)</td><td>20.0 (+6.0)</td><td>54.6 (+0.1)</td></tr>
+<tr><td>RLM + ACE</td><td>48.8 (+18.5)</td><td>61.6 (+15.1)</td><td>42.0 (+19.0)</td><td>20.0 (+6.0)</td><td>53.5 (−1.0)</td></tr>
+<tr><td><strong>RLM + PEEK</strong></td><td><strong>58.1 (+27.8)</strong></td><td><strong>69.4 (+22.9)</strong></td><td><strong>57.0 (+34.0)</strong></td><td><strong>26.0 (+12.0)</strong></td><td><strong>63.4 (+8.9)</strong></td></tr>
+</table>
+
+<p>The diagnostic story in the baseline rows: Shared Chat barely helps OOLONG and <em>hurts</em> CL-bench (raw accumulation = noise); RAG helps only well-structured contexts; Compaction lifts coarse success but not rubric accuracy; ACE improves solve rate (+6.0) but <em>drops</em> rubric accuracy (−1.0), the signature of task-specific playbook overfitting. PEEK improves both coarse and fine metrics — i.e. it strengthens context <em>understanding</em> rather than overfitting task types.</p>
+
+<p><img src="/assets/2605.19932/fig5.png" alt="Figure 5: Score vs Total Iterations (top) and Score vs Total Cost (bottom) — PEEK sits on the upper-left Pareto frontier across all four benchmarks"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "Score vs. Total Iterations (Top) ... Score vs. Total Cost (Bottom) ... PEEK consistently lies on the Pareto frontier across all four benchmarks."). Shared Chat blows iterations up to 748 (OOLONG) / 301 (CL-bench) for ~zero gain; ACE needs 93–145 more iterations than PEEK on OOLONG while scoring 7.8–15.0% lower and costs up to 5.8× more. Cost decomposition (Tables 4–7) shows ACE's blow-up is driven by verbose execution (e.g. 12.45M output tokens, $29.42 on TREC-coarse = 5.8× PEEK).</em></p>
+
+<p><strong>Generalization (Table 2)</strong>: with GPT-5.5, PEEK gains +43.1 / +29.3 / +41.0 on OOLONG splits over RLM and beats ACE; with Qwen3-Coder-Next-FP8 gains persist (+14.0 / +12.6 / +26.0); swapping RLM→Codex the gains are <em>larger</em> still (+44.0 / +35.6 / +52.0). RLM+PEEK with a <em>small</em> GPT-5-mini becomes competitive with out-of-the-box frontier models (GPT-5.5 High, Claude Opus 4.6 High) on the CL-bench leaderboard.</p>
+
+<p><strong>Rejected benchmarks (Appendix D)</strong>: BrowseComp-Plus, FanOutQA, QuALITY were tried and discarded — the first two are manufactured unions of independent documents (per-task evidence nearly disjoint: only 1.1% of FanOutQA dev-question pairs share any evidence page), and QuALITY contexts are too short (~5.6k tokens) to need a cache. This motivates the paper's call for benchmarks that natively pose many hard questions over one persistent context.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>步骤 (paper-internal claim)</th><th>支撑</th></tr>
+<tr><td>1</td><td>Repeated same-context workloads need <em>orientation knowledge</em>, which no existing method (shared chat, RAG, compaction, prompt learning) actively preserves.</td><td>§2.1 2×2 design space; the active/external-context quadrant is empty (Fig 2).</td></tr>
+<tr><td>2</td><td>Orientation knowledge can be stored as a small, constant-size, prompt-resident <em>context map</em> — distinct from KV-cache (model-level) and from task playbooks.</td><td>§3.1 5-section schema; example map with stable item IDs (Fig 4).</td></tr>
+<tr><td>3</td><td>The map must be <em>grown automatically</em> from interaction, not hand-crafted, and updated by separating extraction from editing under a budget.</td><td>§3.2 Algorithm 1: Distiller → Cartographer → Evictor loop.</td></tr>
+<tr><td>4</td><td>This design beats all semantic-layer baselines on quality, iterations, and cost.</td><td>§4.3 Table 1 (best every metric) + Fig 5 (Pareto frontier).</td></tr>
+<tr><td>5</td><td>The two key design choices (Distiller/Cartographer split; eviction policy) each contribute measurably, and the effect is budget-robust.</td><td>§4.5 Table 3: −7.7% if merged, +10.2% from full policy over frozen, all B ∈ {512,1024,2048} win.</td></tr>
+<tr><td>6</td><td>The gains are not artifacts of one model/agent.</td><td>§4.4 Table 2: GPT-5.5, Qwen3-Coder, Codex all improve.</td></tr>
+<tr><td>7</td><td>The active ingredient is specifically <em>curated orientation knowledge</em>, not just "more context."</td><td>Appendix B.2: 5 alternative fills (raw/retrieval/playbook/swap/nudge) all underperform or hurt.</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>[实现未公开 in L1] — the L1 source cites a code handle (<code>zhuohangu/peek</code>) but no file:line-level implementation is captured in the ingested material, so concrete citations are unavailable here. The reproducible specification is Algorithm 1 plus the module contracts below.</p>
+
+<ul>
+<li><strong>PEEK is built on the official RLM system</strong> [49] (arXiv:2512.24601), which stores contexts as REPL environment variables — this externalized-context interface is a hard prerequisite; the map is injected into the agent's <em>system prompt</em>, and the trajectory consumed by the Distiller is RLM's reasoning/action/observation log.</li>
+</ul>
+
+<p><strong>核心技术壁垒 (详述)</strong>: The non-obvious, hardest-to-replicate piece is the <strong>Distiller/Cartographer separation operating purely on execution trajectories without ground truth</strong>. The Distiller must classify trajectory spend (orientation vs task-specific) and tag map items (helpful/harmful/neutral/stale) and extract only <em>transferable</em> candidates — explicitly discarding task-specific rules — while the Cartographer independently performs dedup + minimal ADD/DELETE/REPLACE editing against stable IDs. Merging these into one LLM call drops 7.7%; the authors' direct attempts to skip this structure (runtime full-swap of the map) cost −14.86%. Replicating the headline numbers therefore hinges on faithfully reproducing this two-stage contract and the trajectory-only diagnosis, not merely on "having a context map."</p>
+
+<p><strong>关键实现细节 (easy to miss)</strong>:</p>
+<ol>
+<li><strong>Eviction order is tied to the section-value hierarchy</strong>, not just to scores: ties break by age, and section priority (Parsing Schema → Reusable Results → Domain Constants evicted first; Context Roadmap & Context Understanding protected last) is what keeps the navigational backbone stable as the budget bites.</li>
+<li><strong>The map starts as bare section headers (or fully blank)</strong> and is never pre-populated/hand-crafted — and update can be frozen after as little as m = 1 query, so the <em>maintenance</em> cost is a one-time-ish amortized expense rather than a per-query tax; m = n only when full online adaptation is wanted.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
