@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: NetKV: Network-Aware Decode Instance Selection for Disaggregated LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">NetKV: Network-Aware Decode Instance Selection for Disaggregated LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-cluster">cluster</span> 2606.03910 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2606.03910/detail.html">→ Detail (L2)</a>
+<a href="/overview/cluster.html">← cluster Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="l3-per-paper-synthesis-netkv-2606-03910">L3 Per-Paper Synthesis: NetKV (2606.03910) <a class="heading-anchor" href="#l3-per-paper-synthesis-netkv-2606-03910" aria-label="Link to l3-per-paper-synthesis-netkv-2606-03910">#</a></h1>
+
+<h2 id="§1-相关论文">§1 相关论文 <a class="heading-anchor" href="#§1-相关论文" aria-label="Link to §1-相关论文">#</a></h2>
+
+<p>NetKV 的核心贡献是为 disaggregated LLM inference 引入网络拓扑与拥塞感知的 decode instance 选择算法。以下八篇论文从三个正交维度与之关联。</p>
+
+<h3 id="维度-a：kv-cache-体积——netkv-的-payload-来源">维度 A：KV cache 体积——NetKV 的 payload 来源 <a class="heading-anchor" href="#维度-a：kv-cache-体积——netkv-的-payload-来源" aria-label="Link to 维度-a：kv-cache-体积——netkv-的-payload-来源">#</a></h3>
+
+<p>NetKV 优化的对象是 KV cache 传输延迟 <a href="/papers/2606.03910/detail.html#core-contribution" class="ref-link" title="2606.03910#core-contribution">[2606.03910]</a>。KV cache 的绝对体积直接决定网络项在 TTFT 中的权重。两篇论文从模型架构层面压缩了 KV cache，从而在源头削减 NetKV 需要搬运的 payload：</p>
+
+<ul>
+<li><strong>DeepSeek-V2 (2405.04434)</strong>：MLA 将 KV cache 压缩 93.3%（$d_c + d_h^R = 576$ 维 vs MHA 的 $2n_h d_h = 32768$ 维）<a href="/papers/2405.04434/detail.html#core-contribution" class="ref-link" title="2405.04434#core-contribution">[2405.04434]</a>。这意味着 Llama-3-70B 在 128K 上下文的 40 GB KV cache 若换用 MLA 级别的压缩，有效 payload 可降至 ~2.7 GB，NetKV 的 tier-shifting 收益将大幅收窄。</li>
+<li><strong>Kimi Linear (2510.26692)</strong>：3:1 KDA-to-MLA 混合架构仅在 7/27 层保留 KV cache（MLA 层），其余 20 层为固定大小 recurrent state，实现 75% KV cache 节约 <a href="/papers/2510.26692/detail.html#core-contribution" class="ref-link" title="2510.26692#core-contribution">[2510.26692]</a>。更重要的是，KDA 的 O(1) decode TPOT 使 decode 本身不再是瓶颈——当 decode 极快时，transfer 延迟在 TTFT 中的占比反而被放大，可能使 NetKV 更加必要。</li>
+</ul>
+
+<h3 id="维度-b：长上下文的实际可用性——netkv-的需求前提">维度 B：长上下文的实际可用性——NetKV 的需求前提 <a class="heading-anchor" href="#维度-b：长上下文的实际可用性——netkv-的需求前提" aria-label="Link to 维度-b：长上下文的实际可用性——netkv-的需求前提">#</a></h3>
+
+<p>NetKV 的价值成立的前提是：用户确实需要长上下文 LLM 推理，而非简单缩短输入。四篇论文从不同角度检验了这一前提：</p>
+
+<ul>
+<li><strong>FilM-7B (2404.16811)</strong>：通过 IN2 数据合成消除 lost-in-the-middle，使 7B 模型在 4K–32K 上下文中真正利用任意位置的信息 <a href="/papers/2404.16811/detail.html#core-contribution" class="ref-link" title="2404.16811#core-contribution">[2404.16811]</a>。FilM 证明长上下文 <em>可以</em> 被有效利用——这为 NetKV 的部署场景提供了需求正当性。</li>
+<li><strong>Lost in the Middle, In-Between (2412.10079)</strong>：揭示多跳 QA 的二维退化——绝对位置 U 形 + 证据间距单调衰减——且现有缓解策略（CoT、裁剪）均有严重 trade-off <a href="/papers/2412.10079/detail.html#core-contribution" class="ref-link" title="2412.10079#core-contribution">[2412.10079]</a>。这表明长上下文使用存在系统性困难，削弱了"越长越好"的朴素假设。</li>
+<li><strong>PCD (2506.08371)</strong>：诊断出 Posterior Salience Attenuation——gold token 绝对 logit 随 context 长度单调衰减——并提出训练免费的对比解码缓解 <a href="/papers/2506.08371/detail.html#core-contribution" class="ref-link" title="2506.08371#core-contribution">[2506.08371]</a>。PCD 在 LongBench 上仅 +0.89 的微弱增益 <a href="/papers/2506.08371/detail.html#实验与数据" class="ref-link" title="2506.08371#实验与数据">[2506.08371]</a> 暗示 PSA 只是长上下文退化的一个因素。</li>
+<li><strong>Context Length Alone Hurts (2510.05381)</strong>：最强负面证据——即使完美检索 + mask 掉所有干扰 token，LLM 推理能力仍随输入长度实质退化（HumanEval −50%, MMLU −21.1%）<a href="/papers/2510.05381/detail.html#core-contribution" class="ref-link" title="2510.05381#core-contribution">[2510.05381]</a>。这直接挑战了 NetKV 的前提：如果长输入本身损害推理质量，那么高效传输大 KV cache 的实际价值被稀释。</li>
+</ul>
+
+<h3 id="维度-c：新一代多模态-大规模模型的-serving-范式">维度 C：新一代多模态/大规模模型的 serving 范式 <a class="heading-anchor" href="#维度-c：新一代多模态-大规模模型的-serving-范式" aria-label="Link to 维度-c：新一代多模态-大规模模型的-serving-范式">#</a></h3>
+
+<ul>
+<li><strong>Qwen3-Omni (2509.17765)</strong>：34.5B 总参 / 4.8B 激活的 MoE 多模态模型，Thinker–Talker 异步流式推理 <a href="/papers/2509.17765/detail.html#core-contribution" class="ref-link" title="2509.17765#core-contribution">[2509.17765]</a>。其 MoE 架构下 all-to-all 通信与 KV cache 传输共享网络带宽，使 NetKV 的拥塞建模更加必要但也更加复杂。</li>
+<li><strong>Seedance 1.5 pro (2512.13507)</strong>：dual-branch MMDiT 音视频联合生成 <a href="/papers/2512.13507/detail.html#core-contribution" class="ref-link" title="2512.13507#core-contribution">[2512.13507]</a>。代表了 non-autoregressive serving 范式，其 >10× distillation 加速的工程焦点与 NetKV 的 autoregressive 前提不同，但 RLHF 后训练的大规模 GPU 集群部署需求与 NetKV 的数据中心拓扑假设高度重合。</li>
+</ul>
+
+<hr>
+
+<h2 id="§2-本篇-vs-相关论文的-delta">§2 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#§2-本篇-vs-相关论文的-delta" aria-label="Link to §2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="2-1-netkv-的独有贡献">2.1 NetKV 的独有贡献 <a class="heading-anchor" href="#2-1-netkv-的独有贡献" aria-label="Link to 2-1-netkv-的独有贡献">#</a></h3>
+
+<ol>
+<li><strong>信息不对称的形式化</strong>：NetKV 首次将"调度器无网络可见性 vs 运营商无推理可见性"的信息鸿沟形式化为 Network Cost Oracle 接口 <a href="/papers/2606.03910/detail.html#core-contribution" class="ref-link" title="2606.03910#core-contribution">[2606.03910]</a>。prior work（Mooncake Conductor、llm-d、Dynamo）均未显式建模网络拓扑。</li>
+</ul>
+
+<ol>
+<li><strong>理论保证</strong>：Proposition 1 证明忽略网络代价的调度可任意次优；Proposition 2 证明静态 tier 排序对 oracle staleness 容忍度高达 42 个百分点 <a href="/papers/2606.03910/detail.html#作者证明" class="ref-link" title="2606.03910#作者证明">[2606.03910]</a>。这种 worst-case 理论分析在相关论文中完全缺失——所有模型/算法论文的 claim 都是纯实证。</li>
+</ul>
+
+<ol>
+<li><strong>静态信号的充分性</strong>：ablation 显示静态 tier map 捕获 >90% 收益，动态拥塞仅贡献 ≤0.3% <a href="/papers/2606.03910/detail.html#实验与数据" class="ref-link" title="2606.03910#实验与数据">[2606.03910]</a>。这使得部署门槛极低——仅需 Kubernetes 拓扑标签，无需实时遥测。</li>
+</ul>
+
+<h3 id="2-2-增量-vs-正交关系矩阵">2.2 增量 vs 正交关系矩阵 <a class="heading-anchor" href="#2-2-增量-vs-正交关系矩阵" aria-label="Link to 2-2-增量-vs-正交关系矩阵">#</a></h3>
+
+<table>
+<tr><th>维度</th><th>NetKV 做了什么</th><th>相关论文做了什么</th><th>关系</th></tr>
+<tr><td>KV cache 传输优化</td><td>优化传输路径（tier-shifting）</td><td>MLA <a href="/papers/2405.04434/detail.html#core-contribution" class="ref-link" title="2405.04434#core-contribution">[2405.04434]</a> / KDA <a href="/papers/2510.26692/detail.html#core-contribution" class="ref-link" title="2510.26692#core-contribution">[2510.26692]</a> 优化 payload 体积</td><td><strong>正交互补</strong>：减小 payload × 选择更快路径 = 乘法效应</td></tr>
+<tr><td>长上下文利用</td><td>假设长上下文有价值，优化其 serving</td><td>IN2 <a href="/papers/2404.16811/detail.html#core-contribution" class="ref-link" title="2404.16811#core-contribution">[2404.16811]</a> 提升利用率；2510.05381 <a href="/papers/2510.05381/detail.html#core-contribution" class="ref-link" title="2510.05381#core-contribution">[2510.05381]</a> 质疑利用价值</td><td><strong>依赖关系</strong>：NetKV 的 ROI 取决于模型是否真能用好长上下文</td></tr>
+<tr><td>推理质量</td><td>不涉及</td><td>PCD <a href="/papers/2506.08371/detail.html#core-contribution" class="ref-link" title="2506.08371#core-contribution">[2506.08371]</a> / LITM-IB <a href="/papers/2412.10079/detail.html#core-contribution" class="ref-link" title="2412.10079#core-contribution">[2412.10079]</a> 从解码/评测角度改善</td><td><strong>不相关</strong>：NetKV 不改变模型质量，仅改变 TTFT</td></tr>
+<tr><td>多模态 serving</td><td>不涉及</td><td>Qwen3-Omni <a href="/papers/2509.17765/detail.html#core-contribution" class="ref-link" title="2509.17765#core-contribution">[2509.17765]</a> 引入 MoE 流式推理</td><td><strong>潜在扩展</strong>：MoE all-to-all 与 KV transfer 共享带宽</td></tr>
+</table>
+
+<h3 id="2-3-关键矛盾点">2.3 关键矛盾点 <a class="heading-anchor" href="#2-3-关键矛盾点" aria-label="Link to 2-3-关键矛盾点">#</a></h3>
+
+<p><strong>NetKV 假设 KV cache 体积固定 vs MLA/KDA 正在快速缩小它</strong>。</p>
+
+<p>NetKV 的收益公式 $C(d) = T_{\text{transfer}} + T_{\text{queue}} + T_{\text{decode}}$ 中，$T_{\text{transfer}}$ 与有效 KV 大小 $s_r^{\text{eff}}$ 线性相关 <a href="/papers/2606.03910/detail.html#作者证明" class="ref-link" title="2606.03910#作者证明">[2606.03910]</a>。MLA 将 $s_r$ 压缩到原始 MHA 的 6.7%（DeepSeek-V2 的 93.3% 压缩）<a href="/papers/2405.04434/detail.html#core-contribution" class="ref-link" title="2405.04434#core-contribution">[2405.04434]</a>，Kimi Linear 进一步仅在 26% 的层保留 KV cache <a href="/papers/2510.26692/detail.html#core-contribution" class="ref-link" title="2510.26692#core-contribution">[2510.26692]</a>。</p>
+
+<p>NetKV 的 open question §9.3 自行提出了这一挑战："At what compression ratio does NetKV's advantage become negligible?" <a href="/papers/2606.03910/detail.html#open-questions" class="ref-link" title="2606.03910#open-questions">[2606.03910]</a>。量化估算：Llama-3-70B@16K 的有效 KV 为 ~5 GB；若用 MLA 级压缩降至 ~335 MB，在 Tier 2 (6.25 GB/s) 下传输仅需 ~54 ms，tier 间差异 (~20 ms) 已淹没在 queueing noise 中。</p>
+
+<p><strong>但这一矛盾有时间维度</strong>：截至 2026 年 7 月，生产系统中占主导的仍是 Llama-3、Qwen2.5 等 MHA/GQA 模型，MLA/KDA 模型的部署规模有限。NetKV 在当前技术窗口内有明确价值。</p>
+
+<hr>
+
+<h2 id="§3-可攻击面">§3 可攻击面 <a class="heading-anchor" href="#§3-可攻击面" aria-label="Link to §3-可攻击面">#</a></h2>
+
+<h3 id="攻击-1：仿真器-vs-真实集群的可信度鸿沟">攻击 1：仿真器 vs 真实集群的可信度鸿沟 <a class="heading-anchor" href="#攻击-1：仿真器-vs-真实集群的可信度鸿沟" aria-label="Link to 攻击-1：仿真器-vs-真实集群的可信度鸿沟">#</a></h3>
+
+<p>NetKV 的全部实验基于流级仿真器（flow-level simulator），且论文自身承认仿真器相比包级仿真器（packet-level）高估收益 4–6 个百分点 <a href="/papers/2606.03910/detail.html#open-questions" class="ref-link" title="2606.03910#open-questions">[2606.03910]</a>。真实 NIC 端效应（驱动队列、完成队列竞争、ECMP 哈希冲突）可能进一步侵蚀优势。</p>
+
+<p><strong>与相关论文的对比</strong>：DeepSeek-V2 在真实 H800 集群上报告了 >50K tok/s generation throughput <a href="/papers/2405.04434/detail.html#实验与数据" class="ref-link" title="2405.04434#实验与数据">[2405.04434]</a>；Kimi Linear 在真实硬件上测量了 TPOT <a href="/papers/2510.26692/detail.html#实验与数据" class="ref-link" title="2510.26692#实验与数据">[2510.26692]</a>；Qwen3-Omni 给出了真实延迟分解 <a href="/papers/2509.17765/detail.html#实验与数据" class="ref-link" title="2509.17765#实验与数据">[2509.17765]</a>。NetKV 是八篇论文中唯一没有真实系统验证的。</p>
+
+<p><strong>反驳</strong>：NetKV 的核心 insight（静态 tier map 捕获 >90% 收益）恰恰因其简单性而对仿真误差鲁棒——tier 排序不依赖精确延迟数值，只依赖 ordinal ranking，而真实网络的 tier 带宽差距（NVLink 450 GB/s vs 跨 pod 25 Gbps = 18:1）远超仿真误差范围。</p>
+
+<h3 id="攻击-2：tier-0-1-利用率为零——部署假设过于保守">攻击 2：Tier 0/1 利用率为零——部署假设过于保守 <a class="heading-anchor" href="#攻击-2：tier-0-1-利用率为零——部署假设过于保守" aria-label="Link to 攻击-2：tier-0-1-利用率为零——部署假设过于保守">#</a></h3>
+
+<p>NetKV 实验中 Tier 0（NVLink）和 Tier 1（同 rack）的利用率始终为 0% <a href="/papers/2606.03910/detail.html#实验与数据" class="ref-link" title="2606.03910#实验与数据">[2606.03910]</a>，因为放置策略从不将 prefill 和 decode 共置于同节点/同 rack。这意味着 NetKV 仅在 Tier 2 vs Tier 3 之间做 tier-shifting，浪费了最快的两级传输通道。</p>
+
+<p><strong>与 MLA/KDA 的关联</strong>：MLA 使每 token KV cache 降至 ~69 KB/layer <a href="/papers/2405.04434/detail.html#实验与数据" class="ref-link" title="2405.04434#实验与数据">[2405.04434]</a>。在如此小的 payload 下，即使放弃 Tier 0/1，Tier 2 已足够快。但对 MHA 模型（每 token ~320 KB/layer for Llama-3-70B <a href="/papers/2606.03910/detail.html#作者证明" class="ref-link" title="2606.03910#作者证明">[2606.03910]</a>），混合放置策略利用 Tier 0/1 可能比 tier-shifting 到 Tier 2 更有效。</p>
+
+<h3 id="攻击-3：动态拥塞信号的非必要性">攻击 3：动态拥塞信号的非必要性 <a class="heading-anchor" href="#攻击-3：动态拥塞信号的非必要性" aria-label="Link to 攻击-3：动态拥塞信号的非必要性">#</a></h3>
+
+<p>ablation 显示动态拥塞仅贡献 0.3%，且在 long-context 工作负载下甚至回退 +0.2% <a href="/papers/2606.03910/detail.html#实验与数据" class="ref-link" title="2606.03910#实验与数据">[2606.03910]</a>。这意味着 NetKV-Full 相比 NetKV-Static 是 net-negative 或 net-zero。</p>
+
+<p><strong>技术根因</strong>：长上下文传输本身持续数秒，拥塞信号在传输过程中已过时——这与 PCD 在 1M+ context 下出现轻微回退的逻辑类似 <a href="/papers/2506.08371/detail.html#实验与数据" class="ref-link" title="2506.08371#实验与数据">[2506.08371]</a>：过长的操作窗口使瞬时信号失效。NetKV 的 Proposition 2 证明 42 pp staleness 容忍度 <a href="/papers/2606.03910/detail.html#作者证明" class="ref-link" title="2606.03910#作者证明">[2606.03910]</a> 本身就暗示了动态信号的冗余性。</p>
+
+<h3 id="攻击-4：32k-以上上下文的-netkv-价值归零">攻击 4：32K 以上上下文的 NetKV 价值归零 <a class="heading-anchor" href="#攻击-4：32k-以上上下文的-netkv-价值归零" aria-label="Link to 攻击-4：32k-以上上下文的-netkv-价值归零">#</a></h3>
+
+<p>Context length sweep（Table III）显示：在 32K token 以上，NetKV 的 TTFT 改善降至 −6.7%（32K）和 +0.0%（64K）<a href="/papers/2606.03910/detail.html#实验与数据" class="ref-link" title="2606.03910#实验与数据">[2606.03910]</a>。原因是所有调度器在超长上下文下均 SLO 失败——网络优化无法弥补计算瓶颈。</p>
+
+<p><strong>与 2510.05381 的共振</strong>：如果长上下文本身伤害推理质量 <a href="/papers/2510.05381/detail.html#core-contribution" class="ref-link" title="2510.05381#core-contribution">[2510.05381]</a>，且 NetKV 在超长上下文下无 TTFT 改善，那么 NetKV 的 sweet spot 被压缩到 8K–16K 的狭窄窗口——恰好是 MLA/KDA 压缩效果最显著的区间。</p>
+
+<hr>
+
+<h2 id="§4-生态位">§4 生态位 <a class="heading-anchor" href="#§4-生态位" aria-label="Link to §4-生态位">#</a></h2>
+
+<h3 id="4-1-范式定位">4.1 范式定位 <a class="heading-anchor" href="#4-1-范式定位" aria-label="Link to 4-1-范式定位">#</a></h3>
+
+<p>NetKV 处于 <strong>disaggregated inference scheduling</strong> 范式的网络感知层，是 DistServe → Mooncake → FlowKV 演化链上的最新节点。它不替代 cache-aware 或 load-aware 调度，而是在现有评分链中增加一个正交维度。</p>
+
+<p>这一定位类似于 PCD 在解码算法领域的定位：PCD 不替代 greedy/beam search，而是在现有解码器前增加一个对比层 <a href="/papers/2506.08371/detail.html#core-contribution" class="ref-link" title="2506.08371#core-contribution">[2506.08371]</a>。两者都是 "overlay 优化"，部署简单但增益有上限。</p>
+
+<h3 id="4-2-与模型演化的耦合">4.2 与模型演化的耦合 <a class="heading-anchor" href="#4-2-与模型演化的耦合" aria-label="Link to 4-2-与模型演化的耦合">#</a></h3>
+
+<table>
+<tr><th>模型代际</th><th>KV cache/token (Llama-3-70B 等效)</th><th>NetKV 价值</th></tr>
+<tr><td>MHA/GQA (Llama-3, Qwen2.5)</td><td>~320 KB/layer <a href="/papers/2606.03910/detail.html#作者证明" class="ref-link" title="2606.03910#作者证明">[2606.03910]</a></td><td><strong>高</strong> — 16K context ≈ 5 GB payload</td></tr>
+<tr><td>MLA (DeepSeek-V2/V3)</td><td>~1.15 KB/layer <a href="/papers/2405.04434/detail.html#实验与数据" class="ref-link" title="2405.04434#实验与数据">[2405.04434]</a></td><td><strong>中</strong> — 16K context ≈ 1.1 GB payload</td></tr>
+<tr><td>KDA hybrid (Kimi Linear)</td><td>仅 26% 层有 KV cache <a href="/papers/2510.26692/detail.html#实验与数据" class="ref-link" title="2510.26692#实验与数据">[2510.26692]</a></td><td><strong>低</strong> — 16K context ≈ 0.13 GB payload</td></tr>
+<tr><td>全线性注意力 (Mamba2 等)</td><td>0 KV cache (固定 state)</td><td><strong>零</strong> — 无传输需求</td></tr>
+</table>
+
+<p>NetKV 的窗口期与 MHA/GQA 模型的生产主导地位共存。随着 MLA 和 KDA 的普及，NetKV 的边际价值将递减，但不会归零——即使 payload 很小，在极高并发下 Tier 3 的绝对带宽限制仍可成为瓶颈。</p>
+
+<h3 id="4-3-部署证据">4.3 部署证据 <a class="heading-anchor" href="#4-3-部署证据" aria-label="Link to 4-3-部署证据">#</a></h3>
+
+<p>截至 2026 年 7 月，NetKV 无公开部署实例。但其设计与 llm-d 的 Endpoint Picker scorer chain 和 Dynamo 的 KV-aware router 直接集成兼容 <a href="/papers/2606.03910/detail.html#实现-cross-reference" class="ref-link" title="2606.03910#实现-cross-reference">[2606.03910]</a>。最小可行部署仅需 Kubernetes 拓扑标签——这一信号已在所有主流云提供商的 K8s 集群中标准可用。</p>
+
+<h3 id="4-4-与长上下文模型生态的共生">4.4 与长上下文模型生态的共生 <a class="heading-anchor" href="#4-4-与长上下文模型生态的共生" aria-label="Link to 4-4-与长上下文模型生态的共生">#</a></h3>
+
+<p>FilM-7B <a href="/papers/2404.16811/detail.html#core-contribution" class="ref-link" title="2404.16811#core-contribution">[2404.16811]</a> 和 PCD <a href="/papers/2506.08371/detail.html#core-contribution" class="ref-link" title="2506.08371#core-contribution">[2506.08371]</a> 等工作正在从数据和解码两端提升长上下文利用质量。但 2510.05381 <a href="/papers/2510.05381/detail.html#core-contribution" class="ref-link" title="2510.05381#core-contribution">[2510.05381]</a> 和 2412.10079 <a href="/papers/2412.10079/detail.html#core-contribution" class="ref-link" title="2412.10079#core-contribution">[2412.10079]</a> 表明长上下文退化仍是基本问题。NetKV 的实用价值取决于这场"长上下文是否真有用"的辩论走向：如果 IN2 式训练和 PCD 式解码最终解决了退化问题，长上下文推理需求激增，NetKV 的网络优化变成刚需；如果 2510.05381 的"长度本身有害"结论成立且不可修复，用户会倾向于缩短上下文，KV cache 变小，NetKV 变得不必要。</p>
+
+<hr>
+
+<h2 id="§5-未探索方向">§5 未探索方向 <a class="heading-anchor" href="#§5-未探索方向" aria-label="Link to §5-未探索方向">#</a></h2>
+
+<h3 id="方向-1：kv-压缩-×-网络感知的联合优化">方向 1：KV 压缩 × 网络感知的联合优化 <a class="heading-anchor" href="#方向-1：kv-压缩-×-网络感知的联合优化" aria-label="Link to 方向-1：kv-压缩-×-网络感知的联合优化">#</a></h3>
+
+<p>MLA 和 KDA 压缩 KV cache，NetKV 优化传输路径。但两者目前是独立设计：压缩算法不考虑网络拓扑，调度器不考虑压缩比。</p>
+
+<p><strong>可探索的联合方案</strong>：在 MLA 的 latent space（$d_c = 512$）上做 adaptive quantization，使同 rack 传输用高精度 latent（BF16, 1.15 KB/token/layer），跨 pod 传输用低精度 latent（FP4, ~0.3 KB/token/layer），以精度换带宽。这将 NetKV 的 tier 信号反馈到模型的 KV 表示层，形成 model-aware networking。</p>
+
+<h3 id="方向-2：moe-模型的全参数传输感知调度">方向 2：MoE 模型的全参数传输感知调度 <a class="heading-anchor" href="#方向-2：moe-模型的全参数传输感知调度" aria-label="Link to 方向-2：moe-模型的全参数传输感知调度">#</a></h3>
+
+<p>NetKV 仅优化 prefill-to-decode 的 KV cache 传输，但 MoE 模型（DeepSeek-V2 的 device-limited routing <a href="/papers/2405.04434/detail.html#core-contribution" class="ref-link" title="2405.04434#core-contribution">[2405.04434]</a>，Qwen3-Omni 的 MoE Thinker+Talker <a href="/papers/2509.17765/detail.html#core-contribution" class="ref-link" title="2509.17765#core-contribution">[2509.17765]</a>）在每个 decode step 都有 all-to-all expert 通信。</p>
+
+<p><strong>未被任何论文覆盖的 gap</strong>：将 NetKV 的 tier-aware cost model 扩展到 decode-phase 的 expert 路由——在选择 top-K experts 时，对跨 pod expert 施加 network penalty，倾向于选择 same-pod expert。这相当于 DeepSeek-V2 的 device-limited routing <a href="/papers/2405.04434/detail.html#core-contribution" class="ref-link" title="2405.04434#core-contribution">[2405.04434]</a> 的网络感知推广。</p>
+
+<h3 id="方向-3：retrieve-then-transfer-流水线">方向 3：Retrieve-then-transfer 流水线 <a class="heading-anchor" href="#方向-3：retrieve-then-transfer-流水线" aria-label="Link to 方向-3：retrieve-then-transfer-流水线">#</a></h3>
+
+<p>2510.05381 提出的 retrieve-then-solve mitigation <a href="/papers/2510.05381/detail.html#core-contribution" class="ref-link" title="2510.05381#core-contribution">[2510.05381]</a> 表明：先让模型 recite 关键证据再推理可大幅恢复长上下文性能（GSM8K +31.2%）。将此思路与 NetKV 结合：</p>
+
+<ul>
+<li>Prefill instance 在传输前执行"KV cache pruning"——仅传输 attention score 最高的 top-K% token 的 KV 向量</li>
+<li>Decode instance 基于 pruned KV 做初始推理，必要时触发"按需拉取"剩余 KV</li>
+<li>NetKV 的 tier-aware cost model 决定 pruning 比例：同 rack（快传输）低 pruning，跨 pod（慢传输）高 pruning</li>
+</ul>
+
+<p>这将 2510.05381 的"缩短输入"思路从 prompt 级下沉到 KV cache 传输级。</p>
+
+<h3 id="方向-4：pcd-式解码与-disaggregated-serving-的交互">方向 4：PCD 式解码与 disaggregated serving 的交互 <a class="heading-anchor" href="#方向-4：pcd-式解码与-disaggregated-serving-的交互" aria-label="Link to 方向-4：pcd-式解码与-disaggregated-serving-的交互">#</a></h3>
+
+<p>PCD 需要双 forward pass（标准 RoPE + modified RoPE）<a href="/papers/2506.08371/detail.html#core-contribution" class="ref-link" title="2506.08371#core-contribution">[2506.08371]</a>，在 disaggregated 架构下意味着 decode instance 需要维护双倍 KV cache 或实时从 prefill 传输两份 KV。</p>
+
+<p><strong>未被探索的问题</strong>：disaggregated 架构中的 PCD 是否应该将 local-aware forward 放在 prefill instance（利用其空闲计算资源），仅将对比后的 logits 差值 $\Delta L = (1+\beta)L - \beta L^*$ 传输给 decode instance？这会将 PCD 的 2× 计算开销转化为 prefill-side 开销（prefill 实例通常有空闲窗口），但需要重新设计 prefill-decode 通信协议。</p>
+
+<h3 id="方向-5：多模态-serving-的跨模态-kv-传输">方向 5：多模态 serving 的跨模态 KV 传输 <a class="heading-anchor" href="#方向-5：多模态-serving-的跨模态-kv-传输" aria-label="Link to 方向-5：多模态-serving-的跨模态-kv-传输">#</a></h3>
+
+<p>Qwen3-Omni 的 Thinker–Talker 架构 <a href="/papers/2509.17765/detail.html#core-contribution" class="ref-link" title="2509.17765#core-contribution">[2509.17765]</a> 在 Thinker（30B）和 Talker（3B）之间传输 multimodal features + 离散 text tokens。如果 Thinker 和 Talker 被 disaggregated 到不同 GPU pool（类似 prefill-decode 分离），则 cross-modal feature transfer 成为新的网络瓶颈。</p>
+
+<p>NetKV 的 tier-aware cost model 可直接扩展到 Thinker-to-Talker 调度：选择 network-proximal Talker instance 以最小化 multimodal feature 传输延迟，同时满足 Talker 的 streaming latency SLO（234 ms first-packet <a href="/papers/2509.17765/detail.html#实验与数据" class="ref-link" title="2509.17765#实验与数据">[2509.17765]</a>）。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2401.09670.html">2401.09670</a> (predecessor) 
+<a href="/papers/2407.00079.html">2407.00079</a> (predecessor) 
+<a href="/papers/2504.03775.html">2504.03775</a> (related) 
+<a href="/papers/2602.11688.html">2602.11688</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

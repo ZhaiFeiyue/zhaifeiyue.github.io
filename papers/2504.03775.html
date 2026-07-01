@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: FlowKV: A Disaggregated Inference Framework with Low-Latency KV Cache Transfer and Load-Aware Scheduling — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">FlowKV: A Disaggregated Inference Framework with Low-Latency KV Cache Transfer and Load-Aware Scheduling</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2504.03775 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2504.03775/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="flowkv-2504-03775-—-l3-per-paper-synthesis">FlowKV (2504.03775) — L3 Per-Paper Synthesis <a class="heading-anchor" href="#flowkv-2504-03775-—-l3-per-paper-synthesis" aria-label="Link to flowkv-2504-03775-—-l3-per-paper-synthesis">#</a></h1>
+
+<h2 id="相关论文">相关论文 <a class="heading-anchor" href="#相关论文" aria-label="Link to 相关论文">#</a></h2>
+
+<p>FlowKV 处于 <strong>PD-disaggregated LLM inference</strong> 的核心赛道，与以下 8 篇相关工作形成交叉关系网：</p>
+
+<h3 id="直接竞争-同问题空间">直接竞争 / 同问题空间 <a class="heading-anchor" href="#直接竞争-同问题空间" aria-label="Link to 直接竞争-同问题空间">#</a></h3>
+
+<p><strong>Mooncake (2407.00079)</strong> — 最直接的竞争对手。两者都构建 PD-disaggregated serving 系统，但设计哲学截然不同：Mooncake 以 KVCache 为调度核心，构建分布式 CPU DRAM/SSD 缓存池实现 prefix 复用，并用 RDMA 做跨节点传输 <a href="/papers/2407.00079/detail.html#1-tl-dr" class="ref-link" title="2407.00079#1-tl-dr">[2407.00079]</a>；FlowKV 以 NCCL 传输效率为核心，通过改变 KV cache 内存布局来降低传输延迟 <a href="/papers/2504.03775/detail.html#1-tl-dr" class="ref-link" title="2504.03775#1-tl-dr">[2504.03775]</a>。两者在 FlowKV 的实验中直接对比，FlowKV 声称单机 KV 传输延迟比 Mooncake 低 98.2%（55.2× 加速）<a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>。关联维度：disaggregated architecture, KV cache transfer, global scheduling。</p>
+
+<p><strong>vLLM / PagedAttention (2309.06180)</strong> — FlowKV 的技术基础和改造对象。FlowKV 的三重优化（形状变换、段式分配、双向对齐）本质上是对 PagedAttention 内存管理层的全栈重构 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>。vLLM 的 block-wise 非连续分配是 FlowKV 要解决的根源问题 — PagedAttention 的 block table 机制在单机推理中消除了碎片，但在 disaggregated 跨节点传输中反而制造了碎片化 NCCL 调用 <a href="/papers/2309.06180/detail.html#1-tl-dr" class="ref-link" title="2309.06180#1-tl-dr">[2309.06180]</a>。vLLM-disaggregated 是 FlowKV 的直接基线。关联维度：KV cache memory management, block allocator, NCCL transfer。</p>
+
+<h3 id="kv-cache-管理-调度相关">KV Cache 管理 / 调度相关 <a class="heading-anchor" href="#kv-cache-管理-调度相关" aria-label="Link to kv-cache-管理-调度相关">#</a></h3>
+
+<p><strong>FastServe (2305.05920)</strong> — 调度层面的交集。FastServe 首次将迭代级抢占式调度（skip-join MLFQ）引入 LLM serving，并用 proactive KV cache swapping（GPU↔Host memory）管理被抢占请求的 KV cache <a href="/papers/2305.05920/detail.html#1-tl-dr" class="ref-link" title="2305.05920#1-tl-dr">[2305.05920]</a>。FlowKV 的 Load-Aware Scheduler 与 FastServe 的 MLFQ 在目标上互补：FastServe 解决请求间 HoL blocking（单机内），FlowKV 解决节点间负载不均衡（disaggregated 跨机）<a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>。关联维度：preemptive scheduling, KV cache swap, load balancing。</p>
+
+<p><strong>FastDecode (2403.11421)</strong> — 异构计算路线的代表。FastDecode 将 attention 计算完全卸载到分布式远程 CPU（S-Part/R-Part 分解），KV cache 常驻 CPU 内存 <a href="/papers/2403.11421/detail.html#1-tl-dr" class="ref-link" title="2403.11421#1-tl-dr">[2403.11421]</a>。与 FlowKV "优化 GPU 间 KV 传输" 的路线正交：FastDecode 完全规避 GPU 间 KV 传输问题（KV 从不在 GPU 上），FlowKV 则保持 KV 在 GPU 上但将传输代价降到可忽略。关联维度：heterogeneous inference, KV cache placement, throughput optimization。</p>
+
+<p><strong>Neo (2411.01142)</strong> — 本机 CPU offloading 路线。Neo 将部分 decode attention 和 KV cache 卸载到同机 CPU，通过 asymmetric pipelining 隐藏 CPU 计算延迟 <a href="/papers/2411.01142/detail.html#1-tl-dr" class="ref-link" title="2411.01142#1-tl-dr">[2411.01142]</a>。与 FlowKV 共享 "load-aware scheduling" 理念但应用场景不同：Neo 的 load-aware 是 GPU-CPU 间的每迭代决策（greedy 回退保证），FlowKV 的 load-aware 是 P/D 节点间的全局路由决策 <a href="/papers/2411.01142/detail.html#q2-方法" class="ref-link" title="2411.01142#q2-方法">[2411.01142]</a>。关联维度：load-aware scheduling, KV cache management, heterogeneous compute。</p>
+
+<h3 id="间接相关-概念交叉">间接相关 / 概念交叉 <a class="heading-anchor" href="#间接相关-概念交叉" aria-label="Link to 间接相关-概念交叉">#</a></h3>
+
+<p><strong>FlexRLHF (2312.11819)</strong> — RLHF 训练中的 disaggregation 先驱。FlexRLHF 的 Disaggregated 策略（训练-推理运行时分离 + Shadow 模型）<a href="/papers/2312.11819/detail.html#core-contribution" class="ref-link" title="2312.11819#core-contribution">[2312.11819]</a> 与 FlowKV 的 PD disaggregation 共享 "按阶段特性分离计算" 的核心思想，但应用于训练而非推理。关联维度：disaggregation paradigm, role switching, resource allocation。</p>
+
+<p><strong>HybridFlow / veRL (2409.19256)</strong> — RLHF 框架的 hybrid programming model 和 3D-HybridEngine（actor 在 training/generation 间零冗余 resharding）<a href="/papers/2409.19256/detail.html#core-contribution" class="ref-link" title="2409.19256#core-contribution">[2409.19256]</a> 与 FlowKV 的 KV cache 形状变换存在深层技术类比：两者都需要在不同执行阶段间高效切换 tensor 布局。关联维度：tensor resharding, flexible parallelism, role transition。</p>
+
+<p><strong>DeepSeek-V3 (2412.19437)</strong> — 大规模训练中的通信隐藏。DualPipe 通过细粒度组件交错实现 all-to-all 通信的完全计算重叠 <a href="/papers/2412.19437/detail.html#core-contribution" class="ref-link" title="2412.19437#core-contribution">[2412.19437]</a>。FlowKV 的 KV 传输优化目标相似（降低/隐藏通信开销），但方法不同：DualPipe 靠 overlap（通信与计算同时进行），FlowKV 靠 reduction（将通信次数从 23K 降到 1）<a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>。关联维度：communication optimization, pipeline efficiency。</p>
+
+<hr>
+
+<h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta <a class="heading-anchor" href="#本篇-vs-相关论文的-delta" aria-label="Link to 本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="1-vs-mooncake-—-传输路线对决：nccl-layout-优化-vs-rdma-分布式缓存">1. vs Mooncake — 传输路线对决：NCCL layout 优化 vs RDMA + 分布式缓存 <a class="heading-anchor" href="#1-vs-mooncake-—-传输路线对决：nccl-layout-优化-vs-rdma-分布式缓存" aria-label="Link to 1-vs-mooncake-—-传输路线对决：nccl-layout-优化-vs-rdma-分布式缓存">#</a></h3>
+
+<table>
+<tr><th>维度</th><th>FlowKV</th><th>Mooncake</th></tr>
+<tr><td>传输后端</td><td>NCCL（协议兼容性优先）</td><td>RDMA（GPUDirect，性能优先）</td></tr>
+<tr><td>KV cache 存储</td><td>GPU HBM（标准 PagedAttention 改造）</td><td>CPU DRAM/SSD 分布式池</td></tr>
+<tr><td>Prefix caching</td><td>Global KV Cache Sensor（提及但未详述）</td><td>Hash-based prefix dedup + LRU 淘汰 + 启发式热点迁移</td></tr>
+<tr><td>过载处理</td><td>弹性伸缩 + 角色切换</td><td>Prediction-based early rejection (HTTP 429)</td></tr>
+<tr><td>KV 传输延迟（单机 10K tokens）</td><td><strong>0.0555s</strong></td><td>Failure（无法完成）</td></tr>
+<tr><td>KV 传输延迟（跨机 10K tokens）</td><td><strong>0.1500s</strong></td><td>Failure（无法完成）</td></tr>
+</table>
+
+<p><strong>FlowKV 的增量贡献</strong>：在 NCCL 传输链路上实现了 Mooncake 的 RDMA 路线未能达到的极致优化。Mooncake 在 10K+ 输入时 KV 传输直接 Failure <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>，而 FlowKV 通过内存布局重构将 NCCL 调用数从 23,469 降到 1。这表明 <strong>传输协议选择（RDMA vs NCCL）不如内存布局优化重要</strong> — Mooncake 的 RDMA 在大 KV cache 场景下有未公开的限制。</p>
+
+<p><strong>Mooncake 的不可替代优势</strong>：分布式 KVCache 池 + prefix caching 是 FlowKV 完全缺失的维度。Mooncake 在 L-Eval（>80% prefix 复用）上实现 40% 吞吐提升 <a href="/papers/2407.00079/detail.html#5-实验与数据" class="ref-link" title="2407.00079#5-实验与数据">[2407.00079]</a>，这是 FlowKV 无法覆盖的场景。Mooncake 的 prediction-based early rejection 在过载场景下减少 14% 的无效拒绝 <a href="/papers/2407.00079/detail.html#5-实验与数据" class="ref-link" title="2407.00079#5-实验与数据">[2407.00079]</a>，FlowKV 的 extreme load 策略仅为弹性伸缩，缺乏精细化过载管控。</p>
+
+<h3 id="2-vs-vllm-—-从-pagedattention-消费者到改造者">2. vs vLLM — 从 PagedAttention 消费者到改造者 <a class="heading-anchor" href="#2-vs-vllm-—-从-pagedattention-消费者到改造者" aria-label="Link to 2-vs-vllm-—-从-pagedattention-消费者到改造者">#</a></h3>
+
+<p>FlowKV 对 vLLM 的核心 delta 在于 <strong>将 PagedAttention 的设计假设从 "单机非连续分配" 翻转为 "跨机连续传输"</strong>：</p>
+
+<ul>
+<li>vLLM 的 block allocator 追求 any-free-block 分配以最小化碎片 <a href="/papers/2309.06180/detail.html#q2-方法" class="ref-link" title="2309.06180#q2-方法">[2309.06180]</a>，不关心物理连续性</li>
+<li>FlowKV 的 segment allocator 追求 contiguous-segment 分配以最小化传输次数 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>，用 min-heap 维护连续段</li>
+</ul>
+
+<p>这是一个根本性的设计权衡转换：vLLM 的非连续性在单机上零代价（GPU 内核通过 block table 间接寻址，开销仅 20–26% <a href="/papers/2309.06180/detail.html#5-实验与数据" class="ref-link" title="2309.06180#5-实验与数据">[2309.06180]</a>），但在 disaggregated 跨节点传输中产生 $O(B \times L \times 2)$ 次 NCCL 调用。FlowKV 的连续性在分配时增加少许开销（best-fit 搜索 + 合并），但在传输时获得 $O(1)$ 的巨大收益。</p>
+
+<p><strong>矛盾点</strong>：FlowKV 的 segment allocator 在长期运行中可能产生新的碎片模式。vLLM 的 any-free-block 策略保证内存利用率最高（浪费 < 1 block/request）<a href="/papers/2309.06180/detail.html#4-作者证明" class="ref-link" title="2309.06180#4-作者证明">[2309.06180]</a>，FlowKV 的 best-fit segment 策略是否在高并发 + 多样序列长度下保持同样的低碎片率？论文仅提到 "释放时合并相邻空闲段" <a href="/papers/2504.03775/detail.html#7-实现-cross-reference" class="ref-link" title="2504.03775#7-实现-cross-reference">[2504.03775]</a>，未提供长期碎片率实测。</p>
+
+<h3 id="3-vs-fastserve-—-调度哲学：全局负载均衡-vs-请求级-hol-消除">3. vs FastServe — 调度哲学：全局负载均衡 vs 请求级 HoL 消除 <a class="heading-anchor" href="#3-vs-fastserve-—-调度哲学：全局负载均衡-vs-请求级-hol-消除" aria-label="Link to 3-vs-fastserve-—-调度哲学：全局负载均衡-vs-请求级-hol-消除">#</a></h3>
+
+<p>FastServe 和 FlowKV 在调度层面看似相似（都是 "感知负载做更好的调度"），但解决的问题完全不同：</p>
+
+<ul>
+<li>FastServe 的 skip-join MLFQ 解决 <strong>单机内</strong> 请求间的 HoL blocking：利用 prefill time 已知的半信息属性，将新任务跳过不合适的高优先级队列 <a href="/papers/2305.05920/detail.html#q2-方法" class="ref-link" title="2305.05920#q2-方法">[2305.05920]</a>。问题粒度：per-iteration scheduling。</li>
+<li>FlowKV 的 Load-Aware Scheduler 解决 <strong>跨机</strong> P/D 节点的负载不均衡：通过 8 维负载分数 $C_i^{p/d}$ 做全局路由和角色切换 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>。问题粒度：per-request routing。</li>
+</ul>
+
+<p><strong>潜在组合</strong>：FastServe 的 skip-join MLFQ 可嵌入 FlowKV 的每个 P/D 节点内部作为本地调度器，与 FlowKV 的全局调度器形成二级调度架构。FlowKV 目前的 Hybrid Scheduler 使用简单的 running/waiting/swapped/pending 队列 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>，没有 FastServe 的 preemption sophistication。</p>
+
+<h3 id="4-vs-fastdecode-neo-—-路线分歧：gpu-to-gpu-传输优化-vs-cpu-offloading">4. vs FastDecode / Neo — 路线分歧：GPU-to-GPU 传输优化 vs CPU offloading <a class="heading-anchor" href="#4-vs-fastdecode-neo-—-路线分歧：gpu-to-gpu-传输优化-vs-cpu-offloading" aria-label="Link to 4-vs-fastdecode-neo-—-路线分歧：gpu-to-gpu-传输优化-vs-cpu-offloading">#</a></h3>
+
+<table>
+<tr><th>维度</th><th>FlowKV</th><th>FastDecode</th><th>Neo</th></tr>
+<tr><td>KV cache 位置</td><td>GPU HBM（跨 GPU 传输优化）</td><td>CPU 内存（完全卸载）</td><td>GPU + CPU（混合）</td></tr>
+<tr><td>传输对象</td><td>KV cache tensors（一次 NCCL）</td><td>Q/O activations（每层往返）</td><td>KV per layer（swap in/out）</td></tr>
+<tr><td>额外硬件需求</td><td>无（标准 GPU 集群）</td><td>多台远程 CPU 节点 + InfiniBand</td><td>本机 CPU（无额外节点）</td></tr>
+<tr><td>Prefill 处理</td><td>✅ 分离到 P 节点</td><td>❌ 未覆盖</td><td>✅ GPU 上执行</td></tr>
+<tr><td>目标场景</td><td>中高端 GPU 集群</td><td>A10 等中端 GPU + CPU 集群</td><td>内存受限 GPU（T4/A10G）</td></tr>
+</table>
+
+<p>FastDecode 将 attention 完全移到 CPU 以释放 GPU HBM 给更大 batch <a href="/papers/2403.11421/detail.html#1-tl-dr" class="ref-link" title="2403.11421#1-tl-dr">[2403.11421]</a>，代价是需要 8 台远程 CPU 服务器的聚合带宽来匹配 1 张 GPU。Neo 通过 asymmetric pipelining 在本机 CPU 上执行部分 attention <a href="/papers/2411.01142/detail.html#1-tl-dr" class="ref-link" title="2411.01142#1-tl-dr">[2411.01142]</a>，但在 H100（80GB）上仅 14% 吞吐提升。</p>
+
+<p><strong>FlowKV 的定位差异</strong>：FlowKV 不减少 GPU 上的 KV cache 占用，而是让 disaggregated 架构中的 KV 传输几乎免费。这意味着 FlowKV 的价值 <strong>仅在 PD-disaggregated 部署模式下存在</strong> — 如果不做 PD 分离（如 vLLM 的 colocated 模式），FlowKV 的三重优化毫无意义。FastDecode 和 Neo 则在任何部署模式下都能提供价值（只要 GPU 内存受限）。</p>
+
+<h3 id="5-vs-flexrlhf-hybridflow-—-disaggregation-的跨域迁移">5. vs FlexRLHF / HybridFlow — Disaggregation 的跨域迁移 <a class="heading-anchor" href="#5-vs-flexrlhf-hybridflow-—-disaggregation-的跨域迁移" aria-label="Link to 5-vs-flexrlhf-hybridflow-—-disaggregation-的跨域迁移">#</a></h3>
+
+<p>FlexRLHF 的 Disaggregated 策略将 RLHF 的训练和推理运行时分离到不同设备组 <a href="/papers/2312.11819/detail.html#core-contribution" class="ref-link" title="2312.11819#core-contribution">[2312.11819]</a>，HybridFlow 的 3D-HybridEngine 在 actor 的 training/generation 阶段间做零冗余 resharding <a href="/papers/2409.19256/detail.html#core-contribution" class="ref-link" title="2409.19256#core-contribution">[2409.19256]</a>。与 FlowKV 的 PD disaggregation 存在概念层面的映射：</p>
+
+<table>
+<tr><th>训练域概念</th><th>推理域对应 (FlowKV)</th></tr>
+<tr><td>Training ↔ Generation 分离</td><td>Prefill ↔ Decode 分离</td></tr>
+<tr><td>Shadow 模型参数同步</td><td>KV cache 跨节点传输</td></tr>
+<tr><td>角色切换（训练设备临时做推理）</td><td>P/D 节点角色切换（imbalanced load 下）</td></tr>
+<tr><td>Placement ratio 配置</td><td>P:D 节点比例配置</td></tr>
+</table>
+
+<p><strong>增量贡献</strong>：FlowKV 在推理域中比训练域更强调 <strong>传输效率</strong>（KV cache 远大于参数同步数据量），这驱动了形状变换 + 段式分配的创新。训练域的 resharding 是周期性的（每 PPO iteration 一次 <a href="/papers/2312.11819/detail.html#core-contribution" class="ref-link" title="2312.11819#core-contribution">[2312.11819]</a>），推理域的 KV 传输是每请求的，频率高数个数量级。</p>
+
+<h3 id="6-vs-deepseek-v3-—-通信优化策略：reduction-vs-overlap">6. vs DeepSeek-V3 — 通信优化策略：Reduction vs Overlap <a class="heading-anchor" href="#6-vs-deepseek-v3-—-通信优化策略：reduction-vs-overlap" aria-label="Link to 6-vs-deepseek-v3-—-通信优化策略：reduction-vs-overlap">#</a></h3>
+
+<p>DeepSeek-V3 的 DualPipe 面对 compute:comm ≈ 1:1 的挑战，选择 <strong>overlap</strong> 策略：细粒度组件交错，让 forward 通信与 backward 计算重叠 <a href="/papers/2412.19437/detail.html#core-contribution" class="ref-link" title="2412.19437#core-contribution">[2412.19437]</a>。FlowKV 面对 KV 传输占 25% 延迟的挑战，选择 <strong>reduction</strong> 策略：将传输次数从 23,469 降到 1 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>。</p>
+
+<p>两种策略的适用条件不同：</p>
+<ul>
+<li><strong>Overlap</strong> 要求计算和通信可分解为可独立调度的细粒度组件，且二者时间量级匹配</li>
+<li><strong>Reduction</strong> 要求通信模式存在冗余（如大量小传输可合并为少量大传输）</li>
+</ul>
+
+<p>FlowKV 的情况恰好适合 reduction：NCCL 的 per-call overhead 在小传输时占比巨大，合并后 overhead 只付一次。DualPipe 的情况适合 overlap：all-to-all 通信量固定，不可合并但可与其他操作并行。</p>
+
+<hr>
+
+<h2 id="可攻击面">可攻击面 <a class="heading-anchor" href="#可攻击面" aria-label="Link to 可攻击面">#</a></h2>
+
+<h3 id="攻击-1：96-延迟降低的系统级影响被夸大">攻击 1：96% 延迟降低的系统级影响被夸大 <a class="heading-anchor" href="#攻击-1：96-延迟降低的系统级影响被夸大" aria-label="Link to 攻击-1：96-延迟降低的系统级影响被夸大">#</a></h3>
+
+<p>FlowKV 声称 KV cache 传输延迟降低 96%（0.944s → 0.053s）<a href="/papers/2504.03775/detail.html#1-tl-dr" class="ref-link" title="2504.03775#1-tl-dr">[2504.03775]</a>，但这是 <strong>孤立的传输延迟</strong>，非端到端延迟。从 Table 1 的吞吐数据看，1K 输入时 FlowKV vs vLLM PD-colocated 吞吐提升约 25% <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>，远非 96%。这是因为：(1) KV 传输延迟仅占总延迟的一部分（Fig.1 显示约 25% for 13K input），短输入时占比更小；(2) 消除传输延迟后，系统瓶颈转移到 decode 计算本身。</p>
+
+<p><strong>量化分析</strong>：1K 输入的单请求 KV cache 约 $32 \times 2 \times 63 \times H$ bytes（8B 模型），传输量较小，即使未优化传输延迟也不是主要瓶颈。FlowKV 的吞吐优势在短输入时更多来自 PD 分离消除阶段干扰 + Load-Aware Scheduler，而非 KV 传输优化本身。论文将 "传输延迟降低 96%" 放在 abstract 最醒目位置，但未区分这一优化在不同输入长度下的贡献比例。</p>
+
+<h3 id="攻击-2：load-aware-scheduler-的权重确定缺乏科学性">攻击 2：Load-Aware Scheduler 的权重确定缺乏科学性 <a class="heading-anchor" href="#攻击-2：load-aware-scheduler-的权重确定缺乏科学性" aria-label="Link to 攻击-2：load-aware-scheduler-的权重确定缺乏科学性">#</a></h3>
+
+<p>负载分数 $C_i^p = \sum_k w_{k,p} \cdot \text{metric}_k^i$ 中的 8 个权重系数 $w$ 是 "通过几次成功实验确定的" <a href="/papers/2504.03775/detail.html#4-作者证明" class="ref-link" title="2504.03775#4-作者证明">[2504.03775]</a>。这存在三个问题：</p>
+
+<ol>
+<li><strong>无 sensitivity analysis</strong>：未报告不同权重组合对最终吞吐量的影响。如果权重空间中存在多个 local optima，实验选择的可能不是全局最优。</li>
+<li><strong>无泛化验证</strong>：仅在 LLaMA-3.1 8B/70B + A100/L20/H20 上验证。换模型（如 MoE 架构，prefill 和 decode 的计算特征不同）或换硬件（如 H100 NVLink vs ENI）时，最优权重很可能不同。</li>
+<li><strong>与 Neo 的对比</strong>：Neo 的 load-aware scheduling 通过 $T_{tr}/x$ 的 greedy 比较提供数学上的 never-worse-than-baseline 保证 <a href="/papers/2411.01142/detail.html#4-作者证明" class="ref-link" title="2411.01142#4-作者证明">[2411.01142]</a>。FlowKV 的调度没有类似的形式化保证。</li>
+</ul>
+
+<h3 id="攻击-3：基线公平性存疑">攻击 3：基线公平性存疑 <a class="heading-anchor" href="#攻击-3：基线公平性存疑" aria-label="Link to 攻击-3：基线公平性存疑">#</a></h3>
+
+<p><strong>Mooncake 的 Failure</strong>：FlowKV 报告 Mooncake 在 10K+ 输入时 KV 传输 "Failure" <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>，但未解释 failure 的具体原因。Mooncake 使用 RDMA 传输，理论上应有高带宽 <a href="/papers/2407.00079/detail.html#1-tl-dr" class="ref-link" title="2407.00079#1-tl-dr">[2407.00079]</a>。可能的原因包括：(a) Mooncake 的 RDMA 实现有 bug 或配置不当；(b) FlowKV 使用的 Mooncake 版本过旧；(c) Mooncake 的 block size (512 tokens) 与实验设置不匹配。如果 Mooncake 在正确配置下不 fail，FlowKV 的对比优势会大幅缩小。</p>
+
+<p><strong>DistServe 的坍塌</strong>：DistServe 在 5K–10K 输入时吞吐坍塌到 ~22 tok/s <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>，这暗示 DistServe 可能有根本性的架构限制或配置问题。将一个 "已知会坍塌" 的系统作为基线，人为抬高了 FlowKV 的 "95% 吞吐提升" 数字。</p>
+
+<p><strong>缺失的基线</strong>：FlowKV 在 §3.3 引用了 KVDirect (Chen et al., 2025) 作为相关工作，但实验中 <strong>未与 KVDirect 对比</strong> <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>。KVDirect 直接针对 disaggregated KV cache 传输优化，是最直接的竞争者之一，缺席让人怀疑 FlowKV 是否回避了不利对比。</p>
+
+<h3 id="攻击-4：消融实验不完整">攻击 4：消融实验不完整 <a class="heading-anchor" href="#攻击-4：消融实验不完整" aria-label="Link to 攻击-4：消融实验不完整">#</a></h3>
+
+<p>FlowKV 的三重优化（形状变换、段式分配、双向段对齐）是联合验证的。Table 3 仅提供 "FlowKV Layerwise"（仅形状变换，无段对齐）vs "FlowKV"（全部）的对比 <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>，缺失：</p>
+
+<ul>
+<li>仅段式分配（无形状变换）的效果</li>
+<li>仅双向对齐（无形状变换）的效果</li>
+<li>形状变换 + 段式分配（无双向对齐）的效果</li>
+</ul>
+
+<p>没有完整的 2³ 消融，无法确定每个优化的边际贡献。FlowKV Layerwise 在跨机场景下甚至比 vLLM-Disagg 更慢（如 2000/100: 0.4324s vs 0.3444s）<a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>，说明形状变换单独使用时在某些场景下有负面效果。</p>
+
+<h3 id="攻击-5：10k-2-0-rps-交叉点暴露-1p1d-比例瓶颈">攻击 5：10K/2.0 RPS 交叉点暴露 1P1D 比例瓶颈 <a class="heading-anchor" href="#攻击-5：10k-2-0-rps-交叉点暴露-1p1d-比例瓶颈" aria-label="Link to 攻击-5：10k-2-0-rps-交叉点暴露-1p1d-比例瓶颈">#</a></h3>
+
+<p>Table 1 中 8B 模型 10K/2.0 RPS 时 FlowKV (285.14 tok/s) 略低于 vLLM PD-colocated (286.97 tok/s) <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>。这个交叉点的含义是：当 decode 端 KV cache 填满单 D 节点 HBM 时，disaggregated 1P1D 的架构反而不如 colocated（后者的 8 张 GPU 共同承担 KV cache 压力）。</p>
+
+<p>FlowKV 的 Load-Aware Scheduler 声称支持 "extreme load 下弹性伸缩" <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>，但实验中 1P1D 配置未动态扩展到更多 D 节点，说明弹性伸缩在实验中 <strong>未被触发或未被验证</strong>。</p>
+
+<h3 id="攻击-6：模型覆盖过窄">攻击 6：模型覆盖过窄 <a class="heading-anchor" href="#攻击-6：模型覆盖过窄" aria-label="Link to 攻击-6：模型覆盖过窄">#</a></h3>
+
+<p>仅评估 LLaMA-3.1 8B/70B <a href="/papers/2504.03775/detail.html#5-实验与数据" class="ref-link" title="2504.03775#5-实验与数据">[2504.03775]</a>，存在显著的泛化风险：</p>
+
+<ul>
+<li><strong>GQA/MQA 架构</strong>（如 LLaMA-3 使用 GQA）：KV cache 大小显著小于 MHA，传输优化的绝对收益按比例缩小，FlowKV 的优势可能不显著</li>
+<li><strong>MoE 模型</strong>（如 DeepSeek-V3 的 MLA 将 KV cache 压缩到 512 维 <a href="/papers/2412.19437/detail.html#core-contribution" class="ref-link" title="2412.19437#core-contribution">[2412.19437]</a>）：极小的 KV cache 使传输优化几乎无价值</li>
+<li><strong>超长上下文</strong>（128K+）：FlowKV 最大测试 12K input，在 128K 场景下段式分配器的碎片行为和传输延迟未知</li>
+</ul>
+
+<hr>
+
+<h2 id="生态位">生态位 <a class="heading-anchor" href="#生态位" aria-label="Link to 生态位">#</a></h2>
+
+<h3 id="范式定位">范式定位 <a class="heading-anchor" href="#范式定位" aria-label="Link to 范式定位">#</a></h3>
+
+<p>FlowKV 不是范式转移（paradigm shift），而是 <strong>PD-disaggregated 推理范式中的关键工程优化</strong>。PD 分离本身由 Splitwise (ISCA 2024)、DistServe (OSDI 2024)、Mooncake 等工作确立，FlowKV 填补了这些工作 "忽视 KV 传输延迟" 的盲点 <a href="/papers/2504.03775/detail.html#q1-痛点" class="ref-link" title="2504.03775#q1-痛点">[2504.03775]</a>。</p>
+
+<h3 id="技术路线图谱">技术路线图谱 <a class="heading-anchor" href="#技术路线图谱" aria-label="Link to 技术路线图谱">#</a></h3>
+
+<pre><code>
+LLM Inference Optimization
+├── Memory management
+│   └── PagedAttention (vLLM) ← FlowKV 改造 layout
+├── Scheduling
+│   ├── FastServe: request-level MLFQ
+│   └── FlowKV: cluster-level load-aware ← 与 FastServe 互补
+├── PD Disaggregation
+│   ├── Mooncake: KVCache-centric + RDMA + prefix caching
+│   ├── DistServe: goodput-optimized
+│   └── FlowKV: NCCL transfer optimization ← 本文
+├── CPU Offloading
+│   ├── FastDecode: full attention offload
+│   └── Neo: selective asymmetric offload
+└── Training
+    ├── FlexRLHF: training-inference disaggregation
+    ├── HybridFlow: hybrid programming + resharding
+    └── DeepSeek-V3: DualPipe compute-comm overlap
+</code></pre>
+
+<p>FlowKV 的生态位在 "PD Disaggregation" 子树中独占 "NCCL 传输优化" 这一分支。其技术贡献（形状变换 + 段式分配 + 双向对齐）理论上可以被 vLLM、Mooncake 或其他 disaggregated 框架吸收，但实际上需要全栈改动（attention kernel 写入布局 + block allocator + NCCL 传输 API）<a href="/papers/2504.03775/detail.html#7-实现-cross-reference" class="ref-link" title="2504.03775#7-实现-cross-reference">[2504.03775]</a>，迁移成本非 trivial。</p>
+
+<h3 id="采纳障碍">采纳障碍 <a class="heading-anchor" href="#采纳障碍" aria-label="Link to 采纳障碍">#</a></h3>
+
+<ol>
+<li><strong>未开源</strong>：论文未提供代码仓库或 GitHub 链接 <a href="/papers/2504.03775/detail.html#8-api-usability" class="ref-link" title="2504.03775#8-api-usability">[2504.03775]</a>，严重限制了社区采纳</li>
+<li><strong>全栈改动</strong>：需同时修改 attention kernel、block allocator、transfer module — 不是 vLLM 的 drop-in 插件 <a href="/papers/2504.03775/detail.html#10-deployment-context-实践上下文" class="ref-link" title="2504.03775#10-deployment-context-实践上下文">[2504.03775]</a></li>
+<li><strong>vLLM 原生 disaggregated 的快速演进</strong>：vLLM 社区正在积极开发 disaggregated prefill-decode 支持，FlowKV 的优化可能被社区方案追赶或替代</li>
+<li><strong>对比 Mooncake 的生态劣势</strong>：Mooncake 已开源（github.com/kvcache-ai/Mooncake）<a href="/papers/2407.00079/detail.html#7-实现-cross-reference" class="ref-link" title="2407.00079#7-实现-cross-reference">[2407.00079]</a>，有 Kimi 的生产验证；FlowKV 无开源、无生产部署</li>
+</ul>
+
+<h3 id="核心价值判断">核心价值判断 <a class="heading-anchor" href="#核心价值判断" aria-label="Link to 核心价值判断">#</a></h3>
+
+<p>FlowKV 的技术贡献（NCCL 调用 23,469→1）是 solid engineering innovation，但其影响力取决于：</p>
+
+<ul>
+<li>如果 PD-disaggregated 成为主流部署模式（迹象明显），且 NCCL 仍是主要传输后端 → FlowKV 的技术方案将被广泛参考</li>
+<li>如果 RDMA 或其他零拷贝传输（如 CUDA IPC、NVLink P2P）成为主流 → FlowKV 的 NCCL 优化路线价值降低</li>
+<li>如果 KV cache 大小因架构创新（MLA、GQA、线性 attention）而大幅缩小 → 传输优化的需求本身减弱</li>
+</ul>
+
+<hr>
+
+<h2 id="未探索方向">未探索方向 <a class="heading-anchor" href="#未探索方向" aria-label="Link to 未探索方向">#</a></h2>
+
+<h3 id="方向-1：flowkv-mooncake-融合-—-同时解决传输延迟和-prefix-caching">方向 1：FlowKV + Mooncake 融合 — 同时解决传输延迟和 prefix caching <a class="heading-anchor" href="#方向-1：flowkv-mooncake-融合-—-同时解决传输延迟和-prefix-caching" aria-label="Link to 方向-1：flowkv-mooncake-融合-—-同时解决传输延迟和-prefix-caching">#</a></h3>
+
+<p>FlowKV 的段式连续分配 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a> 与 Mooncake 的 hash-based prefix dedup <a href="/papers/2407.00079/detail.html#7-实现-cross-reference" class="ref-link" title="2407.00079#7-实现-cross-reference">[2407.00079]</a> 存在矛盾：段式分配追求物理连续性以优化传输，hash-based dedup 追求内容寻址以复用 prefix。</p>
+
+<p><strong>可行方案</strong>：两级分配器 — 第一级按 prefix hash 做逻辑 dedup（保留 Mooncake 的 cache 语义），第二级按 segment 做物理分配（获取 FlowKV 的传输效率）。当 prefix cache miss 时，新分配的 KV cache 用段式分配保证连续；cache hit 时跳过传输。</p>
+
+<h3 id="方向-2：kv-cache-形状变换-cpu-offloading-—-跨设备-layout-自适应">方向 2：KV cache 形状变换 + CPU offloading — 跨设备 layout 自适应 <a class="heading-anchor" href="#方向-2：kv-cache-形状变换-cpu-offloading-—-跨设备-layout-自适应" aria-label="Link to 方向-2：kv-cache-形状变换-cpu-offloading-—-跨设备-layout-自适应">#</a></h3>
+
+<p>FlowKV 的 $(L,2,B,H) \to (B,L,2,H)$ 变换优化了 GPU 间传输，但 Neo 的 GPU↔CPU swap 需要不同的内存布局优化（CPU 侧追求 cache-line 友好的顺序访问）<a href="/papers/2411.01142/detail.html#7-实现-cross-reference" class="ref-link" title="2411.01142#7-实现-cross-reference">[2411.01142]</a>。</p>
+
+<p><strong>可行方案</strong>：设计一种 device-aware KV layout 抽象，根据目标设备自动选择最优 tensor shape — GPU 间传输用 $(B,L,2,H)$，CPU swap 用按层连续布局，CPU attention 用按 head 分区布局。这需要 lazy reshape（仅在跨设备传输时做 layout 转换）或 unified layout（兼顾所有访问模式）。</p>
+
+<h3 id="方向-3：动态-p-d-比例-speculative-decoding-联合调度">方向 3：动态 P/D 比例 + Speculative Decoding 联合调度 <a class="heading-anchor" href="#方向-3：动态-p-d-比例-speculative-decoding-联合调度" aria-label="Link to 方向-3：动态-p-d-比例-speculative-decoding-联合调度">#</a></h3>
+
+<p>FlowKV 的 Load-Aware Scheduler 支持 imbalanced load 下 P/D 角色切换 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>，但未考虑 speculative decoding 场景。在 speculative decoding 中，draft model 生成的候选 token 需要 verification（额外 prefill），这改变了 P/D 的负载比例。</p>
+
+<p>DeepSeek-V3 的 MTP speculative decoding 达到 85–90% acceptance rate 和 1.8× TPS <a href="/papers/2412.19437/detail.html#core-contribution" class="ref-link" title="2412.19437#core-contribution">[2412.19437]</a>。若将此集成到 FlowKV 的 disaggregated 架构，需要三类节点（Draft-Prefill / Verify-Prefill / Decode），Load-Aware Scheduler 需要扩展到三维负载空间。</p>
+
+<h3 id="方向-4：fastserve-的-mlfq-flowkv-的全局调度-—-二级调度架构">方向 4：FastServe 的 MLFQ + FlowKV 的全局调度 — 二级调度架构 <a class="heading-anchor" href="#方向-4：fastserve-的-mlfq-flowkv-的全局调度-—-二级调度架构" aria-label="Link to 方向-4：fastserve-的-mlfq-flowkv-的全局调度-—-二级调度架构">#</a></h3>
+
+<p>FastServe 的 skip-join MLFQ 在单机上消除 HoL blocking <a href="/papers/2305.05920/detail.html#q2-方法" class="ref-link" title="2305.05920#q2-方法">[2305.05920]</a>，FlowKV 的全局控制器在集群上做负载均衡 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>。两者可以构成 <strong>层级调度</strong>：</p>
+
+<ul>
+<li>L1（全局）：FlowKV 的 Global Controller 做 request → (P, D) 节点对的路由</li>
+<li>L2（节点内）：FastServe 的 skip-join MLFQ 做 request → iteration slot 的调度</li>
+</ul>
+
+<p>当前 FlowKV 的节点内调度器是简单的 priority-based 队列（"prefill 优先"），无抢占能力 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>。引入 FastServe 的迭代级抢占可以进一步消除节点内的 HoL blocking，特别是在 decode 节点上同时处理不同长度请求时。</p>
+
+<h3 id="方向-5：hybridflow-的-transfer-protocol-抽象应用于推理-kv-传输">方向 5：HybridFlow 的 Transfer Protocol 抽象应用于推理 KV 传输 <a class="heading-anchor" href="#方向-5：hybridflow-的-transfer-protocol-抽象应用于推理-kv-传输" aria-label="Link to 方向-5：hybridflow-的-transfer-protocol-抽象应用于推理-kv-传输">#</a></h3>
+
+<p>HybridFlow 的 transfer protocol 层通过 <code>@register</code> 装饰器将数据 resharding 与模型计算解耦 <a href="/papers/2409.19256/detail.html#core-contribution" class="ref-link" title="2409.19256#core-contribution">[2409.19256]</a>。类似的抽象可以应用于 FlowKV 的 KV 传输：</p>
+
+<p>定义 <code>KVTransferProtocol</code> 抽象，支持多种传输策略的透明切换：</p>
+<ul>
+<li><code>NCCLSegment</code>: FlowKV 的段对齐 NCCL 传输</li>
+<li><code>RDMA</code>: Mooncake 式的 GPUDirect RDMA</li>
+<li><code>IPC</code>: 同机 IPC 传输</li>
+<li><code>CPURelay</code>: Neo 式的 CPU 中转</li>
+</ul>
+
+<p>调度器根据部署拓扑自动选择最优 protocol（FlowKV 目前已支持 NCCL/IPC/RDMA 选择 <a href="/papers/2504.03775/detail.html#q2-方法" class="ref-link" title="2504.03775#q2-方法">[2504.03775]</a>，但缺乏 protocol 抽象层）。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2407.00079.html">2407.00079</a> (baseline) 
+<a href="/papers/2406.17565.html">2406.17565</a> (baseline) 
+<a href="/papers/2312.07104.html">2312.07104</a> (related) 
+<a href="/papers/2308.16369.html">2308.16369</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

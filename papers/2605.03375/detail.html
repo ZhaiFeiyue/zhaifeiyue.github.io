@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Tutti: Making SSD-Backed KV Cache Practical for Long-Context LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Tutti: Making SSD-Backed KV Cache Practical for Long-Context LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2605.03375</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-offloading</span><span class="tag">gpu-centric-storage</span><span class="tag">nvme-ssd</span><span class="tag">prefix-caching</span><span class="tag">io-scheduling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2605.03375.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2605.03375" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="tutti-making-ssd-backed-kv-cache-practical-for-long-context-llm-serving">Tutti: Making SSD-Backed KV Cache Practical for Long-Context LLM Serving <a class="heading-anchor" href="#tutti-making-ssd-backed-kv-cache-practical-for-long-context-llm-serving" aria-label="Link to tutti-making-ssd-backed-kv-cache-practical-for-long-context-llm-serving">#</a></h1>
+
+<blockquote>
+Shi Qiu, Yifan Hu, Xintao Wang, Wenhao Zhu et al. | 2026-05 | <https://arxiv.org/abs/2605.03375>
+Category: framework | Tags: kv-cache-offloading, gpu-centric-storage, nvme-ssd, prefix-caching, io-scheduling
+</blockquote>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>Tutti 是首个将 CPU 从 GPU↔SSD KV cache 的数据路径和 I/O 控制路径中完全移除的开源方案。通过 GPU-native object store + GPU io_uring + slack-aware I/O scheduling 三项设计，SSD-backed KV cache 达到与 DRAM-backed 近乎相同的推理性能，TTFT 降 78.3%、可服务 RPS 翻倍、成本降 27%。</p>
+
+<h3 id="system-scope">System scope <a class="heading-anchor" href="#system-scope" aria-label="Link to system-scope">#</a></h3>
+
+<ul>
+<li><strong>Stage coverage</strong>: prefill + decode（prefill 是 TTFT 优化主战场，decode 利用剩余 slack 写入 KV）</li>
+<li><strong>Serving or training</strong>: 推理 serving，continuous batching (vLLM)</li>
+<li><strong>Parallelism</strong>: TP（每 GPU 一个 Tutti 实例）；PP / EP / DP 未涉及</li>
+<li><strong>Deployment mode</strong>: 单节点多 GPU；通过 Mooncake 扩展至 cluster-wide 元数据协调</li>
+</ul>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+
+<ol>
+<li><strong>KV cache 容量瓶颈</strong>：长上下文 + 高并发使 KV cache 远超 HBM / DRAM 容量；SSD 提供 100 TB 级容量但 I/O 无法跟上推理速度。</li>
+<li><strong>CPU-centric I/O 是根因</strong>：paged KV layout 碎片化 → 数十万次小粒度随机 I/O 全部需 CPU 发起（即便 GDS 亦然），GPU stall 高达 70–80%。</li>
+<li><strong>随 compute 优化加剧</strong>：vLLM v0.12 → v0.17 推理加速后 I/O 比重更大，SSD-backed KV cache 收益从"不佳"变为"负收益"。</li>
+</ul>
+
+<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+
+<p><strong>Design 1 — GPU-centric Object Store (§3.1)</strong>：将 KV cache 抽象为 GPU file（$2L$ objects/file），NVMe file 以 Tensor-Stripe 布局对齐 GPU 内存 block 粒度。P2P memory mapping table 使用 SGL 取代 PRP（HBM 开销从 3.75 GB 降至 15 MB）。CPU 开销从 $O(\text{layer} \times \text{blocks})$ 降为 $O(\text{layer})$。</p>
+
+<p><strong>Design 2 — GPU io_uring (§3.2)</strong>：CPU 仅异步提交 IOCB，GPU kernel 在 HBM 驻留的 lock-free ring buffer (SQ/CQ) 上完成 NVMe 命令提交与完成轮询。SM partitioning（NVIDIA green context）将 GPU 资源硬隔离为 Compute Domain 和 I/O Control Domain，消除长尾延迟。</p>
+
+<p><strong>Design 3 — Slack-aware I/O Scheduler (§3.3)</strong>：离线 profiling 建表记录每层($L_\text{input}$, $L_\text{prefix}$)下的 SM 空闲窗口。运行时查表调度 read/write，解耦 R/W 避免 NVMe 内部 cache 抢占（混合 R/W 带宽跌 60%）。Read 优先；write 延迟到后续 slack 或 decode 阶段。</p>
+
+<h4 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h4>
+
+<p>GPU-side 全程绕过 CPU 的 NVMe I/O 控制路径是最难复现的核心。它要求：(1) GPU 驱动直接管理 NVMe SQ/CQ（BaM/GeminiFS 技术栈）；(2) SGL descriptor 替代 PRP 以避免特权态 CPU 分配页表；(3) SM 硬隔离保证 I/O kernel 不与 compute 争抢——三者缺一不可，且需要对 NVMe 规范和 GPU 硬件调度器有底层控制力。</p>
+
+<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+
+<table>
+<tr><th>Metric</th><th>Tutti</th><th>Best Baseline</th><th>Delta</th></tr>
+<tr><td>TTFT (LEval, vLLM v0.17, SLO 1s)</td><td>lowest</td><td>LMCache-GDS</td><td>−78.3%</td></tr>
+<tr><td>Achievable RPS (SLO-bounded)</td><td>2× GDS</td><td>LMCache-GDS</td><td>+100%</td></tr>
+<tr><td>Retrieve BW (2-disk, 128K)</td><td>25.9 GB/s</td><td>LMCache-GDS 11.9 GB/s</td><td>+2.08×</td></tr>
+<tr><td>Cost per 1M tokens (LooGLE)</td><td>lowest</td><td>LMCache-SSD</td><td>−66.2%</td></tr>
+<tr><td>Crossover hit rate (compute→I/O bound)</td><td>98.3%</td><td>LMCache-SSD ≪</td><td>—</td></tr>
+<tr><td>Multi-GPU TTFT 640K</td><td>1.2 s</td><td>GDS: OOM</td><td>—</td></tr>
+</table>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2605.03375/fig1.png" alt="Figure 1: CPU-centric vs GPU-centric KV cache storage architecture"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "Comparison between CPU-centric KV cache storage (LMCache w/ and w/o GDS) and GPU-centric Tutti. Tutti eliminates CPU intervention from the critical data and I/O control paths between HBM and SSDs.").</em></p>
+
+<p>Figure 1 是 Tutti 的核心对比：左侧 CPU-centric 路径中每次 I/O 都经 CPU 发起 cudaMemcpy 或 GDS cuFile 调用；右侧 GPU-centric 路径中 CPU 仅做一次性元数据准备，数据流完全在 GPU→NVMe 之间闭环。</p>
+
+<p><img src="/assets/2605.03375/fig4.png" alt="Figure 4: Layout of GPU-centric KV cache object store"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "Layout of GPU-centric KV cache store.").</em></p>
+
+<p>GPU file pool 将每个 KV block 映射为一个 GPU file（$2L$ objects：K/V 各一层一 object）。NVMe file pool 基于 GeminiFS 预分配 extent。P2P memory mapping table 在初始化时从 KV cache memory pool 的虚拟地址预算好 SGL 描述符，运行时零开销查表。</p>
+
+<p><img src="/assets/2605.03375/fig5.png" alt="Figure 5: GPU io_uring architecture and I/O flow"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "Architecture and I/O Process of GPU io_uring.").</em></p>
+
+<p>gio_uring 的四步流程：<code>init_queue</code> → <code>get_iocb</code>（CPU 填充 IOCB）→ <code>issue_io</code>（GPU kernel 在隔离 SM 上发射 NVMe 命令）→ <code>wait_cqe</code>（GPU 端 poll CQ，无 CPU 参与）。CUDA event 用于保证跨 stream 依赖正确性。</p>
+
+<p><img src="/assets/2605.03375/fig7.png" alt="Figure 7: Slack-aware I/O scheduler"></p>
+
+<p><em>Paper's Figure 7, verbatim (caption: "Slack aware I/O scheduler.").</em></p>
+
+<p>Scheduler 在 prefill 每层前查表获取空闲 SM 窗口，优先调度 read kernel，write kernel 利用剩余 slack 或 defer 到 decode。解耦设计避免 NVMe SSD 内部 cache 因混合 R/W 而带宽坍塌。</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant CPU as CPU (off-critical-path)
+    participant GPU_C as GPU Compute Domain
+    participant GPU_IO as GPU I/O Domain
+    participant NVMe as NVMe SSD
+
+    CPU->>GPU_C: enqueue compute kernel (layer L)
+    CPU->>GPU_IO: enqueue I/O kernel (IOCB for layer L+1)
+    Note over CPU: CPU overhead = O(layer), then idle
+
+    GPU_C->>GPU_C: prefill layer L (attention + FFN)
+    GPU_IO->>NVMe: issue SGL read (layer L+1 KV)
+    NVMe-->>GPU_IO: DMA completion → CQ entry
+    GPU_IO-->>GPU_C: CUDA event signal (KV ready)
+    GPU_C->>GPU_C: prefill layer L+1 (uses fetched KV)
+
+    Note over GPU_IO: write deferred to slack/decode
+    GPU_IO->>NVMe: issue SGL write (layer L KV store)
+</div>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="无形式化性能模型-—-仅实证-成本模型">无形式化性能模型 — 仅实证 + 成本模型 <a class="heading-anchor" href="#无形式化性能模型-—-仅实证-成本模型" aria-label="Link to 无形式化性能模型-—-仅实证-成本模型">#</a></h3>
+
+<p>论文没有提出 I/O 性能的解析吞吐/延迟模型，而是依赖离线 profiling lookup table 来做调度决策。唯一显式模型为 §4.3 的成本公式。</p>
+
+<h4 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h4>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th><th>Unit</th></tr>
+<tr><td>$P_{GPU}$</td><td>GPU hourly rental price</td><td>$/hour</td></tr>
+<tr><td>$N_{GPU}$</td><td>GPU count</td><td>—</td></tr>
+<tr><td>$P_{mem}$</td><td>DRAM unit price</td><td>$/GB/hour</td></tr>
+<tr><td>$S_{mem}$</td><td>DRAM capacity provisioned</td><td>GB</td></tr>
+<tr><td>$P_{ssd}$</td><td>SSD unit price</td><td>$/GB/hour</td></tr>
+<tr><td>$S_{ssd}$</td><td>SSD capacity provisioned</td><td>GB</td></tr>
+<tr><td>$\text{Throughput}$</td><td>Achieved token generation rate</td><td>tokens/hour</td></tr>
+</table>
+
+<h4 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h4>
+
+<p>$$\text{Cost}_{1M} = \frac{P_{GPU} \cdot N_{GPU} + P_{mem} \cdot S_{mem} + P_{ssd} \cdot S_{ssd}}{\text{Throughput}} \times 10^6$$</p>
+
+<p>分子 = 硬件总小时成本（计算 + 存储）。分母 = 该配置下实际达成的吞吐。物理含义：在 GPU 利用率不变时，用更便宜的 SSD 替代 DRAM 直接降低分子；但如果 SSD I/O 拖累利用率使 throughput 下降，则分母减小 → cost 上升。Tutti 的贡献在于保持 throughput ≈ DRAM-backed 的同时让存储成本项降 ~100×。</p>
+
+<h4 id="6-check-verification">6-check verification <a class="heading-anchor" href="#6-check-verification" aria-label="Link to 6-check-verification">#</a></h4>
+
+<ol>
+<li><strong>维度一致</strong>：\[$/hour\] / \[tokens/hour\] × \[10^6\] = \[$/Mtok\] ✓</li>
+<li><strong>边界检查</strong>：throughput → 0 时 cost → ∞（GPU idle = 最贵），符合直觉 ✓</li>
+<li><strong>单调性</strong>：cost 关于 throughput 单调递减；关于 $S_{mem}$/$S_{ssd}$ 单调递增 ✓</li>
+<li><strong>数值代入</strong>：$P_{GPU}=5, N_{GPU}=1, P_{ssd}=0.000082, S_{ssd}=14000$ → 存储项 $\approx$1.15$/hr ≪ GPU 5$/hr；DRAM 同容量 1232$/hr → 差 1000× ✓</li>
+<li><strong>模型局限</strong>：未计算 I/O 带来的 GPU bubble 对 throughput 的折扣，实际通过实验补全 ✓</li>
+<li><strong>与实验对应</strong>：Fig. 14 中 Tutti cost 最低与公式预测一致 ✓</li>
+</ul>
+
+<h4 id="无形式化-i-o-性能模型的缺失影响">无形式化 I/O 性能模型的缺失影响 <a class="heading-anchor" href="#无形式化-i-o-性能模型的缺失影响" aria-label="Link to 无形式化-i-o-性能模型的缺失影响">#</a></h4>
+
+<p>一个理想的 I/O 模型需刻画：(a) per-layer transfer time $T_\text{xfer}(B, n_\text{disk}, \text{req\_size})$；(b) compute slack $T_\text{slack}(L_\text{input}, L_\text{prefix}, \text{layer})$；(c) crossover condition $T_\text{xfer} > T_\text{slack}$ 的解析解。缺失此模型意味着无法在不同硬件（更多/更少 SSD、不同 GPU）上快速预测 Tutti 的表现界限。</p>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="scheduling-resource-management-framework-specific">Scheduling & resource management (framework-specific) <a class="heading-anchor" href="#scheduling-resource-management-framework-specific" aria-label="Link to scheduling-resource-management-framework-specific">#</a></h3>
+
+<p><strong>I/O 调度粒度</strong>: layer-level（每层一次 retrieve/store 决策）。</p>
+
+<p><strong>Preemption</strong>: 无——I/O kernel 一旦在 I/O Domain 上发射不可抢占，但通过 slack-aware 调度保证不阻塞 compute kernel。</p>
+
+<p><strong>Admission control</strong>: 依赖 vLLM 原有 scheduler 做 request-level admission；Tutti 不做额外准入控制。</p>
+
+<p><strong>Memory management</strong>:</p>
+<ul>
+<li>KV cache allocation unit = vLLM page block（16–64 tokens × heads × dim）</li>
+<li>Fragmentation: Tensor-Stripe 布局 + 预分配 NVMe file pool 消除运行时碎片</li>
+<li>Eviction / reuse: 继承 vLLM prefix cache 策略；Tutti 通过 Mooncake 做 cluster-level replica metadata 管理</li>
+<li>Swap: SSD 即最终持久层，无 CPU swap；retrieve 是从 SSD 直接 DMA 到 HBM</li>
+</ul>
+
+<h3 id="end-to-end-results">End-to-end results <a class="heading-anchor" href="#end-to-end-results" aria-label="Link to end-to-end-results">#</a></h3>
+
+<p><img src="/assets/2605.03375/fig8.png" alt="Figure 8: End-to-end TTFT and ITL across workloads"></p>
+
+<p><em>Paper's Figure 8, verbatim (caption: "End-to-end TTFT and ITL on Llama3-8B across LEval and LooGLE under two vLLM versions...").</em></p>
+
+<p>核心发现：(1) vLLM v0.17 加速 compute 后 GDS 的 I/O 瓶颈更凸显，DRAM 相对领先收窄；(2) Tutti 在所有 RPS 下保持最低且最稳 TTFT 曲线；(3) LooGLE 长序列场景 Tutti TTFT 仅为 GDS 的 38%。</p>
+
+<p><img src="/assets/2605.03375/fig9.png" alt="Figure 9: Raw bandwidth of retrieve and store"></p>
+
+<p><em>Paper's Figure 9, verbatim (caption: "Raw bandwidth of retrieve and store interfaces across varying context lengths.").</em></p>
+
+<p>Retrieve 带宽随 sequence length 近线性增长至 25.9 GB/s（2-disk RAID-0），而 GDS 饱和于 11.9 GB/s。Store 受限于 SSD 写入峰值 ~10 GB/s，但仍优于 GDS 7 GB/s。LMCache-DRAM 在 16K tokens 出现碎片导致带宽跌至 8.5 GB/s 的不稳定现象。</p>
+
+<p><img src="/assets/2605.03375/fig13.png" alt="Figure 13: Crossover point analysis — bubble vs compute"></p>
+
+<p><em>Paper's Figure 13, verbatim (caption: "Decomposition of latency by cache hit rate, highlighting the critical Crossover Point (★) where bubble time begins to exceed compute time.").</em></p>
+
+<p>Tutti 将 crossover point 推至 98.3% hit rate——意味着在几乎所有实际工作负载（hit rate < 98%）下，SSD I/O 延迟完全被 compute 掩盖，bubble time 平均仅 25 ms。这是 SSD-backed KV cache 实用化的关键证据。</p>
+
+<h3 id="workload-characterization">Workload characterization <a class="heading-anchor" href="#workload-characterization" aria-label="Link to workload-characterization">#</a></h3>
+
+<table>
+<tr><th>Workload regime</th><th>Tutti</th><th>Baseline (GDS)</th><th>Why</th></tr>
+<tr><td>Short prefix (16K–32K), low concurrency</td><td>5.8–13.4% better than GDS; matches DRAM</td><td>GDS adequate but not optimal</td><td>Slack windows large, I/O easily hidden</td></tr>
+<tr><td>Long prefix (64K–112K), moderate concurrency</td><td>61.4% TTFT reduction vs GDS</td><td>GPU bubble >70%</td><td>Massive I/O volume requires GPU-centric path</td></tr>
+<tr><td>Very high reuse (>96K/128K prefix)</td><td>DRAM leads by ≤20.6%</td><td>N/A (GDS OOM at 512K+)</td><td>Per-layer transfer exceeds slack; raw DRAM latency wins</td></tr>
+<tr><td>Mixed prefill + decode (LEval)</td><td>2× RPS under SLO</td><td>GDS violates SLO early</td><td>Slack-aware scheduler hides write I/O in decode</td></tr>
+<tr><td>Ultra-long (640K, multi-GPU)</td><td>1.2 s TTFT</td><td>GDS: OOM</td><td>No staging buffer → no memory pressure</td></tr>
+</table>
+
+<h3 id="evaluation-specifics">Evaluation specifics <a class="heading-anchor" href="#evaluation-specifics" aria-label="Link to evaluation-specifics">#</a></h3>
+
+<ul>
+<li><strong>Baseline versions</strong>: vLLM v0.12.0 (Dec 2025) 和 v0.17.0 (Mar 2026); LMCache v0.4.2</li>
+<li><strong>Fair tuning</strong>: baselines 使用各自最优配置（LMCache-DRAM-LW 带 layer-wise pipelining, GDS 带 cuFile）</li>
+<li><strong>Metric definitions</strong>: TTFT = time from request arrival to first output token; ITL = average inter-token latency; throughput = output tokens/hour for cost model</li>
+</ul>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Logic</th></tr>
+<tr><td>1</td><td>Paged KV layout + SSD = 大量碎片化随机 I/O → GPU stall 70–80%</td><td>Fig. 2: SSD 和 GDS 配置下 GPU bubble 占比</td><td>实测 + 因果分析（page-based allocation → fragmentation → CPU I/O overhead）</td></tr>
+<tr><td>2</td><td>CPU 是瓶颈根因，而非 SSD 带宽不足</td><td>§2.4: 即使 GDS P2P DMA，CPU 仍在 control path 发起每次 I/O</td><td>NVMe doorbell/command submission 在 CPU 侧</td></tr>
+<tr><td>3</td><td>GPU-native object store 消除 data path CPU 开销</td><td>§3.1: SGL 替代 PRP（31–91× BW gain, Fig. 10）; Tensor-Stripe 对齐</td><td>设计 + 微基准验证</td></tr>
+<tr><td>4</td><td>GPU io_uring 消除 control path CPU 开销</td><td>§3.2: ring buffer in HBM, SM partitioning 隔离 I/O</td><td>架构设计 + §4 端到端验证</td></tr>
+<tr><td>5</td><td>Slack-aware scheduling 消除 GPU resource contention</td><td>§3.3: 离线 profiling + 解耦 R/W（Fig. 6 证明混合 R/W 带宽跌 60%）</td><td>Lookup table 驱动 + 消融（Fig. 13 crossover push）</td></tr>
+<tr><td>6</td><td>三项设计协同 → SSD-backed ≈ DRAM-backed 性能</td><td>Fig. 8 端到端 + Fig. 11 TTFT vs prefix length + Fig. 13 crossover</td><td>全系统集成验证</td></tr>
+<tr><td>7</td><td>容量无限 + 性能不降 → 成本降低</td><td>Fig. 14 + Eq. 1: SSD $/GB 比 DRAM 低 100×，throughput 持平</td><td>数学推导 + 实测</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<ul>
+<li>vLLM KVConnector 集成：~1,500 LoC Python（注册 KV memory block pool, 构建 logical → GPU file 映射）</li>
+<li>GPU-centric object store + gio_uring：~8,000 LoC C++</li>
+<li>接口：<code>retrieve_layer(layer_id, block_ids)</code>, <code>store_layer(layer_id, block_ids)</code></li>
+<li>SM partitioning 基于 NVIDIA green context API</li>
+<li>NVMe SQ/CQ 管理基于 GeminiFS 内核模块</li>
+<li>Mooncake 集成用于 cluster-wide 元数据（空间分配、replica 位置查找）</li>
+</ul>
+
+<p>具体文件/行号：[实现未公开]（论文声明 open-source 但截至撰写未发布代码仓库）</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Pre-allocation 消除运行时开销</strong>：NVMe file pool 在 Tutti 启动时预分配所有 extent；P2P mapping table 在 KV cache pool 初始化时一次性计算 SGL 描述符。运行时路径零 allocation。</li>
+</ul>
+
+<ol>
+<li><strong>IOCB batch size = 2048 对齐 H100 SM 调度单元</strong>：每个 IOCB 包含 2048 IOCTXs，对应 2 SMs × 64 warps × 32 threads / 2（考虑 register pressure）。这个对齐确保 I/O kernel 恰好占满分配给 I/O Domain 的 SM 资源，避免浪费。</li>
+</ul>
+
+<h2 id="§8-api-usability">§8 API & usability <a class="heading-anchor" href="#§8-api-usability" aria-label="Link to §8-api-usability">#</a></h2>
+
+<ul>
+<li><strong>User-facing API</strong>: 通过 vLLM KVConnector 接口暴露，对上层用户透明（OpenAI-compat API 不变）</li>
+<li><strong>Config surface</strong>: 需要指定 SSD 设备路径、GPU file pool 大小、SM partition 比例；offline profiling 生成 slack lookup table（一次性，复用）</li>
+<li><strong>Migration cost</strong>: 从 vLLM + LMCache-DRAM 迁移需要：(1) 安装 GeminiFS kernel module；(2) 替换 KVConnector 实现；(3) 运行一次 offline profiling。非侵入式——不修改 vLLM 调度器或 attention kernel。</li>
+</ul>
+
+<h2 id="§9-adoption-ecosystem">§9 Adoption & ecosystem <a class="heading-anchor" href="#§9-adoption-ecosystem" aria-label="Link to §9-adoption-ecosystem">#</a></h2>
+
+<ul>
+<li><strong>Upstream status</strong>: 未合入 vLLM 主线；以 KVConnector plugin 形式集成，跨 vLLM 版本可用</li>
+<li><strong>Production deployment</strong>: 论文未披露生产部署信息</li>
+<li><strong>Downstream requirements</strong>: 需要 NVIDIA green context 支持（H100+）；需要 NVMe SSD 支持 SGL（NVMe 1.1+，企业级 SSD 标配）；需要 PCIe P2P（CPU 需支持 PCIe ACS bypass）</li>
+<li><strong>Ecosystem position</strong>: 与 Mooncake 配合形成 cluster-level tiered KV cache；与 LMCache 竞争同一生态位</li>
+</ul>
+
+<h2 id="§10-deployment-context">§10 Deployment context <a class="heading-anchor" href="#§10-deployment-context" aria-label="Link to §10-deployment-context">#</a></h2>
+
+<ul>
+<li><strong>Serving stage</strong>: prefill（主战场：TTFT 优化）+ decode（利用 slack 做异步 store）</li>
+<li><strong>Concurrency regime</strong>: 中高并发（论文测试 0.5–2.0 RPS，约 8–32 并发 long-context requests）</li>
+<li><strong>Hardware affinity</strong>: H100（需 green context 做 SM partitioning）；PCIe 5.0 SSD 最佳（带宽上限更高）。对 A100 可能受限于无 green context 的 SM 隔离能力</li>
+<li><strong>Ecosystem integration</strong>: vLLM KVConnector 插件 + GeminiFS kernel module + Mooncake（可选，集群元数据）</li>
+<li><strong>Migration path</strong>: vLLM 用户需 (1) 部署 GeminiFS；(2) 将 LMCache KVConnector 替换为 Tutti；(3) 配置 SSD 路径和 SM partition ratio</li>
+</ul>
+
+<h2 id="§12-software-→-hardware-reverse-implication">§12 Software → Hardware reverse implication <a class="heading-anchor" href="#§12-software-→-hardware-reverse-implication" aria-label="Link to §12-software-→-hardware-reverse-implication">#</a></h2>
+
+<p>Tutti 属于 hardware-proximal framework：直接操作 NVMe SQ/CQ doorbell、P2P DMA descriptor（SGL vs PRP）、SM 硬件隔离（green context）。</p>
+
+<p><strong>硬件原语若存在将简化软件</strong>：</p>
+
+<ol>
+<li><strong>GPU-native NVMe controller</strong>：若 GPU 芯片集成 NVMe 端点控制器（或 CXL-attached NVMe），可跳过 PCIe P2P 配置和 doorbell MMIO，direct SGL 发射延迟从 μs 级降至 ns 级。</li>
+<li><strong>Hardware SM preemption with I/O priority</strong>：当前需手动 green context 隔离 SM；若 GPU scheduler 支持硬件级 I/O 优先级通道（类似 CPU 中断优先级），Tutti 无需静态分区 SM，可动态调度 I/O kernel。</li>
+<li><strong>Unified memory with NVMe coherency</strong>：若 NVMe 可参与 GPU 统一内存的 coherence domain（类 CXL.mem），则 KV cache 可作为 demand-paged 远端内存，无需显式 retrieve/store 接口。</li>
+<li><strong>SSD-side scatter/gather 感知</strong>：SSD 控制器原生支持 GPU 地址空间的 scatter-gather（无需 host-side SGL 构建），可进一步消除 CPU 参与的最后一步——SGL 描述符预计算。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

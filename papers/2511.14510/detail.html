@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CLO: Efficient LLM Inference System with CPU-Light KVCache Offloading via Algorithm-System Co-Design — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">CLO: Efficient LLM Inference System with CPU-Light KVCache Offloading via Algorithm-System Co-Design</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2511.14510</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-offloading</span><span class="tag">sparse-attention</span><span class="tag">gpu-caching</span><span class="tag">pcie-optimization</span><span class="tag">long-context-inference</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2511.14510.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2511.14510" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="clo-cpu-light-kvcache-offloading-—-l2-distill">CLO: CPU-Light KVCache Offloading — L2 Distill <a class="heading-anchor" href="#clo-cpu-light-kvcache-offloading-—-l2-distill" aria-label="Link to clo-cpu-light-kvcache-offloading-—-l2-distill">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>KVCache offloading 系统的 CPU 三大瓶颈（细粒度缓存管理、PCIe 带宽浪费、CPU-centric 同步开销）通过算法-系统协同解决：head 粒度近似缓存 + 零拷贝传输引擎 + GPU 中心同步，解码吞吐提升 9.3%–66.6%，精度几乎无损。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+
+<p>长序列 LLM 推理中 KVCache 被 offload 到 CPU 内存后，现有系统（RetroInfer、InfiniGen、PQCache）引入三个 CPU 端瓶颈，导致实际解码延迟远超理想值（全 KVCache 驻留 GPU HBM）：</p>
+
+<ol>
+<li><strong>细粒度动态缓存管理开销大</strong>：Block 粒度 LRU/LFU 链表由 CPU 维护，每个 inference step 需逐 head 修改 top-$k$/block_size 条目。RetroInfer 中缓存管理占解码延迟 36.2%。</li>
+<li><strong>PCIe 带宽利用率低</strong>：CPU 侧 gather 操作将分散 KV 数据拼装后再传输，64 线程仍无法饱和 PCIe 4.0 带宽。</li>
+<li><strong>CPU-centric 同步引入 GPU 气泡</strong>：<code>cudaStreamSynchronize</code> 阻塞 CPU kernel launch 线程，产生数十至数百微秒空闲。</li>
+</ul>
+
+<p><img src="/assets/2511.14510/fig2.png" alt="Figure 2: Per-layer decoding latency breakdown of existing KVCache offloading systems"></p>
+
+<p><em>Paper Figure 2：各系统单层解码延迟分解（BSZ=1, SeqLen=128K, top-k=10%, Llama3-8B-1048K）。RetroInfer 延迟为理想值的 137%，InfiniGen 337%，PQCache 354%。</em></p>
+
+<p>Figure 2 量化了三大瓶颈的相对权重：RetroInfer 的性能损失主要来自缓存管理（橙色），InfiniGen 主要来自未隐藏的数据传输（蓝色），PQCache 则两者叠加。这一分解直接驱动了 CLO 的设计优先级。</p>
+
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
+
+<p>CLO 的核心策略是 <strong>牺牲缓存命中率换取管理零开销，再用系统级优化补偿 miss 代价</strong>：</p>
+
+<ol>
+<li><strong>Head-wise 近似缓存</strong>：利用相邻解码步 query 向量的高余弦相似度（观测值 > 0.8），以 attention head 为粒度做缓存判定。每个 head 仅存一条 query label 作为元数据；相似度 $\cos(q_i^t, q_i^{\text{label}}) \geq \tau_i$ 时命中，否则整 head 替换。管理开销从链表遍历降至单次 tensor core 余弦计算。</li>
+</ul>
+
+<ol>
+<li><strong>Importance-aware 自适应阈值</strong>：借助 DuoAttention 的 head importance score $s_i$，按 $\tau_i = \cos(\lambda_i \cdot \arccos(\eta) + (1 - \lambda_i)\pi)$ 设阈值（$\lambda_i = s_i^n$）。重要 head 阈值严格（频繁更新），非重要 head 阈值宽松（高复用）。</li>
+</ul>
+
+<ol>
+<li><strong>Selective residency + prefetching</strong>：难复用 head（reuse difficulty $D_i = \tau_i - (\hat{s}_i - \epsilon) > 0$）中，可被 prefetch 覆盖的分配给 speculative sparse prefetching；剩余的全 KVCache 常驻 GPU HBM（persistent cache）。</li>
+</ul>
+
+<ol>
+<li><strong>零拷贝传输引擎</strong>：基于 GDRCopy 的 PCIe BAR 直接写入 GPU 显存，消除 CPU gather → 仅需 4 个 CPU 线程即饱和 PCIe 4.0 带宽。</li>
+</ul>
+
+<ol>
+<li><strong>GPU-centric 同步</strong>：通过 UVA 共享内存中的 identifier variable 实现 GPU 轮询式同步，将 kernel launch 与数据传输解耦到独立 CPU 线程。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：Head 粒度缓存 + query 余弦相似度判定的组合看似简单，但其可行性依赖于一个非显然的实证发现——相邻步 query 在绝大多数 head 上的余弦相似度高到足以支撑 ~79% 的 head 级缓存命中率。这个 observation 需要跨模型、跨序列长度的系统性验证，且阈值设计（Eq. 7–9）需要与 GQA 聚合（Eq. 10）和 reuse difficulty 判定（Eq. 11–13）配合才能在精度-效率间取得平衡。单独复制其中任一环节均无法复现整体效果。</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<ul>
+<li>解码吞吐：Llama3-8B 上 1.16–1.67×，Qwen2.5-14B 上 1.09–1.47× 对比最佳 baseline。</li>
+<li>精度：RULER / LongBench 上与 FullAttn 差异 ≤ 0.42（平均），优于 InfiniGen。</li>
+<li>GPU 缓存内存：仅为 RetroInfer 的 47.6%。</li>
+<li>PCIe 利用：4 CPU 线程逼近 GDRCopy 峰值 21.21 GB/s，稳定跨序列长度。</li>
+<li>单层解码：2.1–5.2× 加速（vs RetroInfer/InfiniGen on Llama3-8B, 128K）。</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<h3 id="系统总览">系统总览 <a class="heading-anchor" href="#系统总览" aria-label="Link to 系统总览">#</a></h3>
+
+<p><img src="/assets/2511.14510/fig8.png" alt="Figure 8: CLO system overview"></p>
+
+<p><em>Paper Figure 8：CLO 系统总览。三大组件——Cache Manager、Transfer Engine、Data Synchronization Controller——围绕 head 粒度缓存协同工作。</em></p>
+
+<p>CLO 的三个核心模块清晰分离职责：Cache Manager 管理 KVCache 的分区（persistent vs. offloaded）、similarity cache 的 lookup/update、以及 top-$k$ retrieval（集成 HATA）；Transfer Engine 通过 GDRCopy 零拷贝通道执行 CPU→GPU 传输；Data Synchronization Controller 通过 GPU polling 共享内存变量协调数据就绪与 kernel 执行。</p>
+
+<h3 id="解码推理流程">解码推理流程 <a class="heading-anchor" href="#解码推理流程" aria-label="Link to 解码推理流程">#</a></h3>
+
+<p><img src="/assets/2511.14510/fig9.png" alt="Figure 9: Decoding workflow of CLO"></p>
+
+<p><em>Paper Figure 9：解码阶段推理流程。展示 layer $l$ 的 KV 数据如何在 layer $l-1$ 执行期间被预取和准备。</em></p>
+
+<p>流程的关键是 <strong>一层提前量</strong>：在 layer $l-1$ 开始时用 $q_l^{\text{approx}} = x_{l-1} W_Q^l$ 近似下层 query → cache lookup → 对 miss head 发起 prefetch → layer $l-1$ 的 attention + FFN 计算期间传输完成 → layer $l$ 执行时从 cache buffer + persistent cache 双源取 KV。</p>
+
+<h3 id="近似缓存工作流">近似缓存工作流 <a class="heading-anchor" href="#近似缓存工作流" aria-label="Link to 近似缓存工作流">#</a></h3>
+
+<p><img src="/assets/2511.14510/fig7.png" alt="Figure 7: Query similarity-based approximate cache workflow"></p>
+
+<p><em>Paper Figure 7：Query similarity-based approximate cache 的 lookup / update 流程。</em></p>
+
+<p>与传统 LRU/LFU 缓存的关键区别：CLO 的 cache lookup 是一次 GPU tensor core 上的余弦相似度计算（$q_i^t$ vs. $q_i^{\text{label}}$），update 只需替换一个 query vector + 写入新 KV 数据到最终位置（无需 temp buffer → merge 的二次拷贝）。</p>
+
+<h3 id="系统数据流-mermaid">系统数据流 Mermaid <a class="heading-anchor" href="#系统数据流-mermaid" aria-label="Link to 系统数据流-mermaid">#</a></h3>
+
+<div class="mermaid">
+flowchart TB
+    subgraph "Layer l-1 (提前预取)"
+        A["x_{l-1} (hidden state)"] --> B["Approx Query: q_l ≈ x_{l-1}·W_Q^l"]
+        B --> C{"Cache Lookup\ncos(q_t, q_label) ≥ τ_i?"}
+        C -->|Hit| D["Cache Buffer\n(GPU HBM)"]
+        C -->|Miss| E["Top-k Retrieval\n(HATA)"]
+        E --> F["Transfer Engine\n(GDRCopy, 4 threads)"]
+        F -->|"Zero-copy PCIe"| D
+    end
+
+    subgraph "Layer l (执行注意力)"
+        D --> G["Hybrid Attention Kernel\n(FlashAttn2-based)"]
+        H["Persistent Cache\n(hard-to-reuse heads, GPU HBM)"] --> G
+        I["Sink + Recent Tokens\n(4 sink + 64 recent)"] --> G
+        G --> J["Attention Output o_l"]
+    end
+
+    subgraph "GPU-Centric Sync"
+        K["Shared Memory\nIdentifier Variables"] -.->|"GPU poll"| G
+        F -.->|"write complete flag"| K
+    end
+</div>
+
+<h3 id="head-缓存判定逻辑">Head 缓存判定逻辑 <a class="heading-anchor" href="#head-缓存判定逻辑" aria-label="Link to head-缓存判定逻辑">#</a></h3>
+
+<div class="mermaid">
+flowchart LR
+    subgraph "Per KV-Head Decision (offline)"
+        S["Head importance s_i\n(DuoAttention)"] --> T["λ_i = s_i^n (n=2~3)"]
+        T --> U["θ_i = λ_i·arccos(η) + (1-λ_i)·π"]
+        U --> V["τ_i = cos(θ_i)"]
+    end
+
+    subgraph "Per KV-Head Decision (runtime)"
+        Q["q_i^t (current query)"] --> COS["CosSim(q_i^t, q_label)"]
+        QL["q_i^label (cached query)"] --> COS
+        V --> CMP{"sim ≥ τ_i?"}
+        COS --> CMP
+        CMP -->|Yes| HIT["Cache Hit\n→ reuse cached KV"]
+        CMP -->|No| MISS["Cache Miss\n→ fetch new top-k"]
+    end
+
+    subgraph "Intra-GQA Aggregation"
+        AGG["s = Σ(s_i·sim_i) / Σ(s_i)\nweighted avg across Q-heads in group"]
+    end
+</div>
+
+<h3 id="baseline-对比：缓存机制差异">Baseline 对比：缓存机制差异 <a class="heading-anchor" href="#baseline-对比：缓存机制差异" aria-label="Link to baseline-对比：缓存机制差异">#</a></h3>
+
+<p><img src="/assets/2511.14510/fig1.png" alt="Figure 1: RetroInfer caching policy overview"></p>
+
+<p><em>Paper Figure 1：RetroInfer 的 block 粒度 LRU 缓存流程。对比 CLO 的 head 粒度方案，可见三阶段（lookup → access → update）中每一步都需要 CPU 介入。</em></p>
+
+<p>Table 1 总结了核心差异：RetroInfer/PQCache 的 cache metadata 是 CPU 上的链表（高开销、需额外 buffer merge），CLO 的 metadata 是 GPU 上的 query vectors（开销可忽略、无额外拷贝）。</p>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>定义</th><th>来源</th></tr>
+<tr><td>$q_i^t$</td><td>Layer $l$ head $i$ 在步 $t$ 的 query vector</td><td>§3.1</td></tr>
+<tr><td>$q_i^{\text{label}}$</td><td>Head $i$ 缓存的 query label</td><td>§3.1</td></tr>
+<tr><td>$\tau_i$</td><td>Head $i$ 的余弦相似度阈值</td><td>Eq. 9</td></tr>
+<tr><td>$s_i$</td><td>Head $i$ 的 importance score（DuoAttention）</td><td>§3.2</td></tr>
+<tr><td>$\lambda_i$</td><td>$s_i^n$，importance-weighted coefficient</td><td>Eq. 8</td></tr>
+<tr><td>$\eta$</td><td>全局相似度阈值上界（实验中 = 0.8）</td><td>Eq. 7</td></tr>
+<tr><td>$n$</td><td>重要性指数（实验中 = 3）</td><td>§3.2</td></tr>
+<tr><td>$D_i$</td><td>KV head $i$ 的复用困难度</td><td>Eq. 11</td></tr>
+<tr><td>$\hat{s}_i$</td><td>Offline profiled 平均余弦相似度</td><td>Eq. 11</td></tr>
+<tr><td>$\epsilon$</td><td>容差余量（Llama3: 0.1, Qwen2.5: 0.05）</td><td>§6.1</td></tr>
+<tr><td>$N_p$</td><td>每层可 prefetch 的 head 数</td><td>Eq. 12</td></tr>
+<tr><td>$N_{\text{persist}}^l$</td><td>Layer $l$ 需常驻 HBM 的 head 数</td><td>Eq. 13</td></tr>
+<tr><td>$T_{\text{comp}}$</td><td>单层 GPU 计算延迟</td><td>Eq. 12</td></tr>
+<tr><td>$B_{\text{PCIe}}$</td><td>PCIe 峰值带宽</td><td>Eq. 12</td></tr>
+<tr><td>$\text{mem}_{\text{head}}$</td><td>单 head top-$k$ KV 数据量</td><td>Eq. 12</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<ol>
+<li><strong>Eq. 6</strong>（$\text{dot}(q,k) = \|q\|\cdot\|k\|\cdot\cos(q,k)$）：qk-score 的相对排序与 $\|q\|$ 无关（因 $\|q\|$ 对所有 $k$ 共享）。因此高 query 余弦相似度 → top-$k$ 集合高度重叠。这是缓存复用可行性的理论基础。</li>
+</ul>
+
+<ol>
+<li><strong>Eq. 7–9</strong>（阈值链 $\eta \to \theta^<em> \to \theta_i \to \tau_i$）：先将全局相似度上界 $\eta$ 转换为角度空间上界 $\theta^</em>$，再按 importance score 对每个 head 做线性插值——重要 head 的 $\theta_i$ 靠近 $\theta^*$（严格），非重要 head 靠近 $\pi$（宽松，$\cos\pi = -1$ 意味着几乎永远命中）。$n = 3$ 使大部分 head 的 $\lambda_i$ 趋近 0（非线性压缩），仅少数重要 head 保持高 $\lambda_i$。</li>
+</ul>
+
+<ol>
+<li><strong>Eq. 10</strong>（GQA 聚合）：KV head 在 GQA 中被多个 Q head 共享，但缓存判定需要一个标量。加权平均以 importance score 为权重保证重要 Q head 的相似度降低更容易触发 miss，优先保护精度敏感的 head。</li>
+</ul>
+
+<ol>
+<li><strong>Eq. 11</strong>（$D_i = \tau_i - (\hat{s}_i - \epsilon)$）：衡量"阈值要求"与"实际可达相似度"之间的 gap。$D_i > 0$ 意味着该 head 在典型工作负载下无法稳定命中缓存。$\epsilon$ 提供安全余量，防止边界 head 频繁在 hit/miss 间跳动。</li>
+</ul>
+
+<ol>
+<li><strong>Eq. 12–13</strong>（$N_p$, $N_{\text{persist}}^l$）：将 prefetch 能力建模为"单层计算时间内 PCIe 能传多少 head 的 KV 数据"。超出 prefetch 能力的 hard-to-reuse head 必须常驻 HBM。这是资源分配的闭式解，避免了搜索。</li>
+</ul>
+
+<h3 id="6-项验证检查">6 项验证检查 <a class="heading-anchor" href="#6-项验证检查" aria-label="Link to 6-项验证检查">#</a></h3>
+
+<table>
+<tr><th>#</th><th>检查项</th><th>结果</th></tr>
+<tr><td>1</td><td>Eq. 6 的 $\</td><td>q\</td><td>$ 不变性声明</td><td>✓ 标准线性代数性质。qk-score 对所有 k 的排序确实与 $\</td><td>q\</td><td>$ 无关，因 $\</td><td>q\</td><td>$ 是公共因子。</td></tr>
+<tr><td>2</td><td>Eq. 7–9 在极端 $s_i$ 处的行为</td><td>✓ $s_i = 1 \Rightarrow \lambda_i = 1 \Rightarrow \theta_i = \theta^* \Rightarrow \tau_i = \eta = 0.8$（最严格）。$s_i = 0 \Rightarrow \lambda_i = 0 \Rightarrow \theta_i = \pi \Rightarrow \tau_i = -1$（永远命中）。边界行为符合设计意图。</td></tr>
+<tr><td>3</td><td>Eq. 10 的两条规则</td><td>✓ 规则 1：importance 越大 → 权重越大 → 该 head 的 sim 贡献越多。规则 2：所有 sim 相同时，加权平均退化为该值本身（分子 = sim·Σs_i，分母 = Σs_i）。</td></tr>
+<tr><td>4</td><td>Eq. 12 的量纲一致性</td><td>✓ $T_{\text{comp}}$（秒）/ ($B_{\text{PCIe}}$（字节/秒）· $\text{mem}_{\text{head}}$（字节））= 无量纲整数。</td></tr>
+<tr><td>5</td><td>Eq. 13 非负性</td><td>✓ $\max(\cdot, 0)$ 保证当 prefetch 能力足够时 persistent head 数为 0。</td></tr>
+<tr><td>6</td><td>缓存命中率与管理开销的 tradeoff 可行性</td><td>✓ CLO 命中率 ~79%（vs RetroInfer ~91%），但管理开销从 36.2% 降至可忽略（<1%）。净效果：单层延迟降低 2.1–5.2×。命中率损失被管理开销消除 + prefetch + persistent cache 三重补偿。</td></tr>
+</table>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="实验设置">实验设置 <a class="heading-anchor" href="#实验设置" aria-label="Link to 实验设置">#</a></h3>
+
+<ul>
+<li><strong>硬件</strong>：AMD EPYC 9654 (96 core) + 48 GB HBM GPU (PCIe 4.0 x16, 149.7 TFLOPS FP16)</li>
+<li><strong>模型</strong>：Llama3-8B-Instruct-1048K (32L, 32Qh, 8KVh), Qwen2.5-14B-Instruct-1M (48L, 40Qh, 8KVh)</li>
+<li><strong>基准</strong>：RULER (13 subtasks, configurable context length), LongBench (multi-task)</li>
+<li><strong>Baseline</strong>：RetroInfer (LRU cache), InfiniGen (prefetch only), FullAttn (ideal)</li>
+<li><strong>配置</strong>：sparsity 10%, HATA hash bits=256, $\eta=0.8$, $n=3$</li>
+</ul>
+
+<h3 id="端到端吞吐">端到端吞吐 <a class="heading-anchor" href="#端到端吞吐" aria-label="Link to 端到端吞吐">#</a></h3>
+
+<p><img src="/assets/2511.14510/fig10.png" alt="Figure 10: End-to-end throughput across batch sizes and sequence lengths"></p>
+
+<p><em>Paper Figure 10：端到端 prefill + decoding 吞吐。CLO 在所有配置下解码性能领先，短序列下 FullAttn 仍占优（attention 非瓶颈时 top-k retrieval 反成开销）。</em></p>
+
+<p>关键观察：(1) CLO 的 prefill 吞吐几乎匹配 FullAttn（HATA 检索元数据构建开销极低）；(2) 解码吞吐随 batch size 增长，CLO 始终保持优势；(3) InfiniGen 在所有配置下最慢，因为大量 PCIe 传输无法被完全隐藏。</p>
+
+<h3 id="精度保持">精度保持 <a class="heading-anchor" href="#精度保持" aria-label="Link to 精度保持">#</a></h3>
+
+<table>
+<tr><th>方法</th><th>LongBench</th><th>RULER 16K</th><th>RULER 32K</th><th>RULER 64K</th><th>RULER 128K</th></tr>
+<tr><td><strong>Qwen2.5-14B</strong></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>FullAttn</td><td>53.34</td><td>94.35</td><td>94.48</td><td>92.29</td><td>88.85</td></tr>
+<tr><td>RetroInfer</td><td>54.71</td><td>94.73</td><td>94.41</td><td>92.37</td><td>89.49</td></tr>
+<tr><td>InfiniGen</td><td>52.74</td><td>92.78</td><td>92.19</td><td>89.74</td><td>85.26</td></tr>
+<tr><td>CLO + HATA</td><td>53.15</td><td>94.36</td><td>94.22</td><td>92.35</td><td>88.94</td></tr>
+<tr><td><strong>Llama3-8B</strong></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>FullAttn</td><td>41.06</td><td>86.07</td><td>80.80</td><td>76.26</td><td>72.96</td></tr>
+<tr><td>RetroInfer</td><td>41.11</td><td>86.36</td><td>80.64</td><td>76.26</td><td>72.73</td></tr>
+<tr><td>InfiniGen</td><td>40.22</td><td>79.70</td><td>76.76</td><td>72.96</td><td>69.37</td></tr>
+<tr><td>CLO + HATA</td><td>41.15</td><td>85.65</td><td>80.70</td><td>75.94</td><td>73.44</td></tr>
+</table>
+
+<p>CLO 的精度损失在所有配置下 ≤ 0.42（相对 FullAttn），与 RetroInfer 基本持平，显著优于 InfiniGen。这验证了 head 粒度近似缓存在 importance-aware 阈值控制下不引入实质精度退化。</p>
+
+<h3 id="单层延迟分解">单层延迟分解 <a class="heading-anchor" href="#单层延迟分解" aria-label="Link to 单层延迟分解">#</a></h3>
+
+<p><img src="/assets/2511.14510/fig11.png" alt="Figure 11: Per-layer decoding latency breakdown of CLO vs baselines"></p>
+
+<p><em>Paper Figure 11：单层解码延迟分解（BSZ=1, SeqLen=128K）。CLO 在 Llama3 上实现 2.1–5.2× 加速，Qwen2.5 上 1.6–4.2×。</em></p>
+
+<p>分解揭示 CLO 的优势来源：(1) 缓存管理开销几乎为零（vs RetroInfer 26.9–36.2%）；(2) 数据传输成本低（speculative prefetch 隐藏 miss 传输）；(3) kernel launch 开销可忽略（GPU-centric sync vs RetroInfer 114.5 µs, InfiniGen 273.2 µs）。</p>
+
+<h3 id="gpu-缓存内存效率">GPU 缓存内存效率 <a class="heading-anchor" href="#gpu-缓存内存效率" aria-label="Link to gpu-缓存内存效率">#</a></h3>
+
+<table>
+<tr><th>方法</th><th>Llama3 32K</th><th>64K</th><th>128K</th><th>256K</th><th>512K</th><th>Qwen2.5 16K</th><th>32K</th><th>64K</th><th>128K</th><th>256K</th></tr>
+<tr><td>RetroInfer</td><td>1.20</td><td>2.40</td><td>4.80</td><td>9.56</td><td>19.12</td><td>0.90</td><td>1.79</td><td>3.59</td><td>7.20</td><td>14.34</td></tr>
+<tr><td>CLO</td><td>0.53</td><td>1.09</td><td>2.62</td><td>8.19</td><td>14.09</td><td>0.37</td><td>0.74</td><td>1.49</td><td>3.44</td><td>8.03</td></tr>
+</table>
+
+<p>（单位：GB）CLO 平均仅使用 RetroInfer 47.6% 的 GPU 缓存内存，因为 head 粒度缓存无需为每个 block 分配独立 metadata/buffer 空间。</p>
+
+<h3 id="缓存命中率">缓存命中率 <a class="heading-anchor" href="#缓存命中率" aria-label="Link to 缓存命中率">#</a></h3>
+
+<table>
+<tr><th>方法</th><th>Llama3 8K (BSZ 4/8/16/32/64)</th><th>Qwen2.5 8K (BSZ 2/4/8/16/32)</th></tr>
+<tr><td>RetroInfer</td><td>90.41/90.15/90.08/90.07/90.05</td><td>92.65/91.33/91.42/91.34/91.35</td></tr>
+<tr><td>CLO</td><td>79.54/74.69/76.69/84.99/80.00</td><td>80.62/80.65/80.65/81.53/80.75</td></tr>
+</table>
+
+<p>CLO 命中率平均 79.22%（vs RetroInfer ~91%），但 RetroInfer 的高命中率被其 CPU 管理开销抵消。CLO 通过 speculative prefetch 隐藏 miss 传输，净效果更优。</p>
+
+<h3 id="pcie-带宽利用">PCIe 带宽利用 <a class="heading-anchor" href="#pcie-带宽利用" aria-label="Link to pcie-带宽利用">#</a></h3>
+
+<p><img src="/assets/2511.14510/fig3.png" alt="Figure 3: Achieved PCIe bandwidth under existing systems"></p>
+
+<p><em>Paper Figure 3：InfiniGen 和 PQCache 在不同传输量下的 PCIe 实际带宽，始终低于峰值。原因：CPU 侧 gather 操作（先聚合分散 KV 再传输）引入额外开销。</em></p>
+
+<p>CLO 的零拷贝引擎消除了 CPU gather 步骤。4 个 CPU 线程使用 AVX SIMD + cache prefetch 即可逼近 GDRCopy 峰值 21.21 GB/s，且跨序列长度（4K–128K）保持稳定。对比之下，InfiniGen/PQCache 即使使用 64 CPU 线程仍大幅低于峰值。</p>
+
+<h3 id="ablation：各优化组件贡献">Ablation：各优化组件贡献 <a class="heading-anchor" href="#ablation：各优化组件贡献" aria-label="Link to ablation：各优化组件贡献">#</a></h3>
+
+<p>消融实验（+T = adaptive threshold, +G = GQA aggregation, +P = persistent caching）：</p>
+
+<table>
+<tr><th>配置</th><th>Llama3 延迟降幅</th><th>Qwen2.5 延迟降幅</th></tr>
+<tr><td>Baseline → +T</td><td>35.2%</td><td>30.7%</td></tr>
+<tr><td>+T → +T+G</td><td>48.0%</td><td>43.2%</td></tr>
+<tr><td>+T+G → +T+G+P</td><td>56.9%</td><td>47.5%</td></tr>
+</table>
+
+<p>三个组件贡献递增且互补。Adaptive threshold 通过差异化阈值提升总体命中率；GQA aggregation 避免 group 内保守取 min 导致的过频繁 miss；persistent caching 消除 hard-to-reuse head 的传输等待。</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>步骤</th><th>论点</th><th>依据</th><th>作用</th></tr>
+<tr><td>1</td><td>长序列 LLM 推理中 KVCache 远超 GPU HBM 容量，必须 offload 到 CPU 内存</td><td>Qwen2.5-14B 512K 序列 → 93.75 GB KVCache，3.3× 模型权重（§1）</td><td>确立 offloading 必要性</td></tr>
+<tr><td>2</td><td>现有 offloading 系统集成 top-$k$ attention + GPU caching / prefetching，但三个 CPU 瓶颈导致延迟远超理想值（137%–354%）</td><td>Figure 2 单层延迟分解；RetroInfer 缓存管理占 36.2%，InfiniGen 传输占 62.2%（§2.3）</td><td>诊断：CPU 是被忽视的瓶颈</td></tr>
+<tr><td>3</td><td>相邻解码步的 query 向量余弦相似度高 → top-$k$ 集合高度重叠 → head 粒度缓存复用可行</td><td>Eq. 6（qk-score 排序与 ‖q‖ 无关）+ Figure 4/5/6（实证分布）（§3.1）</td><td>算法基础：缓存复用的理论与实证支撑</td></tr>
+<tr><td>4</td><td>Head-wise 近似缓存将管理开销从链表遍历降至单次余弦计算，消除 CPU 瓶颈 1</td><td>Table 1 对比（CLO: GPU 上 query vectors vs RetroInfer: CPU 上 LRU linked list）（§3.1）</td><td>解决瓶颈 1</td></tr>
+<tr><td>5</td><td>Importance-aware 阈值 + GQA 聚合保持精度，同时最大化缓存复用率</td><td>Eq. 7–10 + ablation（+T 降 35%, +T+G 再降 48%）（§3.2, §6.5）</td><td>精度-效率平衡</td></tr>
+<tr><td>6</td><td>Hard-to-reuse heads 通过 selective residency（persistent cache）+ speculative prefetch 补偿</td><td>Eq. 11–13 量化 reuse difficulty + prefetch 能力；+T+G+P 再降 56.9%（§3.3, §6.5）</td><td>解决 cache miss 的性能代价</td></tr>
+<tr><td>7</td><td>零拷贝传输引擎消除 CPU gather，4 线程饱和 PCIe 4.0</td><td>GDRCopy + AVX SIMD；Figure 13 带宽稳定逼近 21.21 GB/s（§4.3, §6.5）</td><td>解决瓶颈 2</td></tr>
+<tr><td>8</td><td>GPU-centric 同步消除 kernel launch overhead</td><td>UVA shared memory polling 替代 cudaStreamSynchronize（§4.4）</td><td>解决瓶颈 3</td></tr>
+<tr><td>9</td><td>端到端验证：9.3%–66.6% 吞吐提升，精度 ≤ 0.42 损失</td><td>Figure 10（吞吐）+ Table 5（精度）跨两个模型、多个序列长度/batch size（§6）</td><td>全系统验证</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<h3 id="代码规模">代码规模 <a class="heading-anchor" href="#代码规模" aria-label="Link to 代码规模">#</a></h3>
+
+<p>CLO 基于 FlashInfer + HuggingFace Transformers 实现：3417 行 CUDA/C++ + 1555 行 Python（§5）。</p>
+
+<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+
+<ol>
+<li><strong>Fused cache lookup + query label update kernel</strong>：Cache lookup（余弦相似度计算）和 query label 更新共享对 incoming query 和 historical query labels 的 HBM 读取。融合为单 kernel 减少一次完整的 HBM roundtrip，同时降低 CPU kernel launch 压力。</li>
+</ul>
+
+<ol>
+<li><strong>Hybrid attention kernel</strong>：基于 FlashAttention2 实现的注意力 kernel 直接访问 Cache Buffer 和 Persistent Cache 两个缓冲区。避免了先将两者 gather 到统一 buffer 再计算的额外 HBM 拷贝。</li>
+</ul>
+
+<h3 id="代码引用">代码引用 <a class="heading-anchor" href="#代码引用" aria-label="Link to 代码引用">#</a></h3>
+
+<p>[实现未公开] — 论文未公开代码仓库。实现基于 FlashInfer（<code>github.com/flashinfer-ai/flashinfer</code>）和 Transformers（<code>github.com/huggingface/transformers</code>），但 CLO 自身的 CUDA/C++ 和 Python 代码未开源。</p>
+
+<h2 id="§8-系统部署上下文">§8 系统部署上下文 <a class="heading-anchor" href="#§8-系统部署上下文" aria-label="Link to §8-系统部署上下文">#</a></h2>
+
+<h3 id="系统定位">系统定位 <a class="heading-anchor" href="#系统定位" aria-label="Link to 系统定位">#</a></h3>
+
+<table>
+<tr><th>维度</th><th>CLO 的定位</th></tr>
+<tr><td>服务阶段</td><td>Prefill + Decode 均覆盖，decode 为核心优化目标</td></tr>
+<tr><td>并发模式</td><td>单请求（BSZ=1）到中等并发（BSZ≤64）均有优化</td></tr>
+<tr><td>硬件亲和性</td><td>PCIe 4.0 GPU（非 NVLink 互连）；CPU 负载极轻（仅 4 线程）；受益于 GDRCopy（需 BAR 映射支持）</td></tr>
+<tr><td>生态集成</td><td>基于 FlashInfer + Transformers，非 vLLM/SGLang 插件，需独立部署</td></tr>
+<tr><td>运行模式</td><td>单机单 GPU（scale-up），与分布式 KVCache（scale-out）正交</td></tr>
+</table>
+
+<h3 id="工作负载特征">工作负载特征 <a class="heading-anchor" href="#工作负载特征" aria-label="Link to 工作负载特征">#</a></h3>
+
+<table>
+<tr><th>工作负载</th><th>CLO</th><th>FullAttn</th><th>RetroInfer</th><th>原因</th></tr>
+<tr><td>短序列 (≤8K), 低并发</td><td>次优</td><td>最佳</td><td>中等</td><td>Attention 非瓶颈，top-k retrieval 反成开销</td></tr>
+<tr><td>长序列 (≥64K), BSZ=1</td><td>最佳</td><td>OOM</td><td>中等</td><td>KVCache 超出 HBM，CLO 的 CPU-light 策略优势最大</td></tr>
+<tr><td>中序列 (8K–64K), 高 BSZ</td><td>最佳</td><td>受限</td><td>中等</td><td>KVCache × BSZ 增长快，CLO 缓存内存效率 (47.6%) 释放更多 BSZ 空间</td></tr>
+</table>
+
+<h3 id="serving-资源估算">Serving 资源估算 <a class="heading-anchor" href="#serving-资源估算" aria-label="Link to serving-资源估算">#</a></h3>
+
+<p>对于 128K 序列 BSZ=1（FP16）：</p>
+<ul>
+<li>Llama3-8B KVCache: ~24 GB → 远超单 48GB GPU，必须 offload</li>
+<li>CLO GPU cache 占用: 2.62 GB（仅 top-k 10%），persistent heads 额外占用取决于 $N_{\text{persist}}$</li>
+<li>PCIe 带宽需求: 4 线程 × 21.21 GB/s 峰值，实际传输量 = miss rate × top-k KV size per head × miss head count</li>
+</ul>
+
+<h2 id="§9-开放问题">§9 开放问题 <a class="heading-anchor" href="#§9-开放问题" aria-label="Link to §9-开放问题">#</a></h2>
+
+<ol>
+<li><strong>跨模型泛化性</strong>：论文仅验证 Llama3-8B 和 Qwen2.5-14B（均为 GQA 架构）。MLA（如 DeepSeek-V3 的 multi-head latent attention）中 query-key 的压缩表示是否仍保持相邻步高余弦相似度？</li>
+</ul>
+
+<ol>
+<li><strong>Batch size 扩展性</strong>：Table 4 显示 CLO 命中率在部分 BSZ 下波动（74.69%–84.99%），暗示 per-head 相似度分布可能受 batch 内 sequence diversity 影响。超大 BSZ（≥128）下行为未知。</li>
+</ul>
+
+<ol>
+<li><strong>多 GPU / 分布式场景</strong>：CLO 当前为单机单 GPU 方案。在 TP/PP 分布式部署中，GDRCopy 的 zero-copy 路径不适用于跨 GPU 通信，persistent cache 的 HBM 预算也需要与 TP 并行的 KV 分区策略协同。</li>
+</ul>
+
+<ol>
+<li><strong>动态序列长度</strong>：论文的 offline profiling（$\hat{s}_i$, $D_i$, $N_{\text{persist}}$）假设工作负载统计量稳定。在混合长短序列的在线 serving 场景中，head importance 和相似度分布可能动态变化。</li>
+</ul>
+
+<ol>
+<li><strong>PCIe 5.0 / CXL 的影响</strong>：CLO 的设计假设 PCIe 4.0 带宽是稀缺资源。PCIe 5.0（双倍带宽）或 CXL（更低延迟的内存扩展）可能改变 prefetch vs. persistent cache 的 tradeoff 平衡点。</li>
+</ul>
+
+<ol>
+<li><strong>与 KV cache compression 的组合</strong>：论文使用 FP16 全精度 KVCache。若结合 FP8/INT4 KV cache 量化，top-k KV 数据量减半甚至更多，$N_p$（可 prefetch head 数）相应增加，persistent cache 可能完全不需要。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
