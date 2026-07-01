@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Improving DeepEP MoE Load Balance in SGLang with Waterfill and LPLB — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Improving DeepEP MoE Load Balance in SGLang with Waterfill and LPLB</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> blog-waterfill-lplb — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/blog-waterfill-lplb/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="waterfill-lplb-—-跨论文综合（dispatch-time-moe-负载均衡）">Waterfill & LPLB — 跨论文综合（dispatch-time MoE 负载均衡） <a class="heading-anchor" href="#waterfill-lplb-—-跨论文综合（dispatch-time-moe-负载均衡）" aria-label="Link to waterfill-lplb-—-跨论文综合（dispatch-time-moe-负载均衡）">#</a></h1>
+
+<blockquote>
+定位一句话：Waterfill/LPLB 是 SGLang 在 DeepEP/EPLB 之上、<strong>运行时（dispatch-time）</strong> 的 MoE 负载均衡层——它既不像 EPLB 那样离线搬权重做<strong>placement</strong>，也不像 DeepEP/MORI/fabric-lib 那样做<strong>通信底座</strong>，而是坐在两者之间，在不改 logical top-k 的前提下决定"哪个物理落点"执行每个 token/shared-expert 请求 <a href="/papers/blog-waterfill-lplb/detail.html#1-tl-dr" class="ref-link" title="blog-waterfill-lplb#1-tl-dr">[blog-waterfill-lplb]</a>。
+</blockquote>
+
+<hr>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>把这簇论文按"它们在 MoE-EP 栈里管哪一层"分成三组，Waterfill/LPLB 的坐标就清楚了。</p>
+
+<p><strong>A. 同层竞品——运行时 LB 决策（最贴近）</strong></p>
+
+<ul>
+<li><strong>moe-lb-interai25</strong>（Latency-Optimal LB）：同样把 MoE-EP 的 max-load imbalance 建成 min–max 优化，同样用"ILP 是理论最优、heuristic 才能上线"的双层套路 <a href="/papers/moe-lb-interai25/detail.html#core-contribution" class="ref-link" title="moe-lb-interai25#core-contribution">[moe-lb-interai25]</a>。但它的决策变量是<strong>expert 的 placement/replication（搬权重）</strong>并把 migration cost 写进目标函数 <a href="/papers/moe-lb-interai25/detail.html#3-key-innovations" class="ref-link" title="moe-lb-interai25#3-key-innovations">[moe-lb-interai25]</a>；LPLB 的决策变量是<strong>既有副本上的流量分配</strong>，明确"不搬权重、不改 top-k" <a href="/papers/blog-waterfill-lplb/detail.html#2-痛点-方法-结果" class="ref-link" title="blog-waterfill-lplb#2-痛点-方法-结果">[blog-waterfill-lplb]</a>。二者是"同一个 min–max 病、两种药"。</li>
+<li><strong>2605.06113</strong>（BalanceRoute / DP decode 路由）：另一个"运行时 LB 决策"，但作用面是 <strong>DP decode 的 request→worker 路由</strong>而非 EP 内的 token→replica 分派，靶子是 KV-cache 随生成单调增长导致的 barrier 空闲 <a href="/papers/2605.06113/detail.html#1-tl-dr" class="ref-link" title="2605.06113#1-tl-dr">[2605.06113]</a>。它与 LPLB 共享"barrier 同步下最忙者决定步延迟"的核心物理直觉 <a href="/papers/2605.06113/detail.html#q1-痛点" class="ref-link" title="2605.06113#q1-痛点">[2605.06113]</a>，方法上却用分段线性 F-score 贪心而非 LP。</li>
+</ul>
+
+<p><strong>B. 下层底座——被 Waterfill/LPLB 依赖或并列的通信/placement 设施</strong></p>
+
+<ul>
+<li><strong>2412.19437</strong>（DeepSeek-V3）：本簇的"共同祖先"。它引入了 auxiliary-loss-free 动态 bias 做 routing 均衡，并在 serving 时用 redundant expert deployment 缓解 domain-shift 造成的不均衡 <a href="/papers/2412.19437/detail.html#key-findings" class="ref-link" title="2412.19437#key-findings">[2412.19437]</a>——这正是 EPLB/redundant replica 的思想源头，也是 LPLB 存在的前提（没有 redundant 副本 LPLB 无可分派）<a href="/papers/blog-waterfill-lplb/detail.html#5-实验与数据" class="ref-link" title="blog-waterfill-lplb#5-实验与数据">[blog-waterfill-lplb]</a>。</li>
+<li><strong>ROCm-mori</strong>（MORI-EP）：AMD 侧的 DeepEP 对等物，提供 dispatch/combine 通信 kernel <a href="/papers/ROCm-mori/detail.html#1-tl-dr" class="ref-link" title="ROCm-mori#1-tl-dr">[ROCm-mori]</a>。它是 Waterfill/LPLB 所处"DeepEP 层"的替代实现，二者正交：MORI 决定"token 怎么搬得快"，Waterfill/LPLB 决定"token 该搬去哪个物理落点"。</li>
+<li><strong>2510.27656</strong>（fabric-lib）：可移植 RDMA P2P 库，MoE dispatch 是其三大验证场景之一，CX-7 上匹配/超越 DeepEP、EFA 上首次可用 <a href="/papers/2510.27656/detail.html#q3-结果" class="ref-link" title="2510.27656#q3-结果">[2510.27656]</a>。同样是"通信底座"，与 dispatch-time LB 正交。</li>
+</ul>
+
+<p><strong>C. 相邻系统——同为 MoE serving 但换了问题维度</strong></p>
+
+<ul>
+<li><strong>2605.02960</strong>（ZeRO-Prefill / AsyncEP）：与 Waterfill/LPLB <strong>同病不同解</strong>。它也盯上 EP routing imbalance（Qwen3-30B 实测 max/min 16.15×）<a href="/papers/2605.02960/detail.html#q1-痛点-moe-prefill-serving-的三重冗余" class="ref-link" title="2605.02960#q1-痛点-moe-prefill-serving-的三重冗余">[2605.02960]</a>，但走"反转数据流、按 weight 聚集使 dispatch 全本地"的路子，让不均衡<strong>不再重要</strong>，而非把它<strong>均衡掉</strong> <a href="/papers/2605.02960/detail.html#8-comparison-with-related-work" class="ref-link" title="2605.02960#8-comparison-with-related-work">[2605.02960]</a>。</li>
+<li><strong>2604.26881</strong>（FaaSMoE）：MoE serving 的另一维度——多租户资源效率，把 expert 拆成 serverless 函数共享 <a href="/papers/2604.26881/detail.html#q2-方法" class="ref-link" title="2604.26881#q2-方法">[2604.26881]</a>。与本篇的运行时吞吐 LB 几乎不重叠，仅共享"expert 是可独立调度单元"的抽象。</li>
+</ul>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<p><strong>delta-1｜相对 moe-lb-interai25：把"搬权重的 min–max"降级为"分流量的 min–max"，换来关键路径可承受。</strong></p>
+<p>moe-lb-interai25 的核心贡献是把 migration cost 纳入 min–max 联合优化、避免 rebalance 本身变瓶颈，heuristic 达 O(E·D·K) 多项式、比前人频繁 2×，减 latency ≤12.5% <a href="/papers/moe-lb-interai25/detail.html#3-key-innovations" class="ref-link" title="moe-lb-interai25#3-key-innovations">[moe-lb-interai25]</a>。LPLB 的 delta 不在"更聪明的优化"，恰恰相反——它把问题<strong>缩小</strong>到"只在已有 redundant 副本间重分配流量"，从而 (a) 完全省掉 migration cost 这一项（不搬权重）；(b) LP 规模只随 redundant expert 数与 rank 数增长、不随全 expert 数 <a href="/papers/blog-waterfill-lplb/detail.html#3-架构-方法图" class="ref-link" title="blog-waterfill-lplb#3-架构-方法图">[blog-waterfill-lplb]</a>；(c) 靠"所有 rank 一次 all-reduce → 各自独立解同一 LP → 无需广播结果" + on-GPU IPM kernel + 三次 kernel launch，把每 batch 求解压进推理关键路径 <a href="/papers/blog-waterfill-lplb/detail.html#7-实现-cross-reference" class="ref-link" title="blog-waterfill-lplb#7-实现-cross-reference">[blog-waterfill-lplb]</a>。<strong>净差异</strong>：moe-lb-interai25 是"每 N batch 做一次较重的 placement 调整"，LPLB 是"每 batch 每层做一次极轻的流量再分配"。</p>
+
+<p><strong>delta-2｜相对 2412.19437（EPLB 源头）：从"离线均分"到"在线 min–max"。</strong></p>
+<p>DeepSeek-V3 的 redundant expert + 默认均分策略，只有当离线标定分布 == live traffic 时才最优 <a href="/papers/2412.19437/detail.html#key-findings" class="ref-link" title="2412.19437#key-findings">[2412.19437]</a>。LPLB 精确指出并修补了这个缺口：单 batch 集中、数据集漂移、rebalance 周期长使 placement 事实上静态，此时均分仍留残余不均衡 <a href="/papers/blog-waterfill-lplb/detail.html#2-痛点-方法-结果" class="ref-link" title="blog-waterfill-lplb#2-痛点-方法-结果">[blog-waterfill-lplb]</a>。这是一个干净的<strong>增量改进 + 前提继承</strong>关系：LPLB 建立在 EPLB placement 之上，red0（无副本）时 LPLB 无可为、实测净负 <a href="/papers/blog-waterfill-lplb/detail.html#5-实验与数据" class="ref-link" title="blog-waterfill-lplb#5-实验与数据">[blog-waterfill-lplb]</a>。</p>
+
+<p><strong>delta-3｜相对 2605.02960（ZeRO-Prefill）：一个"消除不均衡影响"，一个"消除不均衡本身"——且 stage 不同。</strong></p>
+<p>两篇都承认 EP routing imbalance 是核心痛点，但 ZeRO-Prefill 反转数据流让 dispatch 全本地、不均衡不再重要，代价是<strong>绑定 prefill-only 大 compute window</strong> <a href="/papers/2605.02960/detail.html#8-comparison-with-related-work" class="ref-link" title="2605.02960#8-comparison-with-related-work">[2605.02960]</a>。Waterfill/LPLB 保留同步 EP dispatch 框架、直接把负载摊平，适用于含 decode 的常规 serving（评测即 max_tokens=1 的 prefill-heavy 但走标准 DeepEP normal mode）<a href="/papers/blog-waterfill-lplb/detail.html#5-实验与数据" class="ref-link" title="blog-waterfill-lplb#5-实验与数据">[blog-waterfill-lplb]</a>。<strong>矛盾点</strong>：ZeRO-Prefill 主张"expert weight 是可调度资源"、暗示 DeepEP 式 activation 路由是需要被替代的旧范式 <a href="/papers/2605.02960/detail.html#8-comparison-with-related-work" class="ref-link" title="2605.02960#8-comparison-with-related-work">[2605.02960]</a>；Waterfill/LPLB 则押注"DeepEP 式路由继续存在、只需在其上补 dispatch-time LB"。<strong>根源</strong>：二者面向不同 workload——ZeRO-Prefill 的前提是判别式 prefill-only（生产 65.3% token）<a href="/papers/2605.02960/detail.html#q1-痛点-moe-prefill-serving-的三重冗余" class="ref-link" title="2605.02960#q1-痛点-moe-prefill-serving-的三重冗余">[2605.02960]</a>，Waterfill/LPLB 不假设 compute window 足够宽，因而在互联受限或 decode 场景仍适用。</p>
+
+<p><strong>delta-4｜相对 2605.06113（BalanceRoute）：同一"barrier 最忙者定延迟"直觉，两处不同的作用面。</strong></p>
+<p>BalanceRoute 把 min–max 病放在 DP decode 的 request→worker 层、用 O(1) 分段线性 F-score 贪心求解、优势随 G 超线性到 +34.5% <a href="/papers/2605.06113/detail.html#q3-结果" class="ref-link" title="2605.06113#q3-结果">[2605.06113]</a>；LPLB 放在 EP 内 token→replica 层、用 LP 精确解。二者可叠加而非竞争（一个管 request 落哪个 DP worker，一个管 token 落哪个 replica）。<strong>delta</strong>：BalanceRoute 为进关键路径选择了"闭式贪心"，LPLB 选择了"GPU 上真解一个 LP"——后者敢用更重的求解器，是因为它把 LP 结构块离线预算、在线只换 RHS <a href="/papers/blog-waterfill-lplb/detail.html#3-架构-方法图" class="ref-link" title="blog-waterfill-lplb#3-架构-方法图">[blog-waterfill-lplb]</a>。</p>
+
+<p><strong>delta-5｜相对 ROCm-mori / 2510.27656：不同栈层，零竞争。</strong></p>
+<p>MORI 与 fabric-lib 提供 dispatch/combine 的通信实现与带宽/延迟 <a href="/papers/ROCm-mori/detail.html#11-performance-characteristics" class="ref-link" title="ROCm-mori#11-performance-characteristics">[ROCm-mori]</a> <a href="/papers/2510.27656/detail.html#q3-结果" class="ref-link" title="2510.27656#q3-结果">[2510.27656]</a>；Waterfill/LPLB 不碰 kernel、不碰 transport，只改"目的地选择"。delta 是维度正交：把 Waterfill/LPLB 的决策接到 MORI-EP 或 fabric-lib 之上理论上可行（都暴露 per-token 目的地），blog 未验证。</p>
+
+<hr>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<p><strong>攻击-1｜"dispatch-time LB 是必要的独立层"——但两组增益都可能被更强 placement 吃掉。</strong></p>
+<p>blog 承认 LPLB 收益呈"中间最大"：流量均衡且 batch 巨大时残余不均衡本就少、near-zero 收益 <a href="/papers/blog-waterfill-lplb/detail.html#5-实验与数据" class="ref-link" title="blog-waterfill-lplb#5-实验与数据">[blog-waterfill-lplb]</a>。而 moe-lb-interai25 主张"更频繁（2×）的在线 placement 调整"能持续追上分布漂移 <a href="/papers/moe-lb-interai25/detail.html#3-key-innovations" class="ref-link" title="moe-lb-interai25#3-key-innovations">[moe-lb-interai25]</a>。若 placement 层足够敏捷，LPLB 修补的"rebalance 周期长使 placement 事实静态"这一前提可能被削弱，其适用窗口进一步收窄。blog 未与"高频 placement 调整"这一 baseline 对比。</p>
+
+<p><strong>攻击-2｜red0 净负 + 中等区间才最强 = 收益脆弱。</strong></p>
+<p>LPLB 在 red0 三数据集全为负（−0.95%~−1.61%，纯 all-reduce+solve 开销）<a href="/papers/blog-waterfill-lplb/detail.html#5-实验与数据" class="ref-link" title="blog-waterfill-lplb#5-实验与数据">[blog-waterfill-lplb]</a>。这意味着它的净收益强依赖运维正确配置 redundant experts，且最优区间窄（中等规模、适度相关主题）。对比 Waterfill——它每行都为正、与是否有副本无关——LPLB 的"高方差收益"是明显软肋。反驳预期：blog 诚实标注负值行并以 §4 退化检查解释，属自洽，但不改变"部署鲁棒性弱于 Waterfill"这一事实。</p>
+
+<p><strong>攻击-3｜"各 rank 独立解同一 LP 得同解"依赖数值可复现性。</strong></p>
+<p>blog 声称所有 rank 用相同全局分布独立解 LP 得同解、故无需广播 <a href="/papers/blog-waterfill-lplb/detail.html#7-实现-cross-reference" class="ref-link" title="blog-waterfill-lplb#7-实现-cross-reference">[blog-waterfill-lplb]</a>。但 IPM 是迭代数值法，跨 rank 若存在浮点非确定性（归约顺序、kernel 调度差异）理论上可能得到略不同的 log2phy_prob，进而不同 rank 对同一 logical expert 的采样分布不一致。blog 未讨论该正确性对"跨 rank 位一致"的敏感度——这是一个可攻击的隐含假设。fabric-lib 处理无序完成时就专门论证过跨设备 ordering 的正确性边界 <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="2510.27656#q2-方法">[2510.27656]</a>，反衬本篇此处论证的缺失。</p>
+
+<p><strong>攻击-4｜Waterfill 的"通信保守候选集"把平衡自由度让给了通信，最优性未证。</strong></p>
+<p>Waterfill 默认只允许 token 已访问过的 rank 承接 shared slot，理由是"通信通常比额外 shared 计算更贵" <a href="/papers/blog-waterfill-lplb/detail.html#2-痛点-方法-结果" class="ref-link" title="blog-waterfill-lplb#2-痛点-方法-结果">[blog-waterfill-lplb]</a>。这是一个未量化的启发式取舍——在通信便宜的拓扑（如 NVL72 单机架 NVLink 域）上，all-rank 模式可能显著更优而默认反而次优。blog 给了 all-rank 开关但未给选择准则。相较之下，moe-lb-interai25 把通信成本显式写进目标函数联合优化 <a href="/papers/moe-lb-interai25/detail.html#3-key-innovations" class="ref-link" title="moe-lb-interai25#3-key-innovations">[moe-lb-interai25]</a>，Waterfill 的"填谷"则是无 comm-cost 项的纯负载启发式。</p>
+
+<p><strong>攻击-5｜评测 max_tokens=1，decode 场景的 LB 价值未验证。</strong></p>
+<p>V3/R1 矩阵与 V4 验证均为 <code>max_tokens=1</code> <a href="/papers/blog-waterfill-lplb/detail.html#5-实验与数据" class="ref-link" title="blog-waterfill-lplb#5-实验与数据">[blog-waterfill-lplb]</a>，本质是 prefill-dominated 打法。而 BalanceRoute 的整篇论证都指向 decode 阶段（KV 单调增长、barrier 累积空闲才是 DP decode 的病根）<a href="/papers/2605.06113/detail.html#q1-痛点" class="ref-link" title="2605.06113#q1-痛点">[2605.06113]</a>。Waterfill/LPLB 在长 decode、小 batch、HBM-bound 的 decode 阶段能否保持正增益，blog 无数据。</p>
+
+<hr>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<p><strong>范式定位：不是"新范式"，而是给既有 DeepEP+EPLB 范式补上缺失的运行时环节。</strong></p>
+<p>这簇论文里，2605.02960（反转数据流）和 2604.26881（serverless 化）才是范式挑战者；Waterfill/LPLB 是<strong>范式内的精修</strong>——它接受"EPLB 静态 placement + DeepEP 同步 dispatch"这一主流栈，只补"单 batch 残余不均衡"这一最后一公里 <a href="/papers/blog-waterfill-lplb/detail.html#2-痛点-方法-结果" class="ref-link" title="blog-waterfill-lplb#2-痛点-方法-结果">[blog-waterfill-lplb]</a>。这种定位的好处是采用成本极低：Waterfill 一个 flag（<code>--enable-deepep-waterfill</code>）、LPLB 一个 flag（<code>--ep-dispatch-algorithm lp</code>）即可启用 <a href="/papers/blog-waterfill-lplb/detail.html#7-实现-cross-reference" class="ref-link" title="blog-waterfill-lplb#7-实现-cross-reference">[blog-waterfill-lplb]</a>。</p>
+
+<p><strong>采用证据：本簇里采用信号最强的一篇。</strong></p>
+<ul>
+<li>Waterfill/LPLB 直接以 SGLang 上游 PR 形式落地（#20089/#19290/#25391/#24515），且已扩展到 DeepSeek V4 的 HashTopK 路径 <a href="/papers/blog-waterfill-lplb/detail.html#7-实现-cross-reference" class="ref-link" title="blog-waterfill-lplb#7-实现-cross-reference">[blog-waterfill-lplb]</a>——这是"已合并、跨模型代际维护"的生产级成熟度。</li>
+<li>对比：moe-lb-interai25 无公开代码、workshop 阶段 <a href="/papers/moe-lb-interai25/detail.html#10-adoption-maturity" class="ref-link" title="moe-lb-interai25#10-adoption-maturity">[moe-lb-interai25]</a>；BalanceRoute 代码未开源、绑定 Ascend/vllm-ascend <a href="/papers/2605.06113/detail.html#1-tl-dr" class="ref-link" title="2605.06113#1-tl-dr">[2605.06113]</a>；FaaSMoE 是 CPU-only toy-scale 原型 <a href="/papers/2604.26881/detail.html#q3-结果" class="ref-link" title="2604.26881#q3-结果">[2604.26881]</a>。相较之下 Waterfill/LPLB 的"进主流开源引擎主干"是本簇最硬的采用证据。</li>
+<li>底座侧 MORI 已被 SGLang/vLLM/DeepSpeed 等 8 个框架集成 <a href="/papers/ROCm-mori/detail.html#1-tl-dr" class="ref-link" title="ROCm-mori#1-tl-dr">[ROCm-mori]</a>，fabric-lib 在 Perplexity 生产运行 <a href="/papers/2510.27656/detail.html#q3-结果" class="ref-link" title="2510.27656#q3-结果">[2510.27656]</a>——说明 Waterfill/LPLB 所站的"DeepEP 类通信层"生态成熟，其上补 LB 是顺势而为。</li>
+</ul>
+
+<p><strong>思想血缘：DeepSeek 系的连续演化。</strong></p>
+<p>EPLB/redundant experts 源自 DeepSeek-V3 <a href="/papers/2412.19437/detail.html#key-findings" class="ref-link" title="2412.19437#key-findings">[2412.19437]</a>，LPLB 的 LP 公式又直接受 <code>deepseek-ai/LPLB</code> 启发 <a href="/papers/blog-waterfill-lplb/detail.html#1-tl-dr" class="ref-link" title="blog-waterfill-lplb#1-tl-dr">[blog-waterfill-lplb]</a>。Waterfill/LPLB 因此是 DeepSeek MoE serving 血脉在 SGLang 侧的工程延续，而非独立发明——生态位是"把开源社区已有的 LP 想法产品化进主流引擎"。</p>
+
+<hr>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<p><strong>方向-1｜Waterfill × LPLB × placement 的三层联合优化。</strong></p>
+<p>当前 Waterfill（shared expert）与 LPLB（routed replica）互补但各自独立求解 <a href="/papers/blog-waterfill-lplb/detail.html#2-痛点-方法-结果" class="ref-link" title="blog-waterfill-lplb#2-痛点-方法-结果">[blog-waterfill-lplb]</a>。可把 shared-expert slot 也纳入 LPLB 的 min–max LP，作为额外的"可自由落点的伪副本"，一次求解同时摊平 dense + sparse 负载。更进一步，把 moe-lb-interai25 的 placement 变量与 LPLB 的流量变量合成<strong>双时间尺度</strong>优化（慢层搬权重、快层分流量）<a href="/papers/moe-lb-interai25/detail.html#3-key-innovations" class="ref-link" title="moe-lb-interai25#3-key-innovations">[moe-lb-interai25]</a>，理论上比二者独立更优。</p>
+
+<p><strong>方向-2｜自适应候选集与 comm-cost-aware Waterfill。</strong></p>
+<p>把 moe-lb-interai25 显式的通信成本项 <a href="/papers/moe-lb-interai25/detail.html#3-key-innovations" class="ref-link" title="moe-lb-interai25#3-key-innovations">[moe-lb-interai25]</a> 注入 Waterfill 的 waterline，使候选集在"通信保守"与"all-rank"之间按实测链路带宽自适应，而非二选一开关 <a href="/papers/blog-waterfill-lplb/detail.html#2-痛点-方法-结果" class="ref-link" title="blog-waterfill-lplb#2-痛点-方法-结果">[blog-waterfill-lplb]</a>。在 NVL72 大 NVLink 域 vs 跨节点 IB 的异构拓扑上，最优候选集半径本应不同。</p>
+
+<p><strong>方向-3｜跨 DP-worker 路由 + EP 内 replica 分派的堆叠。</strong></p>
+<p>BalanceRoute 管 request→DP worker、LPLB 管 token→replica，二者作用面正交 <a href="/papers/2605.06113/detail.html#1-tl-dr" class="ref-link" title="2605.06113#1-tl-dr">[2605.06113]</a> <a href="/papers/blog-waterfill-lplb/detail.html#3-架构-方法图" class="ref-link" title="blog-waterfill-lplb#3-架构-方法图">[blog-waterfill-lplb]</a>。堆叠后，上层用 F-score 把 request 送到预期 EP 负载更轻的 DP 组、下层用 LP 在组内再摊平，是一个未被任一篇覆盖的两级 LB。挑战在于两级目标是否会互相抵消（上层已均衡时下层收益趋零，正对应 LPLB 的"均衡区间收益低"）。</p>
+
+<p><strong>方向-4｜decode 阶段与长上下文的 dispatch-time LB。</strong></p>
+<p>现有评测全在 max_tokens=1 <a href="/papers/blog-waterfill-lplb/detail.html#5-实验与数据" class="ref-link" title="blog-waterfill-lplb#5-实验与数据">[blog-waterfill-lplb]</a>。把 Waterfill/LPLB 的 per-batch 求解接到长 decode 上，需与 BalanceRoute 揭示的"KV 随步增长"动态耦合 <a href="/papers/2605.06113/detail.html#q1-痛点" class="ref-link" title="2605.06113#q1-痛点">[2605.06113]</a>——每 decode step 重解 LP 的开销/收益比是空白。</p>
+
+<p><strong>方向-5｜跨厂商底座上的 dispatch-time LB 移植。</strong></p>
+<p>LPLB 的求解器绑定 <code>cuSOLVERDx</code>/<code>cuBLASDx</code>（NVIDIA）<a href="/papers/blog-waterfill-lplb/detail.html#7-实现-cross-reference" class="ref-link" title="blog-waterfill-lplb#7-实现-cross-reference">[blog-waterfill-lplb]</a>。要在 AMD 栈上复现，需把 on-GPU IPM kernel 移植到 ROCm，并把目的地决策接到 MORI-EP 的 dispatch 接口 <a href="/papers/ROCm-mori/detail.html#q2-方法" class="ref-link" title="ROCm-mori#q2-方法">[ROCm-mori]</a>；类似地，fabric-lib 的 EFA 可移植 dispatch <a href="/papers/2510.27656/detail.html#q2-方法" class="ref-link" title="2510.27656#q2-方法">[2510.27656]</a> 为"跨云、跨 NIC 的 dispatch-time LB"提供了通信基础。把 LB 决策与 transport 解耦成可插拔层，是让这簇成果脱离单一厂商的未探索工程方向。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/deepseek-ai-lplb.html">deepseek-ai-lplb</a> (predecessor) 
+<a href="/papers/deepep.html">deepep</a> (tool) 
+<a href="/papers/eplb.html">eplb</a> (baseline) 
+<a href="/papers/sglang.html">sglang</a> (tool) 
+<a href="/papers/deepseek-v3.html">deepseek-v3</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

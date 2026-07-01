@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Understanding Bottlenecks for Efficiently Serving LLM Inference With KV Offloading — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Understanding Bottlenecks for Efficiently Serving LLM Inference With KV Offloading</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2601.19910 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2601.19910/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="understanding-bottlenecks-for-efficiently-serving-llm-inference-with-kv-offloading-—-l3-synthesis">Understanding Bottlenecks for Efficiently Serving LLM Inference With KV Offloading — L3 Synthesis <a class="heading-anchor" href="#understanding-bottlenecks-for-efficiently-serving-llm-inference-with-kv-offloading-—-l3-synthesis" aria-label="Link to understanding-bottlenecks-for-efficiently-serving-llm-inference-with-kv-offloading-—-l3-synthesis">#</a></h1>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<table>
+<tr><th>Entity</th><th>Relation</th><th>Why Related</th></tr>
+<tr><td>2309.06180 (vLLM/PagedAttention)</td><td>baseline</td><td>2601.19910 使用 vLLM v0.10.1 + LMCache 作为实验平台；PagedAttention 的分页 KV cache 管理是 offloading 的前置条件</td></tr>
+<tr><td>2305.05920 (FastServe)</td><td>related</td><td>FastServe 的 proactive KV cache swapping（GPU↔host memory）正是 2601.19910 分析的操作——但 FastServe 关注调度延迟而非带宽瓶颈量化</td></tr>
+<tr><td>2403.11421 (FastDecode)</td><td>related</td><td>FastDecode 将 attention 计算直接放在 CPU 侧执行，彻底回避了 KV 数据回传 GPU 的 PCIe 瓶颈——是 2601.19910 提出问题的一种激进解法</td></tr>
+<tr><td>2411.01142 (Neo)</td><td>related</td><td>Neo 部分卸载 KV cache 到 CPU 并在 CPU 侧执行 attention，通过 asymmetric pipelining 缓解正是 2601.19910 量化的 PCIe 瓶颈</td></tr>
+<tr><td>2407.00079 (Mooncake)</td><td>related</td><td>Mooncake 将 KV cache 存储到 CPU DRAM + SSD 并用 RDMA 传输，其 layer-wise streaming 策略直接缓解 2601.19910 指出的传输-计算不可重叠问题</td></tr>
+<tr><td>2412.19437 (DeepSeek-V3)</td><td>related</td><td>DeepSeek-V3 的 MLA 将 $B_{\text{kv}}$ 从 192–516 KB/token 压缩到 70 KB/token，是 2601.19910 分析的最有效模型侧优化</td></tr>
+<tr><td>2312.11819 (FlexRLHF)</td><td>tangential</td><td>FlexRLHF 的 Disaggregated 策略将训练/推理运行时分离到不同设备，思路类似 prefill-decode disaggregation，但目标是 RLHF 训练而非推理 serving</td></tr>
+<tr><td>2409.19256 (HybridFlow/veRL)</td><td>tangential</td><td>HybridFlow 的 3D-HybridEngine 将同一模型在不同阶段使用不同并行策略，理念类似 2601.19910 建议的 workload-aware disaggregation</td></tr>
+</table>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="2601-19910-的独特贡献">2601.19910 的独特贡献 <a class="heading-anchor" href="#2601-19910-的独特贡献" aria-label="Link to 2601-19910-的独特贡献">#</a></h3>
+
+<p>2601.19910 的核心价值是<strong>量化</strong>——它不设计系统，而是建立分析框架（$\kappa_{\text{crit}} = \kappa_M \times \kappa_{HW}$）来精确刻画 KV offloading 何时将 prefill 从 compute-bound 转为 memory-bound <a href="/papers/2601.19910/detail.html#§2-Q2" class="ref-link" title="2601.19910#§2-Q2">[2601.19910]</a>。其他论文要么直接设计解决方案（FastDecode、Neo、Mooncake），要么作为被分析的基线系统（vLLM）。</p>
+
+<h3 id="对比-fastdecode-2403-11421">对比 FastDecode (2403.11421) <a class="heading-anchor" href="#对比-fastdecode-2403-11421" aria-label="Link to 对比-fastdecode-2403-11421">#</a></h3>
+
+<p>FastDecode 的 S-Part/R-Part 分解完全<strong>绕过</strong>了 PCIe 带宽瓶颈——它不再将 KV cache 从 CPU 搬回 GPU，而是在 CPU 侧直接执行 attention <a href="/papers/2403.11421/detail.html#§2-Q2" class="ref-link" title="2403.11421#§2-Q2">[2403.11421]</a>。这使得传输内容从 $O(B \times L_{seq} \times d)$ 的 KV cache 缩减为 $O(B \times d)$ 的 Q/O activation，量级缩小数十到数百倍。</p>
+
+<p><strong>Delta</strong>: 2601.19910 假设 KV cache 必须回传到 GPU 才能执行 attention（标准 vLLM 架构），因此 PCIe 带宽是<strong>硬瓶颈</strong>。FastDecode 证明这个假设不是唯一选择——以 InfiniBand 连接的远程 CPU 集群为代价，可以完全消除该瓶颈。但 FastDecode 需要 8 台 CPU 节点服务单 GPU <a href="/papers/2403.11421/detail.html#§5-实验与数据" class="ref-link" title="2403.11421#§5-实验与数据">[2403.11421]</a>，部署成本高昂且仅覆盖 decode 阶段。</p>
+
+<h3 id="对比-neo-2411-01142">对比 Neo (2411.01142) <a class="heading-anchor" href="#对比-neo-2411-01142" aria-label="Link to 对比-neo-2411-01142">#</a></h3>
+
+<p>Neo 的 asymmetric pipelining 部分卸载 KV cache 到本机 CPU，通过将 prefill 请求（GPU 密集）和 CPU-decode 请求放在互补子批次中，使 GPU linear stage 的执行时间覆盖 CPU attention 时间 <a href="/papers/2411.01142/detail.html#§2-Q2" class="ref-link" title="2411.01142#§2-Q2">[2411.01142]</a>。其 Greedy 原则保证 throughput ≥ GPU-only baseline。</p>
+
+<p><strong>Delta</strong>: 2601.19910 的模型（Eq. 3: $\text{TTFT} = t_{\text{PCIe}} + t_{\text{prefill}}$）假设传输和计算串行不可重叠 <a href="/papers/2601.19910/detail.html#§4-作者证明" class="ref-link" title="2601.19910#§4-作者证明">[2601.19910]</a>。Neo 的贡献恰恰在于通过 pipeline 设计<strong>部分实现</strong>了重叠，但仅在 CPU 内存带宽充足时有效（T4 上 7.5×，H100 上仅 14% <a href="/papers/2411.01142/detail.html#§5-实验与数据" class="ref-link" title="2411.01142#§5-实验与数据">[2411.01142]</a>）。2601.19910 的分析框架可以精确预测 Neo 何时有效：当 $T_{l_0} \geq T_{ca_1}$（GPU linear time 足以覆盖 CPU attention time）时 pipeline 无 bubble，这等价于 Neo 的 "Hiding CPU" 约束 <a href="/papers/2411.01142/detail.html#§4-作者证明" class="ref-link" title="2411.01142#§4-作者证明">[2411.01142]</a>。</p>
+
+<h3 id="对比-mooncake-2407-00079">对比 Mooncake (2407.00079) <a class="heading-anchor" href="#对比-mooncake-2407-00079" aria-label="Link to 对比-mooncake-2407-00079">#</a></h3>
+
+<p>Mooncake 将 KV cache 存储在分布式 CPU DRAM 池中，通过 GPUDirect RDMA（而非标准 PCIe copy）传输，并使用 layer-wise streaming 与 prefill 计算重叠 <a href="/papers/2407.00079/detail.html#§2-Q2" class="ref-link" title="2407.00079#§2-Q2">[2407.00079]</a>。RDMA 网络带宽（800 Gbps = 100 GB/s per node）远高于单节点 PCIe 的实测 15 GB/s <a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。</p>
+
+<p><strong>Delta</strong>: Mooncake 从硬件层面缓解了 2601.19910 指出的瓶颈——将 $\text{BW}_{\text{PCIe}}$ 从 15 GB/s 提升到 100+ GB/s，等价于将 $\kappa_{HW}$ 提升 ~6.7×。这接近 2601.19910 提议的 NVLink C2C 方案（5.3× 提升）<a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。但 Mooncake 的核心贡献在调度层面（cache-aware scheduling、early rejection），而非带宽分析。</p>
+
+<h3 id="对比-vllm-2309-06180">对比 vLLM (2309.06180) <a class="heading-anchor" href="#对比-vllm-2309-06180" aria-label="Link to 对比-vllm-2309-06180">#</a></h3>
+
+<p>vLLM 的 PagedAttention 消除了 KV cache 的内存碎片（20.4%→near-100% 利用率），使更大 batch size 成为可能 <a href="/papers/2309.06180/detail.html#§2-Q3" class="ref-link" title="2309.06180#§2-Q3">[2309.06180]</a>。但 vLLM 的 token budget 调度机制完全不感知 offloaded KV 的 VRAM 消耗——2601.19910 揭示了这个 fundamental mismatch：一个 $K=65$K, $T=32$ 的请求仅消耗 32 token budget 但需要 33 GB VRAM <a href="/papers/2601.19910/detail.html#§5-ext-Scheduling" class="ref-link" title="2601.19910#§5-ext-Scheduling">[2601.19910]</a>。</p>
+
+<p><strong>Delta</strong>: vLLM 解决了 KV cache 的<strong>碎片</strong>问题，2601.19910 揭示了 offloading 场景下的<strong>带宽</strong>问题和<strong>调度</strong>问题——两者正交，且后者需要全新的 VRAM-aware scheduling 机制。</p>
+
+<h3 id="对比-deepseek-v3-2412-19437">对比 DeepSeek-V3 (2412.19437) <a class="heading-anchor" href="#对比-deepseek-v3-2412-19437" aria-label="Link to 对比-deepseek-v3-2412-19437">#</a></h3>
+
+<p>DeepSeek-V3 的 MLA 通过低秩 KV 压缩将 $B_{\text{kv}}$ 从 192 KB/token（Qwen3-235B GQA）降至 70 KB/token，使 $\kappa_M$ 从 0.23 提升到 1.06，$\kappa_{\text{crit}}$ 从 3.1 提升到 14.3（B200 PCIe 5.0）<a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。这是 2601.19910 分析的最有效模型侧缓解手段。</p>
+
+<p><strong>Delta</strong>: 2601.19910 的分析框架量化了 MLA 的收益上界——即使 MLA 将 $\kappa_{\text{crit}}$ 从 3.1 提升到 14.3，典型 document QA workload（$\kappa_{\text{ratio}} = 5000$）仍超出 350× <a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。仅 MLA 不够，需结合硬件优化。但 2601.19910 <strong>未能实证验证</strong> MLA 的效果（DeepSeek-V2 实现问题）<a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>，而 DeepSeek-V3 在生产环境中验证了 MLA + MTP 的联合加速效果 <a href="/papers/2412.19437/detail.html#key-findings" class="ref-link" title="2412.19437#key-findings">[2412.19437]</a>。</p>
+
+<h3 id="对比-fastserve-2305-05920">对比 FastServe (2305.05920) <a class="heading-anchor" href="#对比-fastserve-2305-05920" aria-label="Link to 对比-fastserve-2305-05920">#</a></h3>
+
+<p>FastServe 的 proactive KV cache swapping 将 GPU↔host 的 PCIe 传输与 GPU 计算重叠——overlap 策略使 OPT-175B 的 2.3 GB swap 时间（~36 ms via PCIe 4.0）可以被 decode 执行时间（~60 ms）覆盖 <a href="/papers/2305.05920/detail.html#§7-实现cross-reference" class="ref-link" title="2305.05920#§7-实现cross-reference">[2305.05920]</a>。</p>
+
+<p><strong>Delta</strong>: FastServe 的 overlap 仅在 <strong>decode</strong> 阶段有效（decode 时间 > swap 时间），但 2601.19910 分析的是 <strong>prefill</strong> 阶段——当 $K \gg T$ 时 prefill 计算时间极短（~12.8 ms for 32 tokens on H100）而传输时间极长（~500 ms for 33 GB），overlap 收益可忽略 <a href="/papers/2601.19910/detail.html#§4-作者证明" class="ref-link" title="2601.19910#§4-作者证明">[2601.19910]</a>。这揭示了 FastServe 的 proactive swapping 无法解决 2601.19910 指出的 prefill 瓶颈。</p>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<h3 id="攻击-1-串行假设过强">攻击 1: 串行假设过强 <a class="heading-anchor" href="#攻击-1-串行假设过强" aria-label="Link to 攻击-1-串行假设过强">#</a></h3>
+
+<p>2601.19910 的核心 TTFT 模型（Eq. 3）假设 PCIe 传输和 GPU 计算完全串行 <a href="/papers/2601.19910/detail.html#§4-作者证明" class="ref-link" title="2601.19910#§4-作者证明">[2601.19910]</a>。论文承认存在 partial overlap（Eq. 4, $\alpha < 1$），但以"$t_{\text{PCIe}} \gg t_{\text{GPU}}$ 时 overlap 收益可忽略"为由简化为 $\alpha = 0$。</p>
+
+<p>然而，Mooncake 的 layer-wise streaming（逐层传输 KV + 计算重叠）<a href="/papers/2407.00079/detail.html#§7-实现cross-reference" class="ref-link" title="2407.00079#§7-实现cross-reference">[2407.00079]</a> 和 Neo 的 asymmetric pipelining <a href="/papers/2411.01142/detail.html#§2-Q2" class="ref-link" title="2411.01142#§2-Q2">[2411.01142]</a> 证明，精心设计的 pipeline 可以在 $t_{\text{PCIe}} \gg t_{\text{GPU}}$ 时仍获得显著加速——通过将传输分解为细粒度 chunk 与逐层计算重叠。2601.19910 的模型无法捕捉这种 chunked overlap 的收益，因此<strong>系统性低估了现有系统的实际性能</strong>。</p>
+
+<h3 id="攻击-2-实测带宽异常低">攻击 2: 实测带宽异常低 <a class="heading-anchor" href="#攻击-2-实测带宽异常低" aria-label="Link to 攻击-2-实测带宽异常低">#</a></h3>
+
+<p>论文测得 PCIe 5.0 有效带宽仅 15 GB/s（峰值的 23%）<a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>，归因于 NUMA effects、memory copy overhead、transfer granularity。但这个数字在 LMCache 的实现中可能不代表最优——Mooncake 使用 GPUDirect RDMA 达到了显著更高的有效带宽 <a href="/papers/2407.00079/detail.html#§7-实现cross-reference" class="ref-link" title="2407.00079#§7-实现cross-reference">[2407.00079]</a>。如果优化 LMCache 的传输路径（使用 host-mapped memory、大块传输、NUMA-aware allocation），实际 $\kappa_{\text{crit}}$ 可能从 1–2 提升到接近理论值 7–14。论文将<strong>实现问题</strong>等同于<strong>根本性限制</strong>，可能误导读者认为 PCIe offloading 在根本上不可行。</p>
+
+<h3 id="攻击-3-workload-分布的-cherry-picking">攻击 3: workload 分布的 cherry-picking <a class="heading-anchor" href="#攻击-3-workload-分布的-cherry-picking" aria-label="Link to 攻击-3-workload-分布的-cherry-picking">#</a></h3>
+
+<p>2601.19910 的三个数据集（ShareGPT median $\kappa_{\text{ratio}} = 100$, NarrativeQA = 5000, FinQA = 10000）都是 KV 复用率极高的场景 <a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。然而许多实际场景（code completion, single-turn chat without history）的 $\kappa_{\text{ratio}} < 10$，此时系统仍在 compute-bound 区域。论文标题含"Efficiently Serving"但实际仅分析 KV offloading 的极端场景，未覆盖 offloading 真正有价值的<strong>临界区域</strong>（$\kappa_{\text{ratio}} \approx \kappa_{\text{crit}}$）的性能特征。</p>
+
+<h3 id="攻击-4-mla-效果未实证验证">攻击 4: MLA 效果未实证验证 <a class="heading-anchor" href="#攻击-4-mla-效果未实证验证" aria-label="Link to 攻击-4-mla-效果未实证验证">#</a></h3>
+
+<p>论文声称 MLA 可将 $B_{\text{kv}}$ 降低 2.7–4.7×，$\kappa_{\text{crit}}$ 提升 4.6×，但<strong>未能用 DeepSeek-V2 实证验证</strong>这一结论（"encountered implementation-specific overheads"）<a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。这意味着论文最重要的模型侧优化建议缺乏实验支撑——MLA 的 serving 实现可能引入新的 overhead（KV decompression latency）使得实际 $\kappa_{\text{crit}}$ 提升远小于理论值。</p>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<h3 id="paradigm-positioning">Paradigm positioning <a class="heading-anchor" href="#paradigm-positioning" aria-label="Link to paradigm-positioning">#</a></h3>
+
+<p>2601.19910 在 LLM serving 研究中占据<strong>分析/诊断</strong>的生态位——它不提供系统实现，而是提供设计原则。具体而言：</p>
+
+<ul>
+<li><strong>对系统设计者</strong>：$\kappa_{\text{crit}}$ 框架是一个 quick diagnostic tool——在部署 KV offloading 前计算 $\kappa_{\text{ratio}} / \kappa_{\text{crit}}$ 即可预判性能特征。</li>
+<li><strong>对硬件架构师</strong>：论文直接论证了 unified HBM 和 NVLink C2C 对 inference 的价值（48× vs 5.3× $\kappa_{\text{crit}}$ 提升）<a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。</li>
+<li><strong>对模型设计者</strong>：量化了 MLA vs GQA vs MoE 对 offloading 友好性的影响。</li>
+</ul>
+
+<h3 id="adoption-evidence">Adoption evidence <a class="heading-anchor" href="#adoption-evidence" aria-label="Link to adoption-evidence">#</a></h3>
+
+<ul>
+<li>vLLM + LMCache 的 offloading pathway 在生产中日益常见（Kimi/Mooncake <a href="/papers/2407.00079/detail.html#§2-Q1" class="ref-link" title="2407.00079#§2-Q1">[2407.00079]</a>），2601.19910 的分析直接适用于评估这些部署的效率。</li>
+<li>论文提出的 utilization-aware scheduling 思路已在后续工作中被实践（vLLM 的 scheduler 逐步加入 memory-aware logic）。</li>
+<li>$\kappa_{\text{crit}}$ 的分解公式（model × hardware）为跨平台比较提供了统一语言。</li>
+</ul>
+
+<h3 id="时代定位">时代定位 <a class="heading-anchor" href="#时代定位" aria-label="Link to 时代定位">#</a></h3>
+
+<p>2601.19910 发表于 GPU 互联带宽增长滞后于计算增长的拐点期——B200 的 $\kappa_{HW}$ 仅为 H100 的 40% <a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。随着 inference GPU 向更高 FLOP/s（GB300, MI400）演进，该问题只会恶化。论文的 warning——"newer GPUs are worse for offloading, not better"——可能成为影响 inference GPU 路线图的重要 signal。</p>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<h3 id="方向-1-chunked-pipelined-offloading-neo-style-scheduling">方向 1: Chunked pipelined offloading + Neo-style scheduling <a class="heading-anchor" href="#方向-1-chunked-pipelined-offloading-neo-style-scheduling" aria-label="Link to 方向-1-chunked-pipelined-offloading-neo-style-scheduling">#</a></h3>
+
+<p>将 2601.19910 的 $\kappa_{\text{crit}}$ 分析与 Neo 的 asymmetric pipelining <a href="/papers/2411.01142/detail.html#§2-Q2" class="ref-link" title="2411.01142#§2-Q2">[2411.01142]</a> 和 Mooncake 的 layer-wise streaming <a href="/papers/2407.00079/detail.html#§7-实现cross-reference" class="ref-link" title="2407.00079#§7-实现cross-reference">[2407.00079]</a> 结合：设计一个 layer-granularity 的传输-计算 pipeline，使每层 KV 的传输与前一层的 attention 计算重叠。将 2601.19910 的 Eq. 3 推广为 $\text{TTFT} = t_{\text{PCIe}} / L + t_{\text{compute\_per\_layer}}$ 的 pipeline 模型，量化 chunked overlap 的理论上界。</p>
+
+<h3 id="方向-2-mla-quantized-kv-offloading-的联合实证">方向 2: MLA + quantized KV offloading 的联合实证 <a class="heading-anchor" href="#方向-2-mla-quantized-kv-offloading-的联合实证" aria-label="Link to 方向-2-mla-quantized-kv-offloading-的联合实证">#</a></h3>
+
+<p>2601.19910 分析了 MLA（2.7× $B_{\text{kv}}$ 降低）和 quantization（2–4×）但<strong>均未实证验证</strong> <a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。联合使用可望将 $B_{\text{kv}}$ 从 516 KB/token（LLaMA-405B）降到 ~30 KB/token（MLA + FP4），使 $\kappa_{\text{crit}}$ 从 ~2 提升到 ~100+，覆盖 ShareGPT 的 median $\kappa_{\text{ratio}}$。需要验证 MLA decompression + dequantization 的 on-GPU latency 是否引入新瓶颈。</p>
+
+<h3 id="方向-3-kappa-aware-request-routing-的生产级实现">方向 3: $\kappa$-aware request routing 的生产级实现 <a class="heading-anchor" href="#方向-3-kappa-aware-request-routing-的生产级实现" aria-label="Link to 方向-3-kappa-aware-request-routing-的生产级实现">#</a></h3>
+
+<p>2601.19910 提出的 workload-aware disaggregation（高 $\kappa_{\text{ratio}}$ → Grace Hopper, 低 $\kappa_{\text{ratio}}$ → H100/A100）<a href="/papers/2601.19910/detail.html#§5-ext-Scheduling" class="ref-link" title="2601.19910#§5-ext-Scheduling">[2601.19910]</a> 与 Mooncake 的 cache-aware scheduling <a href="/papers/2407.00079/detail.html#§4-作者证明" class="ref-link" title="2407.00079#§4-作者证明">[2407.00079]</a> 可以统一为一个 $\kappa$-aware router：在 request 到达时估算其 $\kappa_{\text{ratio}}$，结合各实例的 $\kappa_{\text{crit}}$（由硬件决定），路由到最匹配的实例。这需要将 2601.19910 的离线分析框架转化为在线 routing policy。</p>
+
+<h3 id="方向-4-compute-near-data-替代方案的系统性比较">方向 4: Compute-near-data 替代方案的系统性比较 <a class="heading-anchor" href="#方向-4-compute-near-data-替代方案的系统性比较" aria-label="Link to 方向-4-compute-near-data-替代方案的系统性比较">#</a></h3>
+
+<p>FastDecode 在 CPU 侧执行 attention（传输 $O(B \times d)$ 的 Q/O 替代 $O(B \times L \times d)$ 的 KV）<a href="/papers/2403.11421/detail.html#§2-Q2" class="ref-link" title="2403.11421#§2-Q2">[2403.11421]</a>、Neo 在本机 CPU 部分执行 attention <a href="/papers/2411.01142/detail.html#§2-Q2" class="ref-link" title="2411.01142#§2-Q2">[2411.01142]</a>、以及标准 offloading（传输整个 KV）三种架构应在 2601.19910 的 $\kappa_{\text{ratio}}$ 分析框架下统一比较：推导各方案的 $\kappa_{\text{crit}}$ 等效值，确定不同 workload/hardware 配置下的最优架构选择边界。</p>
+
+<h3 id="方向-5-power-capped-serving-的经济模型">方向 5: Power-capped serving 的经济模型 <a class="heading-anchor" href="#方向-5-power-capped-serving-的经济模型" aria-label="Link to 方向-5-power-capped-serving-的经济模型">#</a></h3>
+
+<p>2601.19910 揭示 GPU 在 offloading workload 下仅消耗 22–28% TDP <a href="/papers/2601.19910/detail.html#§5-实验与数据" class="ref-link" title="2601.19910#§5-实验与数据">[2601.19910]</a>。这意味着可以在相同数据中心电力预算下部署更多 GPU——但需要经济模型量化 power-capping（限制到 200–300W）+ more nodes vs. fewer fully-utilized nodes 的 TCO 权衡，结合 vLLM/Mooncake 的调度策略实现 power-aware serving。</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/vllm.html">vllm</a> (baseline) 
+<a href="/papers/lmcache.html">lmcache</a> (tool) 
+<a href="/papers/deepseek-v3.html">deepseek-v3</a> (related) 
+<a href="/papers/splitwise.html">splitwise</a> (related) 
+<a href="/papers/distserve.html">distserve</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> dspark</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">speculative-decoding</span><span class="tag">semi-autoregressive-drafter</span><span class="tag">confidence-scheduled-verification</span><span class="tag">throughput-scheduling</span><span class="tag">llm-serving</span><span class="tag">deepseek-v4</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/dspark.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/dspark" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="dspark-—-作者意图蒸馏">DSpark — 作者意图蒸馏 <a class="heading-anchor" href="#dspark-—-作者意图蒸馏" aria-label="Link to dspark-—-作者意图蒸馏">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>DSpark 把"起草更快更准"与"验证更省"两条线合成一个无损投机解码系统。起草端用半自回归结构：并行 DFlash 主干一次前向出全块 base logits，再挂一个轻量序列头（Markov 或 RNN）注入块内依赖以抑制后缀衰减。验证端用置信度调度：置信头估计每位前缀存活率，硬件感知调度器按实测 $\text{SPS}(B)$ 吞吐曲线动态选每请求验证长度，早停机制保证严格无损。离线接受长度超 Eagle3 约 26.7%–30.9%、超 DFlash 约 16.3%–18.4%；在 DeepSeek-V4 上较 MTP-1 每用户生成加速 60%–85%（Flash）/ 57%–78%（Pro），把服务的吞吐-交互 Pareto 前沿外推。</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 痛点（为什么要做）</strong></p>
+<p>大并行草块理论上能一次前向提出很多 token，但落地遇到两个正交瓶颈：</p>
+<ul>
+<li>生成质量：并行起草器各位置独立预测，无法建模块内 token 间依赖，出现"多模态碰撞"（如把 "of course" 与 "no problem" 混成 "of problem"），接受率沿块位置快速衰减。</li>
+<li>系统效率：草块越长，无差别验证越浪费。验证一个尾部低置信 token 在轻载时几乎免费，但在高并发下会占用本可服务其它请求的目标模型批容量，反而拉低吞吐。理想验证长度同时随数据（code > chat）和系统负载变化。</li>
+</ul>
+
+<p><strong>Q2 方法（怎么做）</strong></p>
+<p>两个互补机制对应上面两个瓶颈：</p>
+<ul>
+<li><strong>半自回归起草</strong>：并行主干（DFlash）承担重计算保持 $T_{\text{draft}}$ 近似与 $\gamma$ 无关；再叠一个轻量序列头，通过局部归一化的自回归因式分解 $P(X\mid x_0)=\prod_k p_k(x_k\mid x_0,x_{<k})$ 注入依赖，用极小延迟换回接受率。</li>
+<li><strong>置信度调度验证</strong>：置信头输出每位存活概率 $c_k$，经 Sequential Temperature Scaling (STS) 校准；硬件感知前缀调度器把"选多长验证"formulate 成全局吞吐最大化 $\Theta=\tau\cdot\text{SPS}(B)$，用贪心 + 早停在线求解并保持无损。</li>
+</ul>
+
+<blockquote>
+<strong>核心技术壁垒</strong>：让一个"回顾式吞吐最大化搜索"同时满足无损性。关键在两处耦合——序列头采用局部（而非全局）softmax 归一化，使每 token 精确概率仍可算（rejection sampling 的前提）；同时早停 / 异步两步前因果屏障使前缀 $x_1$ 的准入决策不依赖 $x_1$ 自身的实现值（non-anticipating）。缺任一处，调度就会引入选择偏差、破坏目标分布（Appendix A 反例证明）。
+</blockquote>
+
+<p><strong>Q3 结果（做到了什么）</strong></p>
+<p>离线（关调度器、固定块）4 个目标模型 × 9 benchmark 全部最优；宏平均接受长度超 Eagle3 30.9%/26.7%/30.0%（Qwen3-4B/8B/14B）、超 DFlash 16.3%/18.4%/18.3%。在线（DeepSeek-V4-Flash/Pro 真实流量）较 MTP-1 每用户生成 +60%–85% / +57%–78%（等吞吐口径），并在严格 SLA（Flash 120 TPS、Pro 50 TPS）下维持非退化吞吐，外推 Pareto 前沿。</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/dspark/fig1.png" alt="Figure 1: DSpark 架构与解码循环"></p>
+
+<p><em>Paper's Figure 1（caption: "The DSpark architecture and decoding cycle …"）。</em> 给定 prompt ABC，目标模型走一步生成 D 作为 anchor；DSpark 用重并行主干 + 轻量序列头一次性产出草 token EFGH 及置信分 $c_1$–$c_4$；硬件感知前缀调度器据置信分保留前缀 EFG、丢弃低置信的 H；目标模型并行验证被调度前缀，E、F 接受、G 拒绝并补生成修正 token G∗；D E F G∗ 进入下一轮。读者应注意：起草（重并行 + 轻序列）与验证（置信调度）是同一循环内的两个可分别优化的阶段。</p>
+
+<p>解码循环三步的时序结构：</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant T as Target Model
+    participant B as Parallel Backbone
+    participant S as Sequential Head
+    participant Sch as Prefix Scheduler
+    T->>T: step1 从 ABC 生成 anchor D
+    T->>B: D + (γ-1) mask
+    B->>B: 一次前向 → h_1..h_γ, base logits U_1..U_γ
+    B->>S: hidden h_k, base logits U_k
+    S->>S: 左到右采样 x_k ~ softmax(U_k + B_k), 出 c_1..c_γ
+    S->>Sch: 草 token + 置信 c_k
+    Sch->>Sch: 按 a_{r,j}=∏c_i 排序, 按 SPS(B) 选 ℓ*
+    Sch->>T: 被调度前缀 (如 EFG)
+    T->>T: step3 并行验证, 接受最长前缀 + 补 bonus/修正 token
+</div>
+
+<p>主干只做一处改动：不再"anchor + γ 个 mask 只预测 mask 位"，而是把 anchor 本身当第一个预测位，$\gamma$ 个输入（anchor + $\gamma-1$ mask）产 $\gamma$ 个 logits，降起草计算而质量近似不变。序列头两种实例化：Markov 头把转移偏置限制为一阶 $B(x_{k-1},x_k)$ 并低秩分解 $B=W_1W_2$（$r=256$）；RNN 头维护跨全块前缀的门控状态 $s_k$。</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>本篇既有形式化模型（延迟模型 + 吞吐最大化 + 无损性证明），亦有实证，属"模型 + 实证"双轨。</p>
+
+<p><strong>记号表</strong></p>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$L$</td><td>每生成 token 的平均延迟</td></tr>
+<tr><td>$T_{\text{draft}}, T_{\text{verify}}$</td><td>起草 / 验证前向的墙钟时间</td></tr>
+<tr><td>$\tau$</td><td>每轮接受 token 数（含 bonus）</td></tr>
+<tr><td>$\gamma$</td><td>块大小（proposal length）</td></tr>
+<tr><td>$U_k, B_k$</td><td>位置 $k$ 的主干 base logit / 序列头转移偏置</td></tr>
+<tr><td>$c_k, c^*_k$</td><td>位置 $k$ 的预测 / 解析存活概率</td></tr>
+<tr><td>$a_{r,j}=\prod_{i\le j}c_{r,i}$</td><td>请求 $r$ 到位置 $j$ 的前缀存活概率</td></tr>
+<tr><td>$\text{SPS}(B)$</td><td>batch 大小 $B$ 时引擎 steps/second（初始化时 profile 成查表）</td></tr>
+<tr><td>$\Theta=\tau\cdot\text{SPS}(B)$</td><td>系统级期望 token 吞吐</td></tr>
+<tr><td>$\ell_r$</td><td>请求 $r$ 被调度的验证长度</td></tr>
+</table>
+
+<p><strong>关键方程物理意义</strong></p>
+<ul>
+<li>延迟 $L=(T_{\text{draft}}+T_{\text{verify}})/\tau$：分数而非和，说明每轮固定开销被"该轮接受 token 数"摊薄，故加速三杠杆为降 $T_{\text{draft}}$、升 $\tau$、降有效 $T_{\text{verify}}$。</li>
+<li>局部归一化 $p_k(v\mid x_0,x_{<k})=\dfrac{\exp(U_k(v)+B_k(\cdot,v))}{\sum_{u}\exp(U_k(u)+B_k(\cdot,u))}$：逐位 softmax 而非全局配分函数，保证每 token 精确概率可算——这是能用于 rejection sampling 的必要条件。</li>
+<li>置信监督 $c^*_k=1-\tfrac12\lVert p^d_k-p^t_k\rVert_1$：per-step 接受概率即 TV 距离的补，作为置信头软标签；训练 loss $\mathcal{L}_{\text{tv}}$ 直接最小化 TV 距离即最大化接受率。</li>
+<li>吞吐目标 $\Theta=\tau\cdot\text{SPS}(B)$，其中 $B=\sum_r(1+\ell_r)$、$\tau=\sum_r(1+\sum_{j\le\ell_r}a_{r,j})$：验证多一个 token 使 $\tau$ 增 $a_{r,j}$ 但使 $B$ 增 1 从而 $\text{SPS}$ 降，两者乘积捕捉"验证边际收益 vs 批容量代价"。</li>
+</ul>
+
+<p><strong>证明检查（≥6）</strong></p>
+<ol>
+<li>精确概率：序列头保持局部 softmax，避免 CRF-NAT 式全局归一化 / CTC 式路径边缘化，故 rejection sampling 的 $\min(1,p^t/p^d)$ 仍可精确计算。✓</li>
+<li>标签正确性：$c^*_k=1-\tfrac12\lVert p^d-p^t\rVert_1$ 是标准投机解码接受率公式，用作软标签自洽。✓</li>
+<li>贪心最优性：$a_{r,j}$ 关于 $j$ 单调非增，故延长请求 $r$ 从 $j-1$ 到 $j$ 的边际接受收益恰为 $a_{r,j}$；对全局池按 $a_{r,j}$ 降序贪心，在 $B$ 固定时即最优分配，且自然尊重块内前缀依赖。✓</li>
+<li>假设边界：早停贪心给全局吞吐最优当且仅当 $\Theta$ 单峰，隐含要求 $\text{SPS}$ 平滑衰减；真实张量核容量呈阶梯状 jagged，此假设破裂——这正是 §5.2 去掉早停的动机。✓（假设失效点）</li>
+<li>无损性（non-anticipating）：早停在 $\Theta$ 一旦下降即中断，使 $x_1$ 的准入只依赖观测 $x_1$ 之前的信息，恢复标准无损性论证所需的非预期属性。✓</li>
+<li>首序数值核验（Appendix A）：取 $\text{SPS}(1)=1.0,\text{SPS}(2)=0.5,\text{SPS}(3)=0.45,a_1=0.8$，则 $\Theta_0=1{\cdot}1.0=1.0$、$\Theta_1=(1+0.8){\cdot}0.5=0.9$，复现论文数值；无早停的回顾式搜索使 $\ell$ 依赖 $x_1$，导致首 token 输出分布 $(0.85,0.15)\ne$ 目标 $(0.7,0.3)$，证回顾式搜索非无损。✓</li>
+<li>生产因果屏障：异步调度用"两步前"的置信预测决定截断长度 $K$，准入决策与当前 token $x_{r,k}$ 的实现隔离，故可去早停做无约束全局搜索而仍无损。✓</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>离线主结果（关调度器、固定块）</strong></p>
+
+<p><img src="/assets/dspark/tab1.png" alt="Table 1: 主投机解码结果（接受长度 τ）"></p>
+
+<p><em>Paper's Table 1，逐格 bold 处 DSpark 最优。</em> 4 个目标模型（Qwen3-4B/8B/14B、Gemma4-12B）× 9 benchmark，DSpark 在每一格均为最优。可见强域效应：结构化任务（Math ~5.6、Code ~5.1，Qwen3-4B）接受长度天然高于开放式 Chat（~3.5），这一数据侧方差正是引入置信调度的动机。</p>
+
+<p><strong>为何并行/半自回归能赢自回归</strong></p>
+
+<p><img src="/assets/dspark/fig2.png" alt="Figure 2: 位置条件接受率"></p>
+
+<p><em>Paper's Figure 2。</em> 位置条件接受率剥离早期拒绝惩罚，只看每位的内在预测质量。$O(1)$ 延迟允许并行/半自回归起草器用更深网络，故在位置 1 起点更高（DFlash 0.88 vs Eagle3 0.81，Math）；因投机是严格前缀存活过程，位置 1 杠杆最大，故初始容量优势主导最终接受长度。但纯并行（DFlash）在后段快速衰减（Code 0.87→0.78），Eagle3 靠依赖建模反而回升（Chat 0.53→0.74）。DSpark 继承高起点（Math 起 0.93）并靠序列头抑制衰减，全块维持高且稳的条件接受率。</p>
+
+<p>深度与长度消融：2 层 DSpark 在所有域超 5 层 DFlash（Fig 3），说明轻量局部自回归比堆并行层更参数高效；序列头在 $\gamma$ 从 4 到 16 仅加 0.2%–1.3% 整轮延迟却带来至多 30% 接受长度提升（Fig 4）。置信头静态阈值扫描把 Chat 接受率从 45.7% 提到 95.7%（Fig 5）；STS 校准把 ECE 从 3%–8% 降到 ~1% 而保持 AUC 0.81–0.90（Fig 6）。</p>
+
+<p><strong>在线：Pareto 前沿外推</strong></p>
+
+<p><img src="/assets/dspark/fig7.png" alt="Figure 7: 吞吐 vs 每用户 TPS"></p>
+
+<p><em>Paper's Figure 7。</em> 散点为真实流量遥测、实线为拟合前沿。等吞吐口径 DSpark 每用户生成 +60%–85%（Flash）/ +57%–78%（Pro）。作者罕见地自我警示：120 TPS 下 +661%、50 TPS 下 +406% 的巨大比值是 MTP-1 塌缩到极小 batch 的产物，应解读为"扩展了可行交互前沿"而非代表性倍速。</p>
+
+<p><img src="/assets/dspark/fig8.png" alt="Figure 8: 负载自适应吞吐与验证预算"></p>
+
+<p><em>Paper's Figure 8。</em> 底行揭示机制：中等并发（Flash <200、Pro <150 请求）时调度器利用空闲目标算力把每请求验证预算从 MTP-1 静态 2 token 扩到 ~4–6 token；并发升高、目标容量饱和时预算随负载平滑收缩，剪掉低置信尾 token 以保批容量。这一负载自适应正是吞吐增益与稳定性的来源。</p>
+
+<p>局限：即便调度剪掉验证浪费，DSpark 仍付固定的草侧成本（并行主干生成初始 $\gamma$ 块）；对内在低接受率的复杂 query，这笔前置起草算力不可回收，作者提出未来做难度感知的草模型早退。</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>步骤</th><th>论点</th><th>依据（本篇内部）</th></tr>
+<tr><td>1</td><td>并行起草器把 $T_{\text{draft}}$ 压成单次前向，但各位置独立 → 多模态碰撞、后缀接受率快速衰减</td><td>§3.1；Fig 2（DFlash 后段衰减）</td></tr>
+<tr><td>2</td><td>在并行主干上叠局部归一化的轻量序列头，注入块内依赖 → 精确 per-token 概率仍可算、$\tau$ 升而延迟仅 +0.2%–1.3%</td><td>Eq.4–6；Table 1；Fig 3、Fig 4</td></tr>
+<tr><td>3</td><td>更长草块在高并发下浪费验证 → 置信头估存活率 + STS 校准 + 调度器最大化 $\Theta=\tau\cdot\text{SPS}(B)$，早停保无损</td><td>§3.2；Fig 5、Fig 6；Appendix A</td></tr>
+<tr><td>4</td><td>生产环境 SPS 阶梯 + ZOS 冲突 → 异步"两步前"top-$K$ + 展平变长核，去早停靠因果屏障仍无损</td><td>§5.2–5.3</td></tr>
+<tr><td>5</td><td>部署 DeepSeek-V4：等吞吐每用户 +60%–85%/+57%–78%，严格 SLA 维持非退化吞吐，外推 Pareto 前沿</td><td>§5.4；Fig 7、Fig 8</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>开源产物：作者开放 DeepSpec（算法驱动的投机解码训练仓库，含 Eagle3 / DFlash / DSpark，<code>source_url</code> 指向 github.com/deepseek-ai/DeepSpec），并释出 DeepSeek-V4-Flash/Pro (preview) 的 DSpark 检查点。仓库无 file:line 级别可引锚点在 L1 中给出。</p>
+
+<p>生产系统内部实现 [实现未公开]：HAI-LLM 训练框架内的两项优化（只通信 LM head 前隐状态把每 token 通信降到 $O(d)$；anchor-bounded 序列打包用 token 级 attention 索引替代 2D mask）、异步调度器、以及 DeepSeek-V4 上为变长路由改造的 index-attention 与 compress 核，均未公开代码。</p>
+
+<p><strong>核心技术壁垒（复现最难点）</strong>：不是任一单独模块，而是"回顾式全局吞吐搜索"与"严格无损"二者共存的证明与工程实现。局部（非全局）softmax 归一化保住精确 per-token 概率；早停 / 异步两步前因果屏障保住 non-anticipating 属性。Appendix A 的 2-token 反例（输出 $(0.85,0.15)\ne(0.7,0.3)$）精确刻画了缺屏障时的选择偏差，是复现者最易踩空之处。</p>
+
+<p><strong>关键实现细节（易被忽略）</strong></p>
+<ul>
+<li>anchor 即第一预测位：对 DFlash 主干只做此一处改动（$\gamma$ 输入产 $\gamma$ logits），降起草计算而质量近似不变。</li>
+<li>置信头复用序列头的 Markov 嵌入 $W_1$ 作特征（Eq.7），两机制间隐式参数共享；置信条件因此建立在真正采样的前一 token 上。</li>
+<li>去早停"安全"仅因异步只评估两步前的历史预测——若在同步 / 单步内去早停即刻破坏无损，此依赖关系极易被误实现。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

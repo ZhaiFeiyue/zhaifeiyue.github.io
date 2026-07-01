@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Understanding Bottlenecks for Efficiently Serving LLM Inference With KV Offloading — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Understanding Bottlenecks for Efficiently Serving LLM Inference With KV Offloading</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2601.19910</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-offloading</span><span class="tag">pcie-bottleneck</span><span class="tag">roofline-analysis</span><span class="tag">serving-scheduling</span><span class="tag">memory-bound-inference</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2601.19910.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2601.19910" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="understanding-bottlenecks-for-efficiently-serving-llm-inference-with-kv-offloading-—-l2">Understanding Bottlenecks for Efficiently Serving LLM Inference With KV Offloading — L2 <a class="heading-anchor" href="#understanding-bottlenecks-for-efficiently-serving-llm-inference-with-kv-offloading-—-l2" aria-label="Link to understanding-bottlenecks-for-efficiently-serving-llm-inference-with-kv-offloading-—-l2">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>推导 $\kappa_{\text{crit}} = \kappa_M \times \kappa_{HW}$ 分析框架，将 KV offloading 下 prefill 从 compute-bound 转 memory-bound 的临界点分解为模型因子和硬件因子；实证表明真实工作负载超过该阈值 1–2 个数量级，GPU 仅消耗 22–28% TDP，99% 延迟花在 PCIe 传输上。</p>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+
+<p>KV cache offloading 通过将 KV 存入 CPU DRAM 解锁长上下文推理，但 PCIe 带宽（实测仅 15 GB/s，峰值的 23%）远低于 HBM（TB/s 级），导致 prefill 从 compute-bound 退化为 memory-bound。现有调度器（vLLM iteration-level scheduling）和架构（prefill-decode disaggregation）的设计假设——prefill 是 compute-intensive——被彻底打破。MoE 模型因计算量减少但 KV 不减而更加脆弱。</p>
+
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
+
+<p>提出 $\kappa_{\text{crit}}$ 分析框架，将瓶颈临界点分解为两个独立因子：</p>
+
+<p>$$\kappa_{\text{crit}} = \underbrace{\frac{F_{\text{pf}}}{B_{\text{kv}}}}_{\kappa_M \text{ (model)}} \times \underbrace{\frac{\text{BW}_{\text{PCIe}}}{C_{\text{eff}}}}_{\kappa_{HW} \text{ (hardware)}}$$</p>
+
+<p>当工作负载的 $\kappa_{\text{ratio}} = K/T > \kappa_{\text{crit}}$ 时，prefill 进入 memory-bound 区域。框架将模型架构（GQA vs MLA, Dense vs MoE）和硬件规格（PCIe gen, GPU 算力）解耦，并进一步推导 VRAM-constrained 调度模型（Eq. 9–10）来量化 scheduler 效率损失。</p>
+
+<p><strong>核心技术壁垒</strong>: 将 roofline model 扩展到 KV offloading 场景的洞察——arithmetic intensity 不再由 model FLOPs/param 决定，而是由 $T/K$ 的 workload ratio 决定。这使得同一硬件上同一模型在不同 workload 下跨越 compute/memory bound 分界线，且该分界线随 GPU 迭代恶化（计算增速快于互联带宽）。</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<ul>
+<li>$\kappa_{\text{crit}}$ 实测值仅 1–2（远低于理论 7.8–14.3），因 PCIe 有效带宽仅峰值 23%</li>
+<li>ShareGPT median $\kappa_{\text{ratio}} = 100$，NarrativeQA = 5000，FinQA = 10000——全面超过阈值</li>
+<li>Qwen3-235B 在 $K=65$K, $T=64$ 时 $P_{OH}=86$（99% 时间在传输）</li>
+<li>GPU 平均功耗仅 TDP 的 22–28%</li>
+<li>NVLink C2C (900 GB/s) 将 $\kappa_{\text{crit}}$ 提升 5.3×，统一 HBM 提升 48×，但 document Q&A 仍超阈值</li>
+</ul>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2601.19910/fig1.png" alt="Figure 1: KV cache offloading overview — cached tokens loaded from CPU DRAM via PCIe while only novel tokens computed on GPU"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "KV cache offloading transfers computed representations from GPU VRAM to CPU DRAM. When serving the second request (green), only the novel token ('ocean') requires computation; cached tokens are loaded via PCIe.").</em></p>
+
+<p>Figure 1 展示了 KV offloading 的核心数据流：第一次请求的 KV 被 offload 到 CPU DRAM，后续请求只需计算 novel tokens 的 KV 并从 CPU DRAM 加载已缓存部分。PCIe 成为瓶颈的根本原因——大量 cached tokens 需要跨越带宽瓶颈回到 GPU。</p>
+
+<p><img src="/assets/2601.19910/fig4.png" alt="Figure 4: Roofline models showing compute-to-memory-bound transition for Qwen3-235B and DeepSeek-V3 across GPU generations"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "Roofline models for Qwen3-235B-A22B (left) and Deepseek-V3 (right) on NVIDIA B200, H100 and A100 for current PCIe bandwidths. Vertical lines indicate κ_crit for specific hardware.").</em></p>
+
+<p>Roofline 图直观展示了随 $\kappa_{\text{ratio}}$ 增大，操作点从 compute ceiling 滑入 bandwidth ceiling 的过程。DeepSeek-V3 的 MLA 将 compute-bound 区域延伸到 $\kappa_{\text{ratio}} \approx 40$，但两个模型在 $\kappa_{\text{ratio}} > 100$ 时均进入 bandwidth-limited 区域。</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Client
+    participant Scheduler as vLLM Scheduler<br/>(token budget)
+    participant VRAM as GPU VRAM<br/>(KV slots)
+    participant DRAM as CPU DRAM<br/>(offloaded KV)
+    participant GPU as GPU Compute
+
+    Client->>Scheduler: Request (K cached, T new tokens)
+    Scheduler->>VRAM: Check: (K+T)·B_kv ≤ V_eff?
+    Note over VRAM: VRAM exhausts before<br/>token budget saturates
+    Scheduler->>DRAM: Initiate KV load (K·B_kv bytes)
+    DRAM-->>VRAM: PCIe transfer (t_PCIe = K·B_kv / BW_PCIe)
+    Note over DRAM,VRAM: 99% of TTFT here
+    VRAM->>GPU: Prefill T new tokens
+    GPU-->>Client: First output token (TTFT)
+</div>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Definition</th><th>Typical Value</th></tr>
+<tr><td>$K$</td><td>Cached (offloaded) tokens</td><td>65K (doc QA)</td></tr>
+<tr><td>$T$</td><td>New prefill tokens</td><td>32–133</td></tr>
+<tr><td>$\kappa_{\text{ratio}}$</td><td>$K/T$ — workload memory-compute balance</td><td>100–10000</td></tr>
+<tr><td>$\kappa_{\text{crit}}$</td><td>Critical ratio for compute→memory-bound transition</td><td>1–76</td></tr>
+<tr><td>$\kappa_M$</td><td>Model factor: $F_{\text{pf}}/B_{\text{kv}}$</td><td>0.07–1.42</td></tr>
+<tr><td>$\kappa_{HW}$</td><td>Hardware factor: $\text{BW}_{\text{PCIe}}/C_{\text{eff}}$</td><td>6.7–107.5 KB/GFLOP</td></tr>
+<tr><td>$F_{\text{pf}}$</td><td>FLOPs per prefill token ($\approx 2N$ for $N$ active params)</td><td>6.6G–810G</td></tr>
+<tr><td>$B_{\text{kv}}$</td><td>Bytes per token for KV cache</td><td>70–516 KB</td></tr>
+<tr><td>$\text{BW}_{\text{PCIe}}$</td><td>Sustained host-to-device bandwidth</td><td>15 GB/s (measured)</td></tr>
+<tr><td>$C_{\text{eff}}$</td><td>Effective GPU compute throughput</td><td>312T–4500T FLOP/s</td></tr>
+<tr><td>$U$</td><td>GPU utilization fraction: $t_{\text{GPU}} / \text{TTFT}$</td><td>0.01–0.5</td></tr>
+<tr><td>$P_{OH}$</td><td>PCIe overhead ratio: $t_{\text{PCIe}}/t_{\text{GPU}}$</td><td>1–86</td></tr>
+<tr><td>$N_{\text{max}}$</td><td>Max concurrent requests (VRAM-limited)</td><td>1–2 (doc QA)</td></tr>
+<tr><td>$V_{\text{eff}}$</td><td>Available VRAM for KV caches</td><td>60–92 GB</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p><strong>Eq. 3 (TTFT decomposition)</strong>: $\text{TTFT} = \frac{K \cdot B_{\text{kv}}}{\text{BW}_{\text{PCIe}}} + \frac{T \cdot F_{\text{pf}}}{C_{\text{eff}}}$</p>
+
+<p>两项之和：PCIe 传输大量 cached KV 的时间 + GPU 计算少量 new tokens 的时间。假设无法完全 overlap（实测 $t_{\text{PCIe}} \gg t_{\text{GPU}}$ 时 overlap 收益可忽略）。</p>
+
+<p><strong>Eq. 6 ($\kappa_{\text{crit}}$ factorization)</strong>: $\kappa_{\text{crit}} = \frac{F_{\text{pf}}}{B_{\text{kv}}} \cdot \frac{\text{BW}_{\text{PCIe}}}{C_{\text{eff}}}$</p>
+
+<p>将 roofline 的 compute-bandwidth 交叉点（$AI = C/BW$）在 KV offloading 场景下重新表达为 $K/T$ 的临界值。乘法结构使模型优化（增大 $\kappa_M$）和硬件优化（增大 $\kappa_{HW}$）可独立推进。</p>
+
+<p><strong>Eq. 10 (Scheduled tokens)</strong>: $T_{\text{sched}} = N_{\text{max}} \cdot T \approx \frac{V_{\text{eff}}}{\kappa_{\text{ratio}} \cdot B_{\text{kv}}}$</p>
+
+<p>VRAM 容量（而非 token budget）决定每 iteration 实际可调度的 prefill tokens 数量，且与 $\kappa_{\text{ratio}}$ 成反比。这解释了为什么 NarrativeQA 仅调度 532 tokens（4K budget 的 13%）。</p>
+
+<h3 id="单调性-凸性分析">单调性 / 凸性分析 <a class="heading-anchor" href="#单调性-凸性分析" aria-label="Link to 单调性-凸性分析">#</a></h3>
+
+<p>$\kappa_{\text{crit}}$ 关于 $\text{BW}_{\text{PCIe}}$ 单调递增，关于 $C_{\text{eff}}$ 单调递减——更快的 GPU 使问题恶化，更快的互联使问题缓解。$U$ 关于 $\kappa_{\text{ratio}}$ 单调递减（$U = 1/(1 + P_{OH})$, $P_{OH} \propto \kappa_{\text{ratio}}$），无内部极值点，边界行为为 $\kappa_{\text{ratio}} \to \infty$ 时 $U \to 0$。</p>
+
+<h3 id="6-minimum-checks">6 Minimum Checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Dimensional consistency</strong>: $\kappa_{\text{crit}}$ is dimensionless — $[F_{\text{pf}}]/[B_{\text{kv}}]$ = FLOP/byte, $[\text{BW}]/[C]$ = byte/FLOP, product is pure ratio ✓</li>
+<li><strong>Boundary: $K=0$</strong>: no offloading → $\kappa_{\text{ratio}} = 0 < \kappa_{\text{crit}}$ → compute-bound, consistent with standard prefill ✓</li>
+<li><strong>Boundary: $T \to 0$</strong>: $\kappa_{\text{ratio}} \to \infty$, always memory-bound → pathological (single-token prefill of huge cached context) ✓</li>
+<li><strong>Case study LLaMA-405B on H100</strong>: $F_{\text{pf}} = 810$ GFLOP, $B_{\text{kv}} = 516$ KB, $\text{BW} = 64$ GB/s, $C = 2000$ TFLOP/s. $\kappa_M = 810G/(516K) = 1.57M$ FLOP/byte ≈ 1.42 (units: GFLOP/KB → 1.42 in normalized units). $\kappa_{HW} = 64G/2000T = 3.2 \times 10^{-5}$ byte/FLOP. Product ≈ 45–50 → matches paper's ~50 ✓</li>
+<li><strong>Measured bandwidth correction</strong>: using 15 GB/s instead of 64 GB/s → $\kappa_{\text{crit}}$ drops by 64/15 ≈ 4.3×, from ~50 to ~12, matches paper's "sustained ~12" ✓</li>
+<li><strong>Eq. 10 NarrativeQA</strong>: $V_{\text{eff}} = 92$ GB, $K=57000$, $T=12$, $B_{\text{kv}} = 328$ KB → $N_{\text{max}} = 92G/(57000 \times 328K) \approx 5$, $T_{\text{sched}} = 5 \times 12 = 60$... paper reports 532 for mixed workload (some requests have larger T) — directionally consistent with VRAM-limited regime ✓</li>
+</ul>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<h3 id="system-scope">System scope <a class="heading-anchor" href="#system-scope" aria-label="Link to system-scope">#</a></h3>
+
+<ul>
+<li><strong>Stage coverage</strong>: Prefill only (decode excluded by design: output limited to 1 token)</li>
+<li><strong>Serving mode</strong>: Continuous batching via vLLM v0.10.1 + LMCache v0.3.5</li>
+<li><strong>Parallelism</strong>: TP (8× H100 SXM5), no EP/PP/SP analysis</li>
+<li><strong>Deployment</strong>: Single-node, 8-GPU</li>
+</ul>
+
+<h3 id="workload-kappatextratio-distributions">Workload $\kappa_{\text{ratio}}$ distributions <a class="heading-anchor" href="#workload-kappatextratio-distributions" aria-label="Link to workload-kappatextratio-distributions">#</a></h3>
+
+<p><img src="/assets/2601.19910/fig3.png" alt="Figure 3: Distributions of prefill tokens T, cached tokens K, and kappa_ratio across ShareGPT, NarrativeQA, and FinQA"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "Distributions of prefill tokens (T), reused KV tokens (K), and the ratio κ_ratio for ShareGPT (top), NarrativeQA (middle), and FinQA (bottom). Median κ_ratio: ShareGPT 100, NarrativeQA 5000, FinQA 10000").</em></p>
+
+<p>三个数据集展示了逐级恶化的 $\kappa_{\text{ratio}}$：multi-turn conversation（ShareGPT）中 KV 增长缓慢，document QA 中整个文档被缓存而 query 极短，$\kappa_{\text{ratio}}$ 高达 10000。这些分布证明了 $\kappa_{\text{crit}}$ 被系统性超越。</p>
+
+<h3 id="pcie-overhead-实测">PCIe overhead 实测 <a class="heading-anchor" href="#pcie-overhead-实测" aria-label="Link to pcie-overhead-实测">#</a></h3>
+
+<p><img src="/assets/2601.19910/fig6.png" alt="Figure 6: PCIe overhead under varying prefill tokens and KV cache sizes for Llama-70B and Qwen3-235B"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "PCIe overhead of KV Cache offloading under varying number of prefill tokens and KV cache size. Qwen with K=65k, T=64 exhibits P_OH=86, corresponding to 99% of execution time spent on PCIe transfers.").</em></p>
+
+<p>热力图清晰展示了 $P_{OH}$ 随 $K$ 增大 / $T$ 减小而指数级增长。MoE 模型（Qwen3）在所有配置下 overhead 均高于 Dense 模型（Llama），验证了 §5.2 的分析预测。</p>
+
+<h3 id="framework-validation">Framework validation <a class="heading-anchor" href="#framework-validation" aria-label="Link to framework-validation">#</a></h3>
+
+<p><img src="/assets/2601.19910/fig5.png" alt="Figure 5: Measured kappa_crit values vs analytical predictions"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "Measurements of κ_crit.").</em></p>
+
+<p>实测 $\kappa_{\text{crit}}$（Llama=2, Qwen=1）远低于峰值带宽假设下的理论值（14.3, 7.8），但使用实测 15 GB/s 带宽修正后（3.3, 1.8）与实测吻合。这验证了框架的正确性并突显了使用实测带宽的重要性。</p>
+
+<h3 id="scheduler-power-underutilization">Scheduler & power underutilization <a class="heading-anchor" href="#scheduler-power-underutilization" aria-label="Link to scheduler-power-underutilization">#</a></h3>
+
+<table>
+<tr><th>Metric</th><th>ShareGPT (70 RPS)</th><th>NarrativeQA (70 RPS)</th></tr>
+<tr><td>$T_{\text{sched}}$ (tokens/iter)</td><td>4064</td><td>532</td></tr>
+<tr><td>Budget utilization</td><td>~100%</td><td>~13%</td></tr>
+<tr><td>Avg GPU power (W)</td><td>196</td><td>152</td></tr>
+<tr><td>% of TDP</td><td>28%</td><td>22%</td></tr>
+</table>
+
+<p>NarrativeQA 的极端 $\kappa_{\text{ratio}}$ 导致 VRAM 在 token budget 饱和前耗尽，scheduler 被迫闲置 87% 的预算。GPU 功耗仅达 TDP 的 22%，意味着数据中心电力/散热基础设施大量过剩。</p>
+
+<h3 id="硬件-模型优化效果">硬件/模型优化效果 <a class="heading-anchor" href="#硬件-模型优化效果" aria-label="Link to 硬件-模型优化效果">#</a></h3>
+
+<p><img src="/assets/2601.19910/fig7.png" alt="Figure 7: Roofline under NVLink C2C and unified HBM for Qwen3-235B and DeepSeek-V3"></p>
+
+<p><em>Paper's Figure 7, verbatim (caption: "Roofline models for Qwen3-235B-A22B (left) and DeepSeek-V3 (right) on NVIDIA GB200 with NVLink C2C and theoretical unified HBM. NVLink C2C increases bandwidth 14× versus PCIe 5.0, raising κ_crit by 5.3×. Unified HBM provides an additional 9× improvement.").</em></p>
+
+<p>NVLink C2C 将 Qwen3 的 $\kappa_{\text{crit}}$ 从 3.1 提升到 41.5，但 document QA（$\kappa_{\text{ratio}}=5000$）仍超出 120×。只有统一 HBM（$\kappa_{\text{crit}}=370$ for Qwen, 1700 for DeepSeek-V3）才能让 MLA 模型的 document QA 接近 compute-bound。</p>
+
+<h3 id="scheduling-optimization-direction">Scheduling optimization direction <a class="heading-anchor" href="#scheduling-optimization-direction" aria-label="Link to scheduling-optimization-direction">#</a></h3>
+
+<p><img src="/assets/2601.19910/fig8.png" alt="Figure 8: FIFO vs utilization-aware scheduling comparison"></p>
+
+<p><em>Paper's Figure 8, verbatim (caption: "Utilization-aware scheduling example. FIFO scheduling (left) underutilizes the token budget due to VRAM constraints. Utilization-aware scheduling (right) reorders requests to saturate the token budget, improving GPU efficiency while introducing fairness concerns.").</em></p>
+
+<p>FIFO 调度在 VRAM 约束下仅利用 3/5 token budget，而 utilization-aware 调度通过重排请求（优先调度低 $\kappa_{\text{ratio}}$ 请求）将利用率提升到 5/5，但引入公平性问题。</p>
+
+<h2 id="§5-ext-scheduling-resource-management">§5-ext Scheduling & Resource Management <a class="heading-anchor" href="#§5-ext-scheduling-resource-management" aria-label="Link to §5-ext-scheduling-resource-management">#</a></h2>
+
+<h3 id="scheduling-decisions">Scheduling decisions <a class="heading-anchor" href="#scheduling-decisions" aria-label="Link to scheduling-decisions">#</a></h3>
+
+<table>
+<tr><th>Aspect</th><th>Paper's approach</th></tr>
+<tr><td>Granularity</td><td>Request-level (iteration-level scheduling, per-request token budget)</td></tr>
+<tr><td>Preemption</td><td>Not explored; vLLM baseline supports preemption but paper focuses on admission</td></tr>
+<tr><td>Admission control</td><td>VRAM-capacity-gated: requests deferred until KV fits in VRAM</td></tr>
+<tr><td>Fairness</td><td>Identified as open problem; proposed aging credits + weighted fair queueing</td></tr>
+</table>
+
+<h3 id="memory-management">Memory management <a class="heading-anchor" href="#memory-management" aria-label="Link to memory-management">#</a></h3>
+
+<table>
+<tr><th>Aspect</th><th>Current (vLLM + LMCache)</th><th>Problem</th></tr>
+<tr><td>KV allocation unit</td><td>PagedAttention blocks (vLLM)</td><td>Budget accounts tokens, not bytes</td></tr>
+<tr><td>Fragmentation</td><td>Paged → low internal fragmentation</td><td>VRAM exhausted by large $K$ before budget saturates</td></tr>
+<tr><td>Eviction</td><td>LRU in LMCache (CPU DRAM)</td><td>CPU DRAM abundant; VRAM is the binding constraint</td></tr>
+<tr><td>Swap</td><td>CPU DRAM → GPU VRAM on demand</td><td>PCIe bandwidth is the bottleneck</td></tr>
+</table>
+
+<p>核心问题：scheduler 的 token budget 与 VRAM consumption 解耦——一个 $K=65$K, $T=32$ 的请求仅消耗 32 token budget 但需要 33 GB VRAM。</p>
+
+<h2 id="§5-ext-workload-characterization">§5-ext Workload Characterization <a class="heading-anchor" href="#§5-ext-workload-characterization" aria-label="Link to §5-ext-workload-characterization">#</a></h2>
+
+<table>
+<tr><th>Workload regime</th><th>Offloading system</th><th>Baseline (no offloading)</th><th>Why</th></tr>
+<tr><td>Short prompt, low $\kappa_{\text{ratio}}$ (<2)</td><td>Compute-bound, behaves like standard prefill</td><td>Same</td><td>$t_{\text{PCIe}} < t_{\text{GPU}}$</td></tr>
+<tr><td>Multi-turn conversation (median $\kappa_{\text{ratio}}$=100)</td><td>Memory-bound; 88% time on PCIe</td><td>N/A (KV doesn't fit VRAM for all users)</td><td>$\kappa_{\text{ratio}} \gg \kappa_{\text{crit}}$</td></tr>
+<tr><td>Document QA (median $\kappa_{\text{ratio}}$=5000)</td><td>Severely memory-bound; 99% time on PCIe, 13% budget utilization</td><td>Cannot serve (OOM)</td><td>Extreme $K/T$ mismatch</td></tr>
+<tr><td>MoE + high $\kappa_{\text{ratio}}$</td><td>Worse than Dense (lower $\kappa_M$)</td><td>N/A</td><td>MoE reduces $F_{\text{pf}}$ faster than $B_{\text{kv}}$</td></tr>
+<tr><td>MLA model (DeepSeek-V3)</td><td>Better; $\kappa_{\text{crit}}$ 4.6× higher than GQA MoE</td><td>N/A</td><td>$B_{\text{kv}}$ reduced 2.7× by low-rank compression</td></tr>
+</table>
+
+<p>Paper wins: analytical prediction; loses: cannot demonstrate real MLA benefits (DeepSeek-V2 implementation issues) and does not propose a working scheduler implementation.</p>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
+<tr><td>1</td><td>TTFT = $t_{\text{PCIe}} + t_{\text{GPU}}$ (sequential, overlap negligible when $t_{\text{PCIe}} \gg t_{\text{GPU}}$)</td><td>Eq. 3–4; measured overlap impact <1% for typical workloads</td><td>Physical constraint: GPU needs KV in VRAM before computing attention</td></tr>
+<tr><td>2</td><td>$\kappa_{\text{crit}} = \kappa_M \times \kappa_{HW}$ factorizes transition point into model × hardware</td><td>Algebraic rearrangement of $t_{\text{PCIe}} > t_{\text{GPU}}$ (Eq. 5→6)</td><td>Step 1</td></tr>
+<tr><td>3</td><td>Real $\kappa_{\text{crit}}$ is 1–2 (not 7–76) because sustained PCIe is 23% of peak</td><td>Fig. 5: measured $P_{OH}=1$ at $\kappa_{\text{ratio}} \approx 1$–2; recalculated with 15 GB/s matches</td><td>Step 2 + empirical bandwidth measurement</td></tr>
+<tr><td>4</td><td>Real workloads' $\kappa_{\text{ratio}}$ (100–10000) exceed $\kappa_{\text{crit}}$ by 50–5000×</td><td>Fig. 3: ShareGPT/NarrativeQA/FinQA CDFs</td><td>Step 3 + dataset analysis</td></tr>
+<tr><td>5</td><td>Scheduler under-utilizes token budget because VRAM (not budget) is binding</td><td>Table 4: NarrativeQA schedules 532/4000 tokens; Eq. 10 predicts correctly</td><td>Step 4 + Eq. 9–10</td></tr>
+<tr><td>6</td><td>GPU power drops to 22–28% TDP → infrastructure overprovisioned</td><td>Table 5: 152–196W measured vs ~700W TDP</td><td>Step 5 (low utilization → low power)</td></tr>
+<tr><td>7</td><td>NVLink C2C raises $\kappa_{\text{crit}}$ 5.3×, unified HBM 48×, but only HBM + MLA approaches sufficiency</td><td>Fig. 7: roofline extension shows extended compute-bound region</td><td>Step 2 (scale $\kappa_{HW}$ with new bandwidth)</td></tr>
+</table>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p><strong>Baseline implementation</strong>: vLLM v0.10.1 + LMCache v0.3.5 (open-source).</p>
+
+<ul>
+<li>vLLM iteration-level scheduler with token budget: <a href="https://github.com/vllm-project/vllm">vllm/core/scheduler.py (v0.10.1)</a> — budget-based admission, VRAM tracking</li>
+<li>LMCache KV offloading integration: <a href="https://github.com/LMCache/LMCache">LMCache/lmcache (v0.3.5)</a> — CPU DRAM KV store with PCIe transfer</li>
+</ul>
+
+<p>[实现未公开] — The paper proposes utilization-aware scheduling and $\kappa$-based routing as design implications but does not release an implementation. The $\kappa_{\text{crit}}$ framework itself is purely analytical (no code artifact).</p>
+
+<p><strong>核心技术壁垒 (§7 dedicated paragraph)</strong>: 本文的核心 insight 是将 KV offloading 场景下的 prefill 性能问题重新框定为 roofline 问题，其中 arithmetic intensity 不由模型本身决定，而由 workload 的 $K/T$ 比例动态决定。这意味着：(1) 同一模型同一硬件的性能可因 workload 变化差异 100×；(2) GPU 越快问题越严重（$\kappa_{HW}$ 随 $C_{\text{eff}}$ 增大而减小）；(3) scheduler 的 token budget 会被 VRAM 约束架空。这个洞察不需要复杂实现，但需要对 serving system 设计理念的根本性转变。</p>
+
+<p><strong>关键实现细节</strong>:</p>
+
+<ol>
+<li><strong>Sustained PCIe bandwidth = 23% of peak</strong>: 任何基于 $\kappa_{\text{crit}}$ 的调度决策必须使用实测带宽（15 GB/s on H100），而非 spec sheet 的 64 GB/s。NUMA effects、CPU memory copy overhead、transfer granularity 是三个主因。</li>
+<li><strong>VRAM-budget decoupling</strong>: 当前 vLLM scheduler 将 offloaded requests 的 prefill token 数计入 budget 但不追踪其 VRAM demand（$(K+T) \cdot B_{\text{kv}}$），导致 VRAM OOM 先于 budget exhaustion。修复需要在 admission control 中引入 VRAM-aware accounting。</li>
+</ul>
+
+<h2 id="§8-api-usability">§8 API & Usability <a class="heading-anchor" href="#§8-api-usability" aria-label="Link to §8-api-usability">#</a></h2>
+
+<ul>
+<li><strong>User-facing API</strong>: 标准 vLLM OpenAI-compatible API（无额外配置暴露给用户）</li>
+<li><strong>Config surface</strong>: LMCache 配置 offloading 策略（CPU DRAM path），vLLM 配置 token budget size</li>
+<li><strong>Migration cost</strong>: 已使用 vLLM 的部署只需添加 LMCache 集成（已有上游支持）</li>
+</ul>
+
+<p>Paper 不提供新的 serving system，而是分析现有系统（vLLM + LMCache）的瓶颈并提出设计方向。</p>
+
+<h2 id="§9-adoption-ecosystem">§9 Adoption & Ecosystem <a class="heading-anchor" href="#§9-adoption-ecosystem" aria-label="Link to §9-adoption-ecosystem">#</a></h2>
+
+<ul>
+<li><strong>Upstream status</strong>: 分析框架本身未合并到任何 serving system；LMCache 已是 vLLM 生态的组件</li>
+<li><strong>Production deployment</strong>: 未声明</li>
+<li><strong>Downstream forcing</strong>: 提出的 utilization-aware scheduling 需修改 vLLM scheduler 的 admission control 逻辑；硬件建议（NVLink C2C, unified HBM）指向 NVIDIA Grace Blackwell/Grace Hopper 平台</li>
+</ul>
+
+<h2 id="§10-deployment-context-实践上下文">§10 Deployment Context (实践上下文) <a class="heading-anchor" href="#§10-deployment-context-实践上下文" aria-label="Link to §10-deployment-context-实践上下文">#</a></h2>
+
+<ul>
+<li><strong>Serving stage</strong>: Prefill only（paper explicitly scopes to prefill; decode 不受此分析影响因为 decode 已是 memory-bound）</li>
+<li><strong>Concurrency regime</strong>: Low concurrency (1–5 requests) due to VRAM exhaustion; high $\kappa_{\text{ratio}}$ workloads cannot co-schedule more than 1–2 concurrent requests on 80 GB GPU</li>
+<li><strong>Hardware affinity</strong>: A100 (PCIe 4) 反而比 B200 (PCIe 5) 更不容易进入 memory-bound（$\kappa_{HW}$ 更高），但绝对性能更低。Grace Hopper/Blackwell (NVLink C2C) 获益最大。</li>
+<li><strong>Ecosystem integration</strong>: 分析适用于任何使用 KV offloading 的 serving system（vLLM, SGLang, TRT-LLM + LMCache/CacheGen）</li>
+<li><strong>Migration path</strong>: 无代码变更需要；paper 提供的是分析工具和设计原则，帮助判断是否值得部署 offloading、选择什么硬件</li>
+</ul>
+
+<h2 id="§12-software-→-hardware-reverse-implication">§12 Software → Hardware Reverse Implication <a class="heading-anchor" href="#§12-software-→-hardware-reverse-implication" aria-label="Link to §12-software-→-hardware-reverse-implication">#</a></h2>
+
+<p><strong>Triggered</strong>: paper 直接讨论了 hardware-proximal 优化（interconnect bandwidth, unified HBM architecture, chiplet topology implications）。</p>
+
+<p>Paper argues for:</p>
+
+<ol>
+<li><strong>Unified HBM</strong>: 消除 CPU-GPU 互联瓶颈，将 KV cache 置于共享 HBM 中。需要解决热管理、die area、coherency 协议挑战。$\kappa_{\text{crit}}$ 可达 370–1700，使多数 workload 回到 compute-bound。</li>
+<li><strong>NVLink C2C 泛化</strong>: 当前仅 Grace Hopper/Blackwell 支持 900 GB/s C2C；paper implicitly argues 所有 inference GPU 都应提供高带宽 CPU-GPU 互联（而非仅依赖 PCIe）。</li>
+<li><strong>ISA/cache implication</strong>: 更快的 GPU（B200+）在 KV offloading 场景下反而更受限，暗示未来 inference-optimized GPU 可能需要牺牲 peak FLOP/s 来换取更平衡的 bandwidth/compute ratio，或者在芯片内部集成更大容量的低延迟 KV buffer。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
