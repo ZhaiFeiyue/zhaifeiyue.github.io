@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2606.16824</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">KVCache</span><span class="tag">LLM-serving</span><span class="tag">coding-agent</span><span class="tag">prefix-caching</span><span class="tag">eviction-policy</span><span class="tag">vLLM</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2606.16824.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2606.16824" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="cachewise-—-面向编程-agent-的-kvcache-管理层">CacheWise — 面向编程 Agent 的 KVCache 管理层 <a class="heading-anchor" href="#cachewise-—-面向编程-agent-的-kvcache-管理层" aria-label="Link to cachewise-—-面向编程-agent-的-kvcache-管理层">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>编程 agent 是长时运行、闭环、工具驱动的 LLM 会话，其请求反复复用巨大且不断增长的前缀。CacheWise 在 vLLM 里加一层 KVCache 管理：前缀感知调度（优先派发所需新增 block 最少的请求）+ 预测式淘汰（用工具调用元数据预测下次复用时间，替代 LRU）。在真实轨迹上把淘汰次数降 2–2.6×、会话完成时间降至最多 ~3.5×。</p>
+
+<h2 id="2-q1-q2-q3">2. Q1/Q2/Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点：为什么-chatbot-的-serving-策略在编程-agent-上失效">Q1 — 痛点：为什么 chatbot 的 serving 策略在编程 agent 上失效 <a class="heading-anchor" href="#q1-—-痛点：为什么-chatbot-的-serving-策略在编程-agent-上失效" aria-label="Link to q1-—-痛点：为什么-chatbot-的-serving-策略在编程-agent-上失效">#</a></h3>
+
+<p>编程 agent 与 chatbot 是<strong>结构上不同的 serving workload</strong>。一个用户任务会展开成一条闭环链：LLM 生成工具调用 → 环境执行 → 结果回灌成新请求，每一轮都在一个不断增长的前缀上追加上下文。三条实测特征使既有系统崩溃：</p>
+
+<ul>
+<li><strong>闭环主导</strong>：工具触发的请求在中位数上是用户触发请求的 20×，性能目标从 per-request 延迟变成 session 完成时间。</li>
+<li><strong>前缀巨大且增长 + 长会话</strong>：会话中位时长 36 min、尾部 >2.6 h；prefill:decode token 比约为 chatbot 的 21×。大前缀必须常驻 XPU 内存以便跨轮复用。</li>
+<li><strong>工具时间可变但有结构</strong>：工具执行时长跨数量级（grep 短而紧凑，bash/pytest 长而重尾），导致 KVCache 复用间隔极不规则。</li>
+</ul>
+
+<p>vLLM/Mooncake 默认的 <strong>FCFS 调度 + LRU 淘汰</strong>是 workload-agnostic 的：FCFS 交错多会话、撑大工作集，容易驱逐马上要用的前缀；LRU 只看历史访问时间，分不清"工具马上返回"和"还要很久"的会话，导致 KVCache <strong>抖动（thrashing）</strong>，压低 token goodput。</p>
+
+<p><img src="/assets/2606.16824/fig1.png" alt="Figure 1: chat 会话与编程 agent 会话对比"></p>
+
+<p><em>Paper's Figure 1（caption: "Chat and coding-assistant interactions."）。</em> 左侧 chat 三轮上下文只从 1K→1.5K；右侧编程 agent 三轮通过 Glob/Read/Edit 工具调用把上下文从 10K 涨到 80K，直观说明"闭环 + 前缀爆炸"这一根本差异。</p>
+
+<h3 id="q2-—-方法：两个正交技术-元数据预测器">Q2 — 方法：两个正交技术 + 元数据预测器 <a class="heading-anchor" href="#q2-—-方法：两个正交技术-元数据预测器" aria-label="Link to q2-—-方法：两个正交技术-元数据预测器">#</a></h3>
+
+<p>CacheWise 是一层 <strong>agent-aware KVCache 管理层</strong>，不改 agent 本身、也不与 agent 框架耦合，只改 serving 系统：</p>
+
+<ol>
+<li><strong>前缀感知调度</strong>：在时刻 $t$ 选择所需<strong>新增 block 最少</strong>的请求 $\arg\min_i a_i(t)$ 派发，直接减少需回收/回填的 block，同时近似 shortest-job-first 降低整体排队。</li>
+<li><strong>预测式淘汰</strong>：不按 recency，而按预测的"下次复用时间"$\mathbb{E}[\tau_i(t)]$ 从大到小淘汰，逼近 Belady 最优。关键洞见——只需预测<strong>相对顺序</strong>（甚至只需准确找出 $\tau$ 最大的那个会话）就够了。</li>
+<li><strong>轻量预测器</strong>：从工具调用元数据 $m=(\text{tool\_name},\text{tool\_args})$ 出发，用 TF-IDF 对参数做语义嵌入、KMeans 聚类，用<strong>每簇</strong>历史时长分布（而非每工具分布）估计剩余执行时间。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：把"KVCache 淘汰"重述为一个<strong>只需相对序、且只需 top-1 正确</strong>的在线预测问题，并证明可以用工具调用元数据（函数名 + 参数的 TF-IDF 聚类）这一"免费"信号把它做到接近 ground-truth oracle 的精度——无需触碰 agent、无需精确回归绝对时长。这是难以复制的判断：把预测目标从"准确预测每个 $\tau$"松弛成"识别最该保留的会话"，是全篇效果的支点。</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<p>在 2×H200（TP=2，282GB）上用 Qwen2.5-Coder-32B、回放 CATraces：高负载（$N>10$）下相对 vLLM/InferCept 会话完成时间低 2.7×–3.5×，token goodput 高 1.64×–2×，淘汰次数与 KVCache 传输量降 2–2.6×，且性能逼近拥有真值时延的 CacheWise*。代价：P99 请求尾延迟更高、CPU 调度开销 2.4–3×（但被 GPU 执行时间的下降远远抵消）。</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2606.16824/fig11.png" alt="Figure 11: CacheWise 端到端工作流 + 两项技术"></p>
+
+<p><em>Paper's Figure 11（caption: "(A) End-to-end workflow of a session through a typical LLM serving system. (B) Prefix-aware request scheduling prioritizes requests by degree of overlap with KVCache resident on the XPU memory... (C) Demonstration of predictive KVCache eviction choosing the block with the highest predicted reuse probability, rather than purely recency-based heuristics like LRU."）。</em></p>
+
+<p>请求生命周期：同一会话的请求经<strong>负载均衡器的前缀匹配路由</strong>（把请求送到常驻可复用前缀最大的节点）→ 通常落到同一推理节点；节点内 CacheWise 接管两处决策：(B) <strong>调度器</strong>按 $a_i(t)$ 升序成批，最大化命中常驻 KVCache；(C) <strong>KVCache 管理器</strong>用预测复用概率而非 LRU 决定淘汰哪个 block。下面的时序图刻画闭环回灌如何驱动调度/淘汰：</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant LB as Load Balancer (prefix-match)
+    participant SCH as Prefix-aware Scheduler
+    participant KV as KVCache Manager (pred. eviction heap)
+    participant ENV as Tool Env
+    U->>LB: task request
+    LB->>SCH: route to node w/ largest resident prefix
+    loop closed-loop turns
+        SCH->>SCH: pick argmin a_i(t) (fewest new blocks)
+        SCH->>KV: need a_i blocks; if W(t)+a_i > M evict
+        KV->>KV: evict block with max E[τ] (not LRU)
+        SCH-->>ENV: LLM emits tool call (tool_name,args,T_i)
+        ENV-->>SCH: result → new request extends prefix
+    end
+</div>
+
+<p>内存管理单元沿用 vLLM 的 <strong>block 级分页</strong>；淘汰在"引用计数归零"的未引用 block 上进行，block 保留其会话元数据并进入<strong>淘汰堆</strong>，堆的优先级即预测的 $\mathbb{E}[\tau_i(t)]$。</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>本篇无形式化定理证明，但给出一个 load-bearing 的轻量资源模型（§4），用于推导 FCFS/LRU 失效。下面复现记号、方程物理意义与检查。</p>
+
+<h3 id="记号表">记号表 <a class="heading-anchor" href="#记号表" aria-label="Link to 记号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$M$</td><td>节点扣除模型权重与运行时开销后的 KVCache block 总容量</td></tr>
+<tr><td>$\mathcal{S}_t$</td><td>时刻 $t$ 同驻节点的活跃会话集合</td></tr>
+<tr><td>$d_i$</td><td>会话 $S_i$ 的完整前缀 block 需求（单调增长）</td></tr>
+<tr><td>$k_i(t)$</td><td>$S_i$ 在时刻 $t$ 常驻 XPU 的 block 数（可复用前缀重叠）</td></tr>
+<tr><td>$a_i(t)$</td><td>请求 $r_i$ 需新增分配的 block 数</td></tr>
+<tr><td>$W(t)$</td><td>活跃 KVCache 工作集</td></tr>
+<tr><td>$\tau_i(t)$</td><td>$S_i$ 常驻 block 的下次复用时间</td></tr>
+<tr><td>$m,\,T_i$</td><td>工具元数据 $(\text{tool\_name},\text{tool\_args})$；工具调用生成时刻</td></tr>
+<tr><td>$N_{rebuild}$</td><td>淘汰堆重建周期（engine 迭代数），实验取 3</td></tr>
+</table>
+
+<h3 id="方程与物理意义">方程与物理意义 <a class="heading-anchor" href="#方程与物理意义" aria-label="Link to 方程与物理意义">#</a></h3>
+
+<p>工作集与预算不变式：</p>
+
+<p>$$W(t) = \sum_{i \in \mathcal{S}_t} d_i, \qquad W(t) \leq M$$</p>
+
+<p>只要总需求不超预算 $M$ 就无需淘汰。（注意：§4 正文写 $W(t)=\sum_i d_i$，而 Figure 10 标注 $W(t)=\sum_i k_i(t)$，二者在内存压力下不等价——见 §7 开放点。）</p>
+
+<p>新增 block 与准入条件：</p>
+
+<p>$$a_i(t) = d_i - k_i(t)$$</p>
+<p>$$\text{admit } r_i \iff W(t) + a_i(t) \leq M$$</p>
+
+<p>前缀复用 $k_i(t)$ 直接缩小分配足迹；超预算时须从其他会话淘汰恰 $a_i(t)$ 个 block。这正是前缀感知调度取 $\arg\min_i a_i(t)$ 的物理动机。</p>
+
+<p>理想（Belady 式）淘汰选择：</p>
+
+<p>$$j^{*} = \arg\max_{j \in \mathcal{S}_t,\, j \neq i} \tau_j$$</p>
+
+<p>驱逐"最久才会被用到"的会话，最小化即将到来的重算/搬运惩罚。</p>
+
+<p>预测器的条件期望估计量：</p>
+
+<p>$$\mathbb{E}\left[\tau_i(t) \mid \tau_i(t) - T_i > t - T_i\right]$$</p>
+
+<p>给定工具已运行 $t-T_i$、尚未完成，用同元数据（同用户/同项目）历史样本估计剩余时长——一个 survival-style 残余时间估计。</p>
+
+<h3 id="检查（≥6）">检查（≥6） <a class="heading-anchor" href="#检查（≥6）" aria-label="Link to 检查（≥6）">#</a></h3>
+
+<ol>
+<li><strong>量纲</strong>：$M,d_i,k_i,a_i,W$ 皆为 block 数；$a_i=d_i-k_i$ 量纲一致。✔</li>
+<li><strong>边界 $k_i=0$</strong>：无常驻前缀时 $a_i=d_i$，退化为全量 prefill，符合"冷会话最贵"。✔</li>
+<li><strong>边界 $k_i=d_i$</strong>：前缀全命中则 $a_i=0$，请求应被调度器最高优先，与 $\arg\min a_i$ 一致。✔</li>
+<li><strong>准入单调</strong>：固定 $W(t)$ 下 $a_i$ 越大越易触发淘汰，符合 FCFS 撑大工作集→抖动的论证。✔</li>
+<li><strong>Belady 退化</strong>：若所有 $\tau_j$ 相等，$\arg\max\tau_j$ 无偏好，退化为任意/LRU，说明预测收益仅来自 $\tau$ 的<strong>方差</strong>（正是工具时长跨数量级的场景）。✔</li>
+<li><strong>松弛自洽</strong>：淘汰只需 $\tau$ 的相对序、甚至只需 top-1，故预测器只需保序而非无偏回归——与"轻量元数据估计器≈oracle"的实测（§6.2、§6.5）自洽。✔</li>
+<li><strong>首阶映射</strong>：Table 3 显示 bash 参数簇的 P50 从 python one-liner 的 0.1s 到 mypy 的 10s（P99 182s），跨两个数量级，正是 per-tool 分布不足、需 per-cluster 分布的直接证据。✔</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>环境</strong>：2×H200（TP=2，282GB），AMD EPYC 9534；Qwen2.5-Coder-32B-Instruct；chunked-prefill（512 tokens/chunk）。80% 会话离线训练预测器，其余回放评测；人类空闲视为会话边界。<strong>基线</strong>：vLLM（LRU+FCFS）、InferCept（FCFS + 移动平均时长预测）；<strong>消融</strong>：CacheWise*（真值时延 oracle）、vLLM(Prefix-aware)、InferCept(Prefix-aware)。</p>
+
+<p><img src="/assets/2606.16824/fig13.png" alt="Figure 13: 会话完成时间"></p>
+
+<p><em>Paper's Figure 13（caption: "Session completion time (in seconds) for different KVCache management systems under the coding agent workload (sampled from CATraces)."）。</em> $N\le10$ 各系统相当（无内存竞争）；$N>10$ CacheWise 完成时间低 2.7×–3.5×，且逼近甚至偶尔略超 CacheWise*（归因于淘汰与调度的耦合动态）。</p>
+
+<p><img src="/assets/2606.16824/fig14.png" alt="Figure 14: 服务效率（goodput/延迟/吞吐）"></p>
+
+<p><em>Paper's Figure 14（caption: "Serving efficiency... (a) Goodput... (b)-(e) LLM request latency distribution... (f) LLM request throughput."）。</em> $N>10$ 下 token goodput 高 1.64×–2×、吞吐高 1.5×–2×；P50/P90 请求延迟低 13–14×，但 <strong>P99 更高</strong>——前缀感知调度会推迟无历史的新请求，这是被有意接受的取舍（session 完成时间才是用户可见指标）。</p>
+
+<p><img src="/assets/2606.16824/fig16.png" alt="Figure 16: 前缀感知调度单独消融"></p>
+
+<p><em>Paper's Figure 16（caption: "Impact of prefix-aware scheduling policy. For each system, we compare the FCFS variant with the corresponding Prefix-aware variant."）。</em> 仅加前缀感知调度：$N=30$ goodput ~1.38×–1.64×、$N=40$ ~1.6×–1.7×；会话完成时间降 ~1.8×–2.66×。说明两项优化<strong>相互独立</strong>，且不依赖准确的复用预测即生效。</p>
+
+<p><img src="/assets/2606.16824/fig17.png" alt="Figure 17: KVCache 搬运量"></p>
+
+<p><em>Paper's Figure 17（caption: "KVCache movement incurred (in TB of data) during the duration of each experiment..."）。</em> 通过降低淘汰频率，CacheWise 把跨层搬运量降 ~2×–2.6×，对 LMCache/Mooncake 这类分层 offload 系统是互补收益。物理搬运（GPU↔CPU over PCIe，$N=30$）配置下会话完成时间仅低 ~1.19×，因为 PCIe 传输远快于大前缀重算，改进空间本就更小。</p>
+
+<p><img src="/assets/2606.16824/fig19.png" alt="Figure 19: 预测粒度扫描"></p>
+
+<p><em>Paper's Figure 19（caption: "Eviction count and session completion time... CX=Tool argument based clustering with X clusters. Hint=Trace replay with ground truth tool durations."）。</em> 粒度从 Point Estimate→Tool-Name→C20/C50/C100 递增，淘汰数与会话完成时间单调下降；C100 最佳，会话完成时间最多改进 19%；超过 100 簇数据不再支持更细粒度（预测器的数据上限）。</p>
+
+<h3 id="何时赢-何时不赢">何时赢 / 何时不赢 <a class="heading-anchor" href="#何时赢-何时不赢" aria-label="Link to 何时赢-何时不赢">#</a></h3>
+
+<table>
+<tr><th>Workload regime</th><th>CacheWise</th><th>基线 (vLLM/InferCept)</th><th>原因</th></tr>
+<tr><td>低并发 $N\le10$</td><td>与基线持平</td><td>持平</td><td>无 KVCache 竞争，内存充裕</td></tr>
+<tr><td>高并发 + 长会话 + 大前缀</td><td>完成时间 2.7×–3.5× 更优</td><td>抖动/重算</td><td>前缀感知调度 + 预测淘汰减少无谓淘汰</td></tr>
+<tr><td>物理搬运（PCIe swap）而非重算</td><td>仅 ~1.19× 更优</td><td>接近</td><td>搬运惩罚小，改进空间被压缩</td></tr>
+<tr><td>请求尾延迟（P99）</td><td><strong>更差</strong></td><td>更好</td><td>前缀调度推迟无历史新请求</td></tr>
+<tr><td>CPU 调度开销</td><td>2.4×–3× 更高（绝对值可忽略）</td><td>更低</td><td>预测+堆重建成本，但被 GPU 时间下降抵消</td></tr>
+</table>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>步骤</th><th>依据（篇内）</th></tr>
+<tr><td>1</td><td>采集真实 CATraces，量化编程 agent 三特征：闭环（工具:用户=20×）、长会话（中位 36min）、大增长前缀（prefill:decode ~21×）</td><td>§3, Table 1, Fig 3–8</td></tr>
+<tr><td>2</td><td>用资源模型形式化 $W(t)\le M$、$a_i=d_i-k_i$，推出 FCFS 撑大工作集→抖动、LRU 忽略未来复用两条失效</td><td>§4, Fig 10</td></tr>
+<tr><td>3</td><td>由 $\arg\min a_i$（调度）与 $\arg\max\tau_j$（Belady 淘汰）给出理想策略</td><td>§4→§5.1/§5.2</td></tr>
+<tr><td>4</td><td>关键松弛：淘汰只需 $\tau$ 相对序 / top-1 正确，故可用工具元数据 TF-IDF+KMeans 轻量预测</td><td>§5.2</td></tr>
+<tr><td>5</td><td>在 vLLM 落地（~2500 LoC，block 附会话元数据，淘汰堆，$N_{rebuild}=3$）</td><td>§5.3</td></tr>
+<tr><td>6</td><td>端到端评测：完成时间 2.7×–3.5×、淘汰/搬运 2–2.6×、逼近真值 oracle</td><td>§6.2–§6.4</td></tr>
+<tr><td>7</td><td>消融证明两技术独立生效；预测粒度 C100 单调最优（19%）</td><td>§6.3, §6.5</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<ul>
+<li><strong>实现规模与位置</strong>：~2,500 行 Python，改动 vLLM 的 batch scheduler 与 KVCache block manager；给每个 block 附加会话级元数据 <code>tool_name, tool_args, T_i</code>（L1 §5.3 para 1）。</li>
+<li><strong>淘汰堆机制</strong>：引用计数归零的未引用 block 保留元数据、按预测 $\mathbb{E}[\tau_i]$ 作优先级入堆，替换默认 LRU；同会话多 block 共享一次预测，避免逐 block 调用预测器（L1 §5.3 para 2）。</li>
+<li><strong>预测器细节（易漏）</strong>：(1) TF-IDF 向量上限 5000 lexicons、scikit-learn ℓ2 norm 加权；(2) KMeans 簇数上界取很大以最大粒度，实测数据在 100 簇饱和（L1 §5.2 footnote 2/3、§6.5）。这两点是"轻量却接近 oracle"的落地关键。</li>
+<li><strong>预测陈化处理</strong>：$\mathbb{E}[\tau_i]$ 随工具执行推进而陈化，故每 $N_{rebuild}=3$ 次 engine 迭代重建整个淘汰堆以刷新估计（L1 §5.3 para 3）——freshness 与开销的可调平衡点。</li>
+<li><strong>开源</strong>：数据集与代码 github.com/cachewise-project/cachewise-coding-traces（L1 §0/§8）；系统源码具体文件行号 [实现未公开于本文正文]。</li>
+</ul>
+
+<h2 id="8-开放问题">8. 开放问题 <a class="heading-anchor" href="#8-开放问题" aria-label="Link to 8-开放问题">#</a></h2>
+
+<ul>
+<li><strong>工作集定义不一致</strong>：§4 正文 $W(t)=\sum d_i$ vs Figure 10 $W(t)=\sum k_i(t)$，内存压力下不等价，篇内未澄清。</li>
+<li><strong>超越自身 oracle</strong>：CacheWise 偶尔略胜拥有真值时延的 CacheWise*，归因于淘汰与前缀调度的耦合动态。</li>
+<li><strong>P50 巨幅改进但 P99 回退</strong>：13–14× 中位改进伴随尾延迟恶化，取舍需在 session 指标下才成立。</li>
+<li><strong>SGLang 未直接对比</strong>：以 InferCept(Prefix-aware) 消融代替 SGLang 场景，代表性存疑。</li>
+<li><strong>分布漂移</strong>：预测器依赖历史轨迹，仓库/工具演化后需周期重训，鲁棒性留待未来工作。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

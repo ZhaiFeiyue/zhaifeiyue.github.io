@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2606.16824 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2606.16824/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="cachewise-vs-邻域：面向编程-agent-的-kvcache-管理">CacheWise vs. 邻域：面向编程 Agent 的 KVCache 管理 <a class="heading-anchor" href="#cachewise-vs-邻域：面向编程-agent-的-kvcache-管理" aria-label="Link to cachewise-vs-邻域：面向编程-agent-的-kvcache-管理">#</a></h1>
+
+<blockquote>
+定位一句话：CacheWise = <strong>前缀感知调度</strong>（$\arg\min a_i$，最少新增 block 优先）+ <strong>工具元数据预测的 reuse-aware 淘汰</strong>（用 tool_name/tool_args 的 TF-IDF 聚类估计 $\mathbb{E}[\tau]$ 替代 LRU），专门服务<strong>编程 agent</strong> 的长时闭环会话，且<strong>不与 agent 框架耦合</strong>、只改 serving 系统 <a href="/papers/2606.16824/detail.html#2-q1-q2-q3" class="ref-link" title="2606.16824#2-q1-q2-q3">[2606.16824]</a>。本篇的两个对比主轴贯穿全文：<strong>预测信号来源</strong>（工具元数据 vs 工作流图 vs 时长统计 vs 模型语义 vs 代码结构 vs 无预测）与<strong>淘汰/管理粒度</strong>（block 堆 vs radix 节点 vs cursor vs chunk-span vs program 调度 vs 合约）。
+</blockquote>
+
+<hr>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>这 7 篇构成一个"agent/多轮 workload 下的 KVCache 生命周期管理"聚类，CacheWise 与它们全部相关，但相关的<strong>维度各不相同</strong>：</p>
+
+<ul>
+<li><strong>2605.06472 PBKV</strong>（预测式淘汰，最近亲）——同样把"预测未来复用"作为淘汰核心，但预测信号是 <strong>workflow 调用图</strong>（GraphSAGE 拓扑 + 注意力历史 + prefill 语义），粒度是 <strong>radix tree 节点</strong>，并给出 Lipschitz 优雅退化保证 <a href="/papers/2605.06472/detail.html#2-q1-q2-q3" class="ref-link" title="2605.06472#2-q1-q2-q3">[2605.06472]</a>。与 CacheWise 的"工具元数据 + block 堆 + 无形式化退化保证"形成最直接的信号/粒度/鲁棒性三重对照。</li>
+<li><strong>2507.07400 KVFlow</strong>（workflow-aware 淘汰）——用<strong>静态 Agent Step Graph</strong> 的 steps-to-execution (STE) 决定淘汰优先级，KV-node 级 min 聚合 + 主动预取 <a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="2507.07400#core-contribution">[2507.07400]</a>。与 CacheWise 共享"LRU 在 agent 场景反向误判"的动机 <a href="/papers/2507.07400/detail.html#key-findings" class="ref-link" title="2507.07400#key-findings">[2507.07400]</a>，但 KVFlow 需要 frontend (<code>sgl.function</code>) 暴露拓扑，CacheWise 明确以"零 agent 改动"为卖点。</li>
+<li><strong>2511.02230 Continuum</strong>（TTL / 时长统计）——同为编程 agent 的多轮 serving，同样从<strong>工具调用时长历史</strong>估计，但用一个有界 <strong>TTL</strong> 把 KV 钉在显存内，并强调真正的痛点是 <strong>per-turn 排队延迟</strong>而非 reload 成本 <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>。</li>
+<li><strong>2602.22603 SideQuest</strong>（模型语义驱动的压缩）——同样处理"工具返回反复追加导致 KV 膨胀"，但走<strong>压缩/删除</strong>而非调度/淘汰：让 LRM 辅助线程语义判断哪些 tool response 过期 <a href="/papers/2602.22603/detail.html#2-核心问题-q1-q2-q3" class="ref-link" title="2602.22603#2-核心问题-q1-q2-q3">[2602.22603]</a>。信号是模型语义理解，粒度是 cursor（tool-response）级。</li>
+<li><strong>2604.10235 CodeComp</strong>（代码结构驱动的压缩）——同为 agentic coding 场景，但用 <strong>Code Property Graph</strong> 结构先验做 span 保护式压缩 <a href="/papers/2604.10235/detail.html#1-tl-dr" class="ref-link" title="2604.10235#1-tl-dr">[2604.10235]</a>，是 prefill 阶段的单请求压缩，与 CacheWise 的跨请求调度/淘汰正交。</li>
+<li><strong>2502.13965 Autellix</strong>（program 级调度，L2 标记 contradicts）——把 LLM agent 当"通用程序"，用 program 级 Least Attained Service 调度，且明确是 <strong>non-clairvoyant（不做未来预测）</strong> <a href="/papers/2502.13965/detail.html#1-tl-dr" class="ref-link" title="2502.13965#1-tl-dr">[2502.13965]</a>。CacheWise 在 L1 §7 亦把它归为"与 agent 框架耦合、不适合大规模部署"的对立面。</li>
+<li><strong>2605.24259 Resident KV Claims</strong>（合约层，元视角）——不提出淘汰策略，而指出所有 retention <em>策略</em>（含预测式淘汰）缺一个 <em>合约</em>：resident 前缀在 active 压力下被静默驱逐时运行时无义务报告 <a href="/papers/2605.24259/detail.html#2-q1-q2-q3" class="ref-link" title="2605.24259#2-q1-q2-q3">[2605.24259]</a>。这正好把 CacheWise 的"预测式淘汰"归类为它批判的"只有策略、没有合约"。</li>
+</ul>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="2-1-预测信号来源（第一对比轴）">2.1 预测信号来源（第一对比轴） <a class="heading-anchor" href="#2-1-预测信号来源（第一对比轴）" aria-label="Link to 2-1-预测信号来源（第一对比轴）">#</a></h3>
+
+<table>
+<tr><th>论文</th><th>预测/决策信号</th><th>是否需 agent 框架耦合</th><th>退化保证</th></tr>
+<tr><td><strong>CacheWise</strong></td><td>工具调用元数据 tool_name+tool_args 的 TF-IDF+KMeans 聚类 → $\mathbb{E}[\tau]$</td><td><strong>否</strong>（只改 serving）</td><td>无形式化（实测逼近 oracle）</td></tr>
+<tr><td>PBKV</td><td>workflow 调用图拓扑 + 注意力历史 + prefill 语义</td><td>是（需调用图）</td><td>Lipschitz 遗憾界</td></tr>
+<tr><td>KVFlow</td><td>静态 Agent Step Graph 的 STE</td><td>是（<code>sgl.function</code>）</td><td>无</td></tr>
+<tr><td>Continuum</td><td>工具时长历史（per-tool/global）+ 程序顺序</td><td>轻（读 tool name/time）</td><td>TTL 过期兜底长尾</td></tr>
+<tr><td>Autellix</td><td>过去累计服务（非预测）</td><td>轻（session API）</td><td>无（non-clairvoyant）</td></tr>
+</table>
+
+<p>CacheWise 的<strong>真正 delta</strong>：它是聚类里唯一把预测信号锁定在<strong>工具调用元数据（函数名 + 参数）</strong>并用 TF-IDF 语义聚类的工作 <a href="/papers/2606.16824/detail.html#2-q1-q2-q3" class="ref-link" title="2606.16824#2-q1-q2-q3">[2606.16824]</a>。相较之下，PBKV/KVFlow 依赖 <strong>workflow 图结构</strong>——这要求上游框架把拓扑下推，正是 CacheWise 想避免的耦合 <a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="2507.07400#summary">[2507.07400]</a>。Continuum 虽也用工具时长，但<strong>只取时长、忽略 tool_name 与 args</strong>，CacheWise 的 L1 §5/§7 与 Continuum 的 L2 均确认这一点是精度上限的来源：<code>bash</code> 参数不同（python one-liner 0.1s vs mypy 10s/P99 182s）时长跨两个数量级 <a href="/papers/2606.16824/detail.html#4-作者证明" class="ref-link" title="2606.16824#4-作者证明">[2606.16824]</a>，而 Continuum 用 per-tool 双层均值 fallback <a href="/papers/2511.02230/detail.html#7-实现-cross-reference" class="ref-link" title="2511.02230#7-实现-cross-reference">[2511.02230]</a>。</p>
+
+<p><strong>矛盾标记</strong>（与 Autellix）：CacheWise 主张"用工具元数据<strong>预测</strong>未来复用序"来指导淘汰 <a href="/papers/2606.16824/detail.html#2-q1-q2-q3" class="ref-link" title="2606.16824#2-q1-q2-q3">[2606.16824]</a>，而 Autellix 明确采取 <strong>non-clairvoyant</strong>、只用过去累计服务、不预测未来的调度哲学 <a href="/papers/2502.13965/detail.html#1-tl-dr" class="ref-link" title="2502.13965#1-tl-dr">[2502.13965]</a>。<strong>矛盾根源</strong>：两者优化对象不同——CacheWise 优化的是<strong>淘汰选择</strong>（哪块 KV 该走，需要"下次何时用"的前瞻），Autellix 优化的是<strong>调度顺序</strong>（哪个 program 先跑，LAS 在 DHR 分布下有已知最优性、无需预测）。二者在各自问题上都自洽，"contradicts" 标记指的是<strong>方法论取向</strong>（预测 vs 非预测）的对立，而非同一指标上的数值冲突；实际上二者可组合（见 §5）。</p>
+
+<h3 id="2-2-淘汰-管理粒度（第二对比轴）">2.2 淘汰/管理粒度（第二对比轴） <a class="heading-anchor" href="#2-2-淘汰-管理粒度（第二对比轴）" aria-label="Link to 2-2-淘汰-管理粒度（第二对比轴）">#</a></h3>
+
+<ul>
+<li><strong>CacheWise = block 级淘汰堆</strong>：沿用 vLLM 分页，引用计数归零的 block 保留会话元数据入堆，堆优先级 = 预测 $\mathbb{E}[\tau_i]$，同会话多 block 共享一次预测 <a href="/papers/2606.16824/detail.html#7-实现-cross-reference" class="ref-link" title="2606.16824#7-实现-cross-reference">[2606.16824]</a>。</li>
+<li><strong>PBKV / KVFlow = radix 节点级</strong>：PBKV 对 Radix Tree 节点算 $\mathrm{Score}(c)$；KVFlow 对 KV-node 继承 STE 并用 <strong>min 聚合</strong>解决共享前缀冲突 <a href="/papers/2507.07400/detail.html#key-findings" class="ref-link" title="2507.07400#key-findings">[2507.07400]</a>。CacheWise 因走 vLLM paged block 而非 radix tree，天然不面对"共享前缀 min 聚合"问题——但也失去了 radix 的显式前缀树语义。</li>
+<li><strong>Continuum = 请求/会话级 pin + TTL</strong>：不选"淘汰谁"，而是给命中的请求一个有界驻留时间 <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>。</li>
+<li><strong>SideQuest / CodeComp = 语义/结构压缩粒度</strong>：SideQuest 删 cursor（整段 tool response）<a href="/papers/2602.22603/detail.html#2-核心问题-q1-q2-q3" class="ref-link" title="2602.22603#2-核心问题-q1-q2-q3">[2602.22603]</a>，CodeComp 保护 code span <a href="/papers/2604.10235/detail.html#1-tl-dr" class="ref-link" title="2604.10235#1-tl-dr">[2604.10235]</a>——它们改变的是"保留哪些 token"，与 CacheWise"整块前缀何时淘汰"正交。</li>
+<li><strong>Autellix = program 调度粒度</strong>（非淘汰），<strong>Resident KV Claims = typed claim 合约粒度</strong>（非策略）<a href="/papers/2605.24259/detail.html#2-q1-q2-q3" class="ref-link" title="2605.24259#2-q1-q2-q3">[2605.24259]</a>。</li>
+</ul>
+
+<h3 id="2-3-增量-vs-新颖">2.3 增量 vs 新颖 <a class="heading-anchor" href="#2-3-增量-vs-新颖" aria-label="Link to 2-3-增量-vs-新颖">#</a></h3>
+
+<ul>
+<li><strong>增量部分</strong>：CacheWise 自认前缀感知调度"已被 SGLang 等探索过"，其贡献是论证它对编程 agent 特别有效（近似 SJF 降排队）<a href="/papers/2606.16824/detail.html#3-架构-方法图" class="ref-link" title="2606.16824#3-架构-方法图">[2606.16824]</a>；"预测式淘汰逼近 Belady"的框架也与 PBKV/KVFlow 同源。</li>
+<li><strong>真正新颖</strong>：(1) 首个<strong>真实编程 agent 轨迹数据集 CATraces</strong> 及其 workload 刻画（工具:用户请求 20×、prefill:decode ~21×、会话中位 36min）<a href="/papers/2606.16824/detail.html#5-实验与数据" class="ref-link" title="2606.16824#5-实验与数据">[2606.16824]</a>；(2) 把淘汰目标<strong>松弛为只需相对序、甚至只需 top-1 正确</strong>，从而用"免费"的工具元数据做到接近 ground-truth oracle <a href="/papers/2606.16824/detail.html#4-作者证明" class="ref-link" title="2606.16824#4-作者证明">[2606.16824]</a>。这一松弛是 PBKV（追求全谱预测精度 + Lipschitz 界）和 Continuum（追求最优 TTL 数值）都没有采取的降维。</li>
+</ul>
+
+<hr>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<ol>
+<li><strong>"只需 top-1 τ 正确"这一松弛可能过度乐观</strong>。CacheWise 声称准确识别 $\tau$ 最大的会话即足够 <a href="/papers/2606.16824/detail.html#4-作者证明" class="ref-link" title="2606.16824#4-作者证明">[2606.16824]</a>，但 PBKV 的整条 scaling 证据显示收益随预测精度在<strong>整个谱</strong>上连续变化、且给出 Lipschitz 界来保证不断崖 <a href="/papers/2605.06472/detail.html#4-作者证明" class="ref-link" title="2605.06472#4-作者证明">[2605.06472]</a>；Continuum 更进一步用 memoryfulness factor $\eta$ 量化"维持顺序何时有益" <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>。若 CacheWise 的 top-1 在多个会话 $\tau$ 接近时频繁误判，其无退化保证的堆将退回近似 LRU（其自身检查 5 也承认预测收益只来自 $\tau$ 的方差）<a href="/papers/2606.16824/detail.html#4-作者证明" class="ref-link" title="2606.16824#4-作者证明">[2606.16824]</a>。<strong>攻击点</strong>：缺一个"预测质量 → 端到端收益"的连续界。</li>
+</ul>
+
+<ol>
+<li><strong>超越自身 oracle 暴露"Belady-on-τ ≠ 真最优"</strong>。CacheWise 偶尔略胜拥有真值时延的 CacheWise* <a href="/papers/2606.16824/detail.html#5-实验与数据" class="ref-link" title="2606.16824#5-实验与数据">[2606.16824]</a>。这说明它的"理想"目标（$\arg\max\tau_j$）在淘汰-调度耦合下并非真正最优——一个自洽的 oracle 不该被近似版超越。这削弱了"逼近 Belady 最优"的理论叙事。</li>
+</ul>
+
+<ol>
+<li><strong>把 resident 前缀当普通优先级 victim，缺合约</strong>。Resident KV Claims 直接指出：预测式淘汰是 retention <em>策略</em>，当 active live KV 与 resident reusable KV 物理冲突（$\text{protected\_resident}+\text{active\_live}>\text{usable}$）时，策略层无义务把 resident 损失显式化 <a href="/papers/2605.24259/detail.html#2-q1-q2-q3" class="ref-link" title="2605.24259#2-q1-q2-q3">[2605.24259]</a>。CacheWise 的淘汰堆恰是这种"无合约的策略"——高价值前缀在内存压力下仍可能被静默驱逐而外部不可观测。<strong>攻击点</strong>：CacheWise 没有 claim-level telemetry 来区分"正常淘汰"与"合约违反"。</li>
+</ul>
+
+<ol>
+<li><strong>P99 尾延迟回退 + 无 anti-starvation</strong>。CacheWise 以推迟"无历史新请求"换取 session 完成时间，导致 P99 更高 <a href="/papers/2606.16824/detail.html#5-实验与数据" class="ref-link" title="2606.16824#5-实验与数据">[2606.16824]</a>。但 Autellix 证明 program-level 调度必须配 anti-starvation（wait/service 阈值）才能控住 p95/p99 <a href="/papers/2502.13965/detail.html#1-tl-dr" class="ref-link" title="2502.13965#1-tl-dr">[2502.13965]</a>，Continuum 也专门优化 P90/P95 <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>。CacheWise 直接把尾延迟回退"辩护"为可接受，缺乏防饿死机制，在混合负载下可能伤害交互式短会话。</li>
+</ul>
+
+<ol>
+<li><strong>分布漂移无鲁棒性证明</strong>。预测器用 80% 轨迹离线训练，漂移鲁棒性"留待未来工作" <a href="/papers/2606.16824/detail.html#5-实验与数据" class="ref-link" title="2606.16824#5-实验与数据">[2606.16824]</a>。PBKV 的 Lipschitz 界正是为"预测不准时不崩"设计 <a href="/papers/2605.06472/detail.html#4-作者证明" class="ref-link" title="2605.06472#4-作者证明">[2605.06472]</a>；Continuum 的 TTL 过期为长尾提供确定性兜底 <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>。CacheWise 在仓库/工具演化后的行为无保证。</li>
+</ul>
+
+<ol>
+<li><strong>"工具完成即复用"假设忽略非单调 token 效用</strong>。CacheWise 的 $\tau$ 建模隐含"工具返回后前缀立刻被复用"。但 SideQuest 用 Cursor 0/1 例子证明 agent 上下文中 token 重要性<strong>非单调</strong>——某 tool response 暂时无用、后来复活 <a href="/papers/2602.22603/detail.html#2-核心问题-q1-q2-q3" class="ref-link" title="2602.22603#2-核心问题-q1-q2-q3">[2602.22603]</a>。若编程 agent 也有"暂时搁置某文件、多轮后再引用"的模式，纯 $\tau$ 前瞻会误判其复用时机。</li>
+</ul>
+
+<ol>
+<li><strong>工作集定义不一致（篇内）</strong>。§4 正文 $W(t)=\sum d_i$ 与 Figure 10 的 $W(t)=\sum k_i(t)$ 在内存压力下不等价，L1/L2 均已 flag 未解 <a href="/papers/2606.16824/detail.html#8-开放问题" class="ref-link" title="2606.16824#8-开放问题">[2606.16824]</a>。虽为记号瑕疵，但准入/淘汰条件正建立其上，值得澄清。</li>
+</ul>
+
+<hr>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<ul>
+<li><strong>范式定位——"框架解耦"这一翼</strong>。agent-aware serving 有两条路线：一条把 application 结构下推到后端（KVFlow 的 <code>sgl.function</code> 拓扑 <a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="2507.07400#summary">[2507.07400]</a>、PBKV 的调用图 <a href="/papers/2605.06472/detail.html#2-q1-q2-q3" class="ref-link" title="2605.06472#2-q1-q2-q3">[2605.06472]</a>、Autellix/Pie 的新编程抽象 <a href="/papers/2502.13965/detail.html#1-tl-dr" class="ref-link" title="2502.13965#1-tl-dr">[2502.13965]</a>）；另一条<strong>只从 serving 系统能免费观测到的信号</strong>（工具调用元数据）做优化、零 agent 改动。CacheWise 是后者在编程 agent 上的旗帜，其 L1 §7 明确以"可支持多样客户端、适合大规模部署"作为对前者的差异化。</li>
+</ul>
+
+<ul>
+<li><strong>数据集作为护城河</strong>。聚类里多数工作用合成或半合成 workload（Autellix 用 ShareGPT/LATS 合成 <a href="/papers/2502.13965/detail.html#1-tl-dr" class="ref-link" title="2502.13965#1-tl-dr">[2502.13965]</a>，PBKV 用 HoVer/SWE-bench+框架 <a href="/papers/2605.06472/detail.html#2-q1-q2-q3" class="ref-link" title="2605.06472#2-q1-q2-q3">[2605.06472]</a>）。CacheWise 开源了<strong>真实编程助手轨迹 CATraces</strong> 并据此刻画 workload <a href="/papers/2606.16824/detail.html#5-实验与数据" class="ref-link" title="2606.16824#5-实验与数据">[2606.16824]</a>，这是它最难被复制的采纳杠杆——后续工作要对标编程 agent serving 很可能被迫引用其数据。</li>
+</ul>
+
+<ul>
+<li><strong>与分层存储/合约互补而非竞争</strong>。CacheWise 通过降低淘汰频率直接减少跨层搬运量（~2–2.6×）<a href="/papers/2606.16824/detail.html#5-实验与数据" class="ref-link" title="2606.16824#5-实验与数据">[2606.16824]</a>，对 LMCache/Mooncake 类 offload 是上游减负；对 Resident KV Claims 的合约层则是一个"需要被合约化"的具体策略实例 <a href="/papers/2605.24259/detail.html#2-q1-q2-q3" class="ref-link" title="2605.24259#2-q1-q2-q3">[2605.24259]</a>。三者可堆叠：合约（能观测）→ 预测式淘汰（减淘汰）→ 分层存储（兜底搬运）。</li>
+</ul>
+
+<ul>
+<li><strong>场景细分坐标</strong>：CacheWise = 编程 agent × 闭环工具触发 × vLLM paged block × 调度+淘汰；KVFlow/PBKV = 多 agent workflow × 图结构 × radix；Continuum = 多轮 ReAct × TTL；SideQuest/CodeComp = agentic 上下文压缩（语义/代码结构）。CacheWise 占据"通用编程助手 + 部署友好"这个此前空缺的格子。</li>
+</ul>
+
+<ul>
+<li><strong>成熟度</strong>：vLLM 内 ~2500 行实现、$N_{rebuild}=3$、数据集+代码开源 <a href="/papers/2606.16824/detail.html#7-实现-cross-reference" class="ref-link" title="2606.16824#7-实现-cross-reference">[2606.16824]</a>，比聚类里多数"实现未公开"的工作（PBKV/SideQuest/CodeComp/Autellix 的 L2 均标 [实现未公开]）采纳门槛更低。</li>
+</ul>
+
+<hr>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<ol>
+<li><strong>预测信号 × 鲁棒性保证的杂交</strong>：把 CacheWise 的工具元数据预测器塞进 PBKV 式的 Lipschitz 退化框架 <a href="/papers/2605.06472/detail.html#4-作者证明" class="ref-link" title="2605.06472#4-作者证明">[2605.06472]</a>，得到"零框架耦合 + 预测不准时可证明不崩"的淘汰器——补上 CacheWise 当前最大的理论空缺（攻击面 1/5）。</li>
+</ul>
+
+<ol>
+<li><strong>相对序淘汰 × 有界 TTL 兜底</strong>：CacheWise 的 $\arg\max\tau$ 决定"淘汰谁"，Continuum 的最优 TTL 决定"钉多久" <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>。组合可对长尾工具（pytest/mypy/WebFetch，Table 3 显示 P99 达数十至百秒）在预测失效时提供确定性上界，同时缓解 P99 回退。</li>
+</ul>
+
+<ol>
+<li><strong>淘汰/调度 × 压缩的正交叠加</strong>：CacheWise 决定"整块前缀何时走"，SideQuest/CodeComp 决定"保留块内哪些 token" <a href="/papers/2602.22603/detail.html#2-核心问题-q1-q2-q3" class="ref-link" title="2602.22603#2-核心问题-q1-q2-q3">[2602.22603]</a><a href="/papers/2604.10235/detail.html#1-tl-dr" class="ref-link" title="2604.10235#1-tl-dr">[2604.10235]</a>。二者作用维度不同，理论上可乘性叠加 KV 节省——被淘汰前先结构/语义压缩，降低重算/搬运体积。</li>
+</ul>
+
+<ol>
+<li><strong>预测式淘汰 × 合约化</strong>：给 CacheWise 的淘汰堆包一层 Resident KV Claims 合约 <a href="/papers/2605.24259/detail.html#2-q1-q2-q3" class="ref-link" title="2605.24259#2-q1-q2-q3">[2605.24259]</a>，让"高 $\tau$ 但被 active 压力驱逐"的 resident 损失变成可观测的 typed 事件而非静默淘汰，直接回应攻击面 3。</li>
+</ul>
+
+<ol>
+<li><strong>加 program 级调度 + anti-starvation 治 P99</strong>：把 CacheWise 的 KVCache 管理与 Autellix 的 PLAS/ATLAS + anti-starvation 组合 <a href="/papers/2502.13965/detail.html#7-实现-cross-reference" class="ref-link" title="2502.13965#7-实现-cross-reference">[2502.13965]</a>——一个优化淘汰、一个优化 program 顺序并防饿死，直击 CacheWise 的尾延迟软肋（攻击面 4）。这也把 L2 标注的 "contradicts" 转化为"互补"的实证机会。</li>
+</ul>
+
+<ol>
+<li><strong>信号融合（当耦合可接受时）</strong>：在允许框架下推的部署里，融合工具元数据（CacheWise）+ 静态 STE / 调用图（KVFlow/PBKV）<a href="/papers/2507.07400/detail.html#key-findings" class="ref-link" title="2507.07400#key-findings">[2507.07400]</a>，用图结构定"下一跳是谁"、用元数据定"多久回来"，兼取两轴之长。</li>
+</ul>
+
+<ol>
+<li><strong>多节点前缀缓存迁移</strong>：CacheWise 与聚类里几乎所有工作都是单节点；跨节点 workflow-aware/预测式前缀迁移仍是公开问题（KVFlow 亦列为 follow-up <a href="/papers/2507.07400/detail.html#limitations" class="ref-link" title="2507.07400#limitations">[2507.07400]</a>）。CacheWise 依赖负载均衡器前缀路由把同会话聚到一节点 <a href="/papers/2606.16824/detail.html#3-架构-方法图" class="ref-link" title="2606.16824#3-架构-方法图">[2606.16824]</a>，路由失败或节点故障后的前缀迁移策略未探索。</li>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2309.0618.html">2309.0618</a> (baseline) 
+<a href="/papers/2402.01869.html">2402.01869</a> (baseline) 
+<a href="/papers/2312.07104.html">2312.07104</a> (related) 
+<a href="/papers/2502.13965.html">2502.13965</a> (contradicts) 
+<a href="/papers/belady-1966.html">belady-1966</a> (predecessor) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
