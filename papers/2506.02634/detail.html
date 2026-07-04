@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>KVCache Cache in the Wild: Characterizing and Optimizing KVCache Cache at a Large Cloud Provider — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">KVCache Cache in the Wild: Characterizing and Optimizing KVCache Cache at a Large Cloud Provider</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2506.02634</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">cache-eviction</span><span class="tag">llm-serving</span><span class="tag">workload-characterization</span><span class="tag">prefix-cache</span><span class="tag">vllm</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2506.02634.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2506.02634" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="kvcache-cache-in-the-wild-—-生产级-kv-cache-的画像与-workload-aware-淘汰">KVCache Cache in the Wild — 生产级 KV$ cache 的画像与 workload-aware 淘汰 <a class="heading-anchor" href="#kvcache-cache-in-the-wild-—-生产级-kv-cache-的画像与-workload-aware-淘汰" aria-label="Link to kvcache-cache-in-the-wild-—-生产级-kv-cache-的画像与-workload-aware-淘汰">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>来自 ALIYUN 通义生产集群一周真实 trace 的首个系统性 KV$ 复用画像：理想命中率仅 62%/54%（远低于合成负载的 >80%），单轮请求贡献 to-B 负载 97% 的命中，KV$ 寿命极短（to-B P99=97s，90% 块 0.3s 内不再复用），因此中等容量缓存即够用。据此把 GDFS 改造成按类别复用概率排序的 workload-aware 淘汰策略，命中率 +1.5–3.9%、QTTFT 降 28.3–41.9%。</p>
+
+<h2 id="2-三个核心问题">2. 三个核心问题 <a class="heading-anchor" href="#2-三个核心问题" aria-label="Link to 2-三个核心问题">#</a></h2>
+
+<h3 id="q1-痛点：现有-kv-cache-的设计假设都建立在合成负载上">Q1 痛点：现有 KV$ cache 的设计假设都建立在合成负载上 <a class="heading-anchor" href="#q1-痛点：现有-kv-cache-的设计假设都建立在合成负载上" aria-label="Link to q1-痛点：现有-kv-cache-的设计假设都建立在合成负载上">#</a></h3>
+
+<p>生产 LLM 服务同时承载 to-C（chatbot、文件/多模态/搜索）与 to-B（OpenAI 兼容 API 调用）两类请求，请求又分单轮/多轮。缓存淘汰策略（LRU/FIFO/LFU）本应像传统数据缓存那样贴合 workload 的复用特征，但业界对生产负载的 KV$ 复用一无所知：不清楚复用量有多大、哪类请求贡献最多、复用时间/复用概率的分布形状、以及 KV$ 的寿命——后者直接决定该配多大缓存。已有研究（ShareGPT、Mooncake trace）要么缺请求提交时间、要么缺请求类型/用户/多轮信息，无法支撑真实命中率与随时间使用量的分析（见 §5 Table 1）。</p>
+
+<h3 id="q2-方法：先画像、再把-workload-特征灌进淘汰优先级">Q2 方法：先画像、再把 workload 特征灌进淘汰优先级 <a class="heading-anchor" href="#q2-方法：先画像、再把-workload-特征灌进淘汰优先级" aria-label="Link to q2-方法：先画像、再把-workload-特征灌进淘汰优先级">#</a></h3>
+
+<p>分两步。第一步用两条脱敏生产 trace（Trace A=to-C、Trace B=to-B）刻画三件事：复用量与偏斜、按类别的复用时间/概率分布、KV$ 寿命与容量需求。脱敏用 SipHash 对每 4 个连续 token 加随机盐哈希（比单 token 哈希更细粒度且更安全）。第二步把画像结论落到淘汰策略：把经典 GDFS 优先级公式里的 <code>Frequency × Cost/Size</code> 换成"按请求类别拟合的指数分布查出的复用概率"，并用寿命(<code>life</code>)对该概率做正则、用前缀偏移(<code>Offset</code>)打破平局。</p>
+
+<p><strong>核心技术壁垒</strong>：真正难以复制的不是那条公式，而是"请求类别（type + 轮数）→ 复用时间指数分布"这一可离线拟合、跨天稳定的映射。它依赖只有云厂商才能拿到的、带提交时间戳 + 请求类型 + 用户 ID + 多轮父链的全字段生产 trace（Table 1 里只有本工作三项俱全）。没有这份数据，策略里的 <code>ReuseProb_w</code> 无从标定，退化回 LRU。</p>
+
+<h3 id="q3-结果：小改缓存策略即得双位数尾延迟收益，且推翻两个直觉">Q3 结果：小改缓存策略即得双位数尾延迟收益，且推翻两个直觉 <a class="heading-anchor" href="#q3-结果：小改缓存策略即得双位数尾延迟收益，且推翻两个直觉" aria-label="Link to q3-结果：小改缓存策略即得双位数尾延迟收益，且推翻两个直觉">#</a></h3>
+
+<p>命中率相对最优基线再 +1.5–3.9%（相对最差 +8.1–23.9%），QTTFT 降 28.3–41.9%，单次淘汰仅 79 µs（vLLM 调度开销的 1.2%）。两个反直觉结论：(1) to-B 负载里单轮请求（而非多轮）贡献 97% 命中；(2) 显式丢弃 GDFS/LFU 的 Frequency 项反而更好，因为短命但高频的块会污染缓存。</p>
+
+<h2 id="3-架构与方法">3. 架构与方法 <a class="heading-anchor" href="#3-架构与方法" aria-label="Link to 3-架构与方法">#</a></h2>
+
+<h3 id="3-1-kv-复用机制（画像的物理基础）">3.1 KV$ 复用机制（画像的物理基础） <a class="heading-anchor" href="#3-1-kv-复用机制（画像的物理基础）" aria-label="Link to 3-1-kv-复用机制（画像的物理基础）">#</a></h3>
+
+<p><img src="/assets/2506.02634/fig2.png" alt="Figure 2: prefill 产出的 KV$ 如何被本请求 decode 及后续请求 prefill 复用"></p>
+
+<p><em>Paper Figure 2（caption: "An illustration of: ❶ how KV\$ from a prefill request (Req#0) can be reused by the decoding of Req#0, and ❷ how KV\$ can be reused for the prefill of a future request (Req#1)."）</em></p>
+
+<p>❶ 同一请求 prefill 阶段算出的 K/V 矩阵在 decode 阶段被反复复用（避免重算）；❷ 当 Req#1 与 Req#0 共享前缀（"A paper on"）时，其 K/V 相同，故 Req#0 结束后仍缓存其 KV$ 供 Req#1 的 prefill 命中，只需现算未共享部分（"AI is"），直接压低 TTFT。这就是全篇优化的对象——块级（vLLM 默认 16 token/块）的跨请求前缀复用。读者应注意：命中只发生在<strong>前缀</strong>相同处，这也是 §3.4 空间局部性"从头缓存最好"的根因。</p>
+
+<h3 id="3-2-系统数据流：从请求到缓存决策">3.2 系统数据流：从请求到缓存决策 <a class="heading-anchor" href="#3-2-系统数据流：从请求到缓存决策" aria-label="Link to 3-2-系统数据流：从请求到缓存决策">#</a></h3>
+
+<p>本框架不改推理算法与缓存机制（GPU→CPU 分层、异步逐层换出、命中时逐层换入均沿用既有系统），只替换"淘汰谁"这一个决策点。请求生命周期与调度/内存管理器的关系如下：</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as Request (category w)
+    participant S as Scheduler (vLLM)
+    participant KM as KV$ Manager (GPU→CPU)
+    participant P as WA Eviction Policy
+    U->>S: arrive (type + turn ⇒ workload w)
+    S->>KM: prefix match? (block-level, per-user)
+    alt hit
+        KM-->>S: reuse cached blocks (skip prefill)
+    else miss
+        S->>KM: prefill, allocate new blocks on HBM
+    end
+    KM->>P: HBM OOM ⇒ pick victim
+    P->>P: per-workload LRU queue heads as candidates
+    P->>P: cmp (ReuseProb_w(t,life), -Offset), lex order
+    P-->>KM: evict lowest-priority block (→CPU or drop)
+</div>
+
+<p>调度粒度是<strong>块</strong>、按用户做前缀匹配；内存管理器与策略解耦——策略只在 HBM OOM 触发淘汰时被调用。关键工程点：不逐块算概率，而是利用"同一 workload 内块天然按最后访问时间有序（指数分布单调）"，每个 workload 维护一个 LRU 优先队列，只把各队头当候选，把复杂度从 O(N) 降到 O(W)（W=workload 数，通常几十）。</p>
+
+<h3 id="3-3-复用概率的计算方式">3.3 复用概率的计算方式 <a class="heading-anchor" href="#3-3-复用概率的计算方式" aria-label="Link to 3-3-复用概率的计算方式">#</a></h3>
+
+<p><img src="/assets/2506.02634/fig23.png" alt="Figure 23: 给定 workload 的 KV$ 块复用概率如何由拟合 CDF 求出"></p>
+
+<p><em>Paper Figure 23（caption: "An illustration of how to calculate the reuse probability of a KV\$ block given its workload (request category)."）</em></p>
+
+<p>后台采样近一小时数据，对每个请求类别拟合复用时间的累积分布 $F$（蓝线=9:00–10:00 拟合，红线=真实，二者贴合）。某块自上次访问已过 $t$、预期寿命 $\text{life}$，则其未来窗口内被复用的概率为 $\text{ReuseProb}(t,\text{life}) = F(t+\text{life}) - F(t)$——即把"寿命"作为向前看的窗口宽度，避免长尾分布对久未访问块给出虚高概率。</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>无形式化定理证明——本篇是实证系统论文；但 §4.2 给出两条淘汰优先级公式，逐项解释其物理意义（框架论文的性能/优先级模型）。</p>
+
+<h3 id="4-1-记号表">4.1 记号表 <a class="heading-anchor" href="#4-1-记号表" aria-label="Link to 4-1-记号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td><code>Clock</code></td><td>对象最后一次访问时间（≈ LRU 的 recency）</td></tr>
+<tr><td><code>Frequency</code></td><td>对象累计访问次数（≈ LFU）</td></tr>
+<tr><td><code>Size</code></td><td>缓存对象大小</td></tr>
+<tr><td><code>Cost</code></td><td>把对象重新取回缓存的代价</td></tr>
+<tr><td><code>ReuseProb_w(t, life)</code></td><td>类别 $w$ 的块，距上次访问 $t$、预期寿命 <code>life</code> 时，未来被复用的概率 = $F(t+\text{life})-F(t)$</td></tr>
+<tr><td><code>Offset</code></td><td>该 KV$ 块在整条请求前缀中的位置（越靠头越小）</td></tr>
+<tr><td>$F$</td><td>该 workload 复用时间的经验 CDF（指数拟合）</td></tr>
+</table>
+
+<h3 id="4-2-两条公式与物理意义">4.2 两条公式与物理意义 <a class="heading-anchor" href="#4-2-两条公式与物理意义" aria-label="Link to 4-2-两条公式与物理意义">#</a></h3>
+
+<p>基线 GDFS：</p>
+
+<p>$$\text{Priority} = \text{Clock} + \text{Frequency} \times \frac{\text{Cost}}{\text{Size}}$$</p>
+
+<p>本篇 workload-aware：</p>
+
+<p>$$\text{Priority} = \left( \text{ReuseProb}_w(t, \text{life}),\ -\text{Offset} \right)$$</p>
+
+<p>six 项检查：</p>
+
+<ol>
+<li><strong>为何用 tuple + 字典序而非加权和</strong>：复用概率与前缀位置量纲不同、重要性不对等；用字典序保证"未来最可能被复用"绝对优先，仅在概率并列时才用 <code>-Offset</code> 决胜，避免人工调权重。最低优先级者先淘汰。</li>
+<li><strong>为何 <code>-Offset</code>（负号）</strong>：Offset 越小越靠请求头部；空间局部性表明只有相同前缀才能共享 KV$（§3.2/§3.4），故头部块更可能被复用。取负使"小 offset→高优先级"，与字典序"大者留存"一致。</li>
+<li><strong>为何删掉 Frequency（相对 GDFS）</strong>：KV$ 寿命极短（Figure 19），高频块可能早已"死亡"，Frequency 无法预测未来复用，保留它会让死块占位。这是与经典缓存智慧相反的取舍，由 §5 消融（去掉 life 正则后 +2.4% 来自此思路）支撑。</li>
+<li><strong>为何删掉 Cost/Size</strong>：GDFS 里取回代价高≠更可能被复用；本场景要优先把"更可能被复用"的块留住，而复用概率已由 <code>ReuseProb_w</code> 显式给出，Cost/Size 冗余且误导。</li>
+<li><strong><code>life</code> 正则的必要性（单调性修正）</strong>：不加 <code>life</code> 时，长尾分布会对久未访问的块持续返回较大概率，与"寿命短"矛盾；用 $F(t+\text{life})-F(t)$ 把概率限制在有限前瞻窗口内，随 $t$ 增大而单调衰减，恢复"越久未用越该淘汰"的单调性。</li>
+<li><strong>一阶数值自洽</strong>：Trace B >99% 为单轮请求，类别信息稀薄，指数拟合退化为均匀 recency 排序——即策略自动回落到 LRU；这正解释了 §5 中"WA 在 Trace B 收益小"的实测（模型的边界行为与实验一致，而非事后拟合）。</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<h3 id="5-1-画像：复用量、偏斜与单轮支配">5.1 画像：复用量、偏斜与单轮支配 <a class="heading-anchor" href="#5-1-画像：复用量、偏斜与单轮支配" aria-label="Link to 5-1-画像：复用量、偏斜与单轮支配">#</a></h3>
+
+<p><img src="/assets/2506.02634/fig4.png" alt="Figure 4: 两条 trace 一天内的理想命中率（无限容量）"></p>
+
+<p><em>Paper Figure 4（caption: "An analysis of the ideal cache hit ratio of the KV\$ cache under real-world LLM serving workloads within a day..."）</em></p>
+
+<p>无限容量下 Trace A/B 理想命中率仅 62%/54%，显著低于合成负载常报的 >80%——说明合成数据高估了 KV$ 收益。10% 的块贡献 77% 复用，Trace A 中 19%、Trace B 中 4% 的请求贡献了 >90% 命中，偏斜极强。</p>
+
+<p><img src="/assets/2506.02634/fig5.png" alt="Figure 5: 各请求类型的命中贡献与其多轮比例"></p>
+
+<p><em>Paper Figure 5（内容：每种请求类型对命中的贡献及其多轮比例；原文未surfaced verbatim caption）</em></p>
+
+<p>反直觉核心证据：Trace B（纯 API）多轮比例 <0.1%，但单轮请求贡献了 97% 命中。原因是程序把相同 system prompt 硬编码进请求、且高 QPS（>10）密集复用共享前缀。结论——优化单轮请求缓存与优化多轮同等重要。</p>
+
+<h3 id="5-2-复用时间的指数分布与寿命">5.2 复用时间的指数分布与寿命 <a class="heading-anchor" href="#5-2-复用时间的指数分布与寿命" aria-label="Link to 5-2-复用时间的指数分布与寿命">#</a></h3>
+
+<p><img src="/assets/2506.02634/fig15.png" alt="Figure 15: 按类别、按时段的 KV$ 复用时间概率分布"></p>
+
+<p><em>Paper Figure 15（caption: "An empirical analysis of the reuse time probability distribution of KV\$ blocks..."）</em></p>
+
+<p>三条观察：(1) 每个请求类别的复用时间都能被指数分布很好拟合；(2) 分布是 workload-aware 的，连同类型不同轮数（text-1 vs text-2）都不同；(3) 相似流量时段（白天 vs 白天）分布相似、跨天同时段相似（附录 Figure 29 佐证）。(1)+(3) 合起来意味着可用近期历史离线预测某类别分布——这是 <code>ReuseProb_w</code> 可标定的前提。</p>
+
+<p><img src="/assets/2506.02634/fig19.png" alt="Figure 19: 两条 trace 上 KV$ 块寿命的分布"></p>
+
+<p><em>Paper Figure 19（caption: "The distribution of the lifespan of KV\$ blocks on both traces."）</em></p>
+
+<p>寿命极短且两 trace 差五个数量级：Trace A 90% 块 612s 内不再复用，Trace B 仅 0.3s。这直接支撑"删 Frequency"与"用 life 正则"的设计，也解释为何 to-B 用小缓存即可。</p>
+
+<h3 id="5-3-容量需求">5.3 容量需求 <a class="heading-anchor" href="#5-3-容量需求" aria-label="Link to 5-3-容量需求">#</a></h3>
+
+<p><img src="/assets/2506.02634/fig22.png" alt="Figure 22: 达到理想命中率所需 KV$ 缓存容量（按模型/trace）"></p>
+
+<p><em>Paper Figure 22（caption: "An analysis of the KV\$ cache size required to achieve an ideal cache hit ratio on different models and traces."）</em></p>
+
+<p>GQA 模型容量需求适中：Trace A 上 Llama3-70B 仅需 4× 可用 HBM（恰好匹配 8×A100 + 1TB CPU 内存的典型配置里每 GPU ≈128GB ≈ 4× 预留 HBM）；Trace B 甚至小于预留 HBM，纯 GPU 缓存即够——意味着 API 负载可省掉 CPU-RDMA-SSD 存储层级。MHA 模型因每 token KV 大仍需巨量缓存，故淘汰策略在受限容量下仍重要。</p>
+
+<h3 id="5-4-策略收益与消融">5.4 策略收益与消融 <a class="heading-anchor" href="#5-4-策略收益与消融" aria-label="Link to 5-4-策略收益与消融">#</a></h3>
+
+<p><img src="/assets/2506.02634/fig25.png" alt="Figure 25: Qwen2-7B 上命中率与 QTTFT 随 CPU 缓存容量变化"></p>
+
+<p><em>Paper Figure 25（caption: "An analysis of the cache hit ratio and QTTFT with respect to the CPU cache provisioned on Qwen2-7B."）</em></p>
+
+<p>在 8×A800-80GB、NVLink 400GBps、PCIe Gen4 的 testbed 上，基于 vLLM 自实现 CPU-GPU 缓存（已校准到 CachedAttention 水平），trace 用保温度模式的方法缩放。WA 相对最差基线 +8.1–23.9% 命中、相对最优基线 +1.5–3.9%，QTTFT 降 28.3–41.9%。</p>
+
+<p><img src="/assets/2506.02634/fig28.png" alt="Figure 28: Qwen2-7B / Trace A 消融（#CPU Cache / HBM = 1）"></p>
+
+<p><em>Paper Figure 28（caption: "An ablation study on Qwen2-7B with #CPU Cache / HBM is 1."）</em></p>
+
+<p>分布法（技术➀）+1% 命中；叠加 life 正则（技术➂）再 +2.4%；空间局部性➁对所有策略均施加故不单列。</p>
+
+<h3 id="5-5-何时赢、何时平">5.5 何时赢、何时平 <a class="heading-anchor" href="#5-5-何时赢、何时平" aria-label="Link to 5-5-何时赢、何时平">#</a></h3>
+
+<table>
+<tr><th>Workload regime</th><th>本框架 (WA)</th><th>基线</th><th>为何</th></tr>
+<tr><td>to-C 多类型、含多轮、容量受限 (Trace A)</td><td>收益最大 (+3.9% vs best)</td><td>LRU/FIFO 忽略类别复用差异</td><td>类别信息丰富，指数拟合有区分度</td></tr>
+<tr><td>to-B 纯 API、>99% 单轮 (Trace B)</td><td>收益最小，≈ LRU</td><td>LRU 已近最优</td><td>类别信息稀薄，WA 回落 LRU</td></tr>
+<tr><td>缓存容量很大</td><td>收益递减</td><td>各策略趋同</td><td>大缓存容忍差策略</td></tr>
+<tr><td>LFU 在任意 regime</td><td>优于 LFU</td><td>LFU 最差</td><td>高频短命块污染缓存</td></tr>
+</table>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>命题</th><th>依据（篇内）</th></tr>
+<tr><td>1</td><td>生产 KV$ 复用量中等（62%/54%）且高度偏斜（10% 块→77% 复用）</td><td>§3.2 Figure 4/7/8</td></tr>
+<tr><td>2</td><td>to-B 命中由单轮请求（共享 system prompt + 高 QPS）主导，占 97%</td><td>§3.2 Figure 5</td></tr>
+<tr><td>3</td><td>每个请求类别的复用时间服从指数分布，且跨相似时段/跨天稳定、可离线预测</td><td>§3.4 Figure 15；附录 Figure 29</td></tr>
+<tr><td>4</td><td>KV$ 寿命极短（to-B 0.3s / to-A 612s @90%），故 Frequency 无预测力、需 life 正则</td><td>§3.5 Figure 19</td></tr>
+<tr><td>5</td><td>由 3+4，把 GDFS 的 <code>Freq×Cost/Size</code> 换成 <code>(ReuseProb_w(t,life), -Offset)</code> 字典序优先级</td><td>§4.2 两公式 + Table 2</td></tr>
+<tr><td>6</td><td>利用同 workload 内时间序，priority queue 使复杂度 O(N)→O(W)，开销 79µs（vLLM 的 1.2%）</td><td>§4.2 Figure 24</td></tr>
+<tr><td>7</td><td>由 5+6，实测命中 +1.5–3.9%、QTTFT −28.3–41.9%；Trace B 因回落 LRU 收益小（自洽边界）</td><td>§5.1 Figure 25–28</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<ul>
+<li>淘汰算法伪代码见 Figure 24（<code>CurT=time.time()</code>；<code>for b in Bs: Priority=ReuseProb_{H(b.w)}(CurT-b.cached_t, Life)</code>；按 <code>Priority<MinPriority or (==  and b.offset>ChosenBlock.offset)</code> 更新 victim；返回 <code>ChosenBlock</code>）——论文以图形式给出，未提供可运行仓库，此段之外 [实现未公开]。</li>
+<li>集成到 vLLM [id 2309.06180]：CPU-GPU 分层缓存为自实现（原文称已校准到 CachedAttention 水平），全局 KV$ 调度器复刻 Mooncake [id 2407.00079]；WA 策略仅作用于单实例，全局层留待未来工作。</li>
+<li>脱敏 trace 样本：<code>github.com/alibaba-edu/qwen-bailian-usagetraces-anon</code>（仅样本，非完整生产 trace）。</li>
+</ul>
+
+<p><strong>核心技术壁垒（展开）</strong>：可复制的门槛在数据而非算法。策略的每个 <code>ReuseProb_w</code> 都要按"类型×轮数"标定一条指数曲线，而标定所需的全字段带时间戳生产 trace 只有大云厂商拥有（Table 1 中唯一三项俱全者）。缺此数据，公式退化为 LRU——这也是 Trace B 上收益微弱的同一机理。</p>
+
+<p><strong>关键实现细节</strong>：</p>
+<ol>
+<li><code>ReuseProb</code> 用 $F(t+\text{life})-F(t)$ 而非 $1-F(t)$：把预期寿命当作有限前瞻窗口，否则长尾分布会对久未访问块给出虚高概率，与短寿命矛盾。</li>
+<li>O(N)→O(W) 的前提是"同一 workload 内块按最后访问时间有序 ⇔ 指数分布单调"，故只需各 workload LRU 队头作候选；这条不成立时优化失效。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

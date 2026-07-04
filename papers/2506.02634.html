@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: KVCache Cache in the Wild: Characterizing and Optimizing KVCache Cache at a Large Cloud Provider — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">KVCache Cache in the Wild: Characterizing and Optimizing KVCache Cache at a Large Cloud Provider</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2506.02634 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2506.02634/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="kvcache-cache-in-the-wild-—-相关论文语境定位-l3">KVCache Cache in the Wild — 相关论文语境定位 (L3) <a class="heading-anchor" href="#kvcache-cache-in-the-wild-—-相关论文语境定位-l3" aria-label="Link to kvcache-cache-in-the-wild-—-相关论文语境定位-l3">#</a></h1>
+
+<p>本篇 (2506.02634) 的独特身份：它不是又一个 KV$ cache <strong>机制</strong>，而是一份 <strong>生产 trace 画像 + 由画像反推出的 workload-aware 淘汰策略</strong></p>
+<p><a href="/papers/2506.02634/detail.html#1-tl-dr" class="ref-link" title="2506.02634#1-tl-dr">[2506.02634]</a>。因此把它放进 peer 语境时，比较轴不是"谁的吞吐更高"，</p>
+<p>而是"每篇对 KV$ 复用/生命周期做了什么假设，本篇的真实数据支持还是推翻了这些假设"。</p>
+
+<hr>
+
+<h2 id="相关论文">相关论文 <a class="heading-anchor" href="#相关论文" aria-label="Link to 相关论文">#</a></h2>
+
+<p>8 篇 peer 按其与本篇的关系可分为四组：</p>
+
+<p><strong>A. 机制底座（本篇站在其上）</strong></p>
+<ul>
+<li><strong>vLLM / PagedAttention (2309.06180)</strong> — 本篇的实现基座与 block 语义来源。vLLM 提供了</li>
+<p>"block=16 token、logical→physical 映射、GPU-CPU swap" 这套已收敛的<strong>机制</strong></p>
+<p><a href="/papers/2309.06180/detail.html#2-痛点-方法-结果" class="ref-link" title="2309.06180#2-痛点-方法-结果">[2309.06180]</a>，但其淘汰<strong>策略</strong>只是 FCFS + all-or-nothing 抢占，</p>
+<p>并未针对复用特征做优化 <a href="/papers/2309.06180/detail.html#3-架构-方法图" class="ref-link" title="2309.06180#3-架构-方法图">[2309.06180]</a>。本篇正是填补 vLLM 留下的</p>
+<p>"策略"空白：机制不动，只替换"淘汰谁"这一个决策点 <a href="/papers/2506.02634/detail.html#3-架构与方法" class="ref-link" title="2506.02634#3-架构与方法">[2506.02634]</a>。</p>
+</ul>
+
+<p><strong>B. workload/future-aware 淘汰的方法学兄弟（最直接的对照）</strong></p>
+<ul>
+<li><strong>KVFlow (2507.07400)</strong> — 与本篇是"同一命题、两种解法"的镜像关系。两者都断言 serving 系统默认的</li>
+<p>LRU 在真实负载里是<strong>错误信号</strong>并要用"未来复用"驱动淘汰</p>
+<p><a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="2507.07400#core-contribution">[2507.07400]</a>；但 KVFlow 的未来信号来自 <strong>application 层的 workflow DAG</strong></p>
+<p>（steps-to-execution，确定性）<a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="2507.07400#summary">[2507.07400]</a>，本篇的未来信号来自 **生产 trace 的</p>
+<p>按类别指数拟合复用概率**（统计性）<a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。见 delta 节详析。</p>
+</ul>
+
+<p><strong>C. 容量/卸载假设的挑战对象（本篇数据与其前提有张力）</strong></p>
+<ul>
+<li><strong>Mooncake (2407.00079)</strong> — 既是本篇 baseline（复刻其全局 KV$ 调度器）也是 trace 对照对象。</li>
+<p>Mooncake 的 CPU DRAM KVCache 池用 <strong>LRU + hash 去重</strong></p>
+<p><a href="/papers/2407.00079/detail.html#框架特定分析" class="ref-link" title="2407.00079#框架特定分析">[2407.00079]</a>，且其公开 trace 缺 type/UID/turn 字段</p>
+<p><a href="/papers/2506.02634/detail.html#2-三个核心问题" class="ref-link" title="2506.02634#2-三个核心问题">[2506.02634]</a>。</p>
+<li><strong>NEO (2411.01142)</strong> 与 <strong>APEX (2506.03296)</strong> — 二者的立论根基是"GPU memory crisis"：</li>
+<p>KV$ 撑爆 HBM、逼小 batch，必须把 KV$ 卸载到 CPU</p>
+<p><a href="/papers/2411.01142/detail.html#2-痛点-方法-结果" class="ref-link" title="2411.01142#2-痛点-方法-结果">[2411.01142]</a><a href="/papers/2506.03296/detail.html#2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2506.03296#2-q1-痛点-q2-方法-q3-结果">[2506.03296]</a>。</p>
+<li><strong>FlowKV (2504.03775)</strong> — 立论根基是 PD 分离下的<strong>跨节点 KV$ 传输瓶颈</strong>，为此做全栈 layout 改造</li>
+<p><a href="/papers/2504.03775/detail.html#2-q1-q2-q3" class="ref-link" title="2504.03775#2-q1-q2-q3">[2504.03775]</a>。这三篇都假设 KV$ 存储/迁移是重量级问题，而本篇的容量画像对</p>
+<p>to-B 场景直接质疑了这一前提（见可攻击面/生态位）。</p>
+</ul>
+
+<p><strong>D. 正交的容量收缩轴（互补而非竞争）</strong></p>
+<ul>
+<li><strong>DeepSeek-V2 / MLA (2405.04434)</strong> — 从<strong>模型架构</strong>侧把 per-token KV$ 压 93.3%</li>
+<p><a href="/papers/2405.04434/detail.html#2-痛点-方法-结果" class="ref-link" title="2405.04434#2-痛点-方法-结果">[2405.04434]</a>，改变的是"缓存对象的大小"；本篇优化的是"对象的淘汰顺序"。</p>
+<p>本篇 §3.5 明确点名 MLA 属于"per-token KV 更小"的一类，是使容量需求变"中等"的原因之一</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。</p>
+<li><strong>KV Cache Survey (2412.19442)</strong> — 给出 token/model/system 三层 taxonomy，本篇落在</li>
+<p>System-level 的 Scheduling/Memory-Mgmt 格子里 <a href="/papers/2412.19442/detail.html#2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2412.19442#2-q1-痛点-q2-方法-q3-结果">[2412.19442]</a>；</p>
+<p>但 survey 自承其复杂度模型建立在"KV$ 全量保留"的合成假设上</p>
+<p><a href="/papers/2412.19442/detail.html#4-作者证明" class="ref-link" title="2412.19442#4-作者证明">[2412.19442]</a>，恰是本篇用真实 trace 要打破的。</p>
+</ul>
+
+<hr>
+
+<h2 id="本篇-vs-相关论文的-delta">本篇 vs 相关论文的 delta <a class="heading-anchor" href="#本篇-vs-相关论文的-delta" aria-label="Link to 本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="Δ1-——-vs-kvflow：统计性未来-vs-结构性未来（本篇的核心-delta）">Δ1 —— vs KVFlow：统计性未来 vs 结构性未来（本篇的核心 delta） <a class="heading-anchor" href="#Δ1-——-vs-kvflow：统计性未来-vs-结构性未来（本篇的核心-delta）" aria-label="Link to Δ1-——-vs-kvflow：统计性未来-vs-结构性未来（本篇的核心-delta）">#</a></h3>
+
+<p>两篇都得出"LRU 反了"这个反直觉结论，但对"如何预测未来复用"给出互补答案：</p>
+
+<table>
+<tr><th>维度</th><th>本篇 2506.02634</th><th>KVFlow 2507.07400</th></tr>
+<tr><td>未来信号来源</td><td>生产 trace 历史，按 (type×turn) 拟合指数分布</td><td>application 递交的 workflow DAG</td></tr>
+<tr><td>预测性质</td><td>概率性 <code>ReuseProb_w(t,life)</code></td><td>确定性 <code>steps-to-execution</code></td></tr>
+<tr><td>适用负载</td><td>to-C/to-B 混合、无应用结构可见</td><td>静态 agentic workflow（MetaGPT 类）</td></tr>
+<tr><td>失效模式</td><td>类别信息稀薄时退化回 LRU（Trace B）</td><td>runtime 动态生成 agent（ReAct）时退化为 heuristic</td></tr>
+<tr><td>落地成本</td><td>单实例、替换 vLLM 淘汰函数，79µs/次</td><td>SGLang radix tree + scheduler 原子改造，3-4 周</td></tr>
+</table>
+
+<p>KVFlow 明确论证"过去访问在 agentic workflow 里是随机的、未来顺序由 DAG 给出"，因此拒绝一切</p>
+<p>基于历史的策略（含 access-time-weighted LRU）<a href="/papers/2507.07400/detail.html#phase-2-logic-flow-约束推导型" class="ref-link" title="2507.07400#phase-2-logic-flow-约束推导型">[2507.07400]</a>。</p>
+<p>本篇则<strong>正好相反</strong>地证明：在没有应用结构可用的通用云负载里，历史 trace 的按类别复用时间</p>
+<p>"跨相似时段/跨天稳定、可离线预测" <a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。</p>
+
+<p><strong>矛盾根源不是谁对谁错，而是负载可观测性不同</strong>：KVFlow 的场景 application 把 DAG 暴露给后端，</p>
+<p>未来是"已知的"；本篇的云 API/chatbot 场景后端看不到应用逻辑，只能从统计规律里"猜"未来。</p>
+<p>两者在各自 workload 下都自洽——这正指向 delta5 的 hybrid 方向。</p>
+
+<h3 id="Δ2-——-vs-mooncake-vllm：从-机制-全局调度-下沉到-单实例策略">Δ2 —— vs Mooncake/vLLM：从"机制/全局调度"下沉到"单实例策略" <a class="heading-anchor" href="#Δ2-——-vs-mooncake-vllm：从-机制-全局调度-下沉到-单实例策略" aria-label="Link to Δ2-——-vs-mooncake-vllm：从-机制-全局调度-下沉到-单实例策略">#</a></h3>
+
+<p>Mooncake 的贡献是 KVCache-centric 的<strong>全局</strong>编排（Conductor 选实例对、热点迁移、early rejection）</p>
+<p><a href="/papers/2407.00079/detail.html#2-痛点-方法-结果" class="ref-link" title="2407.00079#2-痛点-方法-结果">[2407.00079]</a>，其 cache 池内部仍用 LRU</p>
+<p><a href="/papers/2407.00079/detail.html#框架特定分析" class="ref-link" title="2407.00079#框架特定分析">[2407.00079]</a>。vLLM 提供 block 机制。本篇填的是二者都没碰的</p>
+<p><strong>单实例内 HBM OOM 时"淘汰谁"</strong> 这一层，并显式声明全局层 workload-aware 化留作未来工作</p>
+<p><a href="/papers/2506.02634/detail.html#7-实现-cross-reference" class="ref-link" title="2506.02634#7-实现-cross-reference">[2506.02634]</a>。因此本篇与 Mooncake/vLLM 是<strong>可叠加</strong>而非竞争关系。</p>
+
+<p>另一条硬 delta 是 <strong>trace 质量</strong>：本篇 Table 1 显示 Mooncake trace 缺 Type/UID/Turn，ShareGPT 缺</p>
+<p>Time，均无法支撑"随时间的真实命中率 + 按类别复用概率"分析——这是本篇声称的核心壁垒</p>
+<p><a href="/papers/2506.02634/detail.html#2-三个核心问题" class="ref-link" title="2506.02634#2-三个核心问题">[2506.02634]</a>。</p>
+
+<h3 id="Δ3-——-vs-neo-apex-flowkv：容量前提的正面冲突">Δ3 —— vs NEO/APEX/FlowKV：容量前提的正面冲突 <a class="heading-anchor" href="#Δ3-——-vs-neo-apex-flowkv：容量前提的正面冲突" aria-label="Link to Δ3-——-vs-neo-apex-flowkv：容量前提的正面冲突">#</a></h3>
+
+<p>NEO 立论"GPU 吞吐受限于 KV$ 导致的 batch 瓶颈，必须卸载到 CPU"</p>
+<p><a href="/papers/2411.01142/detail.html#2-痛点-方法-结果" class="ref-link" title="2411.01142#2-痛点-方法-结果">[2411.01142]</a>，APEX 继承同一前提并把它推到 decode-heavy 场景</p>
+<p><a href="/papers/2506.03296/detail.html#2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2506.03296#2-q1-痛点-q2-方法-q3-结果">[2506.03296]</a>，FlowKV 则为 PD 分离的 KV$ 传输瓶颈做全栈优化</p>
+<p><a href="/papers/2504.03775/detail.html#2-q1-q2-q3" class="ref-link" title="2504.03775#2-q1-q2-q3">[2504.03775]</a>。</p>
+
+<p>本篇的容量画像给出<strong>部分推翻的证据</strong>：GQA 模型在 to-B（纯 API）负载下所需 KV$ 缓存</p>
+<p>"甚至小于预留 HBM，纯 GPU 缓存即够"，从而"可省掉 CPU-RDMA-SSD 存储层级"</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。</p>
+
+<p><strong>矛盾根源（workload + 模型架构双重差异）</strong>：NEO/APEX 的"memory crisis"实测于**小显存 GPU</p>
+<p>(T4 16GB) + 长 output** 场景 <a href="/papers/2411.01142/detail.html#框架特定分析" class="ref-link" title="2411.01142#框架特定分析">[2411.01142]</a>，本篇的"小缓存够用"结论限定在</p>
+<p><strong>GQA 模型 + to-B + 8×A100 级实例</strong>。本篇也自认 MHA 模型"仍需巨量缓存，故淘汰策略在受限容量下仍重要"</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。两者并不真正矛盾——但本篇的结论对"KV$ 卸载/传输在所有场景都必要"</p>
+<p>这一被 NEO/APEX/FlowKV 隐含假设的命题构成了 workload-conditional 的反例。</p>
+
+<h3 id="Δ4-——-vs-deepseek-v2-survey：正交轴，且本篇声明兼容">Δ4 —— vs DeepSeek-V2/Survey：正交轴，且本篇声明兼容 <a class="heading-anchor" href="#Δ4-——-vs-deepseek-v2-survey：正交轴，且本篇声明兼容" aria-label="Link to Δ4-——-vs-deepseek-v2-survey：正交轴，且本篇声明兼容">#</a></h3>
+
+<p>MLA 从模型侧把对象缩小 <a href="/papers/2405.04434/detail.html#2-痛点-方法-结果" class="ref-link" title="2405.04434#2-痛点-方法-结果">[2405.04434]</a>，本篇从系统侧优化对象淘汰；本篇自述</p>
+<p>"若未压缩的 KV$ 可复用，压缩/删除版同样可复用"，即与 StreamingLLM/KVQuant/MLA 这类压缩正交可组合</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。相对 Survey，本篇补上了 survey 明确缺失的一环：真实 workload 画像</p>
+<p>（survey 复杂度模型假设全量保留 <a href="/papers/2412.19442/detail.html#4-作者证明" class="ref-link" title="2412.19442#4-作者证明">[2412.19442]</a>），并给出 Survey §8 点名的</p>
+<p>"cross-layer/跨类别 workload-aware"方向的一个具体系统实例 <a href="/papers/2412.19442/detail.html#6-论证链" class="ref-link" title="2412.19442#6-论证链">[2412.19442]</a>。</p>
+
+<hr>
+
+<h2 id="可攻击面">可攻击面 <a class="heading-anchor" href="#可攻击面" aria-label="Link to 可攻击面">#</a></h2>
+
+<p>针对本篇的具体断言，逐条列出可被反驳/证伪的攻击点：</p>
+
+<ol>
+<li><strong>"62%/54% 理想命中、单轮占 97%"的外部效度存疑</strong>。数据来自 ALIYUN 通义<strong>一周、单厂商</strong>的</li>
+<p>Trace A/B <a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>，本篇自承 reasoning (o1) 类新负载未覆盖</p>
+<p><a href="/papers/2506.02634/detail.html#1-tl-dr" class="ref-link" title="2506.02634#1-tl-dr">[2506.02634]</a>。KVFlow 展示的 agentic workflow 负载里复用结构完全不同</p>
+<p><a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="2507.07400#summary">[2507.07400]</a>——若把 agentic 流量计入，"单轮支配"可能不再成立。攻击：结论是</p>
+<p>2025 年通义流量快照，而非 LLM serving 的稳态规律。</p>
+</ul>
+
+<ol>
+<li><strong>"小缓存够用、可省 CPU 层级"是被条件严格约束的</strong>。仅对 GQA + to-B + 特定实例配比成立；本篇同页</li>
+<p>即承认 MHA 需巨量缓存 <a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。NEO 实测 T4 上卸载带来 7.5× 吞吐</p>
+<p><a href="/papers/2411.01142/detail.html#2-痛点-方法-结果" class="ref-link" title="2411.01142#2-痛点-方法-结果">[2411.01142]</a>——在小显存/长上下文/MHA 下"省掉 CPU 层"的建议会直接</p>
+<p>伤害吞吐。攻击：该建议不能脱离 (模型架构 × GPU 显存 × output 长度) 语境引用。</p>
+</ul>
+
+<ol>
+<li><strong>指数分布拟合可能是过拟合的便利假设</strong>。本篇自曝 image (multimodal) 类"比其他类别更难预测"</li>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>，说明指数族并非普适。攻击：对重尾/突发类别，</p>
+<p><code>ReuseProb_w</code> 标定误差会直接侵蚀策略收益，而论文未给出拟合失败时的降级保证</p>
+<p>（只有 Trace B 的"退化回 LRU"这一种事后观察）。</p>
+</ul>
+
+<ol>
+<li><strong>净收益薄且高度 workload-limited</strong>。相对<strong>最优</strong> baseline 仅 +1.5–3.9% 命中；消融里</li>
+<p>分布法 +1%、life 正则 +2.4% <a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>；在 to-B 上因 >99% 单轮而</p>
+<p>≈ LRU <a href="/papers/2506.02634/detail.html#6-论证链" class="ref-link" title="2506.02634#6-论证链">[2506.02634]</a>。攻击：真正有效的区间只有"to-C 多类型 + 容量受限"，</p>
+<p>与 KVFlow 声称的"结构可见时确定性信号更准" <a href="/papers/2507.07400/detail.html#phase-2-logic-flow-约束推导型" class="ref-link" title="2507.07400#phase-2-logic-flow-约束推导型">[2507.07400]</a></p>
+<p>相比，本篇在有应用结构的场景里可能被 dominated。</p>
+</ul>
+
+<ol>
+<li><strong>"类别已知"前提在 to-B 上自相矛盾</strong>。策略依赖"请求类别 (type×turn) 已知"来查分布</li>
+<p><a href="/papers/2506.02634/detail.html#3-架构与方法" class="ref-link" title="2506.02634#3-架构与方法">[2506.02634]</a>，但本篇又指出 Trace B <strong>没有 type 信息</strong>（客户端拼接）</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。攻击：恰恰在贡献 97% 命中的 to-B 上，类别粒度最粗，</p>
+<p>策略最接近 LRU——即策略在其"最重要负载"上最无力。</p>
+</ul>
+
+<ol>
+<li><strong>删除 Frequency 与经典缓存智慧对立，样本支撑有限</strong>。论证依赖"KV$ 寿命极短故高频块已死"</li>
+<p><a href="/papers/2506.02634/detail.html#4-作者证明" class="ref-link" title="2506.02634#4-作者证明">[2506.02634]</a>，但寿命 612s(A)/0.3s(B) 相差五个数量级</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>——用同一个"删 Frequency"决策覆盖跨五个数量级的寿命，</p>
+<p>缺乏对中间寿命 regime 的消融。攻击：可能存在一个寿命区间里 Frequency 仍有预测力而被误删。</p>
+</ul>
+
+<hr>
+
+<h2 id="生态位">生态位 <a class="heading-anchor" href="#生态位" aria-label="Link to 生态位">#</a></h2>
+
+<p><strong>范式定位</strong>：本篇是 KV$ cache 研究从 <strong>"合成负载驱动设计"</strong> 转向 <strong>"生产 trace 驱动设计"</strong> 的</p>
+<p>标志性一步，方法论是"先画像真实特征、再优化单个 serving 组件"<a href="/papers/2506.02634/detail.html#1-tl-dr" class="ref-link" title="2506.02634#1-tl-dr">[2506.02634]</a>。它把</p>
+<p>Survey 里被列为 system-level 默认选项的 LRU <a href="/papers/2412.19442/detail.html#2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2412.19442#2-q1-痛点-q2-方法-q3-结果">[2412.19442]</a></p>
+<p>从"事实标准"降级为"workload-blind 的次优解"，与 KVFlow 一起构成 2025 年"eviction 该看未来而非过去"</p>
+<p>思潮的两个代表——一个走统计路线，一个走结构路线 <a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="2507.07400#core-contribution">[2507.07400]</a>。</p>
+
+<p><strong>采纳证据与门槛</strong>：</p>
+<ul>
+<li>开放了脱敏 trace 样本（<code>alibaba-edu/qwen-bailian-usagetraces-anon</code>）并被 USENIX ATC'25 接收，</li>
+<p>其独特资产是 Table 1 里唯一 Time/Type/UID/Turn/Content 五项俱全的 trace</p>
+<p><a href="/papers/2506.02634/detail.html#2-三个核心问题" class="ref-link" title="2506.02634#2-三个核心问题">[2506.02634]</a>。这份数据本身比策略更可能成为社区公共物品。</p>
+<li>落地成本在所有 peer 中最低：单实例、drop-in 替换 vLLM 淘汰函数、79µs/次（vLLM 调度开销 1.2%）</li>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>。对比 FlowKV 需要 attention kernel + allocator + transfer</p>
+<p>三层联动的全栈替换 <a href="/papers/2504.03775/detail.html#9-adoption-ecosystem" class="ref-link" title="2504.03775#9-adoption-ecosystem">[2504.03775]</a>、Mooncake 需替换整个 serving stack</p>
+<p><a href="/papers/2407.00079/detail.html#框架特定分析" class="ref-link" title="2407.00079#框架特定分析">[2407.00079]</a>、KVFlow 需 3-4 周深入 SGLang 内部</p>
+<p><a href="/papers/2507.07400/detail.html#limitations" class="ref-link" title="2507.07400#limitations">[2507.07400]</a>，本篇的工程侵入性最小。</p>
+</ul>
+
+<p><strong>壁垒的真实位置</strong>：本篇的护城河<strong>不在算法而在数据</strong>——<code>ReuseProb_w</code> 的每条曲线都要用带时间戳 +</p>
+<p>类型 + 用户 + 多轮父链的全字段生产 trace 标定，只有大云厂商拥有 <a href="/papers/2506.02634/detail.html#7-实现-cross-reference" class="ref-link" title="2506.02634#7-实现-cross-reference">[2506.02634]</a>。</p>
+<p>这也决定了它的生态位是"云厂商内部可复现、外部学界难复现"，与 vLLM（开源机制、人人可用）</p>
+<p><a href="/papers/2309.06180/detail.html#7-实现-cross-reference" class="ref-link" title="2309.06180#7-实现-cross-reference">[2309.06180]</a> 形成互补而非替代。</p>
+
+<hr>
+
+<h2 id="未探索方向">未探索方向 <a class="heading-anchor" href="#未探索方向" aria-label="Link to 未探索方向">#</a></h2>
+
+<p>从这个 cluster 的交叉点看，最有价值的 hybrid / adaptive 方向：</p>
+
+<ol>
+<li><strong>统计 × 结构的自适应淘汰预测器</strong>。把本篇的 <code>ReuseProb_w</code> 与 KVFlow 的 STE 融合：应用暴露了</li>
+<p>workflow DAG（agentic 场景）时用确定性 STE，否则回落到按类别指数拟合的统计概率</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a><a href="/papers/2507.07400/detail.html#summary" class="ref-link" title="2507.07400#summary">[2507.07400]</a>。这能同时覆盖 KVFlow 无法处理的</p>
+<p>ReAct 动态图 <a href="/papers/2507.07400/detail.html#limitations" class="ref-link" title="2507.07400#limitations">[2507.07400]</a> 与本篇无法处理的"类别信息稀薄的 to-B"</p>
+<p><a href="/papers/2506.02634/detail.html#6-论证链" class="ref-link" title="2506.02634#6-论证链">[2506.02634]</a>。</p>
+</ul>
+
+<ol>
+<li><strong>全局层的 workload-aware 化</strong>。本篇显式把全局层留作未来工作 <a href="/papers/2506.02634/detail.html#7-实现-cross-reference" class="ref-link" title="2506.02634#7-实现-cross-reference">[2506.02634]</a>。</li>
+<p>把 <code>ReuseProb_w</code> 灌进 Mooncake 的 Conductor 调度/热点迁移决策 <a href="/papers/2407.00079/detail.html#2-痛点-方法-结果" class="ref-link" title="2407.00079#2-痛点-方法-结果">[2407.00079]</a></p>
+<p>与 FlowKV 的 Load-Aware Scheduler <a href="/papers/2504.03775/detail.html#2-q1-q2-q3" class="ref-link" title="2504.03775#2-q1-q2-q3">[2504.03775]</a>，做"跨实例的复用概率感知路由"。</p>
+</ul>
+
+<ol>
+<li><strong>workload-aware 的卸载/传输门控</strong>。用本篇的寿命与复用概率去驱动 NEO/APEX 的卸载决策</li>
+<p><a href="/papers/2411.01142/detail.html#2-痛点-方法-结果" class="ref-link" title="2411.01142#2-痛点-方法-结果">[2411.01142]</a><a href="/papers/2506.03296/detail.html#2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2506.03296#2-q1-痛点-q2-方法-q3-结果">[2506.03296]</a>：</p>
+<p>只卸载"长寿命 + 高复用概率"的块，避免把 0.3s 就死的 to-B 块无谓地搬去 CPU 又搬回——直接把本篇的</p>
+<p>画像变成 NEO/FlowKV 传输路径的准入过滤器。</p>
+</ul>
+
+<ol>
+<li><strong>对 reasoning / MoE / MLA 负载重新画像</strong>。MLA 改变 per-token KV$ 大小</li>
+<p><a href="/papers/2405.04434/detail.html#2-痛点-方法-结果" class="ref-link" title="2405.04434#2-痛点-方法-结果">[2405.04434]</a>，从而改变本篇 §3.5 的容量数学</p>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>；o1 类 reasoning 会拉长 output、改变寿命分布。本篇自承这些是</p>
+<p>future work <a href="/papers/2506.02634/detail.html#1-tl-dr" class="ref-link" title="2506.02634#1-tl-dr">[2506.02634]</a>——一份 MLA/reasoning 版的"in the wild"画像是自然续作。</p>
+</ul>
+
+<ol>
+<li><strong>压缩 × 淘汰的联合决策</strong>。既然本篇声明与 KV$ 压缩正交兼容 <a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>，</li>
+<p>而 Survey 把 cross-layer 集成列为最大空白 <a href="/papers/2412.19442/detail.html#6-论证链" class="ref-link" title="2412.19442#6-论证链">[2412.19442]</a>，可按块的复用概率做</p>
+<p>"compress-or-evict"三态决策：高概率保原精度、中概率压缩保留、低概率淘汰——把 token-level 压缩与</p>
+<p>system-level 淘汰统一到同一个 <code>ReuseProb_w</code> 度量下。</p>
+</ul>
+
+<ol>
+<li><strong>公平性 co-design</strong>。本篇自曝恶意 client 可用长相同前缀垄断 prefix cache</li>
+<p><a href="/papers/2506.02634/detail.html#5-实验与数据" class="ref-link" title="2506.02634#5-实验与数据">[2506.02634]</a>，并把公平性划为正交问题。把 workload-aware 优先级与 FairRide</p>
+<p>式配额结合，是一个尚未有人做的 eviction × fairness 交叉点。</p>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2312.05516.html">2312.05516</a> (baseline) 
+<a href="/papers/2407.00079.html">2407.00079</a> (baseline) 
+<a href="/papers/2309.0618.html">2309.0618</a> (tool) 
+<a href="/papers/2305.13245.html">2305.13245</a> (cites) 
+<a href="/papers/2412.19437.html">2412.19437</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
