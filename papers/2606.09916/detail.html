@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>IntentKV: Cross-Turn Intent-Aware KV Cache Pruning for Agent Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">IntentKV: Cross-Turn Intent-Aware KV Cache Pruning for Agent Inference</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2606.09916</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-pruning</span><span class="tag">multi-turn-agent</span><span class="tag">prefix-cache-reuse</span><span class="tag">query-memory</span><span class="tag">tool-use-serving</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2606.09916.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2606.09916" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h2 id="1-tl-dr">1) TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>IntentKV addresses agent inference under long multi-turn trajectories by making KV pruning intent-aware across turns and layout-safe for prefix reuse. The key gain is not only better token retention but also a slot-map eviction design that preserves radix/prefix cache identity; this lets an 8k budget remain close to full-cache accuracy while strongly reducing worst-case KV memory/read pressure.</p>
+
+<h2 id="2-q1-q2-q3">2) Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点是什么？">Q1: 痛点是什么？ <a class="heading-anchor" href="#q1-痛点是什么？" aria-label="Link to q1-痛点是什么？">#</a></h3>
+
+<p>现有 KV 压缩大多是单提示词（single-prompt）视角：用当前 query 的局部注意力给历史 token 打分，然后把保留 token 做 compaction。论文指出这在 agent 场景有两个核心失配：</p>
+
+<ol>
+<li><strong>跨 turn 意图漂移</strong>：后续查询、工具结果、中间决策会让“早期 token”重新变重要，单次打分会过时。</li>
+<li><strong>可复用性破坏</strong>：compaction 会改变 surviving token 的 slot/位置身份，破坏后续 turn 对共享前缀的 radix/prefix cache 命中。</li>
+</ul>
+
+<p><img src="/assets/2606.09916/fig1.png" alt="Figure 1: single-prompt pruning fails in multi-turn agents"></p>
+
+<p>Figure 1 给出上述两种失配：一是“prompt-local score stale”，二是“layout relocation breaks reuse”。这不是单纯算法精度问题，而是 retention 与 serving substrate 的耦合问题。</p>
+
+<h3 id="q2-方法核心是什么？">Q2: 方法核心是什么？ <a class="heading-anchor" href="#q2-方法核心是什么？" aria-label="Link to q2-方法核心是什么？">#</a></h3>
+
+<p>IntentKV 把问题拆成两条正交轴：<strong>保留策略（what to keep）</strong> 与 <strong>布局策略（how to evict without breaking reuse）</strong>。</p>
+
+<ul>
+<li><strong>保留策略</strong>：维护跨 turn 的 QueryMemory，按会话累计 query 信号；再用一个零初始化 residual head 在冻结 backbone 上做校正。</li>
+<li><strong>布局策略</strong>：不做 compaction，把被淘汰位置重定向到 dead slot（sentinel），保留 surviving KV 行、RoPE phase 与 slot identity 不变，从而继续可被 prefix/radix cache 复用。</li>
+</ul>
+
+<p>核心技术壁垒：<strong>在不改 attention kernel 的前提下，同时满足“动态跨-turn相关性建模”与“前缀身份稳定性”</strong>。这要求 scorer、slot-map、allocator、prefix cache 协同设计；单独改任何一层都无法复现论文中的准确率/效率共赢。</p>
+
+<p><img src="/assets/2606.09916/fig2.png" alt="Figure 2: IntentKV architecture and scorer composition"></p>
+
+<p>Figure 2 展示了规则分数、残差分支和最终 top-k 选择的组合路径，并把 dead-slot eviction 放在同一方法图里，强调“打分 + 布局”是联合设计而不是独立技巧叠加。</p>
+
+<h3 id="q3-结果如何？">Q3: 结果如何？ <a class="heading-anchor" href="#q3-结果如何？" aria-label="Link to q3-结果如何？">#</a></h3>
+
+<p>在 BCP 上，IntentKV 在 8k 预算（高压区）表现出“接近 full-cache 的准确率 + 明显更低系统成本”的组合：</p>
+
+<ul>
+<li>Qwen3-8B：True Acc 接近 full-cache（在 16k 下差距仅 0.12；8k 下明显优于启发式基线）。</li>
+<li>Qwen2.5-14B：8k 下相对最强启发式有 10.36 点 True Acc 优势。</li>
+<li>最坏样本上，峰值请求 token 与 Raw KV Reads 出现 1-2 个数量级缓解（Table 3）。</li>
+</ul>
+
+<h2 id="3-架构-方法图">3) 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<h3 id="agent-loop（带压缩插桩）">Agent loop（带压缩插桩） <a class="heading-anchor" href="#agent-loop（带压缩插桩）" aria-label="Link to agent-loop（带压缩插桩）">#</a></h3>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Observe
+    Observe --> Plan
+    Plan --> Act
+    Act --> Verify
+    Verify --> Reflect
+    Reflect --> Observe
+
+    state Act {
+      [*] --> Prefill
+      Prefill --> Compress
+      Compress --> Decode
+      Decode --> ToolCall
+      ToolCall --> [*]
+    }
+</div>
+
+<p>该循环对应论文的 agent inference 位置：IntentKV 在每次请求 prefill 后、decode 前触发压缩；当序列长度超过预算 $C$ 时执行 top-k 保留与 dead-slot 重定向。</p>
+
+<h3 id="关键机制分解">关键机制分解 <a class="heading-anchor" href="#关键机制分解" aria-label="Link to 关键机制分解">#</a></h3>
+
+<ol>
+<li><strong>跨 turn 记忆更新</strong>：$\mathbf{M}_t=e^{-\lambda}\mathbf{M}_{t-1}+\mathrm{Enc}(\mathbf{q}_t)$，并做单位范数约束，避免记忆范数增长导致 softmax 塌缩。</li>
+<li><strong>规则打分 + 残差修正</strong>：$s_j=\mathrm{rule}_j+\alpha\cdot\mathrm{MLP}(\phi_j\oplus c_j)$，残差分支 zero-init，确保初始等价于规则打分下界。</li>
+<li><strong>布局保持</strong>：只改 slot map，不搬移 surviving KV 行；淘汰位置映射到 sentinel，使被淘汰 token 在注意力上近似硬掩码。</li>
+<li><strong>别名安全释放</strong>：回收物理 slot 前检查 prefix 保护、sentinel 与 alias 共享，避免兄弟请求或已重定向位置被误释放。</li>
+</ul>
+
+<p><img src="/assets/2606.09916/fig3.png" alt="Figure 3: cross-turn attention drift evidence"></p>
+
+<p>Figure 3 证明“跨 turn 注意力漂移”是现实现象而非假设：不同 query turn 激活前缀中的不同区域，支撑 QueryMemory 的必要性。</p>
+
+<h2 id="4-作者证明">4) 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>无形式化作者证明 — 仅实证。</p>
+
+<table>
+<tr><th>检查项</th><th>论文中的证据</th><th>结论</th></tr>
+<tr><td>1. 问题-方法闭环</td><td>§1 明确两类失配；§3 分别给 retention/layout 方案</td><td>闭环完整</td></tr>
+<tr><td>2. 指标与目标一致</td><td>True Acc + Completion + KV reads + wall + prefix-hit</td><td>同时覆盖质量与系统成本</td></tr>
+<tr><td>3. 对照组充分性</td><td>Full-cache + StreamingLLM/SnapKV/H2O/TrimKV</td><td>主要基线充分</td></tr>
+<tr><td>4. 预算敏感性</td><td>$C\in\{8k,16k\}$，8k 为压力测试</td><td>展示 tight/loose 两区间</td></tr>
+<tr><td>5. 组件归因</td><td>去 memory / 去 x-attn / 去 residual 的消融</td><td>证明 memory 是主增益源</td></tr>
+<tr><td>6. 布局归因</td><td>compact vs dead-slot substrate 对照（Appendix E）</td><td>证明 prefix-reuse 贡献可分离</td></tr>
+</table>
+
+<p>可被约束但未被形式化的量：给定 turn 分布与预算 $C$ 下的 completion 下界，以及 score 漂移对 retained evidence 的风险上界。论文尚未给出理论界，但实证通过多指标和分解消融提供了较强可信度。</p>
+
+<h2 id="5-实验与数据">5) 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<h3 id="主结果（准确率与效率）">主结果（准确率与效率） <a class="heading-anchor" href="#主结果（准确率与效率）" aria-label="Link to 主结果（准确率与效率）">#</a></h3>
+
+<p><img src="/assets/2606.09916/fig4.png" alt="Figure 4: accuracy vs KV cost under fixed budgets"></p>
+
+<p>Figure 4 显示在 PT（内存上界）和 Eff. Live KV（有效注意力负载）两个坐标下，IntentKV 在 8k 预算下形成更优帕累托前沿。即使预算紧张，准确率下降也显著小于启发式压缩器。</p>
+
+<p><img src="/assets/2606.09916/tab1.png" alt="Table 1: BCP full split accuracy comparison"></p>
+
+<p>Table 1 的关键信号是 8k 压力区：IntentKV completion 明显高于 compaction 基线，因此 True Acc 优势主要来自“完成率守住”，而非仅提升已完成样本的 Raw 精度。</p>
+
+<p><img src="/assets/2606.09916/tab2.png" alt="Table 2: system cost comparison"></p>
+
+<p>Table 2 显示 IntentKV 在 wall time 与 Raw/Eff KV reads 上普遍更低，且 prefix-hit 不再像 compaction 方法那样接近归零，说明布局兼容性是系统侧收益的关键来源。</p>
+
+<p><img src="/assets/2606.09916/tab3.png" alt="Table 3: worst-case tail pressure"></p>
+
+<p>Table 3 聚焦最坏 100 条长轨迹：IntentKV-8k 把最坏 Raw KV Reads 从 411M 降到 31M（Qwen2.5-14B），同时保持接近 full-cache 的 True Acc，说明其价值主要在 tail 风险控制而非平均 case 的小修小补。</p>
+
+<h2 id="6-论证链">6) 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>步骤</th><th>论点</th><th>证据</th><th>推导结果</th></tr>
+<tr><td>1</td><td>agent 场景中，单次 query 打分会随 turn 漂移失效</td><td>Figure 1, Figure 3</td><td>需要跨 turn 记忆化打分，而不是 prompt-local 静态打分</td></tr>
+<tr><td>2</td><td>仅改 scorer 不够，compaction 仍会破坏 prefix 重用</td><td>§3.4 + Appendix E</td><td>必须把 eviction 设计成不改变 surviving slot identity</td></tr>
+<tr><td>3</td><td>QueryMemory + residual 可在 tight budget 保持质量</td><td>Table 1 + Table 4</td><td>8k 压力区 accuracy/completion 显著优于启发式基线</td></tr>
+<tr><td>4</td><td>dead-slot 布局可独立贡献系统收益</td><td>Table 2 + Table 7</td><td>prefix-hit 恢复并带来 wall/raw-read 降低</td></tr>
+<tr><td>5</td><td>两条轴联合后形成质量-成本共赢</td><td>Figure 4 + Table 3</td><td>在最坏长轨迹上显著降压，同时保持接近 full-cache 准确率</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7) 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>[实现未公开]</p>
+
+<h3 id="核心技术壁垒（实现视角）">核心技术壁垒（实现视角） <a class="heading-anchor" href="#核心技术壁垒（实现视角）" aria-label="Link to 核心技术壁垒（实现视角）">#</a></h3>
+
+<p>最难复现点不是单个公式，而是<strong>服务栈集成的一致性</strong>：要在 paged KV + radix prefix cache 的真实推理路径中引入 dead-slot 重定向、alias-aware free、query-memory 更新与 residual 打分，并确保它们在多并发会话下不破坏 correctness。任何一个环节与 serving runtime 的现有内存管理约定冲突，都会导致 prefix 复用失效或 KV 读错位。</p>
+
+<h3 id="关键实现细节（易漏点）">关键实现细节（易漏点） <a class="heading-anchor" href="#关键实现细节（易漏点）" aria-label="Link to 关键实现细节（易漏点）">#</a></h3>
+
+<ol>
+<li><strong>sentinel 数值构造</strong>：$K[s^\dagger]=-10^4\mathbf{1}, V[s^\dagger]=0$ 的目标是“在现有内核里等价硬掩码”，不是一般意义的空 token；数值尺度不足会在低精度下泄漏注意力。</li>
+<li><strong>zero-init residual with gradient path</strong>：输出层零初始化但 $\alpha$ 初始为 1，使 day-0 精确回退到 rule scorer，同时梯度可通过 fc2 学到修正；若把 $\alpha=0$ 与零输出同时使用会形成训练停滞。</li>
+<li><strong>训练标签构造</strong>：用未来 5 次工具调用参数做 substring 匹配作为正例，且无匹配样本直接丢弃，优先保证标签精度；这是 residual head 能学到“未来可用证据”而非 recency 偏置的关键。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
