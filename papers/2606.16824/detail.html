@@ -196,208 +196,173 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">CacheWise: Understanding Workloads and Optimizing KVCache Management for Efficiently Serving LLM Coding Agents</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2606.16824</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">KVCache</span><span class="tag">LLM-serving</span><span class="tag">coding-agent</span><span class="tag">prefix-caching</span><span class="tag">eviction-policy</span><span class="tag">vLLM</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2606.16824</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">coding-agent</span><span class="tag">kvcache</span><span class="tag">serving</span><span class="tag">eviction</span><span class="tag">scheduling</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2606.16824.html">← Synthesis</a>
-<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2606.16824" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
 
-<h1 id="cachewise-—-面向编程-agent-的-kvcache-管理层">CacheWise — 面向编程 Agent 的 KVCache 管理层 <a class="heading-anchor" href="#cachewise-—-面向编程-agent-的-kvcache-管理层" aria-label="Link to cachewise-—-面向编程-agent-的-kvcache-管理层">#</a></h1>
+<h1 id="cachewise-optimizing-kvcache-management-for-serving-llm-coding-agents-—-l2">CacheWise: Optimizing KVCache Management for Serving LLM Coding Agents — L2 <a class="heading-anchor" href="#cachewise-optimizing-kvcache-management-for-serving-llm-coding-agents-—-l2" aria-label="Link to cachewise-optimizing-kvcache-management-for-serving-llm-coding-agents-—-l2">#</a></h1>
 
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>编程 agent 是长时运行、闭环、工具驱动的 LLM 会话，其请求反复复用巨大且不断增长的前缀。CacheWise 在 vLLM 里加一层 KVCache 管理：前缀感知调度（优先派发所需新增 block 最少的请求）+ 预测式淘汰（用工具调用元数据预测下次复用时间，替代 LRU）。在真实轨迹上把淘汰次数降 2–2.6×、会话完成时间降至最多 ~3.5×。</p>
+<p>Coding agents are long-running, closed-loop LLM sessions (median 36 min, ~20× more tool-driven than user-driven turns) that reuse large, growing prefixes. Default FCFS+LRU serving thrashes their KVCache. CacheWise adds prefix-aware scheduling (dispatch min missing-prefix request) + metadata-predictive eviction (tool-call → reuse-time predictor), cutting evictions 2–2.6× and session completion time up to ~3.5× in vLLM.</p>
 
-<h2 id="2-q1-q2-q3">2. Q1/Q2/Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-—-痛点：为什么-chatbot-的-serving-策略在编程-agent-上失效">Q1 — 痛点：为什么 chatbot 的 serving 策略在编程 agent 上失效 <a class="heading-anchor" href="#q1-—-痛点：为什么-chatbot-的-serving-策略在编程-agent-上失效" aria-label="Link to q1-—-痛点：为什么-chatbot-的-serving-策略在编程-agent-上失效">#</a></h3>
+<p><strong>Q1 — 痛点 (pain point).</strong> Coding-agent serving had never been characterized as a workload. Existing serving systems (vLLM, Mooncake) use FCFS batching and LRU KVCache eviction — policies tuned for chatbot request-latency, not multi-turn sessions. Two properties break them: (a) requests from one session share a large, growing prefix already resident in memory; (b) time-to-next-reuse depends on external tool execution, which LRU cannot see. FCFS interleaves many sessions → expands the working set → evicts prefixes that will soon be reused; LRU cannot tell a session whose tool call is about to return from one idle for hours. Result: <strong>KVCache thrashing</strong>, low token goodput (useful tokens/sec after excluding recompute + movement).</p>
 
-<p>编程 agent 与 chatbot 是<strong>结构上不同的 serving workload</strong>。一个用户任务会展开成一条闭环链：LLM 生成工具调用 → 环境执行 → 结果回灌成新请求，每一轮都在一个不断增长的前缀上追加上下文。三条实测特征使既有系统崩溃：</p>
+<p><strong>Q2 — 方法 (method).</strong> CacheWise is an agent-aware KVCache management <em>layer</em> inside a general serving system (vLLM), requiring <strong>no changes to the coding agents</strong>. Two ideas: (1) <strong>Prefix-aware request scheduling</strong> — at time $t$, dispatch the request $r_i$ that requires the fewest additional (non-resident) blocks $a_i(t)$; this minimizes reclaim/restore and approximates shortest-job-first. (2) <strong>Predictive KVCache eviction</strong> — replace LRU with a Belady-style rule that evicts the session whose blocks are furthest from reuse, using a lightweight predictor $\mathbb{E}[\tau_i(t)]$ over tool-call metadata (tool name + args). The <strong>核心技术壁垒</strong> (single hardest-to-replicate insight): you do <strong>not</strong> need accurate per-session reuse-time prediction — only the <em>relative order</em> of $\tau$ across sessions (indeed just the single highest-$\tau$ session), and TF-IDF + KMeans clustering of tool arguments provides enough signal to recover that order.</p>
 
-<ul>
-<li><strong>闭环主导</strong>：工具触发的请求在中位数上是用户触发请求的 20×，性能目标从 per-request 延迟变成 session 完成时间。</li>
-<li><strong>前缀巨大且增长 + 长会话</strong>：会话中位时长 36 min、尾部 >2.6 h；prefill:decode token 比约为 chatbot 的 21×。大前缀必须常驻 XPU 内存以便跨轮复用。</li>
-<li><strong>工具时间可变但有结构</strong>：工具执行时长跨数量级（grep 短而紧凑，bash/pytest 长而重尾），导致 KVCache 复用间隔极不规则。</li>
-</ul>
-
-<p>vLLM/Mooncake 默认的 <strong>FCFS 调度 + LRU 淘汰</strong>是 workload-agnostic 的：FCFS 交错多会话、撑大工作集，容易驱逐马上要用的前缀；LRU 只看历史访问时间，分不清"工具马上返回"和"还要很久"的会话，导致 KVCache <strong>抖动（thrashing）</strong>，压低 token goodput。</p>
-
-<p><img src="/assets/2606.16824/fig1.png" alt="Figure 1: chat 会话与编程 agent 会话对比"></p>
-
-<p><em>Paper's Figure 1（caption: "Chat and coding-assistant interactions."）。</em> 左侧 chat 三轮上下文只从 1K→1.5K；右侧编程 agent 三轮通过 Glob/Read/Edit 工具调用把上下文从 10K 涨到 80K，直观说明"闭环 + 前缀爆炸"这一根本差异。</p>
-
-<h3 id="q2-—-方法：两个正交技术-元数据预测器">Q2 — 方法：两个正交技术 + 元数据预测器 <a class="heading-anchor" href="#q2-—-方法：两个正交技术-元数据预测器" aria-label="Link to q2-—-方法：两个正交技术-元数据预测器">#</a></h3>
-
-<p>CacheWise 是一层 <strong>agent-aware KVCache 管理层</strong>，不改 agent 本身、也不与 agent 框架耦合，只改 serving 系统：</p>
-
-<ol>
-<li><strong>前缀感知调度</strong>：在时刻 $t$ 选择所需<strong>新增 block 最少</strong>的请求 $\arg\min_i a_i(t)$ 派发，直接减少需回收/回填的 block，同时近似 shortest-job-first 降低整体排队。</li>
-<li><strong>预测式淘汰</strong>：不按 recency，而按预测的"下次复用时间"$\mathbb{E}[\tau_i(t)]$ 从大到小淘汰，逼近 Belady 最优。关键洞见——只需预测<strong>相对顺序</strong>（甚至只需准确找出 $\tau$ 最大的那个会话）就够了。</li>
-<li><strong>轻量预测器</strong>：从工具调用元数据 $m=(\text{tool\_name},\text{tool\_args})$ 出发，用 TF-IDF 对参数做语义嵌入、KMeans 聚类，用<strong>每簇</strong>历史时长分布（而非每工具分布）估计剩余执行时间。</li>
-</ul>
-
-<p><strong>核心技术壁垒</strong>：把"KVCache 淘汰"重述为一个<strong>只需相对序、且只需 top-1 正确</strong>的在线预测问题，并证明可以用工具调用元数据（函数名 + 参数的 TF-IDF 聚类）这一"免费"信号把它做到接近 ground-truth oracle 的精度——无需触碰 agent、无需精确回归绝对时长。这是难以复制的判断：把预测目标从"准确预测每个 $\tau$"松弛成"识别最该保留的会话"，是全篇效果的支点。</p>
-
-<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
-
-<p>在 2×H200（TP=2，282GB）上用 Qwen2.5-Coder-32B、回放 CATraces：高负载（$N>10$）下相对 vLLM/InferCept 会话完成时间低 2.7×–3.5×，token goodput 高 1.64×–2×，淘汰次数与 KVCache 传输量降 2–2.6×，且性能逼近拥有真值时延的 CacheWise*。代价：P99 请求尾延迟更高、CPU 调度开销 2.4–3×（但被 GPU 执行时间的下降远远抵消）。</p>
+<p><strong>Q3 — 结果 (results).</strong> Implemented in ~2,500 LoC on vLLM, evaluated on the collected CATraces (Qwen2.5-Coder-32B, 2× H200). At load $N>10$: session completion time 2.7–3.5× lower vs vLLM/InferCept, token goodput 1.64–2×, evictions and KVCache transfer volume down 2–2.6×, throughput 1.5–2×, P50 latency 13–14× lower. CacheWise matches (sometimes marginally beats) an oracle CacheWise* with ground-truth tool latencies.</p>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p><img src="/assets/2606.16824/fig11.png" alt="Figure 11: CacheWise 端到端工作流 + 两项技术"></p>
-
-<p><em>Paper's Figure 11（caption: "(A) End-to-end workflow of a session through a typical LLM serving system. (B) Prefix-aware request scheduling prioritizes requests by degree of overlap with KVCache resident on the XPU memory... (C) Demonstration of predictive KVCache eviction choosing the block with the highest predicted reuse probability, rather than purely recency-based heuristics like LRU."）。</em></p>
-
-<p>请求生命周期：同一会话的请求经<strong>负载均衡器的前缀匹配路由</strong>（把请求送到常驻可复用前缀最大的节点）→ 通常落到同一推理节点；节点内 CacheWise 接管两处决策：(B) <strong>调度器</strong>按 $a_i(t)$ 升序成批，最大化命中常驻 KVCache；(C) <strong>KVCache 管理器</strong>用预测复用概率而非 LRU 决定淘汰哪个 block。下面的时序图刻画闭环回灌如何驱动调度/淘汰：</p>
+<p>The agent loop is a closed loop: one user task expands into a chain of LLM requests and tool calls, each turn extending the resident KVCache prefix.</p>
 
 <div class="mermaid">
-sequenceDiagram
-    participant U as User
-    participant LB as Load Balancer (prefix-match)
-    participant SCH as Prefix-aware Scheduler
-    participant KV as KVCache Manager (pred. eviction heap)
-    participant ENV as Tool Env
-    U->>LB: task request
-    LB->>SCH: route to node w/ largest resident prefix
-    loop closed-loop turns
-        SCH->>SCH: pick argmin a_i(t) (fewest new blocks)
-        SCH->>KV: need a_i blocks; if W(t)+a_i > M evict
-        KV->>KV: evict block with max E[τ] (not LRU)
-        SCH-->>ENV: LLM emits tool call (tool_name,args,T_i)
-        ENV-->>SCH: result → new request extends prefix
-    end
+stateDiagram-v2
+    [*] --> UserTask
+    UserTask --> LLMGen: build prefix + generate
+    LLMGen --> ToolCall: model emits tool call (obs→plan→act)
+    ToolCall --> ToolExec: environment runs (grep/bash/pytest…)
+    ToolExec --> LLMGen: result appended, prefix grows (reuse)
+    LLMGen --> [*]: task done
+    ToolExec --> Idle: long/idle tool → session inactive
+    Idle --> LLMGen: tool returns, KVCache reused
 </div>
 
-<p>内存管理单元沿用 vLLM 的 <strong>block 级分页</strong>；淘汰在"引用计数归零"的未引用 block 上进行，block 保留其会话元数据并进入<strong>淘汰堆</strong>，堆的优先级即预测的 $\mathbb{E}[\tau_i(t)]$。</p>
+<p>The system-level workflow places CacheWise at the inference node behind a prefix-match load balancer.</p>
+
+<p><img src="/assets/2606.16824/fig11.png" alt="Figure 11: CacheWise end-to-end workflow, prefix-aware scheduling (B), and predictive eviction (C)"></p>
+
+<p><em>Paper's Figure 11 (caption: "(A) End-to-end workflow of a session through a typical LLM serving system. (B) Prefix-aware request scheduling prioritizes requests by degree of overlap with KVCache resident on the XPU memory... (C) Demonstration of predictive KVCache eviction choosing the block with the highest predicted reuse probability, rather than purely recency-based heuristics like LRU.").</em></p>
+
+<p>Panel (A) shows the load balancer routing same-session requests to the same node via largest-resident-prefix matching, so the growing prefix stays local. Panel (B) is the scheduler choosing the highest-overlap (lowest-$a_i$) request; panel (C) is the eviction heap choosing the block least likely to be reused soon — the two mechanisms operate independently at each node.</p>
+
+<p>The formal memory model motivating the notation:</p>
+
+<p><img src="/assets/2606.16824/fig10.png" alt="Figure 10: XPU memory layout — model weights + KVCache blocks per session, eviction when W(t)+a5 > M"></p>
+
+<p><em>Paper's Figure 10 (caption: "XPU memory layout during LLM serving. After reserving memory for model weights, the remaining capacity $M$ holds KVCache blocks for active sessions... When a new request $r_5$ requires $a_5$ additional blocks that exceed $M$, the system must evict blocks from an existing session.").</em></p>
+
+<p>This schematic grounds the whole analysis: capacity $M$ after weights, per-session resident blocks $k_i(t)$, and the eviction trigger $W(t)+a_5 > M$. Note the caption defines $W(t)=\sum_i k_i(t)$ (resident blocks), which differs from the §4 prose definition $W(t)=\sum_i d_i$ (total prefix demand) — an internal inconsistency in the source.</p>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p>本篇无形式化定理证明，但给出一个 load-bearing 的轻量资源模型（§4），用于推导 FCFS/LRU 失效。下面复现记号、方程物理意义与检查。</p>
+<p><strong>无形式化作者证明 — 仅实证.</strong> CacheWise offers no convergence/success guarantee; its eviction target (Belady) is provably optimal only under perfect future knowledge, which the predictor approximates empirically. What <em>could</em> have been bounded: the competitive ratio of predicted-order eviction vs Belady-optimal (the theory exists in Lykouris & Vassilvitskii 2021, cited but not instantiated here). The paper instead offers a lightweight formal model + empirical sweeps.</p>
 
-<h3 id="记号表">记号表 <a class="heading-anchor" href="#记号表" aria-label="Link to 记号表">#</a></h3>
+<p><strong>Notation table:</strong></p>
 
 <table>
-<tr><th>符号</th><th>含义</th></tr>
-<tr><td>$M$</td><td>节点扣除模型权重与运行时开销后的 KVCache block 总容量</td></tr>
-<tr><td>$\mathcal{S}_t$</td><td>时刻 $t$ 同驻节点的活跃会话集合</td></tr>
-<tr><td>$d_i$</td><td>会话 $S_i$ 的完整前缀 block 需求（单调增长）</td></tr>
-<tr><td>$k_i(t)$</td><td>$S_i$ 在时刻 $t$ 常驻 XPU 的 block 数（可复用前缀重叠）</td></tr>
-<tr><td>$a_i(t)$</td><td>请求 $r_i$ 需新增分配的 block 数</td></tr>
-<tr><td>$W(t)$</td><td>活跃 KVCache 工作集</td></tr>
-<tr><td>$\tau_i(t)$</td><td>$S_i$ 常驻 block 的下次复用时间</td></tr>
-<tr><td>$m,\,T_i$</td><td>工具元数据 $(\text{tool\_name},\text{tool\_args})$；工具调用生成时刻</td></tr>
-<tr><td>$N_{rebuild}$</td><td>淘汰堆重建周期（engine 迭代数），实验取 3</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$M$</td><td>total KVCache block capacity of node (after weights + overhead)</td></tr>
+<tr><td>$\mathcal{S}_t$</td><td>set of active co-located sessions at time $t$</td></tr>
+<tr><td>$d_i$</td><td>session $i$'s full contiguous growing prefix (blocks)</td></tr>
+<tr><td>$k_i(t)$</td><td>blocks of $d_i$ resident in XPU memory at $t$</td></tr>
+<tr><td>$W(t)$</td><td>active KVCache working set</td></tr>
+<tr><td>$a_i(t)$</td><td>additional (non-resident) blocks needed by $r_i$</td></tr>
+<tr><td>$\tau_i(t)$</td><td>time to next reuse of $S_i$'s resident blocks</td></tr>
+<tr><td>$j^{*}$</td><td>session selected for eviction</td></tr>
 </table>
 
-<h3 id="方程与物理意义">方程与物理意义 <a class="heading-anchor" href="#方程与物理意义" aria-label="Link to 方程与物理意义">#</a></h3>
+<p><strong>方程物理意义:</strong></p>
 
-<p>工作集与预算不变式：</p>
+<p>Working set and memory budget (no eviction while it fits):</p>
 
-<p>$$W(t) = \sum_{i \in \mathcal{S}_t} d_i, \qquad W(t) \leq M$$</p>
+<p>$$W(t)=\sum_{i\,\in\,\mathcal{S}_{t}}d_{i}, \quad W(t)\leq M$$</p>
 
-<p>只要总需求不超预算 $M$ 就无需淘汰。（注意：§4 正文写 $W(t)=\sum_i d_i$，而 Figure 10 标注 $W(t)=\sum_i k_i(t)$，二者在内存压力下不等价——见 §7 开放点。）</p>
+<p>Admission cost — only the missing prefix incurs allocation; evict if it overflows:</p>
 
-<p>新增 block 与准入条件：</p>
+<p>$$a_{i}(t)=d_{i}-k_{i}(t)$$</p>
 
-<p>$$a_i(t) = d_i - k_i(t)$$</p>
-<p>$$\text{admit } r_i \iff W(t) + a_i(t) \leq M$$</p>
+<p>Optimal (Belady) eviction — evict the session furthest from reuse:</p>
 
-<p>前缀复用 $k_i(t)$ 直接缩小分配足迹；超预算时须从其他会话淘汰恰 $a_i(t)$ 个 block。这正是前缀感知调度取 $\arg\min_i a_i(t)$ 的物理动机。</p>
+<p>$$j^{<em>}=\operatorname</em>{arg\,max}_{j\,\in\,\mathcal{S}_{t},\;j\neq i}\tau_{j}$$</p>
 
-<p>理想（Belady 式）淘汰选择：</p>
+<p>Prefix-aware dispatch — pick the request minimizing missing-prefix cost:</p>
 
-<p>$$j^{*} = \arg\max_{j \in \mathcal{S}_t,\, j \neq i} \tau_j$$</p>
+<p>$$\text{dispatch } r_i \text{ minimizing } a_i(t)$$</p>
 
-<p>驱逐"最久才会被用到"的会话，最小化即将到来的重算/搬运惩罚。</p>
+<p>Predictor — conditional (survival-style) remaining tool-execution time given the call is still outstanding after elapsed $t-T_i$:</p>
 
-<p>预测器的条件期望估计量：</p>
+<p>$$\mathbb{E}[\tau_{i}(t)\mid\tau_{i}(t)-T_{i}>t-T_{i}]$$</p>
 
-<p>$$\mathbb{E}\left[\tau_i(t) \mid \tau_i(t) - T_i > t - T_i\right]$$</p>
-
-<p>给定工具已运行 $t-T_i$、尚未完成，用同元数据（同用户/同项目）历史样本估计剩余时长——一个 survival-style 残余时间估计。</p>
-
-<h3 id="检查（≥6）">检查（≥6） <a class="heading-anchor" href="#检查（≥6）" aria-label="Link to 检查（≥6）">#</a></h3>
-
+<p><strong>Agent-specific checks (6 minimum):</strong></p>
 <ol>
-<li><strong>量纲</strong>：$M,d_i,k_i,a_i,W$ 皆为 block 数；$a_i=d_i-k_i$ 量纲一致。✔</li>
-<li><strong>边界 $k_i=0$</strong>：无常驻前缀时 $a_i=d_i$，退化为全量 prefill，符合"冷会话最贵"。✔</li>
-<li><strong>边界 $k_i=d_i$</strong>：前缀全命中则 $a_i=0$，请求应被调度器最高优先，与 $\arg\min a_i$ 一致。✔</li>
-<li><strong>准入单调</strong>：固定 $W(t)$ 下 $a_i$ 越大越易触发淘汰，符合 FCFS 撑大工作集→抖动的论证。✔</li>
-<li><strong>Belady 退化</strong>：若所有 $\tau_j$ 相等，$\arg\max\tau_j$ 无偏好，退化为任意/LRU，说明预测收益仅来自 $\tau$ 的<strong>方差</strong>（正是工具时长跨数量级的场景）。✔</li>
-<li><strong>松弛自洽</strong>：淘汰只需 $\tau$ 的相对序、甚至只需 top-1，故预测器只需保序而非无偏回归——与"轻量元数据估计器≈oracle"的实测（§6.2、§6.5）自洽。✔</li>
-<li><strong>首阶映射</strong>：Table 3 显示 bash 参数簇的 P50 从 python one-liner 的 0.1s 到 mypy 的 10s（P99 182s），跨两个数量级，正是 per-tool 分布不足、需 per-cluster 分布的直接证据。✔</li>
+<li><strong>Success-rate model</strong> — N/A (systems paper); the analog is the predictor-granularity sweep (§6.5), monotone: Point→ToolName→C20→C50→C100 monotonically lowers evictions & session time (up to 19% at C100), then saturates (data can't support >100 clusters).</li>
+<li><strong>Latency budget per turn</strong> — session completion time = sum of LLM request latencies excluding tool durations (env-determined). CPU scheduling overhead ≤ ~9% of request time (§6.6); the paper does <em>not</em> claim per-request interactive latency (P99 deliberately worse).</li>
+<li><strong>Failure-mode / cost classes</strong> — two limitation classes identified: FCFS thrashing (Impl. #1) and LRU priority inversion (Impl. #2); the two mechanisms target one each, verified independent in ablations (§6.3).</li>
+<li><strong>Sweep over load</strong> — swept $N$; gains appear only at $N>10$ (memory contention onset), monotone increase with load. Reproducible (deterministic trace replay).</li>
+<li><strong>Backbone sensitivity</strong> — prototype runs any model incl. GQA/MQA without weight changes; evaluated only on Qwen2.5-Coder-32B, so backbone sensitivity is untested.</li>
+<li><strong>Oracle gap</strong> — CacheWise ≈ CacheWise* (ground-truth latencies), confirming relative-order prediction suffices; the near-zero oracle gap is the key empirical guarantee substitute.</li>
 </ul>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p><strong>环境</strong>：2×H200（TP=2，282GB），AMD EPYC 9534；Qwen2.5-Coder-32B-Instruct；chunked-prefill（512 tokens/chunk）。80% 会话离线训练预测器，其余回放评测；人类空闲视为会话边界。<strong>基线</strong>：vLLM（LRU+FCFS）、InferCept（FCFS + 移动平均时长预测）；<strong>消融</strong>：CacheWise*（真值时延 oracle）、vLLM(Prefix-aware)、InferCept(Prefix-aware)。</p>
+<p><strong>Workload characterization.</strong> The core motivation is that coding agents are a distinct workload class, quantified against prior datasets:</p>
 
-<p><img src="/assets/2606.16824/fig13.png" alt="Figure 13: 会话完成时间"></p>
+<p><img src="/assets/2606.16824/fig2.png" alt="Figure 2: prefill vs decode length distributions across datasets"></p>
 
-<p><em>Paper's Figure 13（caption: "Session completion time (in seconds) for different KVCache management systems under the coding agent workload (sampled from CATraces)."）。</em> $N\le10$ 各系统相当（无内存竞争）；$N>10$ CacheWise 完成时间低 2.7×–3.5×，且逼近甚至偶尔略超 CacheWise*（归因于淘汰与调度的耦合动态）。</p>
+<p><em>Paper's Figure 2 (caption: "Comparing LLM serving request characteristics across datasets" — (a) prefill lengths, (b) decode lengths).</em></p>
 
-<p><img src="/assets/2606.16824/fig14.png" alt="Figure 14: 服务效率（goodput/延迟/吞吐）"></p>
+<p>Coding agents prefill far more tokens per request (large accumulated prefix) yet decode far fewer, giving a <strong>~21× higher prefill:decode ratio</strong> than chatbots — a load-bearing asymmetry that inverts the usual decode-centric optimization focus, since larger shared prefixes mean fewer concurrent resident sessions.</p>
 
-<p><em>Paper's Figure 14（caption: "Serving efficiency... (a) Goodput... (b)-(e) LLM request latency distribution... (f) LLM request throughput."）。</em> $N>10$ 下 token goodput 高 1.64×–2×、吞吐高 1.5×–2×；P50/P90 请求延迟低 13–14×，但 <strong>P99 更高</strong>——前缀感知调度会推迟无历史的新请求，这是被有意接受的取舍（session 完成时间才是用户可见指标）。</p>
+<p><img src="/assets/2606.16824/fig4.png" alt="Figure 4: CDF of tool-completion vs user-initiated requests"></p>
 
-<p><img src="/assets/2606.16824/fig16.png" alt="Figure 16: 前缀感知调度单独消融"></p>
+<p><em>Paper's Figure 4 (caption: "CDF of requests triggered by tool completion versus user input. Tool-initiated requests dominate, indicating a predominantly closed-loop request generation process.").</em></p>
 
-<p><em>Paper's Figure 16（caption: "Impact of prefix-aware scheduling policy. For each system, we compare the FCFS variant with the corresponding Prefix-aware variant."）。</em> 仅加前缀感知调度：$N=30$ goodput ~1.38×–1.64×、$N=40$ ~1.6×–1.7×；会话完成时间降 ~1.8×–2.66×。说明两项优化<strong>相互独立</strong>，且不依赖准确的复用预测即生效。</p>
+<p>Tool-completion requests are <strong>20× more frequent</strong> than user-initiated at the median: the workload is machine-driven, not human-in-the-loop, justifying session-level (not request-level) metrics.</p>
 
-<p><img src="/assets/2606.16824/fig17.png" alt="Figure 17: KVCache 搬运量"></p>
+<p><strong>Headline end-to-end result:</strong></p>
 
-<p><em>Paper's Figure 17（caption: "KVCache movement incurred (in TB of data) during the duration of each experiment..."）。</em> 通过降低淘汰频率，CacheWise 把跨层搬运量降 ~2×–2.6×，对 LMCache/Mooncake 这类分层 offload 系统是互补收益。物理搬运（GPU↔CPU over PCIe，$N=30$）配置下会话完成时间仅低 ~1.19×，因为 PCIe 传输远快于大前缀重算，改进空间本就更小。</p>
+<p><img src="/assets/2606.16824/fig13.png" alt="Figure 13: session completion time vs load across systems"></p>
 
-<p><img src="/assets/2606.16824/fig19.png" alt="Figure 19: 预测粒度扫描"></p>
+<p><em>Paper's Figure 13 (caption: "Session completion time (in seconds) for different KVCache management systems under the coding agent workload (sampled from CATraces).").</em></p>
 
-<p><em>Paper's Figure 19（caption: "Eviction count and session completion time... CX=Tool argument based clustering with X clusters. Hint=Trace replay with ground truth tool durations."）。</em> 粒度从 Point Estimate→Tool-Name→C20/C50/C100 递增，淘汰数与会话完成时间单调下降；C100 最佳，会话完成时间最多改进 19%；超过 100 簇数据不再支持更细粒度（预测器的数据上限）。</p>
+<p>Below $N\leq10$ all systems tie (no memory contention); at $N>10$ CacheWise is 2.7–3.5× lower than vLLM/InferCept and tracks the oracle CacheWise* — proving the lightweight predictor is good enough.</p>
 
-<h3 id="何时赢-何时不赢">何时赢 / 何时不赢 <a class="heading-anchor" href="#何时赢-何时不赢" aria-label="Link to 何时赢-何时不赢">#</a></h3>
+<p><img src="/assets/2606.16824/fig14.png" alt="Figure 14: goodput, evictions, latency distribution, throughput vs load"></p>
 
-<table>
-<tr><th>Workload regime</th><th>CacheWise</th><th>基线 (vLLM/InferCept)</th><th>原因</th></tr>
-<tr><td>低并发 $N\le10$</td><td>与基线持平</td><td>持平</td><td>无 KVCache 竞争，内存充裕</td></tr>
-<tr><td>高并发 + 长会话 + 大前缀</td><td>完成时间 2.7×–3.5× 更优</td><td>抖动/重算</td><td>前缀感知调度 + 预测淘汰减少无谓淘汰</td></tr>
-<tr><td>物理搬运（PCIe swap）而非重算</td><td>仅 ~1.19× 更优</td><td>接近</td><td>搬运惩罚小，改进空间被压缩</td></tr>
-<tr><td>请求尾延迟（P99）</td><td><strong>更差</strong></td><td>更好</td><td>前缀调度推迟无历史新请求</td></tr>
-<tr><td>CPU 调度开销</td><td>2.4×–3× 更高（绝对值可忽略）</td><td>更低</td><td>预测+堆重建成本，但被 GPU 时间下降抵消</td></tr>
-</table>
+<p><em>Paper's Figure 14 (caption: "Serving efficiency... (a) Goodput... (b)-(e) LLM request latency distribution... (f) LLM request throughput...").</em></p>
+
+<p>CacheWise improves token goodput 1.64–2× and reduces evicted blocks 2–2.6×; goodput decreases with load for all systems but CacheWise minimizes <em>unnecessary</em> evictions. Note the deliberate trade-off: P50 latency drops 13–14× but P99 <em>increases</em> (history-less new requests are deferred) — acceptable under the session-oriented objective.</p>
+
+<p><strong>Argument-level clustering evidence:</strong></p>
+
+<p><img src="/assets/2606.16824/tab3.png" alt="Table 3: Bash execution-time percentiles clustered by argument pattern"></p>
+
+<p><em>Paper's Table 3 (caption: "Bash tool call execution time distributions clustered by argument types. Columns P50, P90, and P99 show percentiles... $n$ is the number of datapoints in the cluster.").</em></p>
+
+<p>Within the single tool "bash", git operations span P50 0.1s → P99 97s (~1000× intra-cluster), while <code>mypy</code> (P50 10s) and <code>docker compose</code> (P50 22s) differ by tool-name-blind averages — motivating TF-IDF+KMeans clustering on arguments rather than per-tool-name distributions.</p>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>#</th><th>步骤</th><th>依据（篇内）</th></tr>
-<tr><td>1</td><td>采集真实 CATraces，量化编程 agent 三特征：闭环（工具:用户=20×）、长会话（中位 36min）、大增长前缀（prefill:decode ~21×）</td><td>§3, Table 1, Fig 3–8</td></tr>
-<tr><td>2</td><td>用资源模型形式化 $W(t)\le M$、$a_i=d_i-k_i$，推出 FCFS 撑大工作集→抖动、LRU 忽略未来复用两条失效</td><td>§4, Fig 10</td></tr>
-<tr><td>3</td><td>由 $\arg\min a_i$（调度）与 $\arg\max\tau_j$（Belady 淘汰）给出理想策略</td><td>§4→§5.1/§5.2</td></tr>
-<tr><td>4</td><td>关键松弛：淘汰只需 $\tau$ 相对序 / top-1 正确，故可用工具元数据 TF-IDF+KMeans 轻量预测</td><td>§5.2</td></tr>
-<tr><td>5</td><td>在 vLLM 落地（~2500 LoC，block 附会话元数据，淘汰堆，$N_{rebuild}=3$）</td><td>§5.3</td></tr>
-<tr><td>6</td><td>端到端评测：完成时间 2.7×–3.5×、淘汰/搬运 2–2.6×、逼近真值 oracle</td><td>§6.2–§6.4</td></tr>
-<tr><td>7</td><td>消融证明两技术独立生效；预测粒度 C100 单调最优（19%）</td><td>§6.3, §6.5</td></tr>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Coding agents are a distinct workload: more turns, closed-loop, long sessions, growing prefixes, structured tool times</td><td>CATraces analysis, Fig 2–9, Table 1</td></tr>
+<tr><td>2</td><td>These properties formalize into a memory model where FCFS thrashes (Impl. #1) and LRU inverts priority (Impl. #2)</td><td>§4 notation ($M$, $W(t)$, $a_i$, $\tau_i$), $j^{*}=\arg\max\tau_j$</td></tr>
+<tr><td>3</td><td>Impl. #1 → prefix-aware scheduling (min $a_i$); Impl. #2 → predictive eviction from tool metadata</td><td>§5.1, §5.2, Table 2 mapping</td></tr>
+<tr><td>4</td><td>Only relative $\tau$-order is needed; TF-IDF+KMeans over args gives enough signal</td><td>§5.2 insight, Fig 12, Table 3</td></tr>
+<tr><td>5</td><td>Both mechanisms combined: 2.7–3.5× session time, 2–2.6× fewer evictions, ≈ oracle</td><td>Fig 13, Fig 14</td></tr>
+<tr><td>6</td><td>Mechanisms are independent and each contributes</td><td>Fig 15 (eviction alone 1.7–2×), Fig 16 (scheduling alone 1.8–2.66×)</td></tr>
+<tr><td>7</td><td>Gains cover the offloading regime too (smaller, 1.19×) and net-positive despite CPU overhead</td><td>Fig 17, Fig 18, Fig 20</td></tr>
 </table>
 
 <h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<ul>
-<li><strong>实现规模与位置</strong>：~2,500 行 Python，改动 vLLM 的 batch scheduler 与 KVCache block manager；给每个 block 附加会话级元数据 <code>tool_name, tool_args, T_i</code>（L1 §5.3 para 1）。</li>
-<li><strong>淘汰堆机制</strong>：引用计数归零的未引用 block 保留元数据、按预测 $\mathbb{E}[\tau_i]$ 作优先级入堆，替换默认 LRU；同会话多 block 共享一次预测，避免逐 block 调用预测器（L1 §5.3 para 2）。</li>
-<li><strong>预测器细节（易漏）</strong>：(1) TF-IDF 向量上限 5000 lexicons、scikit-learn ℓ2 norm 加权；(2) KMeans 簇数上界取很大以最大粒度，实测数据在 100 簇饱和（L1 §5.2 footnote 2/3、§6.5）。这两点是"轻量却接近 oracle"的落地关键。</li>
-<li><strong>预测陈化处理</strong>：$\mathbb{E}[\tau_i]$ 随工具执行推进而陈化，故每 $N_{rebuild}=3$ 次 engine 迭代重建整个淘汰堆以刷新估计（L1 §5.3 para 3）——freshness 与开销的可调平衡点。</li>
-<li><strong>开源</strong>：数据集与代码 github.com/cachewise-project/cachewise-coding-traces（L1 §0/§8）；系统源码具体文件行号 [实现未公开于本文正文]。</li>
+<p>Implementation is stated as <strong>~2,500 lines of Python on top of vLLM</strong> (§5.3), extending the batch scheduler and KVCache block manager; the traces/dataset are open-sourced at <code>github.com/cachewise-project/cachewise-coding-traces</code>. The serving-system code itself is not linked in the L1 source, so specific file:line citations are <strong>[实现未公开]</strong>.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
+<ol>
+<li><strong>Block-attached session metadata + shared predictions.</strong> Each KVCache block carries <code>(tool_name, tool_args, T_i)</code> (§5.3). When a block's refcount hits zero it enters an eviction heap keyed by the predicted $\mathbb{E}[\tau_i(t)]$. Crucially, blocks of the same session share one prediction — the predictor is <em>not</em> invoked per block, keeping overhead low.</li>
+<li><strong>Staleness rebuild parameter $N_{\text{rebuild}}$.</strong> Predictions go stale as tool calls progress, so CacheWise periodically re-scores all unreferenced blocks and rebuilds the heap every $N_{\text{rebuild}}$ engine iterations. Set to $N_{\text{rebuild}}=3$ empirically — the freshness/overhead knob is a subtle but load-bearing config that most reimplementations would miss.</li>
 </ul>
 
-<h2 id="8-开放问题">8. 开放问题 <a class="heading-anchor" href="#8-开放问题" aria-label="Link to 8-开放问题">#</a></h2>
-
-<ul>
-<li><strong>工作集定义不一致</strong>：§4 正文 $W(t)=\sum d_i$ vs Figure 10 $W(t)=\sum k_i(t)$，内存压力下不等价，篇内未澄清。</li>
-<li><strong>超越自身 oracle</strong>：CacheWise 偶尔略胜拥有真值时延的 CacheWise*，归因于淘汰与前缀调度的耦合动态。</li>
-<li><strong>P50 巨幅改进但 P99 回退</strong>：13–14× 中位改进伴随尾延迟恶化，取舍需在 session 指标下才成立。</li>
-<li><strong>SGLang 未直接对比</strong>：以 InferCept(Prefix-aware) 消融代替 SGLang 场景，代表性存疑。</li>
-<li><strong>分布漂移</strong>：预测器依赖历史轨迹，仓库/工具演化后需周期重训，鲁棒性留待未来工作。</li>
-</ul>
+<p><strong>核心技术壁垒 (restated).</strong> The single hardest insight to replicate is not the plumbing but the observation that near-optimal (Belady-approaching) eviction needs only the <em>relative ordering</em> of reuse times across sessions — often just identifying the one highest-$\tau$ session — which is recoverable from cheap tool-metadata clustering. This is why CacheWise can match a ground-truth oracle without accurate absolute reuse-time prediction, and it is the property that a naive reimplementation (e.g. per-tool moving average, as InferCept does) fails to capture.</p>
 
 </div>
 </div>

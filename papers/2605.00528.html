@@ -204,199 +204,266 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
-<h1 id="saga-vs-peers-—-l3-per-paper-synthesis">SAGA vs Peers — L3 Per-Paper Synthesis <a class="heading-anchor" href="#saga-vs-peers-—-l3-per-paper-synthesis" aria-label="Link to saga-vs-peers-—-l3-per-paper-synthesis">#</a></h1>
+<h1 id="saga-2605-00528-—-l3-per-paper-synthesis">SAGA (2605.00528) — L3 Per-Paper Synthesis <a class="heading-anchor" href="#saga-2605-00528-—-l3-per-paper-synthesis" aria-label="Link to saga-2605-00528-—-l3-per-paper-synthesis">#</a></h1>
 
-<h2 id="§1-相关论文">§1 相关论文 <a class="heading-anchor" href="#§1-相关论文" aria-label="Link to §1-相关论文">#</a></h2>
+<p>SAGA sits at the confluence of two strong 2025–2026 lineages: **program-level agent</p>
+<p>scheduling<strong> (Autellix) and </strong>workflow-aware KV-cache retention** (Continuum, TokenCake,</p>
+<p>KVFlow-lineage). Its distinctive move is to fold <em>all three</em> axes — distributed scheduling,</p>
+<p>tool-call TTL, and provable fairness — under a single "workflow-as-schedulable-unit" thesis,</p>
+<p>then anchor the whole thing to a Bélády competitive-ratio bound. The peer cluster below shows</p>
+<p>this is less a novel primitive than a <strong>unification-plus-formalization</strong> of primitives that</p>
+<p>each already existed in isolation.</p>
 
-<table>
-<tr><th>论文</th><th>关系</th><th>核心关联</th></tr>
-<tr><td><strong>Continuum</strong> (2511.02230)</td><td>直接竞争</td><td>同属 KV-cache-aware agent serving；Continuum 用单机 TTL 机制解决排队气泡，SAGA 用分布式 AEG + WA-LRU 解决跨 worker 缓存保留</td></tr>
-<tr><td><strong>PBKV</strong> (2605.06472)</td><td>直接竞争</td><td>同属预测驱动的 KV-cache 淘汰；PBKV 用 GraphSAGE 预测 agent 调用序列，SAGA 用 AEG 预测 KV 复用概率</td></tr>
-<tr><td><strong>SideQuest</strong> (2602.22603)</td><td>互补/正交</td><td>SideQuest 在 token 粒度做语义驱动 KV 压缩（intra-turn），SAGA 在 session 粒度做跨 turn 缓存保留（inter-turn）</td></tr>
-<tr><td><strong>CMV</strong> (2602.22402)</td><td>正交</td><td>CMV 管理 conversation-level 持久化状态（跨 session branching），SAGA 管理 GPU KV-cache 的短时驻留——两者操作不同层次</td></tr>
-<tr><td><strong>PASTE</strong> (2603.18897)</td><td>互补</td><td>PASTE 通过投机执行重叠 tool 延迟与 LLM 推理，SAGA 通过 TTL 保留重叠 tool 延迟与 KV 缓存——两者减少同一空闲窗口的不同浪费</td></tr>
-<tr><td><strong>CPU-Centric</strong> (2511.00739)</td><td>互补</td><td>揭示 CPU 工具执行是 agent 延迟主导（最高 88%），为 SAGA 的 tool-call-aware TTL 提供问题动机</td></tr>
-<tr><td><strong>Claude Code Analysis</strong> (2604.14228)</td><td>上下文参照</td><td>生产级 agent 的 5 层 compaction pipeline 是 SAGA 服务的上游客户；SAGA 管理推理引擎层的 KV，Claude Code 管理 prompt 层的 context</td></tr>
-<tr><td><strong>SGH</strong> (2604.11378)</td><td>概念参照</td><td>SGH 提出 scheduler 视角看 agent 执行，SAGA 是该视角在 serving 层的具象化——把 workflow DAG 作为一等调度单元</td></tr>
-</table>
+<hr>
 
-<p><strong>为什么这组论文构成 SAGA 的核心参照系</strong>：SAGA 的创新是把 "workflow-as-unit" 从概念（SGH 的 scheduler continuum）落地为 serving 系统。它需要同时解决三个子问题——KV 缓存保留（vs Continuum 的 TTL）、缓存淘汰策略（vs PBKV 的预测驱动淘汰）、tool 延迟期间的资源管理（vs PASTE 的投机执行）。SideQuest 则代表了另一条路径：不在 serving 层解决缓存问题，而是让 LLM 自己做内存管理。</p>
+<h2 id="1-相关论文-—-which-entities-are-related-and-why">1. 相关论文 — which entities are related and why <a class="heading-anchor" href="#1-相关论文-—-which-entities-are-related-and-why" aria-label="Link to 1-相关论文-—-which-entities-are-related-and-why">#</a></h2>
 
-<h2 id="§2-本篇-vs-相关论文的-delta">§2 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#§2-本篇-vs-相关论文的-delta" aria-label="Link to §2-本篇-vs-相关论文的-delta">#</a></h2>
+<p>The 8 peers fall into four bands by how directly they collide with SAGA's claims.</p>
 
-<h3 id="相对-continuum-2511-02230-的-delta">相对 Continuum (2511.02230) 的 delta <a class="heading-anchor" href="#相对-continuum-2511-02230-的-delta" aria-label="Link to 相对-continuum-2511-02230-的-delta">#</a></h3>
-
-<table>
-<tr><th>维度</th><th>Continuum</th><th>SAGA</th></tr>
-<tr><td>调度粒度</td><td>单请求 TTL（per-turn 决策）</td><td>整个 workflow 作为调度单元</td></tr>
-<tr><td>缓存保留机制</td><td>Cost-benefit TTL（pin 固定时间）</td><td>WA-LRU + AEG 预测复用概率</td></tr>
-<tr><td>分布式支持</td><td>单机 vLLM 插件</td><td>64-GPU 集群，session-affinity + work stealing</td></tr>
-<tr><td>公平性</td><td>Program-level FCFS（近似 SRTF）</td><td>Agent Fair Share（Lyapunov drift bound）</td></tr>
-<tr><td>理论保证</td><td>无 competitive ratio</td><td>1.31× vs Bélády optimal（经验）+ loose formal bound</td></tr>
-<tr><td>代码开源</td><td>✓ (vllm-continuum)</td><td>✗</td></tr>
-</table>
-
-<p>SAGA 的核心 delta：<strong>从 per-request TTL 升级为 per-workflow DAG-predicted 淘汰</strong>。Continuum 的 memoryfulness factor $\eta$ 只捕获"维持程序顺序是否有助于加速"这一标量 <a href="/papers/2511.02230/detail.html#核心技术壁垒" class="ref-link" title="2511.02230#核心技术壁垒">[2511.02230]</a>，而 SAGA 的 $P_{reuse}(s) = \sum_{u \in succ(v_s)} P(v_s \to u) \cdot overlap(s, u)$ 利用了 AEG 的完整 successor 结构和 transition probabilities <a href="/papers/2605.00528/detail.html#核心技术壁垒" class="ref-link" title="2605.00528#核心技术壁垒">[2605.00528]</a>。代价是需要 framework integration（或 87% 准确率的 pattern inference）。</p>
-
-<h3 id="相对-pbkv-2605-06472-的-delta">相对 PBKV (2605.06472) 的 delta <a class="heading-anchor" href="#相对-pbkv-2605-06472-的-delta" aria-label="Link to 相对-pbkv-2605-06472-的-delta">#</a></h3>
-
-<table>
-<tr><th>维度</th><th>PBKV</th><th>SAGA</th></tr>
-<tr><td>预测目标</td><td>下一个 agent 类型（K 步分布）</td><td>KV 缓存复用概率</td></tr>
-<tr><td>预测器</td><td>GraphSAGE (~350K params, 1.56ms)</td><td>AEG transition probabilities + tool-type EMA</td></tr>
-<tr><td>退化保证</td><td>Lipschitz 遗憾界 → 退化至 LAE 而非 LRU</td><td>无形式退化保证（退化至 prefix caching +96% TCT）</td></tr>
-<tr><td>预取</td><td>保守预取（空闲资源，不反噬）</td><td>投机 prefetch（most-likely successor）</td></tr>
-<tr><td>淘汰设计</td><td>分层（退役确定性 + 评分概率性）</td><td>加权线性组合（recency + reuse + size）</td></tr>
-<tr><td>覆盖场景</td><td>动态多 agent 工作流（跨 agent 缓存共享）</td><td>单 agent 多 turn 工作流（session 内缓存保留）</td></tr>
-</table>
-
-<p>PBKV 的 "确定性护栏 + 概率系统" 分层设计 <a href="/papers/2605.06472/detail.html#核心技术壁垒" class="ref-link" title="2605.06472#核心技术壁垒">[2605.06472]</a> 在鲁棒性上优于 SAGA 的加权线性评分。PBKV 在预测精度从 0.94 到随机的整个谱上都严格优于 LRU <a href="/papers/2605.06472/detail.html#预测误差鲁棒性" class="ref-link" title="2605.06472#预测误差鲁棒性">[2605.06472]</a>，而 SAGA 的 ablation 显示去除 AEG 后 TCT 退化 54% <a href="/papers/2605.00528/detail.html#实验与数据" class="ref-link" title="2605.00528#实验与数据">[2605.00528]</a>，意味着 SAGA 对预测质量的依赖更强。</p>
-
-<p>SAGA 的优势在于 <strong>更丰富的决策信号</strong>：不仅预测"下一个 agent 是谁"，还预测"已有 KV 有多少比例会被复用"——后者是 agent 内部决策的直接函数。PBKV 跨 agent（工作流级），SAGA 跨 turn（session 级）。</p>
-
-<h3 id="相对-sidequest-2602-22603-的-delta">相对 SideQuest (2602.22603) 的 delta <a class="heading-anchor" href="#相对-sidequest-2602-22603-的-delta" aria-label="Link to 相对-sidequest-2602-22603-的-delta">#</a></h3>
-
-<p>SideQuest 用 LRM 辅助线程做语义级 eviction（56-65% token 降幅）<a href="/papers/2602.22603/detail.html#q3-结果" class="ref-link" title="2602.22603#q3-结果">[2602.22603]</a>，但：</p>
+<p><strong>Band A — direct predecessors on the same problem (agent-serving scheduling + KV retention).</strong></p>
 <ul>
-<li>操作粒度是 token-level cursor（intra-context），SAGA 是 session-level KV block（inter-turn）</li>
-<li>SideQuest 需要 LoRA 微调 + 215 条训练数据，SAGA 无训练</li>
-<li>SideQuest 的 serving 增益（SGLang +83.9% 吞吐）是因为释放 batch capacity；SAGA 的增益（1.64× TCT）是因为避免 cache regeneration</li>
+<li><strong>Autellix (2502.13965)</strong> is the closest sibling and one SAGA explicitly names as related.</li>
+<p>Both elevate the <em>program</em> (not the request) to the scheduling unit; Autellix does it via</p>
+<p>program-level Least-Attained-Service (PLAS/ATLAS) over an arbitrary DAG</p>
+<p><a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>, SAGA via workflow-atomic dispatch of an AEG.</p>
+<p>Autellix is <em>non-clairvoyant</em> (zero structural knowledge); SAGA is <em>clairvoyant-ish</em></p>
+<p>(observable AEG). This is the sharpest delta in the cluster.</p>
+<li><strong>Continuum (2511.02230)</strong> is SAGA's near-twin on KV retention: it introduces a cost-benefit</li>
+<p><strong>TTL</strong> to pin KV across tool calls in multi-turn ReAct agents</p>
+<p><a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>, exactly SAGA's §4.2 mechanism. Continuum's headline is that</p>
+<p>the dominant cost is <em>per-turn queueing delay</em> (58.2% of latency), not reload — a framing</p>
+<p>SAGA under-emphasizes.</p>
+<li><strong>TokenCake (2510.18586)</strong> co-designs a temporal (offload/upload) + spatial (reserve/share)</li>
+<p>KV scheduler for multi-agent tool-call idle windows <a href="/papers/2510.18586/detail.html#2-q1-q2-q3" class="ref-link" title="2510.18586#2-q1-q2-q3">[2510.18586]</a>, a</p>
+<p>memory-management peer to SAGA's WA-LRU + pressure-scaled TTL.</p>
 </ul>
 
-<p>两者可组合：SAGA 跨 turn 保留 KV block，SideQuest 在单 turn 内压缩已保留 block 的内容。</p>
-
-<h3 id="相对-paste-2603-18897-的-delta">相对 PASTE (2603.18897) 的 delta <a class="heading-anchor" href="#相对-paste-2603-18897-的-delta" aria-label="Link to 相对-paste-2603-18897-的-delta">#</a></h3>
-
-<p>PASTE 的投机执行将 tool 等待时间减少 67% <a href="/papers/2603.18897/detail.html#关键发现" class="ref-link" title="2603.18897#关键发现">[2603.18897]</a>，而 SAGA 通过 TTL 保留避免了 KV 重建。两者解决同一问题（tool-call idle period 的浪费）的不同面：</p>
+<p><strong>Band B — mechanism-complementary (KV reuse / speculation SAGA calls "orthogonal").</strong></p>
 <ul>
-<li>PASTE：重叠下一个 tool 的执行与当前 LLM 推理 → 减少 tool stall</li>
-<li>SAGA：在 tool 执行期间保留 KV cache → 减少下一次 prefill 的重建开销</li>
+<li><strong>KVCOMM (2510.12872)</strong> reuses KV <em>across contexts</em> in multi-agent systems via RoPE</li>
+<p>re-alignment + anchor-pool offset approximation <a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a> — a different</p>
+<p>reuse axis (cross-prefix) than SAGA's within-session retention.</p>
+<li><strong>Speculative Tool Calls (2512.15834)</strong> overlaps tool execution with generation by</li>
+<p>speculatively pre-executing the next tool <a href="/papers/2512.15834/detail.html#§2-q1-·-q2-·-q3" class="ref-link" title="2512.15834#§2-q1-·-q2-·-q3">[2512.15834]</a>. SAGA itself flags</p>
+<p>speculation as <em>complementary</em> (§1.2, §11 future work item 6): speculation trades wasted</p>
+<p>compute for latency; SAGA schedules known work.</p>
 </ul>
 
-<p>PASTE 的 pattern tuple $(C, T, f, p)$ <a href="/papers/2603.18897/detail.html#核心技术壁垒" class="ref-link" title="2603.18897#核心技术壁垒">[2603.18897]</a> 和 SAGA 的 AEG 在概念上相近：都是从历史 trace 中提取 agent 行为模式用于预测。但 PASTE 预测的是 tool 类型+参数（用于投机执行），SAGA 预测的是 KV 复用概率（用于缓存决策）。</p>
-
-<h2 id="§3-可攻击面">§3 可攻击面 <a class="heading-anchor" href="#§3-可攻击面" aria-label="Link to §3-可攻击面">#</a></h2>
-
-<h3 id="攻击-1：aeg-的实用性与冷启动">攻击 1：AEG 的实用性与冷启动 <a class="heading-anchor" href="#攻击-1：aeg-的实用性与冷启动" aria-label="Link to 攻击-1：aeg-的实用性与冷启动">#</a></h3>
-
-<p>SAGA 声称 AEG 可以无 framework hint 推断（87% 准确率）<a href="/papers/2605.00528/detail.html#实验与数据" class="ref-link" title="2605.00528#实验与数据">[2605.00528]</a>，但：</p>
+<p><strong>Band C — orthogonal-but-adjacent system framings.</strong></p>
 <ul>
-<li>87% 是在 SWE-bench 这种高度结构化 benchmark 上的数字。ReAct 循环的模式固定（think→act→observe），推断不难。</li>
-<li>对于更复杂的 workflow（multi-agent, tree-of-thought, 动态子任务生成），推断准确率可能大幅下降。论文自己承认"dynamic multi-agent frameworks requiring AEG re-inference per epoch"的退化 <a href="/papers/2605.00528/detail.html#多agent考量" class="ref-link" title="2605.00528#多agent考量">[2605.00528]</a>。</li>
-<li>PBKV 只需 1K 训练轨迹即可达 0.94 精度 <a href="/papers/2605.06472/detail.html#q3-结果" class="ref-link" title="2605.06472#q3-结果">[2605.06472]</a>，证明"预测 agent 调用"是可解问题——但 SAGA 的"预测 KV overlap"比"预测下一个 agent"更难验证正确性。</li>
+<li><strong>CPU-Centric Characterization (2511.00739)</strong> argues tool execution (mostly CPU) can be up to</li>
+<p>88% of E2E latency <a href="/papers/2511.00739/detail.html#q1-这篇论文试图解决什么核心痛点？" class="ref-link" title="2511.00739#q1-这篇论文试图解决什么核心痛点？">[2511.00739]</a> — a direct challenge</p>
+<p>to SAGA's GPU-centric accounting (see §3 可攻击面).</p>
+<li><strong>RouteLLM (2406.18665)</strong> is model routing by query difficulty <a href="/papers/2406.18665/detail.html#§2-痛点-方法-结果" class="ref-link" title="2406.18665#§2-痛点-方法-结果">[2406.18665]</a>;</li>
+<p>same "route to the right resource" family but at the <em>model-selection</em> layer, not the</p>
+<p>scheduling layer. Weak overlap; useful mainly as a fairness/cost-knob contrast.</p>
 </ul>
 
-<h3 id="攻击-2：bélády-competitive-ratio-的误导性">攻击 2：Bélády competitive ratio 的误导性 <a class="heading-anchor" href="#攻击-2：bélády-competitive-ratio-的误导性" aria-label="Link to 攻击-2：bélády-competitive-ratio-的误导性">#</a></h3>
-
-<p>SAGA 报告 1.31× competitive ratio vs Bélády optimal <a href="/papers/2605.00528/detail.html#q3-结果" class="ref-link" title="2605.00528#q3-结果">[2605.00528]</a>，但：</p>
+<p><strong>Band D — scope/vocabulary peer.</strong></p>
 <ul>
-<li>Bélády 是 offline optimal for page replacement，而 SAGA 的 cache space 是在多 worker、多 session 间共享的。真正的 optimal 应该是 <strong>joint scheduling + eviction</strong> 的全局最优，Bélády 只是单机 eviction 的 optimal。</li>
-<li>Formal bound 是 20.5×（极度松散）<a href="/papers/2605.00528/detail.html#作者证明" class="ref-link" title="2605.00528#作者证明">[2605.00528]</a>。1.31× 是 empirical average-case，在 adversarial workload 下可能远差。</li>
-<li>Continuum 没有报告 competitive ratio，但其 8.18× 延迟改善（真实 SWE-agent）<a href="/papers/2511.02230/detail.html#真实分布式SWE-Agent" class="ref-link" title="2511.02230#真实分布式SWE-Agent">[2511.02230]</a> 暗示在真实环境中的绝对收益可能更大——因为 Continuum 解决的是 queueing delay 而非纯 cache miss，而 queueing delay 在高负载下主导。</li>
+<li><strong>Agent Interoperability Protocols Survey (2505.02279)</strong> defines the MCP/ACP/A2A/ANP layer</li>
+<p><a href="/papers/2505.02279/detail.html#§2-痛点-方法-结果" class="ref-link" title="2505.02279#§2-痛点-方法-结果">[2505.02279]</a>. Orthogonal to serving, but relevant: SAGA assumes</p>
+<p>framework hints (LangChain/AutoGen callbacks) surface the AEG — the survey shows that hint</p>
+<p>channel is <em>not yet standardized</em>, which stresses SAGA's best-case observability assumption.</p>
 </ul>
 
-<h3 id="攻击-3：30-吞吐损失的代价">攻击 3：30% 吞吐损失的代价 <a class="heading-anchor" href="#攻击-3：30-吞吐损失的代价" aria-label="Link to 攻击-3：30-吞吐损失的代价">#</a></h3>
+<hr>
 
-<p>SAGA 明确承认 ~30% throughput reduction vs BFS <a href="/papers/2605.00528/detail.html#实验与数据" class="ref-link" title="2605.00528#实验与数据">[2605.00528]</a>。这是 session-affinity 的直接代价——请求被路由到"正确的"worker 而非"空闲的"worker。在高吞吐需求场景下，这是一个严重的限制。</p>
+<h2 id="2-本篇-vs-相关论文的-delta-—-what-s-new-incremental-contradictory">2. 本篇 vs 相关论文的 delta — what's new, incremental, contradictory <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta-—-what-s-new-incremental-contradictory" aria-label="Link to 2-本篇-vs-相关论文的-delta-—-what-s-new-incremental-contradictory">#</a></h2>
 
-<p>对比：</p>
-<ul>
-<li>Continuum 没有报告吞吐损失（TTL 机制不影响路由）</li>
-<li>PBKV 的保守预取设计"确保错误预测时无负面影响"<a href="/papers/2605.06472/detail.html#核心技术壁垒" class="ref-link" title="2605.06472#核心技术壁垒">[2605.06472]</a>，没有吞吐代价</li>
-<li>SideQuest 反而提升吞吐 +83.9%（通过释放 batch capacity）<a href="/papers/2602.22603/detail.html#SGLang生产serving性能" class="ref-link" title="2602.22603#SGLang生产serving性能">[2602.22603]</a></li>
+<p><strong>Genuinely new in SAGA:</strong></p>
+<ol>
+<li><strong>The empirical competitive-ratio bound (1.31× of Bélády).</strong> No peer quantifies how close an</li>
+<p>online policy gets to the offline optimum. Continuum's TTL is "expected-utility optimal" with</p>
+<p><em>no</em> competitive ratio <a href="/papers/2511.02230/detail.html#§4-作者证明" class="ref-link" title="2511.02230#§4-作者证明">[2511.02230]</a>; Autellix explicitly leaves</p>
+<p>program-level competitive ratio unproven and only <em>simulates</em> the gap to SRPT</p>
+<p><a href="/papers/2502.13965/detail.html#§4-作者证明" class="ref-link" title="2502.13965#§4-作者证明">[2502.13965]</a>. SAGA's Bélády framing is the cluster's only attempt at an</p>
+<p>optimality anchor for eviction <a href="/papers/2605.00528/detail.html#5-实验与数据" class="ref-link" title="2605.00528#5-实验与数据">[2605.00528]</a>.</p>
+<li><strong>Formal fairness at the task level (AFS + Lyapunov drift, Theorem 2).</strong> Autellix has</li>
+<p>anti-starvation but no formal bound; Continuum, TokenCake, KVCOMM have none. SAGA is alone</p>
+<p>in providing a <em>provable</em> completion-time deviation bound <a href="/papers/2605.00528/detail.html#4-作者证明" class="ref-link" title="2605.00528#4-作者证明">[2605.00528]</a>.</p>
+<li><strong>Unification under one thesis.</strong> Table 11's 4-axis claim (distributed × tool-TTL × fairness ×</li>
+<p>competitive-ratio) is real: no single peer checks all four boxes.</p>
 </ul>
 
-<h3 id="攻击-4：单模型、单-benchmark-类型的评估局限">攻击 4：单模型、单 benchmark 类型的评估局限 <a class="heading-anchor" href="#攻击-4：单模型、单-benchmark-类型的评估局限" aria-label="Link to 攻击-4：单模型、单-benchmark-类型的评估局限">#</a></h3>
-
-<p>SAGA 仅评估 Llama-3-70B-Instruct <a href="/papers/2605.00528/detail.html#llm-backbone-requirements" class="ref-link" title="2605.00528#llm-backbone-requirements">[2605.00528]</a>。未测试：</p>
+<p><strong>Incremental / overlapping (SAGA is not first):</strong></p>
 <ul>
-<li>更小模型（8B/14B）——KV cache 更小，缓存保留的边际价值更低</li>
-<li>MoE 模型（DeepSeek-V3, Qwen3-32B）——routing-aware extensions 被标记为 limitation</li>
-<li>多模态 agent——图像 token 的 KV 特征不同</li>
+<li><strong>Tool-call TTL retention.</strong> Continuum (2511.02230) and TokenCake (2510.18586) both do this,</li>
+<p>and Continuum's cost-benefit TTL is arguably <em>more principled</em> (explicit reload + queueing</p>
+<p>terms with a memoryfulness factor η <a href="/papers/2511.02230/detail.html#§4-作者证明" class="ref-link" title="2511.02230#§4-作者证明">[2511.02230]</a>) than SAGA's percentile-of-</p>
+<p>log-normal TTL with linear pressure scaling. SAGA's §4.2 does not cite Continuum's queueing-</p>
+<p>delay decomposition at all.</p>
+<li><strong>Program-as-unit scheduling.</strong> Autellix (2502.13965) predates SAGA on this framing. SAGA's</li>
+<p>incremental contribution over Autellix is (a) making structure <em>observable</em> via AEG rather</p>
+<p>than inferred from runtime, and (b) adding cache-retention + fairness on top.</p>
+<li><strong>Migration-based rebalancing.</strong> Both SAGA and Autellix reuse Llumnix-style KV migration;</li>
+<p>Autellix additionally contributes batched swap (18× fewer ops <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>).</p>
 </ul>
 
-<p>对比 PBKV 测试了 Qwen3-14B 和 Qwen3-32B <a href="/papers/2605.06472/detail.html#LLM骨干要求" class="ref-link" title="2605.06472#LLM骨干要求">[2605.06472]</a>，Continuum 测试了 8B/70B/12B/355B 四个模型 <a href="/papers/2511.02230/detail.html#llm-backbone-requirements" class="ref-link" title="2511.02230#llm-backbone-requirements">[2511.02230]</a>。</p>
-
-<h2 id="§4-生态位">§4 生态位 <a class="heading-anchor" href="#§4-生态位" aria-label="Link to §4-生态位">#</a></h2>
-
-<h3 id="范式定位">范式定位 <a class="heading-anchor" href="#范式定位" aria-label="Link to 范式定位">#</a></h3>
-
-<p>SAGA 代表了 agent serving 从 "request-level scheduling" 到 "workflow-level scheduling" 的范式跃迁。这个方向的信号已经在多篇论文中出现：</p>
+<p><strong>Potentially contradictory:</strong></p>
 <ul>
-<li>SGH 从理论层面论证了"把 workflow 作为一等调度单元"的必要性（$|\mathcal{U}| \geq 1$ 的 scheduler continuum）<a href="/papers/2604.11378/detail.html#破局" class="ref-link" title="2604.11378#破局">[2604.11378]</a></li>
-<li>PBKV 从缓存管理层面实现了跨 agent 的生命周期追踪 <a href="/papers/2605.06472/detail.html#核心技术壁垒" class="ref-link" title="2605.06472#核心技术壁垒">[2605.06472]</a></li>
-<li>PASTE 从工具执行层面实现了 workflow pattern 的投机执行 <a href="/papers/2603.18897/detail.html#核心技术壁垒" class="ref-link" title="2603.18897#核心技术壁垒">[2603.18897]</a></li>
+<li>SAGA's ablation says **session affinity dominates (+96% TCT when removed), WA-LRU eviction only</li>
+<p>+54%*<em> <a href="/papers/2605.00528/detail.html#5-实验与数据" class="ref-link" title="2605.00528#5-实验与数据">[2605.00528]</a>. Continuum instead argues the </em>scheduling/queueing*</p>
+<p>bubble is the dominant cost and KV-reload is secondary <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>. These</p>
+<p>two agree that co-location/scheduling beats raw cache mechanics — but SAGA foregrounds the</p>
+<p>cache competitive-ratio as its "scientific contribution" while its own numbers say co-location</p>
+<p>carries the win. See §3.</p>
 </ul>
 
-<p>SAGA 是这条线上最完整的系统实现：同时覆盖 KV 保留、分布式路由、公平性三个子问题。</p>
+<hr>
 
-<h3 id="采用证据与阻碍">采用证据与阻碍 <a class="heading-anchor" href="#采用证据与阻碍" aria-label="Link to 采用证据与阻碍">#</a></h3>
+<h2 id="3-可攻击面-—-adversarial-rebuttal-against-specific-claims">3. 可攻击面 — adversarial rebuttal against specific claims <a class="heading-anchor" href="#3-可攻击面-—-adversarial-rebuttal-against-specific-claims" aria-label="Link to 3-可攻击面-—-adversarial-rebuttal-against-specific-claims">#</a></h2>
 
-<p><strong>正面信号</strong>：</p>
-<ul>
-<li>Agent 工作负载的 KV 缓存问题已被广泛认可（Continuum 开源并被引用、PBKV/KVFlow 的出现）</li>
-<li>64-GPU 集群评估说明工程投入足够生产级</li>
-</ul>
+<p><strong>Attack 1 — the "1.31× of Bélády" headline over-claims relative to what carries the win.</strong></p>
+<p>SAGA calls the competitive ratio "the main scientific contribution" <a href="/papers/2605.00528/detail.html#1-tl-dr" class="ref-link" title="2605.00528#1-tl-dr">[2605.00528]</a>,</p>
+<p>yet its own ablation shows removing session affinity costs +96% TCT vs only +54% for removing</p>
+<p>workflow-aware eviction <a href="/papers/2605.00528/detail.html#5-实验与数据" class="ref-link" title="2605.00528#5-实验与数据">[2605.00528]</a>. The marquee bound describes the</p>
+<p><em>least</em> load-bearing lever. A skeptic would say the real engineering win is plain session</p>
+<p>co-location — which Autellix already gets from locality-aware routing without any Bélády framing</p>
+<p><a href="/papers/2502.13965/detail.html#§3-架构-方法图" class="ref-link" title="2502.13965#§3-架构-方法图">[2502.13965]</a>.</p>
 
-<p><strong>阻碍</strong>：</p>
-<ul>
-<li>代码未开源——严重阻碍社区采用</li>
-<li>需要 framework integration 或 pattern inference——部署门槛高于 Continuum（纯 vLLM 插件）</li>
-<li>30% 吞吐损失对高吞吐场景不可接受</li>
-<li>单模型评估降低了结论的泛化信心</li>
-</ul>
+<p><strong>Attack 2 — the GPU-centric latency model may be measuring the wrong bottleneck.</strong></p>
+<p>SAGA attributes 6.0× latency inflation and 38% wasted time to KV regeneration</p>
+<p><a href="/papers/2605.00528/detail.html#2-q1-q2-q3" class="ref-link" title="2605.00528#2-q1-q2-q3">[2605.00528]</a>. The CPU-centric characterization (2511.00739) shows that for</p>
+<p>tool-heavy agents, <em>tool execution itself</em> (mostly CPU) is up to 88% of E2E latency</p>
+<p><a href="/papers/2511.00739/detail.html#key-findings" class="ref-link" title="2511.00739#key-findings">[2511.00739]</a>. If SAGA's SWE-bench agents spend most wall-time inside</p>
+<p><code>run_test</code>/retrieval CPU tools rather than KV re-prefill, then eliminating KV regeneration</p>
+<p>optimizes a minority of the latency budget — and the 6.0× figure would be workload-specific to</p>
+<p>cache-regeneration-dominated traces.</p>
 
-<h3 id="竞争格局">竞争格局 <a class="heading-anchor" href="#竞争格局" aria-label="Link to 竞争格局">#</a></h3>
+<p><strong>矛盾根源</strong>: SAGA's instrumentation counts <em>GPU-side</em> time (KV regen, memory util)</p>
+<p><a href="/papers/2605.00528/detail.html#2-q1-q2-q3" class="ref-link" title="2605.00528#2-q1-q2-q3">[2605.00528]</a>; 2511.00739 counts <em>end-to-end</em> time including CPU tool stages</p>
+<p><a href="/papers/2511.00739/detail.html#q1-这篇论文试图解决什么核心痛点？" class="ref-link" title="2511.00739#q1-这篇论文试图解决什么核心痛点？">[2511.00739]</a>. Both can be internally correct: SAGA's 38%</p>
+<p>is "of GPU-attributable time," 2511.00739's 88% is "of E2E time," and they overlap only if the</p>
+<p>tool-idle windows are short. SAGA's own Table 1 (P99 web/API = 45s) suggests long tool tails</p>
+<p>exist, which favors 2511.00739's framing for browser agents.</p>
 
-<p>在 "agent-aware KV cache management" 这个具体赛道上：</p>
+<p><strong>Attack 3 — Theorem 2 proves less than the abstract implies.</strong> The Lyapunov bound formally</p>
+<p>covers only tenants with W_i ≤ C/N; heavy tenants lie <em>outside</em> the hypothesis yet the paper</p>
+<p>reports comparable 99.1% SLO for them <a href="/papers/2605.00528/detail.html#4-作者证明" class="ref-link" title="2605.00528#4-作者证明">[2605.00528]</a>. The empirical 99.2% is</p>
+<p>called merely "directionally consistent" with the bound. So the "provable bounded-deviation</p>
+<p>guarantee" in the abstract is a guarantee for the <em>easy</em> tenant class, validated empirically for</p>
+<p>the hard one. Continuum is more honest here — it claims no formal guarantee at all</p>
+<p><a href="/papers/2511.02230/detail.html#§4-作者证明" class="ref-link" title="2511.02230#§4-作者证明">[2511.02230]</a>.</p>
 
-<pre><code>
-复杂度 ↑
-    │  SAGA (cluster-wide, workflow-atomic)
-    │     ↑ 完整但重
-    │  PBKV (multi-workflow, prediction-driven)
-    │     ↑ 理论保证强
-    │  Continuum (single-instance, TTL-based)
-    │     ↑ 简单可用
-    │  vLLM+APC (prefix caching, no awareness)
-    └──────────────────────────────────── 收益 →
-</code></pre>
+<p><strong>Attack 4 — TTL design is weaker than a cited-adjacent peer.</strong> SAGA's TTL = percentile of a</p>
+<p>fitted log-normal, scaled linearly by memory pressure (§4.2). Continuum's TTL explicitly</p>
+<p>maximizes P(hit)×Benefit − Cost, decomposing benefit into reload <em>and</em> out-of-order (queueing)</p>
+<p>terms weighted by η = −Corr(k, N−k) <a href="/papers/2511.02230/detail.html#§4-作者证明" class="ref-link" title="2511.02230#§4-作者证明">[2511.02230]</a>. SAGA's TTL ignores the</p>
+<p>queueing-delay benefit that Continuum shows is the <em>dominant</em> term. A reviewer would ask why</p>
+<p>SAGA didn't adopt (or at least compare against) Continuum's cost model.</p>
 
-<p>Continuum 已开源且侵入性最低，可能率先被生产采用。PBKV 的 Lipschitz 退化保证使其在预测不可靠场景下更安全。SAGA 提供了最完整的视角但部署代价最高。</p>
+<p><strong>Attack 5 — the anti-thrashing gating is fragile by construction.</strong> SAGA's steal trigger</p>
+<p>T_idle=100ms is <em>shorter</em> than mean migration latency (230ms), requiring three separate guards</p>
+<p>to avoid oscillation <a href="/papers/2605.00528/detail.html#7-实现-cross-reference" class="ref-link" title="2605.00528#7-实现-cross-reference">[2605.00528]</a>. This is a self-inflicted design</p>
+<p>tension; TokenCake sidesteps it with a single shared pressure-snapshot ordering protocol</p>
+<p><a href="/papers/2510.18586/detail.html#7-实现-cross-reference" class="ref-link" title="2510.18586#7-实现-cross-reference">[2510.18586]</a>, arguably cleaner.</p>
 
-<h2 id="§5-未探索方向">§5 未探索方向 <a class="heading-anchor" href="#§5-未探索方向" aria-label="Link to §5-未探索方向">#</a></h2>
+<hr>
+
+<h2 id="4-生态位-—-paradigm-shift-positioning-adoption-evidence">4. 生态位 — paradigm-shift positioning, adoption evidence <a class="heading-anchor" href="#4-生态位-—-paradigm-shift-positioning-adoption-evidence" aria-label="Link to 4-生态位-—-paradigm-shift-positioning-adoption-evidence">#</a></h2>
+
+<p><strong>Paradigm position.</strong> SAGA is a <em>consolidation</em> paper, not a paradigm shift. The paradigm shift</p>
+<p>— "treat the agent program, not the request, as the schedulable unit" — was already articulated</p>
+<p>by Autellix (2502.13965) <a href="/papers/2502.13965/detail.html#§1-tl-dr" class="ref-link" title="2502.13965#§1-tl-dr">[2502.13965]</a> and Parrot (cited, out of scope). SAGA's</p>
+<p>role is to (1) make the program <em>structure</em> explicit as an AEG rather than inferring it at</p>
+<p>runtime, and (2) bolt on the two things Autellix lacked: cross-tool-call cache retention (which</p>
+<p>Continuum/TokenCake independently supplied) and a formal fairness bound.</p>
+
+<p><strong>Where it advances the field.</strong> The Bélády competitive-ratio framing is a genuine conceptual</p>
+<p>contribution: it reframes "how good is our eviction policy?" from a relative comparison ("beats</p>
+<p>LRU") to an absolute one ("within 1.31× of the offline oracle") <a href="/papers/2605.00528/detail.html#5-实验与数据" class="ref-link" title="2605.00528#5-实验与数据">[2605.00528]</a>.</p>
+<p>This is the kind of anchor the surrounding cluster lacks — Autellix's SRPT-gap simulation</p>
+<p><a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a> is the only comparable move, and it's about scheduling not</p>
+<p>eviction.</p>
+
+<p><strong>Adoption evidence (weak).</strong> SAGA is HPDC'26, built on vLLM v0.6.0 + Ray, and claims</p>
+<p>zero-agent-code-modification deployment <a href="/papers/2605.00528/detail.html#7-实现-cross-reference" class="ref-link" title="2605.00528#7-实现-cross-reference">[2605.00528]</a>. But code is</p>
+<p><strong>未公开</strong> (unlike Continuum, which ships github.com/Hanchenli/vllm-continuum</p>
+<p><a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a>, and RouteLLM, which is fully open</p>
+<p><a href="/papers/2406.18665/detail.html#§7-实现-cross-reference" class="ref-link" title="2406.18665#§7-实现-cross-reference">[2406.18665]</a>). This materially weakens reproducibility relative to</p>
+<p>its closest twin. The reliance on framework-exposed AEG hints also depends on an interop channel</p>
+<p>that the protocol survey (2505.02279) shows is still fragmenting</p>
+<p><a href="/papers/2505.02279/detail.html#§2-痛点-方法-结果" class="ref-link" title="2505.02279#§2-痛点-方法-结果">[2505.02279]</a>.</p>
+
+<p><strong>Deployment niche.</strong> Explicitly latency-sensitive interactive serving, accepting ~30% lower peak</p>
+<p>throughput <a href="/papers/2605.00528/detail.html#5-实验与数据" class="ref-link" title="2605.00528#5-实验与数据">[2605.00528]</a>. This is the opposite trade from Autellix (which</p>
+<p>optimizes <em>throughput</em> at fixed latency, 4–15× <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>) —</p>
+<p>so the two are complementary, not substitutes: pick SAGA for interactive multi-tenant TCT, pick</p>
+<p>Autellix for batch throughput.</p>
+
+<hr>
+
+<h2 id="5-未探索方向-—-hybrid-adaptive-directions-from-the-cluster">5. 未探索方向 — hybrid / adaptive directions from the cluster <a class="heading-anchor" href="#5-未探索方向-—-hybrid-adaptive-directions-from-the-cluster" aria-label="Link to 5-未探索方向-—-hybrid-adaptive-directions-from-the-cluster">#</a></h2>
 
 <ol>
-<li><strong>Continuum TTL + SAGA AEG 的混合</strong>：用 Continuum 的 cost-benefit TTL 做 fast-path（低开销，per-turn），用 SAGA 的 AEG 预测做 slow-path（高信息量，per-workflow）。在信息不足时退化到 TTL，在 workflow 模式清晰时升级到 AEG-guided。这组合了两者的优点而避免了 SAGA 对 AEG 质量的强依赖。</li>
+<li><strong>SAGA × Continuum: fold the queueing-delay term into WA-LRU's TTL.</strong> SAGA's TTL ignores the</li>
+<p>out-of-order/queueing benefit that Continuum quantifies via η <a href="/papers/2511.02230/detail.html#§4-作者证明" class="ref-link" title="2511.02230#§4-作者证明">[2511.02230]</a>.</p>
+<p>A hybrid TTL = SAGA's log-normal percentile <em>plus</em> Continuum's memoryfulness-weighted queueing</p>
+<p>term would likely tighten SAGA's own competitive ratio below 1.31×, since Continuum shows</p>
+<p>queueing (not reload) is the dominant cost the current TTL is blind to.</p>
 </ul>
 
 <ol>
-<li><strong>SideQuest 语义压缩 + SAGA session 保留</strong>：SAGA 保留了完整 KV block 跨 turn，但长 session 的 KV 最终仍会超出 GPU 容量。SideQuest 的辅助线程可以在 SAGA 保留的 KV block 内部做语义压缩——保留结构但丢弃已过时的 tool response token。两个系统操作在不同粒度，组合后覆盖 "session 级保留 + turn 级压缩" 的完整谱。</li>
+<li><strong>SAGA × Speculative Tool Calls: multiplicative latency reduction.</strong> SAGA itself names this as</li>
+<p>future work item 6. Speculative Tool Calls (2512.15834) overlaps tool execution with</p>
+<p>generation, capped at <2× by Lemma 1 <a href="/papers/2512.15834/detail.html#§2-q1-·-q2-·-q3" class="ref-link" title="2512.15834#§2-q1-·-q2-·-q3">[2512.15834]</a>; SAGA schedules the known</p>
+<p>work. Prefetching the argmax-successor KV (SAGA §4.3) <em>and</em> speculatively executing that</p>
+<p>successor's likely tool would compound — but only for stateless tools, per 2512.15834's</p>
+<p>constraint.</p>
 </ul>
 
 <ol>
-<li><strong>PBKV 的 Lipschitz 退化框架应用于 SAGA</strong>：SAGA 的 WA-LRU 缺乏形式退化保证。将 PBKV 的 "确定性护栏 + 概率系统" 分层设计 <a href="/papers/2605.06472/detail.html#核心技术壁垒" class="ref-link" title="2605.06472#核心技术壁垒">[2605.06472]</a> 移植到 SAGA——工作流终止后的 cache 确定性回收作为护栏，AEG-guided eviction 作为概率层——可以在不牺牲 SAGA 信息优势的前提下获得形式化的退化保证。</li>
+<li><strong>CPU-aware AEG accounting.</strong> SAGA's work_remain (Eq. 9) counts only GPU prefill+decode</li>
+<p><a href="/papers/2605.00528/detail.html#4-作者证明" class="ref-link" title="2605.00528#4-作者证明">[2605.00528]</a>. Given 2511.00739's finding that CPU tool time can be 88% of</p>
+<p>E2E <a href="/papers/2511.00739/detail.html#key-findings" class="ref-link" title="2511.00739#key-findings">[2511.00739]</a>, an AEG node should carry a <em>CPU-time</em> estimate too, so</p>
+<p>AFS urgency reflects true wall-clock remaining work. Nobody in the cluster co-schedules</p>
+<p>GPU-KV retention and CPU-tool admission (COMB/MAS from 2511.00739) jointly.</p>
 </ul>
 
 <ol>
-<li><strong>PASTE 投机执行 + SAGA 投机 prefetch 的联合优化</strong>：SAGA 已经在做 speculative KV prefetch（most-likely successor）<a href="/papers/2605.00528/detail.html#关键実装细节" class="ref-link" title="2605.00528#关键実装细节">[2605.00528]</a>，PASTE 在做 speculative tool execution。如果两者共享 pattern 预测结果：当预测下一个 tool 是 <code>run_test</code> 时，PASTE 预执行 test，SAGA 同时 prefetch test-response 对应的 KV prefix。这消除了"投机执行返回后才开始 prefill"的串行依赖。</li>
+<li><strong>Cross-context reuse for multi-agent SAGA.</strong> SAGA retains <em>within-session</em> KV; KVCOMM</li>
+<p>(2510.12872) reuses KV <em>across</em> agent contexts via offset approximation</p>
+<p><a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a>. A multi-agent SAGA (SAGA §11 item 5) where sibling agents</p>
+<p>share large prompt prefixes could layer KVCOMM's anchor-pool reuse under WA-LRU eviction —</p>
+<p>turning "which session's cache to keep" into "which <em>offset-approximated</em> cache to keep."</p>
 </ul>
 
 <ol>
-<li><strong>CPU-GPU co-scheduling 扩展</strong>：2511.00739 揭示 CPU 工具执行占 E2E 延迟最高 88% <a href="/papers/2511.00739/detail.html#核心发现" class="ref-link" title="2511.00739#核心发现">[2511.00739]</a>。SAGA 的 tool-call TTL 目前只考虑 GPU 侧的 KV 保留决策。如果将 CPU 工具执行的调度（COMB 微批、MAS 准入控制）纳入 SAGA 的统一调度，可以同时优化 GPU KV 保留和 CPU 工具执行——构建真正的 "heterogeneous workflow-aware scheduler"。</li>
+<li><strong>Adaptive throughput/latency knob instead of a fixed ~30% trade.</strong> SAGA's BFS/DFS hybrid is a</li>
+<p>static point <a href="/papers/2605.00528/detail.html#5-实验与数据" class="ref-link" title="2605.00528#5-实验与数据">[2605.00528]</a>; Autellix's PLAS/ATLAS and RouteLLM's α-threshold</p>
+<p><a href="/papers/2406.18665/detail.html#§4-作者证明" class="ref-link" title="2406.18665#§4-作者证明">[2406.18665]</a> both expose a <em>tunable</em> operating point. A workload-adaptive</p>
+<p>controller that slides between throughput-optimal (BFS, Autellix-like) and TCT-optimal</p>
+<p>(SAGA-hybrid) per tenant SLO is unexplored and technically straightforward given the shared</p>
+<p>vLLM substrate all three build on.</p>
 </ul>
 
-<ol>
-<li><strong>自适应 AFS 面向 DAG-structured workflows</strong>：SGH 提出 agent 执行应从 loop 走向 structured graph <a href="/papers/2604.11378/detail.html#核心技术壁垒" class="ref-link" title="2604.11378#核心技术壁垒">[2604.11378]</a>。SAGA 的 AFS 目前假设 flat tenant 模型。当上游 agent runtime 采用 DAG 结构时，fairness 的定义应该从"per-task completion time"扩展为"per-DAG critical-path completion time"——这需要 AFS 感知 DAG 拓扑。</li>
+<hr>
+
+<h2 id="参考-drill-links">参考 (drill links) <a class="heading-anchor" href="#参考-drill-links" aria-label="Link to 参考-drill-links">#</a></h2>
+
+<ul>
+<li><strong>本篇</strong> SAGA — <a href="/papers/2605.00528/detail.html#1-tl-dr" class="ref-link" title="2605.00528#1-tl-dr">[2605.00528]</a>, <a href="/papers/2605.00528/detail.html#4-作者证明" class="ref-link" title="2605.00528#4-作者证明">[2605.00528]</a>, <a href="/papers/2605.00528/detail.html#5-实验与数据" class="ref-link" title="2605.00528#5-实验与数据">[2605.00528]</a></li>
+<li>Autellix (program-level LAS scheduling) — <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>, <a href="/papers/2502.13965/detail.html#§4-作者证明" class="ref-link" title="2502.13965#§4-作者证明">[2502.13965]</a></li>
+<li>Continuum (KV TTL, cost-benefit) — <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>, <a href="/papers/2511.02230/detail.html#§4-作者证明" class="ref-link" title="2511.02230#§4-作者证明">[2511.02230]</a>, <a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a></li>
+<li>TokenCake (temporal+spatial KV scheduler) — <a href="/papers/2510.18586/detail.html#2-q1-q2-q3" class="ref-link" title="2510.18586#2-q1-q2-q3">[2510.18586]</a>, <a href="/papers/2510.18586/detail.html#7-实现-cross-reference" class="ref-link" title="2510.18586#7-实现-cross-reference">[2510.18586]</a></li>
+<li>KVCOMM (cross-context KV reuse) — <a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a></li>
+<li>Speculative Tool Calls (tool-level speculation) — <a href="/papers/2512.15834/detail.html#§2-q1-·-q2-·-q3" class="ref-link" title="2512.15834#§2-q1-·-q2-·-q3">[2512.15834]</a></li>
+<li>CPU-Centric Characterization (CPU tool bottleneck) — <a href="/papers/2511.00739/detail.html#q1-这篇论文试图解决什么核心痛点？" class="ref-link" title="2511.00739#q1-这篇论文试图解决什么核心痛点？">[2511.00739]</a>, <a href="/papers/2511.00739/detail.html#key-findings" class="ref-link" title="2511.00739#key-findings">[2511.00739]</a></li>
+<li>RouteLLM (query-difficulty model routing) — <a href="/papers/2406.18665/detail.html#§2-痛点-方法-结果" class="ref-link" title="2406.18665#§2-痛点-方法-结果">[2406.18665]</a>, <a href="/papers/2406.18665/detail.html#§4-作者证明" class="ref-link" title="2406.18665#§4-作者证明">[2406.18665]</a>, <a href="/papers/2406.18665/detail.html#§7-实现-cross-reference" class="ref-link" title="2406.18665#§7-实现-cross-reference">[2406.18665]</a></li>
+<li>Agent Interoperability Protocols Survey — <a href="/papers/2505.02279/detail.html#§2-痛点-方法-结果" class="ref-link" title="2505.02279#§2-痛点-方法-结果">[2505.02279]</a></li>
 </ul>
 
 </div>
 <div class="link-area">
 <strong>Related:</strong> 
-<a href="/papers/2404.16811.html">2404.16811</a> (baseline) 
-<a href="/papers/2409.19256.html">2409.19256</a> (related) 
-<a href="/papers/2504.09285.html">2504.09285</a> (related) 
-<a href="/papers/2505.05286.html">2505.05286</a> (related) 
+<a href="/papers/kvflow.html">kvflow</a> (baseline) 
+<a href="/papers/vllm.html">vllm</a> (baseline) 
+<a href="/papers/llumnix.html">llumnix</a> (related) 
+<a href="/papers/parrot.html">parrot</a> (related) 
+<a href="/papers/autellix.html">autellix</a> (related) 
+<a href="/papers/belady-1966.html">belady-1966</a> (cites) 
+<a href="/papers/react.html">react</a> (cites) 
 </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>

@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">Efficient Serving for Dynamic Agent Workflows with Prediction-based KV-Cache Management</h1>
 <div class="card-meta"><span class="badge badge-agent">agent</span> 2605.06472</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-management</span><span class="tag">multi-agent-serving</span><span class="tag">workflow-prediction</span><span class="tag">cache-eviction</span><span class="tag">algorithms-with-predictions</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">multi-agent-serving</span><span class="tag">cache-eviction</span><span class="tag">prefetching</span><span class="tag">algorithms-with-predictions</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2605.06472.html">← Synthesis</a>
 <a href="/overview/agent.html">← agent Survey</a>
@@ -207,367 +207,202 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h1 id="pbkv-prediction-based-kv-cache-management-for-dynamic-agent-workflows">PBKV: Prediction-Based KV-Cache Management for Dynamic Agent Workflows <a class="heading-anchor" href="#pbkv-prediction-based-kv-cache-management-for-dynamic-agent-workflows" aria-label="Link to pbkv-prediction-based-kv-cache-management-for-dynamic-agent-workflows">#</a></h1>
 
-<blockquote>
-Haoyu Zheng, Fangcheng Fu, Jia Wu, Binhang Yuan, Yongqiang Zhang, Hao Wang, Yuanyuan Zhu, Xiao Yan, Jiawei Jiang | 2026-05 | <a href="https://arxiv.org/abs/2605.06472">arXiv 2605.06472</a>
-Category: agent | Tags: kv-cache-management, multi-agent-serving, workflow-prediction, cache-eviction, algorithms-with-predictions
-Read: 2026-05-25
-</blockquote>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<hr>
+<p>Dynamic multi-agent workflows (retry loops, runtime branches) break both LRU (temporal locality) and KVFlow (static DAG) for KV-cache management. PBKV predicts the next $K$ agent invocations with a tiny GraphSAGE model, scores each cache node by cross-workflow expected reuse, then evicts retired-cache-first and prefetches only idle GPU/PCIe capacity — up to 1.85× faster than LRU, with a Lipschitz graceful-degradation guarantee.</p>
 
-<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p>PBKV 用 GraphSAGE 多步预测 agent 调用序列，驱动「分层淘汰 + 保守预取」的 KV 缓存策略，在动态多 agent 工作流 serving 中实现 1.85× 加速和 2.55× 缓存命中率提升，并提供基于 Lipschitz 连续性的优雅退化保证。</p>
+<h3 id="q1-—-痛点-the-problem">Q1 — 痛点 (the problem) <a class="heading-anchor" href="#q1-—-痛点-the-problem" aria-label="Link to q1-—-痛点-the-problem">#</a></h3>
 
-<hr>
-
-<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
-
-<h3 id="q1-痛点：lru-与静态-dag-假设均无法应对动态-agent-工作流">Q1 痛点：LRU 与静态 DAG 假设均无法应对动态 agent 工作流 <a class="heading-anchor" href="#q1-痛点：lru-与静态-dag-假设均无法应对动态-agent-工作流" aria-label="Link to q1-痛点：lru-与静态-dag-假设均无法应对动态-agent-工作流">#</a></h3>
-
-<p>多 agent 工作流（Planner → Coder → Tester → 重试循环）中上下游 agent 共享大量 KV-Cache（系统 prompt、工具描述、对话历史），理论命中率可达 90%+。但实际受限于 GPU 显存，必须做淘汰决策：</p>
+<p>Agentic workflows chain agents (Planner → Coder → Tester …) that share a large context — system prompt, tool/agent descriptions, and upstream history — so KV-cache reuse can exceed a 90% hit rate. But GPU memory is limited, so a cache-management policy must decide what to keep. Two existing families both fail on <em>dynamic</em> workflows:</p>
 
 <ul>
-<li><strong>LRU 的失配</strong>：LRU 假设时间局部性，但工作流级缓存复用由 DAG 结构决定——一个缓存节点可能在多个 agent 调用之间空闲然后被复用。LRU 会过早淘汰这些结构上仍有价值的节点。实测命中率仅 27-28%。</li>
-<li><strong>KVFlow 的静态假设</strong>：KVFlow 将 Belady 算法适配到静态 Agent Step Graph 上，按"距执行步数"打分淘汰。但真实工作流是动态的——Tester 失败触发重试循环、Retriever 根据内容生成子查询——运行时 agent 调用序列取决于上下文，KVFlow 无法处理。</li>
-<li><strong>预测与代价的不对称</strong>：agent 工作流天然难预测（随机解码沿路径传播不确定性），而预测错误的代价极高——一次 cache miss 需要对累积的数万 token 做完整 re-prefill。</li>
+<li><strong>LRU</strong> (the SGLang/vLLM default) assumes temporal locality. But in a workflow a cache entry sits idle across several agent invocations (tool calls, agent transitions) before being reused; LRU evicts it prematurely during that idle window. Reuse here is <em>structural</em>, not temporal.</li>
+<li><strong>KVFlow</strong> adapts Belady's optimal eviction to agents by assuming a <em>predefined static agent step graph</em> and evicting the cache whose next invocation is farthest away ("steps-to-execution"). This requires knowing the future invocation order a priori — which is false for runtime-dependent workflows (a Tester bounces code back for a rewrite; a Retriever spawns new sub-queries).</li>
 </ul>
 
-<p><img src="/assets/2605.06472/fig1.png" alt="Figure 1: 动态工作流示例——代码生成任务的调用图"></p>
+<p>The core tension: the workflow structure exposes huge reuse potential, yet is inherently hard to predict (stochastic LLM decoding injects per-step uncertainty that propagates along the path), <em>and</em> prediction errors are disproportionately costly — one wrong eviction can force re-prefill of tens of thousands of accumulated tokens.</p>
 
-<p><em>Paper Figure 1：代码生成任务的 agent 调用图。Tester 根据运行结果条件性地触发 Analyzer → Coder 的重试循环，使调用序列在运行时才确定。</em></p>
+<h3 id="q2-—-方法-the-method">Q2 — 方法 (the method) <a class="heading-anchor" href="#q2-—-方法-the-method" aria-label="Link to q2-—-方法-the-method">#</a></h3>
 
-<p>这张图展示了为何静态 DAG 假设失败：重试循环的触发取决于 Tester 的 LLM 输出，基于预定义执行顺序的缓存策略无法为这类动态分支做出正确淘汰决策。</p>
-
-<h3 id="q2-方法：预测驱动的三组件-kv-cache-管理">Q2 方法：预测驱动的三组件 KV-Cache 管理 <a class="heading-anchor" href="#q2-方法：预测驱动的三组件-kv-cache-管理" aria-label="Link to q2-方法：预测驱动的三组件-kv-cache-管理">#</a></h3>
-
-<p>PBKV 的核心设计原则：<strong>预测即将到来的 agent 调用 → 评估现有缓存的复用价值 → 驱动淘汰与预取</strong>。三个组件：</p>
+<p>PBKV reframes cache management as <strong>predicting future access patterns</strong> and builds three coordinated components (Figure 2):</p>
 
 <ol>
-<li><strong>多步预测器</strong>：融合 GraphSAGE 拓扑先验（调用图结构）、注意力历史聚合（工作流前缀）、prefill 语义信号（LLM 隐藏状态），单次前向传播输出 $K$ 步 agent 分布。~350K 参数，1024 请求推理仅需 1.56ms。</li>
+<li><strong>A multi-step predictor</strong> that fuses complementary signals (graph topology + per-request prefill semantics) and emits $K$ probability distributions over upcoming agents in one forward pass — avoiding the myopia of single-step predictors and the error accumulation of autoregressive rollout.</li>
+<li><strong>Hierarchical eviction</strong> — reclaim <em>retired</em> cache (from terminated workflows, deterministically valueless) first; only when it is exhausted does a continuous lookahead score $\mathrm{Score}(c)$ drive eviction of active cache.</li>
+<li><strong>Conservative prefetching</strong> — proactively load likely-reused nodes from host memory, but <em>only</em> into otherwise-idle GPU space and idle PCIe bandwidth, never displacing known-valuable active cache.</li>
 </ul>
 
-<ol>
-<li><strong>分层淘汰</strong>：(a) 生命周期感知——优先回收已终止工作流的"退役缓存"（确定性零价值）；(b) 评分驱动——对活跃缓存按 $K$ 步期望复用次数 $\mathrm{Score}(c)$ 排序淘汰。分层设计确保确定性保护嵌入概率系统——预测准确时获益，不准确时退化至生命周期感知水平而非 LRU。</li>
-</ul>
+<p><strong>核心技术壁垒</strong>: the single hardest-to-replicate insight is <em>embedding deterministic guardrails inside a probabilistic system</em>. Prediction is untrustworthy, so PBKV never lets a prediction override a certainty: retired cache (a fact) always outranks any score (an estimate), and prefetching only spends resources that are provably idle. This asymmetry — trust facts, discount predictions — is what turns a noisy predictor into monotone, robust gains and underwrites the Lipschitz degradation bound. Copying the GraphSAGE model is easy; copying this discipline of <em>when to ignore it</em> is the load-bearing design.</p>
 
-<ol>
-<li><strong>保守预取</strong>：仅在空闲 GPU 空间和纯 decode 批次的空闲 PCIe 带宽内，从 host 预取高价值缓存。不淘汰活跃缓存为预取腾空间，确保预测错误时无负面影响。</li>
-</ul>
+<h3 id="q3-—-结果-the-outcome">Q3 — 结果 (the outcome) <a class="heading-anchor" href="#q3-—-结果-the-outcome" aria-label="Link to q3-—-结果-the-outcome">#</a></h3>
 
-<p><strong>核心技术壁垒</strong>：「确定性护栏 + 概率系统」的分层架构。退役缓存淘汰提供不依赖预测的确定性基线（单独贡献 1.66× 命中率提升），评分驱动淘汰的 Lipschitz 退化保证（Theorem 5.1）确保增益随预测精度连续变化而不断崖式下降，保守预取的空间/带宽双约束确保错误预测不反噬。三层联合使 PBKV 在预测精度从 0.94 到随机的整个谱上都严格优于 LRU——这是 KVFlow 和 PASTE 等同类工作未能实现的稳健性。</p>
+<p>On three realistic workloads (HoVer+LangChain, SWE-bench+AutoGen, FinanceBench+CrewAI) with Qwen3-14B/32B: PBKV cuts end-to-end latency by up to <strong>1.85×</strong> and lifts KV-cache hit rate by up to <strong>2.55×</strong> over LRU on dynamic workflows; on the static workflow it beats SOTA KVFlow by up to <strong>1.26×</strong> latency / <strong>1.39×</strong> hit rate. The predictor is pluggable and the system is proven to degrade <em>Lipschitz-continuously</em> in prediction error.</p>
 
-<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<ul>
-<li>动态工作流：相比 LRU 延迟降低最高 <strong>1.85×</strong>，命中率提升 <strong>2.55×</strong></li>
-<li>静态工作流：相比 SOTA KVFlow 延迟降低 <strong>1.26×</strong>，命中率提升 <strong>1.39×</strong></li>
-<li>预测器精度：1-step 0.94，3-step 0.77（1K 训练轨迹，HoVer+LangChain）</li>
-<li>调度开销可忽略：预测推理 1.18ms（<10% decode step），评分更新 1.53μs</li>
-<li>理论保证：淘汰代价遗憾与预测误差呈 Lipschitz 连续，乘子 $1/(2(1-\gamma))$ 独立于系统规模</li>
-</ul>
+<h3 id="the-global-call-graph-and-the-workflow-abstraction">The global call graph and the workflow abstraction <a class="heading-anchor" href="#the-global-call-graph-and-the-workflow-abstraction" aria-label="Link to the-global-call-graph-and-the-workflow-abstraction">#</a></h3>
 
-<h3 id="agent-scope">Agent Scope <a class="heading-anchor" href="#agent-scope" aria-label="Link to agent-scope">#</a></h3>
+<p>A multi-agent app is a directed <strong>global call graph</strong> $G=(V,E)$ where nodes are agents and edges are admissible transitions; crucially $G$ may contain <strong>loops</strong> (retry paths). A <em>workflow</em> is one execution instance — an ordered sequence $a_1, a_2, \ldots$ over $G$. The code-generation example makes the dynamism concrete: the Tester conditionally routes back through Analyzer and Coder, so the realized path is unknowable in advance.</p>
 
-<ul>
-<li><strong>任务类别</strong>：serving 基础设施层——为动态多 agent 工作流提供 KV-Cache 管理，非 agent 本身</li>
-<li><strong>交互模式</strong>：服务多轮 agent 调用链（每个 agent 是一次 LLM 请求），工作流长度 3-10+ agent</li>
-<li><strong>自治性</strong>：缓存管理完全自动，预测器自主推理；不涉及 agent 层面的规划或决策</li>
-<li><strong>覆盖范围</strong>：动态工作流（含条件分支、重试循环）和静态工作流均适用</li>
-</ul>
+<p><img src="/assets/2605.06472/fig1.png" alt="Figure 1: code-generation call graph with a Tester-triggered retry loop"></p>
 
-<hr>
+<p><em>Paper's Figure 1: "A call graph for the code-generation task. The Tester conditionally triggers a retry path through Analyzer and Coder, i.e., a retry loop."</em> This loop is exactly what defeats KVFlow's static "steps-to-execution": when the current agent is Analyzer, the Tester will be re-invoked two steps later, so its cache must be protected — but a static distance or a single-step predictor cannot see that.</p>
 
-<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+<h3 id="system-overview-—-the-agent-serving-loop">System overview — the agent-serving loop <a class="heading-anchor" href="#system-overview-—-the-agent-serving-loop" aria-label="Link to system-overview-—-the-agent-serving-loop">#</a></h3>
 
-<h3 id="系统全景">系统全景 <a class="heading-anchor" href="#系统全景" aria-label="Link to 系统全景">#</a></h3>
+<p><img src="/assets/2605.06472/fig2.png" alt="Figure 2: PBKV system overview — predictor feeds Score(c), which drives eviction and prefetching over a two-tier store"></p>
 
-<p><img src="/assets/2605.06472/fig2.png" alt="Figure 2: PBKV 系统概览"></p>
+<p><em>Paper's Figure 2: "For each active workflow $w$, the predictor produces a $K$-step forecast over upcoming agent invocations. The forecast drives a shared scoring function $Score(c)$, which feeds both a hierarchical eviction policy and a conservative prefetching policy on the two-tier KV-Cache storage."</em> The two-tier store is a Radix Tree on GPU memory plus HiCache on host memory; eviction and prefetching both consume the same forecast, sharing one reuse-scoring mechanism and one design philosophy (deterministic guardrails in a probabilistic system).</p>
 
-<p><em>Paper Figure 2：PBKV 系统架构。对每个活跃工作流 $w$，预测器产生 $K$ 步预测，驱动共享评分函数 $\mathrm{Score}(c)$，同时服务于分层淘汰和保守预取策略，底层为 Radix Tree (GPU) + HiCache (host) 的两级存储。</em></p>
-
-<p>系统分三层：预测层（轻量 GNN + attention + MLP，独立 CUDA stream，与 decode 重叠），策略层（淘汰/预取决策，CPU 调度线程），存储层（SGLang Radix Tree + HiCache）。策略层不占 GPU 关键路径。</p>
-
-<h3 id="预测器架构">预测器架构 <a class="heading-anchor" href="#预测器架构" aria-label="Link to 预测器架构">#</a></h3>
-
-<p><img src="/assets/2605.06472/fig3.png" alt="Figure 3: 预测器三流融合架构"></p>
-
-<p><em>Paper Figure 3：预测器架构。三路信号—— GraphSAGE 拓扑嵌入 $\mathbf{h}_{\mathrm{cur}}$、注意力工作流前缀摘要 $\mathbf{h}_{\mathrm{path}}$、prefill 语义信号 $\mathbf{h}_{\mathrm{txt}}$——拼接后经 MLP 联合预测 $K$ 步 agent 分布。</em></p>
-
-<p>三路设计的互补性：</p>
-<ul>
-<li><strong>$\mathbf{h}_{\mathrm{cur}}$（拓扑嵌入）</strong>：2 层 GraphSAGE 在 agent 调用图 $G$ 上传播，编码当前 agent 在全局拓扑中的位置及邻居转移概率。跨工作流共享的结构先验。</li>
-<li><strong>$\mathbf{h}_{\mathrm{path}}$（前缀摘要）</strong>：以当前 agent 嵌入为 query，对工作流前缀做缩放点积注意力，upweight 最具信息量的历史 agent。区分同一 agent 在不同前缀路径下的行为差异。</li>
-<li><strong>$\mathbf{h}_{\mathrm{txt}}$（语义信号）</strong>：复用 LLM prefill 的 post-norm 隐藏状态经 ReLU 投影。区分相同前缀但不同请求内容——零额外推理成本。</li>
-</ul>
-
-<p>$K$ 步联合预测（single forward pass）而非自回归逐步展开，避免误差累积。</p>
-
-<h3 id="评分与淘汰机制">评分与淘汰机制 <a class="heading-anchor" href="#评分与淘汰机制" aria-label="Link to 评分与淘汰机制">#</a></h3>
-
-<p><img src="/assets/2605.06472/fig4.png" alt="Figure 4: 跨工作流复用评分计算"></p>
-
-<p><em>Paper Figure 4：对缓存节点 $c$，聚合所有关联活跃工作流的 $K$=3 步预测，各步乘以存活概率 $s^{(k)}$ 和信心衰减 $\gamma^{k-1}$，跨 $m$ 个工作流求和得到 $\mathrm{Score}(c)$。</em></p>
-
-<p>评分的物理意义：$\mathrm{Score}(c)$ 等于淘汰 $c$ 在未来 $K$ 步内引起的期望折扣 miss 次数（Lemma G.1 证明）。跨工作流聚合自然保护全局缓存（被多工作流共享的系统 prompt 得分最高）。</p>
-
-<h3 id="pbkv-serving-循环">PBKV Serving 循环 <a class="heading-anchor" href="#pbkv-serving-循环" aria-label="Link to pbkv-serving-循环">#</a></h3>
+<p>The per-turn control loop, driven on every workflow state change (new invocation or termination):</p>
 
 <div class="mermaid">
 stateDiagram-v2
-    [*] --> WorkflowArrival
-    WorkflowArrival --> PredictorInference: 新请求 / agent 转移
-    PredictorInference --> ScoreUpdate: K步预测分布
-    ScoreUpdate --> EvictionCheck: GPU 显存压力?
-    EvictionCheck --> RetiredEvict: 存在退役缓存
-    EvictionCheck --> ScoreDrivenEvict: 退役已耗尽
-    RetiredEvict --> PrefetchCheck
-    ScoreDrivenEvict --> PrefetchCheck
-    EvictionCheck --> PrefetchCheck: 无压力
-    PrefetchCheck --> HostToGPU: 空闲空间 + decode批次
-    PrefetchCheck --> LLMDispatch: 无预取预算
-    HostToGPU --> LLMDispatch
-    LLMDispatch --> Decode: cache hit → 部分 prefill
-    LLMDispatch --> FullReprefill: cache miss
-    FullReprefill --> Decode
-    Decode --> AgentDone: EOS
-    AgentDone --> PredictorInference: 下一 agent
-    AgentDone --> WorkflowEnd: 最后一个 agent
-    WorkflowEnd --> RetireTag: 标记私有缓存为退役
-    RetireTag --> [*]
+    [*] --> Invoke: new agent invocation
+    Invoke --> Predict: refresh K-step forecast
+    Predict --> Score: update Score(c) of affected nodes
+    Score --> Evict: on memory pressure
+    Evict --> RetiredFirst: drain retired cache (deterministic)
+    RetiredFirst --> ScoreDriven: then evict lowest Score(c) active
+    Score --> Prefetch: on pure-decode batch
+    Prefetch --> BudgetGate: budget = min(idle space, idle bandwidth)
+    ScoreDriven --> Invoke
+    BudgetGate --> Invoke
+    Invoke --> [*]: workflow terminates -> cache becomes retired
 </div>
 
-<p>关键的"确定性护栏"实现点在 EvictionCheck → RetiredEvict 分支：只有所有退役缓存耗尽后才触发概率评分驱动的 ScoreDrivenEvict。WorkflowEnd → RetireTag 是生命周期追踪的核心——监听终止事件并即时标记。</p>
+<h3 id="planning-prediction-architecture">Planning / prediction architecture <a class="heading-anchor" href="#planning-prediction-architecture" aria-label="Link to planning-prediction-architecture">#</a></h3>
 
-<h3 id="规划与推理">规划与推理 <a class="heading-anchor" href="#规划与推理" aria-label="Link to 规划与推理">#</a></h3>
+<p>The predictor is the foundation. It must (i) exploit structural priors in $G$ and (ii) generalize to <em>unseen</em> runtime prefixes — so PBKV uses <strong>GraphSAGE</strong> (inductive, operates via neighborhood sampling/aggregation) rather than a transductive GCN.</p>
+
+<p><img src="/assets/2605.06472/fig3.png" alt="Figure 3: predictor fusing topology (h_cur), attention history (h_path), and prefill semantics (h_txt) into an MLP that emits K distributions"></p>
+
+<p><em>Paper's Figure 3: "It fuses a topology-aware agent embedding from GraphSAGE ($h_{cur}$), an attention-based workflow prefix summary ($h_{path}$), and a semantic signal reused from prefill ($h_{txt}$), then jointly predicts the next $K$ agent probability distributions via an MLP."</em> The reader should notice the three-stream fusion: $h_{\mathrm{cur}}$ answers "where am I in $G$", $h_{\mathrm{path}}$ answers "how did I get here" (attention over the prefix so two workflows at the same agent but different histories diverge), and $h_{\mathrm{txt}}$ answers "what is my intent" (reusing the last prefill token's post-norm hidden state, obtained essentially for free). The single MLP emits all $K$ steps at once, avoiding autoregressive error accumulation while keeping latency to one inference.</p>
 
 <ul>
-<li><strong>规划风格</strong>：PBKV 的"规划"是缓存管理层面的 $K$-step lookahead，非任务层面 planning。预测器产出的是 agent 调用概率分布，而非执行计划。</li>
-<li><strong>分解</strong>：bottom-up——从当前状态预测未来，而非 top-down 分解任务。</li>
-<li><strong>预算</strong>：$K$-step horizon（最优 $K$=3）+ 信心衰减 $\gamma$=0.7 限制远期预测的影响。</li>
-<li><strong>回退</strong>：预测失败时退化至生命周期感知策略（确定性基线），而非退化至 LRU。</li>
+<li><strong>Memory model</strong>: short-term = the current radix-tree cache (GPU); long-term / spill = HiCache host memory; episodic = offline invocation traces used to train the predictor and estimate the transition matrix $A$.</li>
+<li><strong>Error recovery</strong>: when a prediction is wrong and a needed node was evicted, HiCache re-admits it from host memory (a PCIe transfer) instead of a full re-prefill; when retired cache is unavailable the policy falls back to score-driven eviction rather than degenerating to LRU.</li>
 </ul>
 
-<hr>
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+<p><strong>PBKV has a formal analytical model</strong> (unusual for an agent paper): a full algorithms-with-predictions smoothness analysis in Appendix G, culminating in Theorem 5.1 (= Theorem G.4).</p>
 
-<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
 
 <table>
-<tr><th>符号</th><th>含义</th><th>类型</th></tr>
-<tr><td>$G=(V,E)$</td><td>agent 调用图（有向，可含环）</td><td>图</td></tr>
-<tr><td>$c$</td><td>Radix Tree 中的缓存节点</td><td>对象</td></tr>
-<tr><td>$A_w(c) \in \{0,1\}^{\</td><td>V\</td><td>}$</td><td>工作流 $w$ 对节点 $c$ 的 agent 级访问指示器</td><td>向量</td></tr>
-<tr><td>$P_w^{(k)}$</td><td>工作流 $w$ 在第 $k$ 步的预测 agent 分布</td><td>$\Delta^{\</td><td>V\</td><td>}$</td></tr>
-<tr><td>$s_w^{(k)}$</td><td>工作流 $w$ 在第 $k$ 步的存活概率</td><td>[0,1]</td></tr>
-<tr><td>$\gamma$</td><td>信心衰减因子（默认 0.7）</td><td>超参</td></tr>
-<tr><td>$K$</td><td>前瞻步数（默认 3）</td><td>超参</td></tr>
-<tr><td>$\mathrm{Score}(c)$</td><td>缓存节点的期望折扣复用分数</td><td>标量 ≥ 0</td></tr>
-<tr><td>$\widehat{E}_B$ / $E_B^{\star}$</td><td>PBKV 淘汰集 / 最优淘汰集</td><td>集合</td></tr>
-<tr><td>$\epsilon_c^{\gamma}$</td><td>节点 $c$ 的折扣加权预测误差</td><td>标量 ≥ 0</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$G=(V,E)$</td><td>global call graph; nodes = agents, edges = admissible transitions (may loop)</td></tr>
+<tr><td>$\mathcal{W}^{\text{act}}(c)$</td><td>set of active workflows associated with cache node $c$</td></tr>
+<tr><td>$A_w(c)\in\{0,1\}^{</td><td>V</td><td>}$</td><td>per-workflow access indicator: which agents of $w$ touch $c$</td></tr>
+<tr><td>$P_w^{(k)}$</td><td>predicted step-$k$ agent-access distribution for workflow $w$</td></tr>
+<tr><td>$p_{w,\langle\text{END}\rangle}^{(j)}$</td><td>conditional termination probability of $w$ at step $j$</td></tr>
+<tr><td>$s_w^{(k)}$</td><td>cumulative survival probability of $w$ to step $k$</td></tr>
+<tr><td>$\gamma<1$</td><td>confidence decay factor (far-step distrust)</td></tr>
+<tr><td>$K$</td><td>lookahead horizon (best at $K=3$)</td></tr>
+<tr><td>$\epsilon_c^\gamma$</td><td>node-local discount-weighted prediction error</td></tr>
+<tr><td>$\widehat{E}_B, E_B^\star$</td><td>PBKV's vs. ground-truth-optimal eviction set of budget $B$</td></tr>
 </table>
 
-<h3 id="方程物理意义与推导检验">方程物理意义与推导检验 <a class="heading-anchor" href="#方程物理意义与推导检验" aria-label="Link to 方程物理意义与推导检验">#</a></h3>
+<h3 id="equation-physical-meaning">Equation physical meaning <a class="heading-anchor" href="#equation-physical-meaning" aria-label="Link to equation-physical-meaning">#</a></h3>
 
-<p><strong>Check 1 — 单步复用价值（Eq 1）</strong></p>
+<p>Single-step reuse value aggregates, across all active workflows touching $c$, the probability their next invocation hits $c$:</p>
 
-<p>$$\mathrm{Value}(c) = \sum_{w \in \mathcal{W}^{\mathrm{act}}(c)} A_w(c) \cdot P_w$$</p>
+<p>$$\mathrm{Value}(c)=\sum_{w\in\mathcal{W}^{\text{act}}(c)}A_{w}(c)\cdot P_{w}$$</p>
 
-<p>聚合所有关联活跃工作流下一步调用到 $c$ 所涉 agent 的概率。内积 $A_w(c) \cdot P_w$ 对那些之前访问过 $c$ 的 agent 取其被调用概率求和；跨工作流累加使全局缓存（多 workflow 共享）自然获得更高分。用于保守预取的排序依据（不使用 $K$-step，因为预取是逐步增量的）。</p>
+<p>The <strong>sum</strong> (not min) is deliberate: value grows with both the <em>number</em> and <em>probability</em> of reusing workflows, so popular/global cache is protected automatically — the opposite of KVFlow's <em>min</em> over steps-to-execution, which sees timing but not popularity.</p>
 
-<p><strong>Check 2 — $K$ 步折扣评分（Eq 2）</strong></p>
+<p>Survival discounts steps that likely never happen because the workflow already terminated (hazard-product):</p>
 
-<p>$$\mathrm{Score}(c) = \sum_{k=1}^{K} \gamma^{k-1} \sum_{w \in \mathcal{W}^{\mathrm{act}}(c)} s_w^{(k)} \cdot A_w(c) \cdot P_w^{(k)}$$</p>
+<p>$$s_{w}^{(k)}=\prod_{j=1}^{k-1}\bigl(1-p_{w,\langle\text{END}\rangle}^{(j)}\bigr)$$</p>
 
-<p>将单步价值扩展到 $K$ 步 horizon。每步贡献被两重折扣抑制：信心衰减 $\gamma^{k-1}$（远期预测不可靠）和存活概率 $s_w^{(k)}$（工作流可能已终止）。物理意义经 Lemma G.1 证明：$\mathrm{Score}(c)$ = 淘汰 $c$ 导致的期望折扣 miss 数。淘汰 Score 最低的节点等价于贪心最小化期望 miss。</p>
+<p>The $K$-step score combines confidence decay ($\gamma^{k-1}$: far predictions less reliable) with survival weighting:</p>
 
-<p><strong>Check 3 — 存活概率</strong></p>
+<p>$$\mathrm{Score}(c)=\sum_{k=1}^{K}\gamma^{k-1}\sum_{w\in\mathcal{W}^{\text{act}}(c)}s_{w}^{(k)}\cdot A_{w}(c)\cdot P_{w}^{(k)}$$</p>
 
-<p>$$s_w^{(k)} = \prod_{j=1}^{k-1} \bigl(1 - p_{w,\langle\mathrm{END}\rangle}^{(j)}\bigr)$$</p>
+<p>The prefetch budget takes the tightest of space vs bandwidth so prefetch hides behind one decode step and steals nothing on-path: $S_{bw}=Bandwidth\cdot StepDuration$, $S=\min\{S_a, S_{bw}\}$.</p>
 
-<p>链式条件概率：存活到第 $k$ 步 = 前 $k-1$ 步每步都未终止的联合概率。当 $p_{\langle\mathrm{END}\rangle}$ 较高时，后续步数的贡献自动衰减。$\langle\mathrm{END}\rangle$ 在训练中被当作常规 agent 目标，终止概率可被自然学习。</p>
+<h3 id="minimum-checks-≥6">Minimum checks (≥6) <a class="heading-anchor" href="#minimum-checks-≥6" aria-label="Link to minimum-checks-≥6">#</a></h3>
 
-<p><strong>Check 4 — Lipschitz 遗憾界（Theorem 5.1 / G.4）</strong></p>
-
-<p>$$0 \leq \mathcal{R}(B) := \mathcal{L}\!\bigl(\widehat{E}_B\bigr) - \mathcal{L}\!\bigl(E_B^{\star}\bigr) \leq \frac{1}{2(1-\gamma)} \sum_{c \in \widehat{E}_B \triangle E_B^{\star}} \epsilon_c^{\gamma}$$</p>
-
-<p>遗憾上界 = 对称差集中每个节点的折扣预测误差之和 × 常数 $\frac{1}{2(1-\gamma)}$。该常数独立于活跃工作流数量和缓存大小。预测完美时 $\epsilon_c^{\gamma}=0$，遗憾为零；遗憾随误差线性增长，不存在突变点。这是 algorithms-with-predictions 框架（Lykouris & Vassilvitskii 2021, Mitzenmacher & Vassilvitskii 2022）在 KV-Cache 管理上的首次应用。</p>
-
-<p><strong>Check 5 — Score = Expected Miss Count（Lemma G.1）</strong></p>
-
-<p>在淘汰抽象（被淘汰节点 $K$ 步内不恢复）下，$\mathrm{Score}(c) = \mathrm{EMC}(c)$。证明通过分解每步每工作流的 miss 指示随机变量 $\mathbf{1}[w \text{ survives to step } k \wedge \text{invokes some } a \in \mathcal{O}_w(c)]$，取期望后各项恢复 Eq 2 的形式。建立了评分函数与决策论目标的等价性。</p>
-
-<p><strong>Check 6 — GraphSAGE 传播（Eq 3）</strong></p>
-
-<p>$$\mathbf{H}^{(\ell)} = \mathrm{ReLU}\!\left(\bigl<a href="\mathbf{W}^{(\ell">\mathbf{H}^{(\ell-1)} \| A\mathbf{H}^{(\ell-1)}\bigr</a>})^\top\right)$$</p>
-
-<p>自身表示 $\mathbf{H}^{(\ell-1)}$ 与邻域聚合 $A\mathbf{H}^{(\ell-1)}$ 拼接后线性变换 + ReLU。行归一化转移矩阵 $A$ 从离线轨迹构建。2 层感受野覆盖 2-hop，对 5-10 节点的 agent 调用图已足以编码全局拓扑。归纳式学习（vs. transductive GCN）允许对训练时未见过的工作流前缀做推理。</p>
-
-<h3 id="agent-specific-验证">Agent-Specific 验证 <a class="heading-anchor" href="#agent-specific-验证" aria-label="Link to agent-specific-验证">#</a></h3>
-
-<ul>
-<li><strong>Success-rate model</strong>：不适用于传统 agent 成功率。论文的等价量是"预测精度 → 缓存命中率 → 端到端延迟"的链式映射。通过 predictor backbone × 训练数据量 × lookahead $K$ 三维 sweep 给出（§6.3, Appendix C）。GraphSAGE 在所有 horizon 上领先；精度→收益单调递增。</li>
-<li><strong>延迟预算/轮</strong>：预测推理 1.18ms（P99: 1.68ms），淘汰决策 0.44ms，评分更新 1.53μs，预取决策 0.64ms。总计 <2.3ms vs. decode step 12.34ms（<19%），且全部在 CPU 线程或独立 CUDA stream 上，不在 GPU 关键路径。</li>
-<li><strong>失败模式分类</strong>：(1) 预测错误导致高价值缓存被淘汰 → re-prefill 代价——Lipschitz 界约束此类损失；(2) 错误预取低价值缓存 → 仅浪费带宽、无负面影响——保守设计保证；(3) 高并发下显存耗尽 → LRU 在并发 84 时 crash 3/10 trials，96 时 10/10 trials；PBKV 保持稳定。论文确认 (1) 为主导失败模式。</li>
-<li><strong>可绑定但缺失的形式化指标</strong>：agent-level success rate 可定义为"给定 cache hit rate $h$，端到端延迟低于 SLO 阈值的工作流比例"，但论文未建模 SLO 约束。</li>
+<ol>
+<li><strong>Dimensional consistency</strong>: $A_w(c)^\top P_w^{(k)} = P_w^{(k)}(\mathcal{O}_w(c)) \in [0,1]$ (Eq. 6) — a subset-event probability; multiplying by $s_w^{(k)}\in[0,1]$ and $\gamma^{k-1}$ keeps $\mathrm{Score}(c)$ a bounded expected count.</li>
+<li><strong>Score = expected discounted miss count</strong> (Lemma G.1): $\mathrm{EMC}(c)=\sum_k \gamma^{k-1}\mathbb{E}[\text{misses on }c\text{ at }k]=\mathrm{Score}(c)$, grounding the ad-hoc score in Belady-style caching cost, removing circularity between the scoring rule and the cost it's judged against.</li>
+<li><strong>Lipschitz continuity</strong> (Lemma G.2): $|\mathrm{Score}(c)-\widehat{\mathrm{Score}}(c)|\le \frac{1-\gamma^K}{2(1-\gamma)}\epsilon_c^\gamma \le \frac{\epsilon_c^\gamma}{2(1-\gamma)}$ — perfect prediction ⇒ zero deviation; multiplier is $K$-independent.</li>
+<li><strong>Boundary condition</strong>: $\mathcal{R}(B)\ge 0$ (Eq. 20) by optimality of $E_B^\star$; and $\mathcal{R}(B)\to 0$ as $\epsilon\to 0$ (Theorem G.4) — perfect predictor recovers the optimum.</li>
+<li><strong>Locality check</strong>: only $w\in\mathcal{W}_{\mathrm{act}}(c)$ enter $\epsilon_c^\gamma$; errors on non-accessing workflows leave $\mathrm{Score}(c)$ unchanged — consistent with radix-tree prefix structure.</li>
+<li><strong>Boundary-localized regret</strong>: only nodes in the symmetric difference $\widehat{E}_B\triangle E_B^\star$ contribute (Eq. 21); a correctly-ranked node contributes zero regret regardless of its individual score error — regret is governed by ranking near the eviction frontier, matching Corollary G.3's ranking-stability view.</li>
 </ul>
 
-<hr>
+<h3 id="the-headline-guarantee-theorem-5-1-g-4">The headline guarantee (Theorem 5.1 / G.4) <a class="heading-anchor" href="#the-headline-guarantee-theorem-5-1-g-4" aria-label="Link to the-headline-guarantee-theorem-5-1-g-4">#</a></h3>
 
-<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+<p>$$0\;\leq\;\mathcal{R}(B):=\mathcal{L}(\widehat{E}_{B})-\mathcal{L}(E_{B}^{\star})\;\leq\;\frac{1}{2(1-\gamma)}\sum_{c\in\widehat{E}_{B}\triangle E_{B}^{\star}}\epsilon_{c}^{\gamma}$$</p>
 
-<h3 id="主要结果">主要结果 <a class="heading-anchor" href="#主要结果" aria-label="Link to 主要结果">#</a></h3>
+<p>The eviction cost regret is bounded linearly in prediction error, with a multiplier independent of $K$, of $|\mathcal{W}_{\mathrm{act}}|$, and of cache size. This is the formal justification for the <em>pluggable predictor</em> design: any future accuracy improvement directly tightens the bound. Note what is <em>not</em> bounded — there is no success-rate or convergence guarantee for the workflows themselves; the metric that <em>could</em> have been (and is) bounded is expected miss count, not task success.</p>
 
-<p><img src="/assets/2605.06472/tab1.png" alt="Table 1: 三个工作流基准、两个模型的全量结果"></p>
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p><em>Paper Table 1：PBKV 各变体与基线在 HoVer+LangChain（动态）、SWE-bench+AutoGen（动态）、FinanceBench+CrewAI（静态）上的端到端延迟、Per-Agent TTFT 和 GPU 命中率。</em></p>
+<p>Testbed: 8× A6000 (48 GB) with NVLink, 20 GB/s PCIe; Qwen3-14B and Qwen3-32B (TP=2). Baselines: LRU (SGLang+HiCache default) and KVFlow (static-workflow only). Ablation variants: PBKV-LAE (lifecycle-aware eviction only) and PBKV-HE (adds hierarchical eviction, no prefetching).</p>
 
-<p>核心数据点（Qwen3-32B）：</p>
+<h3 id="main-results">Main results <a class="heading-anchor" href="#main-results" aria-label="Link to main-results">#</a></h3>
+
+<p><img src="/assets/2605.06472/tab1.png" alt="Table 1: performance of policies across workloads and LLMs"></p>
+
+<p><em>Paper's Table 1 (concurrency 72/24/48; static workload for KVFlow comparison).</em> The load-bearing numbers, HoVer+LangChain, Qwen3-32B: LRU 189.66 s / 27.09% hit → Full PBKV 102.60 s / 69.10% hit (1.85× latency, 2.55× hit). The ablation ladder is the key story — most gain comes <em>before</em> the flagship prefetching:</p>
 
 <table>
-<tr><th>工作负载</th><th>策略</th><th>延迟(s)</th><th>命中率(%)</th></tr>
-<tr><td>HoVer+LangChain</td><td>LRU</td><td>189.66</td><td>27.09</td></tr>
-<tr><td>HoVer+LangChain</td><td>PBKV-LAE</td><td>146.67</td><td>44.91</td></tr>
-<tr><td>HoVer+LangChain</td><td>PBKV-HE</td><td>108.86</td><td>66.01</td></tr>
-<tr><td>HoVer+LangChain</td><td>Full PBKV</td><td><strong>102.60</strong></td><td><strong>69.10</strong></td></tr>
-<tr><td>SWE-bench+AutoGen</td><td>LRU</td><td>271.90</td><td>46.34</td></tr>
-<tr><td>SWE-bench+AutoGen</td><td>Full PBKV</td><td><strong>160.18</strong></td><td><strong>79.94</strong></td></tr>
-<tr><td>FinanceBench+CrewAI</td><td>KVFlow</td><td>101.57</td><td>39.87</td></tr>
-<tr><td>FinanceBench+CrewAI</td><td>Full PBKV</td><td><strong>80.53</strong></td><td><strong>53.44</strong></td></tr>
+<tr><th>Policy (HoVer, Qwen3-32B)</th><th>Latency (s)</th><th>Hit rate (%)</th></tr>
+<tr><td>LRU</td><td>189.66</td><td>27.09</td></tr>
+<tr><td>PBKV-LAE (lifecycle only)</td><td>146.67</td><td>44.91</td></tr>
+<tr><td>PBKV-HE (+ scoring)</td><td>108.86</td><td>66.01</td></tr>
+<tr><td>Full PBKV (+ prefetch)</td><td>102.60</td><td>69.10</td></tr>
 </table>
 
-<p>增益分解：LAE 单独贡献命中率 ×1.66；加入评分驱动淘汰 HE 从 44.91% → 66.01%（跃升最大）；保守预取在此基础上再提 ~3pp（稳定但温和）。在静态工作流上 PBKV 仍以 1.26× 击败 KVFlow——因为生命周期感知淘汰和跨工作流聚合捕获了距离度量遗漏的信息。</p>
+<p>The jump LAE→HE (44.9%→66.0%) is large; HE→full (66.0%→69.1%) is modest — by design, because conservative prefetching refuses to gamble known-valuable cache. On static FinanceBench, PBKV still beats KVFlow (53.44% vs 39.87% hit on Qwen3-32B) because cross-workflow <em>sum</em> aggregation captures popularity that KVFlow's <em>min</em> steps-to-execution misses.</p>
 
-<h3 id="缓存行为时序分析">缓存行为时序分析 <a class="heading-anchor" href="#缓存行为时序分析" aria-label="Link to 缓存行为时序分析">#</a></h3>
+<h3 id="why-it-works-—-phase-by-phase-cache-trace">Why it works — phase-by-phase cache trace <a class="heading-anchor" href="#why-it-works-—-phase-by-phase-cache-trace" aria-label="Link to why-it-works-—-phase-by-phase-cache-trace">#</a></h3>
 
-<p><img src="/assets/2605.06472/fig6.png" alt="Figure 6: 命中率随时间变化的六阶段分析"></p>
+<p><img src="/assets/2605.06472/fig6.png" alt="Figure 6: KV-cache hit rate of each policy over time, with dashed lines marking phases"></p>
 
-<p><em>Paper Figure 6：HoVer+LangChain 工作负载下各策略的 KV-Cache 命中率时序图（Qwen3-14B, 并发 72）。虚线标注关键事件。</em></p>
+<p><em>Paper's Figure 6 (HoVer+LangChain, Qwen3-14B, concurrency 72).</em> This is the load-bearing mechanism plot: all policies start ~80% (warm-up, no eviction); at ~30 s memory saturates and LRU collapses toward ~10% while PBKV-HE/full decline only gradually; from 55 s retired cache is released and PBKV-LAE recovers, but once retired cache drains (~80 s) LAE reverts to LRU while HE/full sustain ~50% via scoring. The reader should notice that lifecycle-awareness and scoring cover <em>different</em> phases — the two guardrails are complementary, not redundant.</p>
 
-<p>六阶段剖析：</p>
-<ol>
-<li><strong>预热（0-30s）</strong>：显存充裕，所有策略 >80% 命中率，无需淘汰。</li>
-<li><strong>压力开始（30-55s）</strong>：GPU 饱和。LRU 急剧下降；PBKV-HE/PBKV 仅缓降（评分识别低价值缓存优先淘汰）。</li>
-<li><strong>退役窗口（55-80s）</strong>：首批工作流完成，退役缓存释放。PBKV-LAE 立即跳升受益。</li>
-<li><strong>退役耗尽（80-115s）</strong>：LAE 退化回 LRU 水平——证明单独 LAE 不足以持续。PBKV-HE/PBKV 保持高位。</li>
-<li><strong>稳态（115-245s）</strong>：PBKV 持续领先 PBKV-HE ~3pp（保守预取的稳定贡献）。</li>
-<li><strong>尾部（>245s）</strong>：请求池耗尽，命中率回升至 ~90%。PBKV 最先完成所有工作流。</li>
-</ul>
+<h3 id="sensitivity">Sensitivity <a class="heading-anchor" href="#sensitivity" aria-label="Link to sensitivity">#</a></h3>
 
-<p>此图直观展示三层机制的互补性和各自生效的时间窗口，是理解 PBKV 分层设计必要性的关键证据。</p>
+<p><img src="/assets/2605.06472/fig5.png" alt="Figure 5: sensitivity to concurrency (a), predictor backbone (b), and lookahead horizon K (c)"></p>
 
-<h3 id="预测误差鲁棒性">预测误差鲁棒性 <a class="heading-anchor" href="#预测误差鲁棒性" aria-label="Link to 预测误差鲁棒性">#</a></h3>
+<p><em>Paper's Figure 5 (HoVer+LangChain, Qwen3-32B).</em> Three monotonicity checks: (a) hit rate falls with concurrency but PBKV always beats LRU, and LRU OOM-crashes 3/10 at concurrency 84 and 10/10 at 96; (b) weaker backbones (R-GCN, Markov-N3) lower accuracy → monotonically lower hit rate, yet even the <em>weakest</em> backbone still beats prediction-free PBKV-LAE (robustness to predictor quality); (c) $K=3$ is optimal — smaller is myopic, larger dilutes the score with unreliable long-range predictions.</p>
 
-<p><img src="/assets/2605.06472/fig12.png" alt="Figure 12: 保守 vs 激进预取在不同预测噪声下的表现"></p>
+<h3 id="conservative-vs-aggressive-prefetching-under-noise">Conservative vs aggressive prefetching under noise <a class="heading-anchor" href="#conservative-vs-aggressive-prefetching-under-noise" aria-label="Link to conservative-vs-aggressive-prefetching-under-noise">#</a></h3>
 
-<p><em>Paper Figure 12：向预测器注入噪声 $\tilde{P}_w^{(k)} = (1-\lambda) P_w^{(k)} + \lambda U$ 后，PBKV-HE（无预取）、保守预取、激进预取（$\rho$=20%）的命中率变化。</em></p>
+<p><img src="/assets/2605.06472/fig12.png" alt="Figure 12: hit rate of PBKV-HE, conservative, and aggressive prefetching across noise levels λ"></p>
 
-<p>关键发现：</p>
-<ul>
-<li>激进预取仅在 $\lambda \leq 10\%$ 时略优于保守（~2pp），$\lambda=20\%$ 时已被反超，$\lambda=30\%$ 时<strong>低于无预取的 PBKV-HE</strong>——错误预测使激进预取适得其反。</li>
-<li>保守预取在所有噪声水平下一致优于 PBKV-HE——验证"只用空闲资源"设计的稳健性。</li>
-<li>激进策略的标准差随 $\rho$ 单调增长，即使无噪声也不稳定。</li>
-</ul>
+<p><em>Paper's Figure 12 (noise injection $\tilde P = (1-\lambda)P + \lambda U$).</em> This figure justifies the conservative default: aggressive prefetching only wins at $\lambda=0,10\%$, is overtaken by conservative at $\lambda=20\%$, and falls <em>below</em> even the no-prefetch PBKV-HE at $\lambda\ge30\%$ — while conservative prefetching stays above PBKV-HE at every noise level (its lower-bound guarantee). Since real dynamic workflows are hard to predict, PBKV picks the stable option.</p>
 
-<h3 id="评估基准与指标">评估基准与指标 <a class="heading-anchor" href="#评估基准与指标" aria-label="Link to 评估基准与指标">#</a></h3>
+<h2 id="6-论证链-paper-internal">6. 论证链 (paper-internal) <a class="heading-anchor" href="#6-论证链-paper-internal" aria-label="Link to 6-论证链-paper-internal">#</a></h2>
 
 <table>
-<tr><th>基准</th><th>框架</th><th>类型</th><th>特征</th></tr>
-<tr><td>HoVer</td><td>LangChain</td><td>动态</td><td>事实验证，迭代 refinement 循环</td></tr>
-<tr><td>SWE-bench</td><td>AutoGen</td><td>动态</td><td>代码生成，Tester→Analyzer→Coder 重试循环</td></tr>
-<tr><td>FinanceBench</td><td>CrewAI</td><td>静态</td><td>文档分析，固定 agent 序列（用于与 KVFlow 对比）</td></tr>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Cache management = predicting future access; workflow reuse is structural, not temporal</td><td>§1 argument: entries idle across invocations, LRU evicts prematurely</td></tr>
+<tr><td>2</td><td>Static-DAG (KVFlow) assumption fails on runtime-dependent loops</td><td>§1 retry/sub-query examples; call graph with loop (Figure 1)</td></tr>
+<tr><td>3</td><td>A single-step predictor is myopic; need $K$-step horizon with complementary signals</td><td>§3/§4.1: Analyzer→Coder→Tester example; GraphSAGE + $h_{path}$ + $h_{txt}$ fusion</td></tr>
+<tr><td>4</td><td>Predicted $\mathrm{Score}(c)$ = expected discounted miss count</td><td>Lemma G.1 proof (Eqs. 9–10, survival weighting)</td></tr>
+<tr><td>5</td><td>Retired cache is a <em>certainty</em> of zero value; must outrank probabilistic scores</td><td>§4.2.3 hierarchical eviction: deterministic guardrail in probabilistic system</td></tr>
+<tr><td>6</td><td>Prefetch cost is deterministic, benefit probabilistic ⇒ spend only idle resources</td><td>§4.3 asymmetry argument; budget $S=\min\{S_a,S_{bw}\}$</td></tr>
+<tr><td>7</td><td>Under these designs, regret is linear in prediction error, $K$-independent multiplier</td><td>Lemma G.2 → Corollary G.3 → Theorem G.4 (Eqs. 11–25)</td></tr>
+<tr><td>8</td><td>Therefore gains are large in the common case and degrade gracefully under bad predictors</td><td>§6.2 ablation ladder; §6.3 backbone sweep; §6.4 phase trace; Appendix E noise sweep</td></tr>
 </table>
 
-<ul>
-<li><strong>指标</strong>：端到端工作流延迟、Per-Agent TTFT（均值）、token 级 GPU 命中率</li>
-<li><strong>统计</strong>：10 runs，附标准差（Appendix A Table 2）</li>
-<li><strong>基线</strong>：LRU（SGLang 默认）、KVFlow（SOTA 静态策略，仅评估静态工作流）</li>
-<li><strong>模型</strong>：Qwen3-14B（单 GPU）、Qwen3-32B（2-way TP）</li>
-<li><strong>硬件</strong>：8× A6000 48GB, NVLink, 20GB/s PCIe</li>
-</ul>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<h3 id="工具与环境接口">工具与环境接口 <a class="heading-anchor" href="#工具与环境接口" aria-label="Link to 工具与环境接口">#</a></h3>
+<p>PBKV is built on <strong>SGLang</strong> + <strong>HiCache</strong>; the paper repeatedly points to "the supplementary code" for full hyperparameters/training config, and the concrete integration is described but line-level source is not embedded in the paper. Mark: <strong>[实现未公开]</strong> at file:line granularity (code referenced but not enumerated in the source text).</p>
 
-<p>PBKV 在 serving 层运行，其"工具接口"：</p>
-<ul>
-<li><strong>输入事件</strong>：agent 完成/启动通知（工作流状态转移）</li>
-<li><strong>环境假设</strong>：SGLang Radix Tree + HiCache 两级存储；每次 agent 调用是独立 LLM 请求；工作流间私有缓存不共享（随机解码导致前缀数 token 内发散）</li>
-<li><strong>副作用</strong>：淘汰/预取修改 GPU↔host 缓存分布（可逆——被淘汰到 host 的缓存可被预取回 GPU）</li>
-<li><strong>环境确定性</strong>：缓存存储状态在请求间持久化；预测器推理确定性（给定输入）；LLM 解码的随机性通过概率建模吸收</li>
-</ul>
+<p><strong>核心技术壁垒 (dedicated paragraph)</strong>: the replication moat is not the ~350K-param GraphSAGE predictor — Table 3 shows several predictor families reach within a few points of it, and even a Markov-N3 backbone still helps. The moat is the <em>coordination discipline</em>: (1) a deterministic retired-cache tier that a prediction can never override; (2) a prefetch budget provably confined to idle space <em>and</em> idle bandwidth (<code>min</code> of two limits), activated only on pure-decode batches (>90% of batches); (3) a scoring rule that is simultaneously the deployed heuristic <em>and</em> the analyzed proxy cost (Lemma G.1), so the empirical system and the regret bound are the same object. Reproducing the numbers requires all three co-designed, not just the model.</p>
 
-<hr>
-
-<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
-
-<table>
-<tr><th>#</th><th>论点</th><th>论据</th><th>作用</th></tr>
-<tr><td>1</td><td>LRU 的时间局部性假设与工作流级缓存复用的结构性不匹配</td><td>LRU 命中率仅 27-28%，理论上限 >90%（[34]）</td><td>建立动机</td></tr>
-<tr><td>2</td><td>KVFlow 的静态 DAG 假设无法处理运行时条件分支和重试循环</td><td>Fig 1 动态调用图；KVFlow 的距离度量在环路中未定义</td><td>排除已有最优方案</td></tr>
-<tr><td>3</td><td>预测 agent 调用是 KV-Cache 管理的充要信息，但预测天然不精确</td><td>文献 [2,22,23,38,39] 报告 agent 系统固有不确定性；随机解码传播</td><td>定义核心矛盾</td></tr>
-<tr><td>4</td><td>融合拓扑 + 历史 + 语义的多步预测器可达高精度</td><td>Table 3 对比 14 种 predictor：GraphSAGE 全 horizon 领先（0.94/0.85/0.77）</td><td>证明预测可解</td></tr>
-<tr><td>5</td><td>分层淘汰在精确预测下大幅提升命中率（27→69%），不精确时退化至 LAE 而非 LRU</td><td>Table 1 增量消融 + Fig 6 六阶段分析 + Theorem 5.1 Lipschitz 界</td><td>证明方法有效且稳健</td></tr>
-<tr><td>6</td><td>保守预取利用空闲资源稳定叠加 ~3pp，不在错误预测下反噬</td><td>Fig 12：保守在所有 $\lambda$ 下优于 HE；激进在 $\lambda \geq 30\%$ 时劣于 HE</td><td>验证保守设计</td></tr>
-<tr><td>7</td><td>调度开销可忽略，不构成实用障碍</td><td>Table 4：全部组件在 GPU 关键路径外，总计 <2.3ms</td><td>排除工程阻碍</td></tr>
-</table>
-
-<hr>
-
-<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
-
-<h3 id="代码可用性">代码可用性 <a class="heading-anchor" href="#代码可用性" aria-label="Link to 代码可用性">#</a></h3>
-
-<p>[实现未公开] — 论文未提供开源代码链接。系统基于 SGLang + HiCache 构建，预测器为 ~350K 参数的 PyTorch 模型。</p>
-
-<h3 id="核心技术壁垒——实现视角">核心技术壁垒——实现视角 <a class="heading-anchor" href="#核心技术壁垒——实现视角" aria-label="Link to 核心技术壁垒——实现视角">#</a></h3>
-
-<p>分层淘汰的「确定性护栏嵌入概率系统」设计需要两个关键实现：</p>
-
+<p><strong>关键实现细节 (easy-to-miss tricks)</strong>:</p>
 <ol>
-<li><strong>工作流生命周期追踪</strong>：为每个 Radix Tree 缓存节点维护访问工作流集合 $\mathcal{W}(c)$。服务端监听工作流终止事件，将已终止工作流的 $\mathcal{W}^{\mathrm{act}}(c)$ 条目迁移至退役集。退役节点按"剩余访问工作流数"降序排列，使共享全局前缀最后被淘汰。实现上是 per-node workflow-set + 终止回调——极其简单，但此前无系统实现。</li>
-</ul>
-
-<ol>
-<li><strong>评分堆维护</strong>：活跃缓存节点按 $\mathrm{Score}(c)$ 维护最小堆。取顶 $O(1)$，pop/insert/score-update $O(\log n)$。每次工作流状态变更触发预测器刷新 → 相关节点评分批量更新。</li>
-</ul>
-
-<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
-
-<ol>
-<li><strong>Prefill 隐藏状态零成本复用</strong>：语义信号 $\mathbf{h}_{\mathrm{txt}}$ 取自 LLM prefill 的 post-norm 最后 token 隐藏状态——不需额外推理，只需在 prefill 结束时读取一个向量并投影。最优提取层因模型/workload 而异（Appendix C.3），但 post-norm 作为通用 fallback 在所有实验中表现稳健。</li>
-</ul>
-
-<ol>
-<li><strong>预取的空间/带宽双约束实现</strong>：可用预取空间 $S_a$ = 空闲 GPU 内存 + 退役缓存占用量；可用带宽 $S_{bw} = \text{Bandwidth} \times \text{StepDuration}$；最终预算 $S = \min\{S_a, S_{bw}\}$。仅在 decode-only 批次（>90% 批次属此类）激活。候选按 1-step $\mathrm{Value}(c)$ 降序贪心装载（精确最优是 knapsack NP-hard）。</li>
-</ul>
-
-<h3 id="llm-骨干要求">LLM 骨干要求 <a class="heading-anchor" href="#llm-骨干要求" aria-label="Link to llm-骨干要求">#</a></h3>
-
-<ul>
-<li><strong>测试模型</strong>：Qwen3-14B（单 GPU）、Qwen3-32B（2-way tensor parallelism）</li>
-<li><strong>最低模型规模</strong>：未测试更小模型。PBKV 的收益与缓存量和显存压力正相关——小模型缓存压力低，收益空间也更小。</li>
-<li><strong>能力要求</strong>：无特殊要求，PBKV 是 serving 层优化，不要求 tool-call 格式或结构化输出。</li>
-<li><strong>骨干敏感性</strong>：缓存管理策略与 LLM 架构无关；预测器需按 workload 训练（但仅需 1K 轨迹，~350K 参数）。</li>
-</ul>
-
-<h3 id="多-agent-拓扑">多 Agent 拓扑 <a class="heading-anchor" href="#多-agent-拓扑" aria-label="Link to 多-agent-拓扑">#</a></h3>
-
-<ul>
-<li><strong>拓扑</strong>：由上游 agent 框架（LangChain / AutoGen / CrewAI）定义。PBKV 通过调用图 $G=(V,E)$ 隐式编码拓扑，不需显式拓扑感知。</li>
-<li><strong>协调机制</strong>：工作流内 agent 通过共享上下文协调（消息传递 + KV-Cache 前缀继承）。PBKV 利用 Radix Tree 的前缀共享结构捕获这种协调。</li>
-<li><strong>角色特化</strong>：不同 agent 有不同 system prompt，编码为 Radix Tree 中的不同前缀分支。PBKV 的跨工作流聚合自然给高频 agent 分支更高评分。</li>
-<li><strong>失败隔离</strong>：单个 agent 失败不影响 PBKV——工作流异常终止后触发退役标记，等价于正常终止。</li>
-</ul>
-
-<h3 id="production-readiness">Production Readiness <a class="heading-anchor" href="#production-readiness" aria-label="Link to production-readiness">#</a></h3>
-
-<ul>
-<li><strong>沙箱隔离</strong>：依赖 SGLang 进程级隔离，PBKV 不引入新隔离边界。</li>
-<li><strong>可观测性</strong>：论文未讨论 trace logging。预测分布、评分、淘汰/预取决策可记录但未实现。</li>
-<li><strong>成本控制</strong>：保守预取设计即是成本控制——不消耗有价值 GPU 资源。预测器开销 <2.3ms/轮。</li>
-<li><strong>Secrets / auth</strong>：不适用——PBKV 运行在推理引擎内部，不接触外部 API。</li>
-<li><strong>并发控制</strong>：论文测试并发 24-96 工作流。LRU 在 84+ 并发时崩溃；PBKV 在所有测试并发下稳定。</li>
+<li><strong>$h_{txt}$ is free</strong>: the semantic stream reuses the <em>post-norm hidden state of the last prefill token</em> — a by-product already computed by the LLM's output head, universally accessible across models without extra instrumentation, so no separate encoder pass is added. (§4.1, Appendix B; the optimal extraction layer is model-specific per Figure 9, which is why they default to post-norm for portability.)</li>
+<li><strong>Score refresh is essentially free</strong>: <code>ScoreUpdate</code> costs 1.53 µs (Table 4) vs a 12.34 ms decode step — ~8000× cheaper — so per-node scores can be refreshed on every state change without serializing the scheduler; all scheduler hooks run on the CPU thread or a separate CUDA stream, off the GPU critical path.</li>
 </ul>
 
 </div>

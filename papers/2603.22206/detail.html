@@ -196,185 +196,163 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Chimera: Latency- and Performance-Aware Multi-agent Serving for Heterogeneous LLMs</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2603.22206</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">multi-agent-serving</span><span class="tag">heterogeneous-LLM</span><span class="tag">model-routing</span><span class="tag">length-prediction</span><span class="tag">load-balancing</span><span class="tag">STJF-scheduling</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2603.22206</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">multi-agent-serving</span><span class="tag">heterogeneous-llm</span><span class="tag">routing</span><span class="tag">length-prediction</span><span class="tag">scheduling</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2603.22206.html">← Synthesis</a>
-<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2603.22206" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
 
-<h1 id="chimera-—-异构-llm-集群上的多智能体工作流预测式调度">Chimera — 异构 LLM 集群上的多智能体工作流预测式调度 <a class="heading-anchor" href="#chimera-—-异构-llm-集群上的多智能体工作流预测式调度" aria-label="Link to chimera-—-异构-llm-集群上的多智能体工作流预测式调度">#</a></h1>
+<h1 id="chimera-latency-and-performance-aware-multi-agent-serving-for-heterogeneous-llms-—-l2">Chimera: Latency- and Performance-Aware Multi-agent Serving for Heterogeneous LLMs — L2 <a class="heading-anchor" href="#chimera-latency-and-performance-aware-multi-agent-serving-for-heterogeneous-llms-—-l2" aria-label="Link to chimera-latency-and-performance-aware-multi-agent-serving-for-heterogeneous-llms-—-l2">#</a></h1>
 
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>Chimera 是 vLLM 之上的中间件调度层，为跑在<strong>异构</strong> LLM 集群（不同尺寸/家族的模型）上的多智能体工作流联合优化端到端延迟与任务性能：语义路由给每个请求打各模型置信分，QRF 预测整条工作流剩余输出 token 数作 STJF 优先级，活动监视器用在途预测 token 量估计每引擎拥塞。相对 vLLM/MLFQ/LTR 延迟降 1.2–2.4×、性能升 8.0–9.5pp，调度开销 ≤2.2%。</p>
+<p>Middleware atop vLLM that serves multi-agent workflows on a <em>mix</em> of LLM sizes/families. It couples a semantic router (per-model success confidence), a CPU QRF that predicts a workflow's <em>total remaining</em> output tokens, and an in-flight-token load monitor to pick the strongest model within a latency slack and schedule by Shortest-Total-Job-First. Traces the best latency–performance Pareto frontier: 1.2–2.4× lower latency, +8–9.5 pp performance, ≤2.2% overhead.</p>
 
 <h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+<p><strong>Q1 — 痛点.</strong> Multi-agent tasks run as multi-stage workflows (a query fans out into dependent LLM calls, each consuming prior stages' output). Two facts break existing serving: (a) prior serving systems assume a <em>homogeneous</em> cluster (identical replicas), so they never decide <em>which</em> model of differing capacity should serve requests of differing difficulty; (b) prior routers treat latency as a static per-model attribute, ignoring that routing a hard request to a slow, capable model amplifies queue congestion and hurts <em>other</em> workflows. The result is an intrinsic latency–performance trade-off that neither camp addresses jointly.</p>
 
-<p>现有 LLM serving 有两个不匹配异构多智能体工作流的假设：(1) serving 系统假设<strong>同构</strong>集群（同一模型的一个或多个副本），只在单请求粒度优化，不管异构容量如何分配给难度不同的请求；(2) 路由方法把延迟当作模型的<strong>静态属性</strong>，而非排队与资源竞争下的涌现结果。两者叠加导致一个内在权衡（Figure 1）：把请求路由到更强但更慢的模型能提升性能，却放大 GPU 竞争、拖慢其他工作流的延迟。工作流的端到端延迟由跨多个依赖阶段的排队交互涌现，使<strong>请求级</strong>调度次优（Luo et al., 2025）。</p>
+<p><strong>Q2 — 方法.</strong> Chimera is a predictive scheduler middleware sitting between agent apps and a pool of heterogeneous inference engines. Per request it computes: (i) <code>Semantic Router</code> — ModernBERT-large multi-label head emitting an independent sigmoid confidence $q[m]$ per candidate model; (ii) <code>Length Predictor</code> — a Quantile Random Forest predicting the <em>workflow-total</em> remaining output tokens $\hat{y}$ (used as scheduling priority); (iii) <code>Activity Monitor</code> — per-engine map of in-flight predicted tokens; (iv) <code>Load Balancer</code> — estimates each model's time-to-last-token from in-flight tokens, then picks the highest-confidence model that stays within $(1+\tau)$ of the fastest model's latency and beats current confidence by margin $\Delta s$. Requests are queued by Shortest-Total-Job-First on $\hat{y}$, with aging-based anti-starvation.</p>
 
-<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
+<p><strong>核心技术壁垒</strong>: the <em>workflow-level</em> total-remaining-output-length signal $Y_r=\sum_{j=i}^{N_p}\text{OutTokens}(p,j)$ — predicting not just this stage's output but the sum over all <em>future</em> stages of a multi-agent program, cheaply on CPU and robustly under heavy tails, then feeding it simultaneously as (a) scheduling priority and (b) the load estimate that drives model routing. This coupling is what turns two independently-studied signals (routing, length prediction) into a joint latency+performance win.</p>
 
-<p>Chimera 用三个<strong>预测信号</strong>驱动模型选择与队列优化，构成四模块中间件（Figure 2）：</p>
-
-<ol>
-<li><strong>Semantic Router</strong>：ModernBert-large 微调的多标签编码器，为每个请求输出各候选模型独立 sigmoid 置信分 $q[m]\in[0,1]$（成功概率）。</li>
-<li><strong>Length Predictor</strong>：CPU 上的 Quantile Random Forest（QRF）预测<strong>工作流级剩余总输出 token 数</strong> $Y_r$ 的条件中位数，作为调度优先级（STJF）。</li>
-<li><strong>Activity Monitor</strong>：program table 记录每请求预测 token 量，聚合成每引擎在途工作量 $I[m]$。</li>
-<li><strong>Load Balancer</strong>：把 $q[m]$ 与由 $I[m]$ 算出的 TTLT 负载 $L[m]$ 结合——先找最快模型 $m_{\text{fast}}$，再在延迟 slack $\tau$ 内、置信提升超过 margin $\Delta s$ 的前提下选置信最高的模型；随后以 $\hat y$ 为优先级入队。</li>
-</ul>
-
-<p><strong>核心技术壁垒</strong>：把「模型路由」与「拥塞感知负载均衡」通过一个<strong>单一延迟-性能感知的 dispatch 规则</strong>（同模型的置信分与由预测 token 量导出的 TTLT 在同一比较循环里做取舍）耦合起来，并让这个耦合在负载上升时产生<strong>单调回退</strong>（congested 大模型 $L[m]$ 上升 → 流量自动转向更空闲模型）——这是难以复制的联合设计，而非把路由器和调度器简单串联。同一工作流跨阶段<strong>复用路由决策</strong>既省 GPU（少调路由器）又促进 KV-cache 复用，是让该耦合在线可行的关键。</p>
-
-<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
-
-<p>在 APPS（代码生成）与 MATH（数学推理）、多种异构模型组合与 RPS 下，Chimera 始终占据最好的操作点（同时最低 E2E 延迟 + 最高性能）。相对 vLLM 平均延迟降 1.2–2.4×、性能升 8.0–9.5pp；APPS Qwen1.5+7B 上对 vLLM 达 3.4× 加速 + 16.0pp 提升。调度器（路由+预测+其他）合计仅占 E2E 延迟 ≤2.2%。延迟 slack $\tau$ 是可调旋钮：收紧偏低延迟、放宽解锁高性能。</p>
+<p><strong>Q3 — 结果.</strong> Across APPS (code) and MATH (math) on RTX A6000 clusters mixing 1.5B–14B Qwen/Llama/Ministral models, Chimera dominates vLLM, MLFQ, and LTR on the $(C,S)$ frontier: e.g. APPS Qwen1.5+7B = 3.4× speedup <strong>and</strong> +16.0 pp over vLLM; near the vLLM(STJF) oracle on the hard long-output config. Scheduler overhead ≤2.2% of E2E latency. Gains are large on APPS (8.2–19.6 pp) but small on MATH (1.2–5.0 pp).</p>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p><img src="/assets/2603.22206/fig2.png" alt="Figure 2: Chimera system overview"></p>
+<p>Chimera is a middleware layer, not a new engine — it wraps stock vLLM engines and only makes the <em>dispatch</em> decision.</p>
 
-<p><em>Paper's Figure 2, verbatim（caption: "Chimera system overview. ... For each incoming request, Chimera (i) predicts the confidence score for each candidate model (Semantic Router), (ii) predicts the total number of output tokens (Length Predictor), and (iii) tracks per-engine in-flight work (Activity Monitor). It then combines these information to choose an engine and enqueue the request (Load Balancer)."）.</em></p>
+<p><img src="/assets/2603.22206/fig2.png" alt="Figure 2: Chimera system overview — router, predictor, monitor, load balancer between apps and engines"></p>
 
-<p>该图是理解全篇的主线：Chimera 作为中间件夹在多智能体应用与后端异构推理引擎（Ministral8B / Llama3B / Qwen14B，各自带 Queue + Executor）之间。要注意的是三个信号在图中的具体化——路由器给出 Conf. Scores（如 0.6/0.4/0.5），长度预测器把到达请求转成 Est. Total Lengths（582/138/634），活动监视器维护 (Request ID, Engine ID, Est. Length) 的 program table。这三路信息汇入 Load Balancer 做引擎选择 + 入队。下面的 Mermaid 补充了单个请求在调度器内部的<strong>决策时序</strong>（原图未画的控制流）：</p>
+<p><em>Paper's Figure 2 (caption: "Chimera system overview. Chimera is a middleware layer that sits between multi-agent applications and a pool of inference engines... (i) predicts the confidence score for each candidate model (Semantic Router), (ii) predicts the total number of output tokens (Length Predictor), and (iii) tracks per-engine in-flight work (Activity Monitor). It then combines these information to choose an engine and enqueue the request (Load Balancer). Each backend engine executes requests from their local priority queues.")</em></p>
+
+<p>The figure makes the division of labor explicit: three cheap predictors feed one dispatcher, and each backend engine owns a <em>local</em> priority queue. Note that the router/predictor sit off the critical path (async batched services); the engines keep doing continuous batching and KV-cache management.</p>
+
+<h3 id="the-agent-loop-per-request-decision-algorithm-1">The agent-loop / per-request decision (Algorithm 1) <a class="heading-anchor" href="#the-agent-loop-per-request-decision-algorithm-1" aria-label="Link to the-agent-loop-per-request-decision-algorithm-1">#</a></h3>
+
+<p>Because a workflow is a sequence of stages sharing a <code>program_id</code>, the "loop" here is the scheduler's per-request decision, with model assignment reused across a workflow's stages to preserve KV-cache locality.</p>
 
 <div class="mermaid">
-sequenceDiagram
-    participant App as Multi-agent App
-    participant LB as Load Balancer
-    participant R as Semantic Router
-    participant P as Length Predictor
-    participant AM as Activity Monitor
-    participant E as Chosen Engine (priority queue)
-    App->>LB: request r=(p,i,x_r,meta)
-    alt program_id 已分配模型
-        LB->>LB: 复用 A[program_id]=m*
-    else 新工作流
-        LB->>R: q[m]=σ(ℓ_{r,m}) for m∈M
-        LB->>AM: 读 I[m], 算 L[m]=P_m·decode_ms/max_batch
-        LB->>LB: m_fast=argmin L[m]; 选 slack τ 内且 q≥q*+Δs 最高分模型 m*
-    end
-    LB->>P: ŷ=Ŷ(meta, m*)  (STJF 优先级)
-    LB->>AM: I[m*][r.id]=ŷ  (记在途负载)
-    LB->>E: Dispatch(r, priority=ŷ, arrival)
-    Note over E: 本地 min-heap 按 (starvation_level, priority, arrival) 出队
+stateDiagram-v2
+    [*] --> Arrive: request r=(p,i,x,meta)
+    Arrive --> HasAssignment: program_id in A?
+    HasAssignment --> ReuseModel: yes (reuse m*)
+    HasAssignment --> Route: no
+    Route --> Score: router S(prompt,m) -> q[m]
+    Score --> LoadEst: monitor -> P_m, TTLT L[m]
+    LoadEst --> Select: pick highest q[m] s.t. L[m]<=(1+tau)L_fast and q[m]>=q*+ds
+    Select --> Predict
+    ReuseModel --> Predict
+    Predict --> Priority: yhat = Predictor(meta,m*); priority = yhat
+    Priority --> Enqueue: I[m*][r.id]=yhat; push Q[m*] by (level,priority,arrival)
+    Enqueue --> [*]
 </div>
 
-<p>调度器只阻塞在 dispatch 所需的最小输出上（路由置信分 + 预测总长），路由器与预测器作为<strong>异步批处理服务</strong>在独立 worker pool 运行（进程隔离），推理引擎仍负责 continuous batching / kernel / KV-cache（§3.8）。</p>
+<p>The Mermaid captures the branch the raster figure cannot: the <strong>assignment-reuse fork</strong> at the top. The router (a GPU-occupying transformer) runs only on a workflow's <em>first</em> request; subsequent stages skip routing entirely. Error/overflow recovery is implicit — congested models simply see their $L[m]$ rise and shed traffic (monotone fallback), and starved requests are promoted via aging rather than dropped.</p>
+
+<p><strong>Memory model</strong>: short-term = each engine's local priority queue + KV-cache; the "long-term" memory is the offline-trained router weights and QRF, plus the offline-profiled <code>decode_ms_per_token</code>/<code>max_batch_size</code> per model. Episodic state = the Activity Monitor's program table (<code>program_id → assigned engine, remaining length</code>), which is <em>live</em> work-in-flight, cleared on completion.</p>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p>无形式化作者证明 — 仅实证。全篇没有排队论/收敛性定理，但给出了一组<strong>闭式估计公式 + 一个 dispatch 规则</strong>，其物理意义与自洽性可核验。</p>
+<p><strong>无形式化作者证明 — 仅实证.</strong> Chimera has no convergence or optimality theorem; all guarantees are empirical Pareto-dominance. What <em>could</em> have been bounded but was not: a queueing-theoretic bound on worst-case wait under the aging mechanism (only claimed to "improve worst-case waiting time"), or a regret bound on model selection vs. the oracle router. The paper instead supplies definitions and an analytical fallback argument.</p>
 
-<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+<p><strong>Notation table:</strong></p>
 
 <table>
-<tr><th>符号</th><th>含义</th></tr>
-<tr><td>$r=(p,i,x_r,\text{meta\_info}_r)$</td><td>请求：工作流 id $p$、阶段 $i$、阶段输入 $x_r$、元信息</td></tr>
-<tr><td>$N_p$</td><td>工作流 $p$ 的有序阶段数</td></tr>
-<tr><td>$C_p,\ S_p$</td><td>工作流端到端完成时间 / 最终输出的任务性能分</td></tr>
-<tr><td>$q[m]=\sigma(\ell_{r,m})$</td><td>模型 $m$ 对请求 $r$ 的独立成功置信分 $\in[0,1]$</td></tr>
-<tr><td>$Y_r=\sum_{j=i}^{N_p}\text{OutTokens}(p,j)$</td><td>从当前阶段到末阶段的剩余总输出 token</td></tr>
-<tr><td>$\hat y\approx\text{median}(Y_r\mid\phi(r),m^\star)$</td><td>QRF 预测的条件中位数（优先级）</td></tr>
-<tr><td>$P_m,\ L[m]$</td><td>模型 $m$ 在途预测 token 之和 / 其 TTLT 估计</td></tr>
-<tr><td>$\tau,\ \Delta s$</td><td>延迟 slack / 置信 margin 两个旋钮</td></tr>
-<tr><td>$S,\ Q$</td><td>反饥饿的 starvation 阈值 / running quantum</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$r=(p,i,x_r,\textit{meta}_r)$</td><td>request: program id, stage index, prompt, metadata</td></tr>
+<tr><td>$N_p$</td><td>number of stages in workflow $p$</td></tr>
+<tr><td>$C_p,\ S_p$</td><td>end-to-end completion time; task performance score</td></tr>
+<tr><td>$q[m]=\sigma(\ell_{r,m})$</td><td>per-model confidence (sigmoid, multi-label)</td></tr>
+<tr><td>$Y_r=\sum_{j=i}^{N_p}\text{OutTokens}(p,j)$</td><td>total remaining workflow output tokens</td></tr>
+<tr><td>$\hat{y}\approx\text{median}(Y_r\mid\phi(r),m^\star)$</td><td>predicted priority (conditional median)</td></tr>
+<tr><td>$P_m=\sum_{t\in\text{Values}(\mathcal{I}[m])}t$</td><td>in-flight predicted tokens on model $m$</td></tr>
+<tr><td>$L[m]=\frac{P_m\cdot\Pi[m].\text{decode\_ms\_per\_token}}{\Pi[m].\text{max\_batch\_size}}$</td><td>TTLT estimate</td></tr>
+<tr><td>$\tau,\ \Delta s$</td><td>latency slack; confidence margin</td></tr>
+<tr><td>$S,\ Q$</td><td>starvation threshold; running quantum (aging)</td></tr>
 </table>
 
-<h3 id="关键方程与物理意义">关键方程与物理意义 <a class="heading-anchor" href="#关键方程与物理意义" aria-label="Link to 关键方程与物理意义">#</a></h3>
+<p><strong>方程物理意义:</strong> $q[m]=\sigma(\ell_{r,m})$ uses sigmoid (not softmax) so <em>several</em> models can be simultaneously confident — routing is multi-label, not mutually exclusive. $L[m]$ divides committed token work by batch parallelism × per-token cost, an amortized delay estimate; larger $\text{max\_batch\_size}$ lowers effective delay. Selection $L[m]\le(1+\tau)L_\text{fast}$ AND $q[m]\ge q^\star+\Delta s$ picks fastest by default, upgrades only if a stronger model stays within slack and clears the margin.</p>
 
-<p>TTLT（time-to-last-token）负载估计：</p>
-
-<p>$$ L[m] = \frac{P_m \cdot \Pi[m].\text{decode\_ms\_per\_token}}{\Pi[m].\text{max\_batch\_size}}, \qquad P_m = \sum_{t \in \text{Values}(I[m])} t $$</p>
-
-<p>分子把在途 token backlog $P_m$ 乘离线 profile 的每 token 解码耗时，转成时间；除以 max batch size 近似并行服务（一个 batch 内多请求并发解码）。dispatch 规则：</p>
-
-<p>$$ m_{\text{fast}} = \arg\min_{m \in M} L[m]; \quad \text{选按 } q[m] \text{ 降序第一个满足 } L[m]\le(1+\tau)L_{\text{fast}} \ \wedge\ q[m]\ge q^\star+\Delta s \text{ 的 } m $$</p>
-
-<h3 id="最小核验（6-条）">最小核验（6 条） <a class="heading-anchor" href="#最小核验（6-条）" aria-label="Link to 最小核验（6-条）">#</a></h3>
-
+<p><strong>6 minimum checks:</strong></p>
 <ol>
-<li><strong>为何除以 max_batch_size 而非乘</strong>：解码是批并行的，backlog 被 batch 并发消化，故有效等待时间随批容量下降 → 除法正确。</li>
-<li><strong>为何用中位数而非均值</strong>：输出长度重尾（APPS Qwen1.5B 均值 447 但 std 1276；MATH std 2587，§4.1），均值被尾部拉偏，QRF 分位数对重尾稳健。</li>
-<li><strong>单调回退性</strong>：$m^\star=m_{\text{fast}}$ 起步，只有满足 $L[m]\le(1+\tau)L_{\text{fast}}$ 才升级到更强模型；当强模型拥塞其 $L[m]$ 增大越出 slack，即被自动排除 → 负载上升时流量单调转向空闲模型，边界由 $\tau$ 决定（内点/边界解随 $\tau$ 连续移动）。</li>
-<li><strong>$\Delta s$ 的作用</strong>：要求置信提升超过 margin 才换模型，避免为边际收益频繁切换、破坏 KV-cache 复用 → 迟滞（hysteresis）项。</li>
-<li><strong>为何丢掉 prefill token</strong>：长输出下解码时间主导 prefill，作者实测加权 prefill「no measurable improvement」→ 优先级只用 $\hat y$ 自洽。</li>
-<li><strong>STJF 优先级正确性</strong>：按 $Y_r$（工作流剩余总量）而非单请求长度排序，才对齐 makespan 最短；Figure 3 实测 STJF 比 SJF 再降 15–34% 排队时间，佐证工作流级信息有增益。</li>
+<li><strong>Dimensional check</strong> — $L[m]$: tokens × (ms/token) / (dimensionless batch) = ms. ✓ consistent with "TTLT estimate" in ms.</li>
+<li><strong>Monotonicity (load)</strong> — as more work admits to $m$, $P_m\uparrow \Rightarrow L[m]\uparrow \Rightarrow$ constraint (i) eventually fails $\Rightarrow$ traffic sheds to less-loaded models. Matches the "monotone fallback" claim.</li>
+<li><strong>Boundary $\tau\to0$</strong> — only models tied for fastest latency are eligible ⇒ latency-first (matches "tighter slack prioritizes lower latency").</li>
+<li><strong>Boundary $\tau\to\infty$</strong> — load constraint always satisfied ⇒ pure highest-confidence routing (performance-first). Matches slack as a tuning knob (§4.3).</li>
+<li><strong>Boundary $\Delta s\to\infty$</strong> — no model ever beats the margin ⇒ always use $m_\text{fast}$; never switches. Consistent with "avoid switching models for marginal gains / promote KV reuse".</li>
+<li><strong>Degenerate homogeneous cluster</strong> — all $q[m]$ and $\Pi[m]$ equal ⇒ selection collapses to $m_\text{fast}$ and STJF-by-$\hat{y}$ only; reduces to a length-aware scheduler, sane baseline behavior.</li>
 </ul>
 
-<p>一个形式化模型（如 M/G/1 排队 + 路由概率）本可澄清 $\tau$ 与吞吐/尾延迟的定量关系及稳定性条件，本文以实证 Pareto 前沿代替。</p>
+<p><strong>Success-rate model</strong> (empirical sweep): the $(C,S)$ frontier is swept over <code>(dataset ∈ {APPS,MATH}, RPS ∈ {8,12,16}, model combo ∈ {Qwen1.5+7B, Qwen1.5+14B, Llama3B+Minis8B, Qwen1.5+3+14B}, slack τ)</code>. Monotonicity holds along RPS (latency rises with load) and along τ (performance rises, latency loosens). <strong>Failure-mode note</strong>: the dominant residual bottleneck <em>flips</em> by model combo — oracle predictor helps Qwen1.5+7B (length-prediction error binds under tight latency), oracle router helps Qwen1.5+14B (routing binds). <strong>Latency budget per turn</strong>: router 0.1–1.1% + predictor 0.1–1.1% of E2E ⇒ scheduler ≤2.2% (Table 1); no per-turn "interactive latency" claim, but the overhead is negligible relative to decode.</p>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p>评测在 NVIDIA RTX A6000（49GB）上，模型覆盖 Qwen2.5-1.5B/3B/7B/14B、Ministral8B、Llama3B；指标为 (每 token E2E 延迟, 任务分)，越靠右下越好；baseline 为 vLLM、MLFQ、LTR，另有 oracle 参照 vLLM(STJF)。</p>
+<p><strong>Main frontier.</strong> The load-bearing result is the latency-vs-performance scatter across all combos; Chimera occupies the lower-right (best) region.</p>
 
-<p><img src="/assets/2603.22206/fig5.png" alt="Figure 5: Latency vs performance on heterogeneous model combinations"></p>
+<p><img src="/assets/2603.22206/fig5.png" alt="Figure 5: Latency vs performance on heterogeneous model combinations, APPS and MATH"></p>
 
-<p><em>Paper's Figure 5, verbatim（caption: "Latency vs. performance on heterogeneous model combinations. ... Chimera demonstrates lower latency and higher performance compared to other serving systems."）.</em> (a1)–(a4) 为 APPS、(b1)–(b4) 为 MATH。要注意的是：Chimera 的点整体位于所有 baseline 的<strong>右下方外沿</strong>，即同时更快更准；而 MLFQ/LTR 只在延迟轴上移动、性能几乎不变——因为它们不联合优化性能。APPS Qwen1.5+7B(a1) 对 vLLM 达 3.4× + 16.0pp；在 Llama3B+Ministral8B(a3) 这种超长输出配置里，vLLM(STJF) oracle 也只有 1.2× 空间，Chimera 已近 oracle。</p>
+<p><em>Paper's Figure 5 (caption: "Latency vs. performance on heterogeneous model combinations. We evaluate on LLMs with various parameter sizes (1.5B, 3B, 7B, 8B, and 14B) and families (Qwen, Llama, and Ministral). Chimera demonstrates lower latency and higher performance compared to other serving systems.")</em></p>
+
+<p>Lower-right is better. Baselines (vLLM, MLFQ, LTR) mostly move <em>left</em> (lower latency) but not <em>up</em> (performance stays flat) — they don't jointly optimize. Chimera moves to the corner and exposes a whole frontier as τ varies. On the hard Llama3B+Ministral8B config Chimera nearly matches vLLM(STJF), the oracle-length reference (both 1.2× over vLLM).</p>
+
+<p><strong>STJF queue-time benefit.</strong> The priority policy is validated in isolation on single Qwen models.</p>
+
+<p><img src="/assets/2603.22206/fig3.png" alt="Figure 3: Average queue time — FCFS vs SJF vs STJF"></p>
+
+<p><em>Paper's Figure 3 (caption: "Average queue time for serving multi-agentic workflows with single Qwen models. Prioritization based on Shortest Total Job First (STJF) reduces the most amount of queue time, comparing to First-Come First-Served (FCFS) and Shortest Job First (SJF).")</em></p>
+
+<p>SJF cuts queue time 26–48% over FCFS; STJF (workflow-aware) adds a further 15–34% over SJF — the incremental win specifically attributable to summing <em>future</em> stage lengths rather than just the current request.</p>
+
+<p><strong>Router ablation.</strong> Removing the router collapses query-adaptive selection.</p>
 
 <p><img src="/assets/2603.22206/fig6.png" alt="Figure 6: Pareto frontiers with and without the semantic router"></p>
 
-<p><em>Paper's Figure 6, verbatim（caption: "Pareto frontiers of Chimera with and without the semantic router. ... Using the router yields a markedly better Pareto frontier across all RPS values."）.</em> 这是最关键的消融：去掉路由器后系统只能用固定启发式（如 slack 允许时总选更强模型），无法按 query 自适应选模型，需要更高延迟才能换来相当性能。它直接支撑「per-query 置信路由 × 预测调度」的联合设计价值。</p>
+<p><em>Paper's Figure 6 (caption: "Pareto frontiers of Chimera with and without the semantic router. We ablate the router and compare the resulting latency–performance tradeoff curves. Using the router yields a markedly better Pareto frontier across all RPS values.")</em></p>
 
-<p><img src="/assets/2603.22206/fig7.png" alt="Figure 7: Chimera vs oracle predictor / oracle router variants"></p>
+<p>Without confidence scores the system falls back to a fixed heuristic (e.g. "use the stronger model when slack permits") and must pay more latency for the same performance — the router's per-query signal is what bends the frontier.</p>
 
-<p><em>Paper's Figure 7, verbatim（caption: "Pareto frontiers of Chimera and its oracle variants: (i) Oracle Predictor uses ground-truth total output lengths, and (ii) Oracle Router uses ground-truth per-request success outcomes."）.</em> 有意思的发现是<strong>瓶颈随配置翻转</strong>：Qwen1.5+7B 的剩余头room 主要在长度预测（低 slack 下 oracle predictor 才明显降延迟），而 Qwen1.5+14B 的头room 主要在路由（oracle router 显著改善前沿）。这说明限制组件是 config-dependent。</p>
+<p><strong>Heavy-tailed lengths motivate QRF.</strong> The distributions justify predicting a <em>median</em>, not a mean.</p>
 
-<p>调度开销（Table 1）：</p>
+<p><img src="/assets/2603.22206/fig4.png" alt="Figure 4: Total output length distributions for APPS and MATH"></p>
 
-<table>
-<tr><th>Dataset</th><th>RPS</th><th>Models</th><th>E2E Latency</th><th>Router</th><th>Predictor</th><th>Scheduler</th></tr>
-<tr><td>APPS</td><td>8.0</td><td>Qwen1.5+7B</td><td>17068</td><td>64 (0.4%)</td><td>179 (1.1%)</td><td>250 (1.5%)</td></tr>
-<tr><td>APPS</td><td>8.0</td><td>Qwen1.5+14B</td><td>28750</td><td>72 (0.3%)</td><td>126 (0.4%)</td><td>206 (0.7%)</td></tr>
-<tr><td>APPS</td><td>16.0</td><td>Qwen1.5+7B</td><td>24554</td><td>277 (1.1%)</td><td>234 (1.0%)</td><td>528 (2.2%)</td></tr>
-<tr><td>APPS</td><td>16.0</td><td>Qwen1.5+14B</td><td>46522</td><td>315 (0.7%)</td><td>315 (0.7%)</td><td>646 (1.4%)</td></tr>
-<tr><td>MATH</td><td>8.0</td><td>Qwen1.5+7B</td><td>37025</td><td>49 (0.1%)</td><td>90 (0.2%)</td><td>144 (0.4%)</td></tr>
-<tr><td>MATH</td><td>8.0</td><td>Qwen1.5+14B</td><td>61944</td><td>44 (0.1%)</td><td>82 (0.1%)</td><td>131 (0.2%)</td></tr>
-<tr><td>MATH</td><td>16.0</td><td>Qwen1.5+7B</td><td>45485</td><td>71 (0.2%)</td><td>78 (0.2%)</td><td>155 (0.3%)</td></tr>
-<tr><td>MATH</td><td>16.0</td><td>Qwen1.5+14B</td><td>79485</td><td>52 (0.1%)</td><td>101 (0.1%)</td><td>159 (0.2%)</td></tr>
-</table>
+<p><em>Paper's Figure 4 (caption: "Total output length distributions for APPS and MATH. We observe that different models exhibit different total output length distributions with large standard deviations.")</em></p>
 
-<p>开销随 RPS 上升但封顶 2.2%（APPS）/0.4%（MATH），验证异步批处理服务把预测成本摊得足够薄。</p>
+<p>Std can exceed the mean (APPS Qwen1.5B: mean 447, std 1276; MATH Qwen1.5B: mean 606, std 2587). A conditional-median QRF is robust to these tails, unlike a mean regressor.</p>
 
-<p>组件质量补充：语义路由 mAP（Table 2）ModernBert-large APPS 0.521 / MATH 0.740 / Avg 0.631，优于 base（0.595）；即便绝对 mAP 不高仍能带来明显更好的前沿。长度预测（Table 3，Kendall's Tau 距离，越低越好）QRF 平均把 ranking 反转率降到 0.155–0.262，比 FCFS（≈0.50）低 0.314、比用 input length 作代理低 0.371。</p>
-
-<h3 id="胜负-regime（框架必须暴露）">胜负 regime（框架必须暴露） <a class="heading-anchor" href="#胜负-regime（框架必须暴露）" aria-label="Link to 胜负-regime（框架必须暴露）">#</a></h3>
-
-<table>
-<tr><th>工作负载</th><th>Chimera</th><th>Baseline</th><th>为何</th></tr>
-<tr><td>短工作流 / 低 RPS(=8)</td><td>领先明显（3.4× on a1）</td><td>拥塞轻，路由收益足</td><td>slack 内可选强模型不堵队</td></tr>
-<tr><td>超长输出 / 高竞争(Llama3B+Minis8B, a3)</td><td>只 1.2× 加速</td><td>vLLM(STJF) oracle 也仅 1.2×</td><td>长输出使 oracle 空间本就小，接近上限</td></tr>
-<tr><td>与 LTR 比延迟（MATH b2）</td><td>相同延迟，仅 +3.7pp 分</td><td>LTR 延迟已很低</td><td>无额外延迟增益，胜在性能轴</td></tr>
-<tr><td>三模型(Qwen1.5+3+14B, a4/b4)</td><td>2.1–2.7× + 6.7–8.2pp</td><td>随 RPS 上升 MLFQ 退化</td><td>更宽的延迟-性能谱增加路由/均衡动态</td></tr>
-</table>
+<p><strong>Overhead</strong> (Table 1): E2E latency 17–79 s; scheduler adds ≤646 ms, i.e. 0.2–2.2% — router and predictor each ≤1.1%. <strong>Predictor ranking quality</strong> (Table 3): QRF Kendall-τ distance ≈0.12–0.27 (12–27% inverted pairs) vs FCFS ≈0.50 and input-length proxy ≈0.54–0.70; −0.314 over FCFS, −0.371 over input-length. <strong>Router</strong> (Table 2): ModernBert-large mAP 0.631 avg (APPS 0.521 / MATH 0.740), beating ModernBert-base (0.595).</p>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>步</th><th>主张</th><th>依据（篇内）</th></tr>
-<tr><td>1</td><td>异构多智能体 serving 存在延迟-性能内在权衡，请求级调度次优</td><td>§1 两点理由 + Figure 1；工作流延迟由跨阶段排队涌现（Luo et al., 2025）</td></tr>
-<tr><td>2</td><td>要联合优化须同时拿到「哪个模型更可能对」「整条工作流还剩多少活」「每引擎有多堵」三个信号</td><td>§3.2 四模块设计；Figure 2 系统总览</td></tr>
-<tr><td>3</td><td>用工作流级剩余长度做 STJF 优先级比 FCFS/SJF 更省排队</td><td>§3.4 + Figure 3：SJF 比 FCFS 降 26–48%，STJF 再降 15–34%</td></tr>
-<tr><td>4</td><td>把置信分与 TTLT 负载放进单一 dispatch 规则可得单调回退、避免边际切换</td><td>§3.6 规则 + $L[m]$ 公式；$\tau,\Delta s$ 物理意义</td></tr>
-<tr><td>5</td><td>该联合设计在多配置/RPS 上占据最优操作点，且开销可忽略</td><td>§4.3 Figure 5 + Table 1（≤2.2%）</td></tr>
-<tr><td>6</td><td>增益确由路由器与预测器分别贡献，且瓶颈随配置不同</td><td>§4.4 Figure 6（去路由器前沿变差）、Figure 7（oracle 瓶颈翻转）</td></tr>
+<tr><th>#</th><th>Step</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Multi-agent tasks = multi-stage workflows; E2E latency emerges from <em>cross-stage queueing</em>, so request-level scheduling is suboptimal.</td><td>§1 para 3, Figure 1</td></tr>
+<tr><td>2</td><td>Heterogeneous clusters expose a latency–performance trade-off, but model choice and congestion are coupled (routing hard requests to slow models amplifies contention).</td><td>§1 para 3</td></tr>
+<tr><td>3</td><td>Therefore evaluate systems by the achievable $(C,S)$ operating-point set (Pareto), not a scalarized objective.</td><td>§3.1 objective</td></tr>
+<tr><td>4</td><td>To route well you need per-query model confidence ⇒ multi-label sigmoid router; to schedule well you need <em>workflow-total</em> remaining length ⇒ QRF median $\hat{y}$.</td><td>§3.3, §3.4</td></tr>
+<tr><td>5</td><td>To couple routing with congestion, estimate per-model TTLT $L[m]$ from in-flight predicted tokens; select highest-confidence model within $(1+\tau)L_\text{fast}$ and margin $\Delta s$.</td><td>§3.5, §3.6</td></tr>
+<tr><td>6</td><td>Prioritize by $\hat{y}$ (STJF) with aging so short workflows finish first without starving long ones; STJF cuts queue time beyond SJF.</td><td>§3.4 (Fig 3), §3.7</td></tr>
+<tr><td>7</td><td>Empirically this traces the best $(C,S)$ frontier across datasets/RPS/combos at ≤2.2% overhead, near-oracle in hard cases.</td><td>§4.3 (Fig 5), Table 1</td></tr>
 </table>
 
 <h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p>调度主循环以伪代码形式在 L1 §3.2 Algorithm 1 给出（<code>SCHEDULEREQUEST</code>：置信分循环 → TTLT 累加 → slack+margin 选模型 → 预测总长作优先级 → 记在途负载 → Dispatch）。整体实现基于 vLLM 并暴露与 OpenAI chat/generation 兼容的 API（§3.8）。路由器与长度预测器作为<strong>异步批处理服务</strong>运行：请求入队轻量 feature 对象，后台 collector 按最大 batch 或 timeout 成批，批推理在独立 worker pool（进程隔离）执行，调度器只阻塞在 dispatch 所需最小输出上；推理引擎仍负责 continuous batching / kernel / KV-cache（§3.8）。</p>
+<p><code>[实现未公开]</code> — no public code repository is referenced in the source; all citations below are to the paper's own algorithm listing and prose.</p>
 
-<p><strong>关键实现细节（易漏）</strong>：</p>
+<p><strong>核心技术壁垒 (dedicated).</strong> The single hardest-to-replicate insight is the <strong>workflow-total remaining-length signal</strong> $Y_r=\sum_{j=i}^{N_p}\text{OutTokens}(p,j)$ predicted cheaply and used <em>twice</em>. Replicating it requires (a) offline traces labeling each stage's realized output length per model, (b) a per-model QRF conditioned on features <code>{system/user/full token counts, workflow id, stage id, model name, TF-IDF+truncated-SVD text sketch}</code> (Algorithm 1 line 28; §3.4 feature list), and (c) wiring the <em>same</em> $\hat{y}$ into both the priority key and the Activity Monitor's in-flight accounting so the load estimate and the schedule stay consistent. Getting the future-stage sum right (not just current-stage length) is the non-obvious part — it is what separates STJF from ordinary SJF and drives the extra 15–34% queue-time reduction.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
 <ol>
-<li><strong>同工作流跨阶段复用路由分配</strong>（§3.6）：若 program id 已有分配则不再调路由器——既省 GPU（路由器占卡），又保 KV-cache 复用，还降低路由器训练复杂度（无需复杂训练流程）。</li>
-<li><strong>反饥饿的三元队列 key</strong>（§3.7）：本地 min-heap 按 <code>(starvation_level, priority, arrival_time)</code>；请求连续未被选中达阈值 $S$ 则 starvation_level 减一临时提升，经 $Q$ 次调度后再降回，既保 STJF 又界定最坏等待。</li>
+<li><strong>Assignment reuse across a workflow's stages</strong> (Algorithm 1 lines 2, 24–26): the router runs only on a workflow's <em>first</em> request; later stages reuse <code>A[program_id]</code>. This both saves the GPU-occupying router call and promotes KV-cache reuse — and it means finer per-stage routing is deliberately <em>not</em> attempted.</li>
+<li><strong>Async batched predictor/router off the critical path</strong> (§3.8): requests enqueue lightweight feature objects; a background collector batches to a max size or timeout; inference runs in a separate process pool so it never contends with the scheduler event loop. The scheduler blocks only on the two minimal outputs (confidence scores, $\hat{y}$) needed for dispatch — this is why overhead stays ≤2.2% despite two learned models in the loop.</li>
 </ul>
 
-<p>具体行号级源码 [实现未公开]（论文未附代码仓库链接）。</p>
+<p><strong>Tool & environment interface.</strong> Tool catalog = the workflow stages (Planner / Coder / QAAggent / Solver / Verifier), each a system-prompted LLM call over the accumulated history; ReAct-style, 1–4 stages (Appendix A.1). Chimera exposes OpenAI-compatible chat/generation endpoints (§3.8), so the environment contract is a stateless request API with the engine owning KV-cache; side effects are confined to code execution against APPS hidden tests (evaluated externally, not by the scheduler).</p>
+
+<p><strong>LLM backbone requirements.</strong> Method is backbone-agnostic on the <em>served</em> models (validated across Qwen 1.5/3/7/14B, Llama3.2-3B, Ministral3-8B); the only fixed backbone is the router (ModernBert-large, chosen over base for longer context and higher mAP — §B.1). No CoT/tool-call-format dependency is required of served models beyond producing the workflow stage outputs.</p>
 
 </div>
 </div>

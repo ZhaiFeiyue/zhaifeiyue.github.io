@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">SPECTRE: Hybrid Ordinary-Parallel Speculative Serving for Resource-Efficient LLM Inference</h1>
 <div class="card-meta"><span class="badge badge-framework">framework</span> 2605.08151</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">speculative-decoding</span><span class="tag">llm-serving</span><span class="tag">multi-tenant</span><span class="tag">parallel-decoding</span><span class="tag">resource-utilization</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">speculative-decoding</span><span class="tag">multi-tenant-serving</span><span class="tag">sglang</span><span class="tag">disaggregation</span><span class="tag">adaptive-scheduling</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2605.08151.html">← Synthesis</a>
 <a href="/overview/framework.html">← framework Survey</a>
@@ -205,180 +205,140 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
-<h1 id="spectre-hybrid-ordinary-parallel-speculative-serving-for-resource-efficient-llm-inference">SPECTRE: Hybrid Ordinary-Parallel Speculative Serving for Resource-Efficient LLM Inference <a class="heading-anchor" href="#spectre-hybrid-ordinary-parallel-speculative-serving-for-resource-efficient-llm-inference" aria-label="Link to spectre-hybrid-ordinary-parallel-speculative-serving-for-resource-efficient-llm-inference">#</a></h1>
+<h1 id="spectre-hybrid-ordinary-parallel-speculative-serving-—-l2">SPECTRE: Hybrid Ordinary-Parallel Speculative Serving — L2 <a class="heading-anchor" href="#spectre-hybrid-ordinary-parallel-speculative-serving-—-l2" aria-label="Link to spectre-hybrid-ordinary-parallel-speculative-serving-—-l2">#</a></h1>
 
-<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>SPECTRE reuses idle tail-model GPUs as remote speculative drafters, switching ordinary/parallel decoding per round via a throughput-derived rollback threshold $r^*$. Reaches 2.28× over AR and 66% over best baseline on Qwen3-235B TP8, with <2% interference from shared draft traffic.</p>
+<p>SPECTRE reuses idle tail-model services as remote speculative drafters for busy large models, and adaptively switches between <em>parallel</em> (draft overlaps verify) and <em>ordinary</em> (draft waits) modes using a throughput-derived rollback threshold $r^*$. Up to 2.28× over AR, +66% over the best SD baseline.</p>
 
-<h2 id="§2-痛点-·-方法-·-结果">§2 痛点 · 方法 · 结果 <a class="heading-anchor" href="#§2-痛点-·-方法-·-结果" aria-label="Link to §2-痛点-·-方法-·-结果">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+<p><strong>Q1 — 痛点.</strong> Multi-model serving clouds have long-tailed demand: a few large models are saturated while many small tail models sit idle. Speculative decoding (SD) can borrow that idle small-model capacity as a <em>remote drafter</em>, but naive <strong>parallel</strong> SD — where drafting overlaps target verification — is not always a win. When a pre-generated draft is invalidated by the verifier (a <em>rollback</em>), the overlapped work is wasted and the effective accepted length collapses to 1. Under high concurrency or a TP-heavy target (verification fast relative to draft), rollbacks dominate and parallel SD can fall <strong>below</strong> autoregressive decoding (PEARL drops to 0.36× at bs=128).</p>
 
-<p>Multi-model serving platforms exhibit long-tail demand: a few popular large models saturate GPUs while numerous smaller tail models sit underutilized. Existing speculative decoding approaches either (a) waste this idle capacity by requiring dedicated draft GPUs that serve no native traffic (PEARL, MineDraft), or (b) use pure parallel execution that suffers catastrophic rollback overhead at high batch sizes — PEARL degrades to 0.36× AR throughput at bs=128 on reasoning benchmarks, actively harming performance.</p>
+<p><strong>Q2 — 方法.</strong> Three coupled mechanisms:</p>
+<ol>
+<li><strong>Hybrid ordinary-parallel execution</strong>: per-round, compare the observed rollback ratio $r_n$ against a closed-form threshold $r^<em>$ derived from a throughput model; run parallel when $r_n \le r^</em>$, else fall back to ordinary (target waits for repaired drafts). This is the piece that keeps accepted length near the ordinary-SD ceiling while still harvesting overlap when it pays.</li>
+<li><strong>Speculative priority scheduling</strong> on the shared draft server: non-preemptive priority for speculative requests, with a fairness valve every $K$ steps so background user traffic is not starved.</li>
+<li><strong>Draft-side context compression</strong> (StreamingLLM-style prefix+suffix keep, ratio $p$): shrinks draft prefill/decode latency so drafting stays off the critical path when the target is TP-accelerated.</li>
+</ul>
 
-<p>The fundamental tension: parallel speculative decoding hides draft latency by overlapping with target verification, but pre-generated drafts become invalid when verification discovers mismatches. At high batch sizes the rollback fraction climbs and the throughput gain from latency-hiding is overwhelmed by the loss of useful accepted tokens.</p>
+<p><strong>核心技术壁垒</strong>: the closed-form switching threshold $r^<em>$ that decides, </em>per round and per batch*, whether overlap is net-positive — turning "parallel vs. ordinary SD" from a static design choice into a runtime-adaptive controller (see §7).</p>
 
-<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+<p><strong>Q3 — 结果.</strong> Up to 2.28× over AR and up to +66% over the strongest SD baseline (DS-32B bs=128 LongBench). Under TP8 (Qwen3-235B-A22B), +12–19% over the best competitor where PEARL goes sub-AR. Shared draft traffic costs the target <2% throughput up to 8 QPS. System-level benefit (\$/1000s/GPU) up to 1.81× AR because the draft GPU also serves paying traffic.</p>
 
-<p>Three interlocking mechanisms:</p>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p><strong>1. Hybrid ordinary-parallel coordination.</strong> Derives closed-form throughput for both modes. Ordinary mode throughput (sequential draft → verify):</p>
+<p>SPECTRE is a <strong>disaggregated serving</strong> framework: a target server (large model, possibly TP=8) and one or more draft servers (small tail models, TP=1) that also serve their own native traffic. Communication is a ZMQ router/dealer backend (C++ extension, local IPC on-node, TCP cross-node). It owns the <em>scheduling/coordination</em> axis; it delegates tensor/pipeline parallelism to the underlying SGLang runtime.</p>
 
-<p>$$\mathrm{Thr}_{\mathrm{ord}} = \frac{BL}{T_T + (\gamma - 1)T_D}$$</p>
+<p><img src="/assets/2605.08151/fig1.png" alt="Figure 1: remote-drafter serving topology"></p>
 
-<p>Parallel mode throughput (round latency collapses to $T_T$ since drafting overlaps, but rollback fraction $r$ degrades accepted tokens):</p>
+<p><em>Paper's Figure 1.</em> A large-model (target, blue) service pulls speculative drafts over ZMQ from an underutilized tail-model (draft, orange) service; the draft server keeps serving its own native requests under speculative-priority scheduling while answering target draft queries. The key architectural notice: the drafter is not a dedicated sidecar — it is a live multi-tenant service, which is what makes the system-benefit story work.</p>
+
+<p><img src="/assets/2605.08151/fig2.png" alt="Figure 2: ordinary vs parallel vs SPECTRE timeline"></p>
+
+<p><em>Paper's Figure 2.</em> Timeline contrast: ordinary SD is fully serialized (draft → verify → draft); parallel SD overlaps draft generation with target verification; SPECTRE adaptively switches. Notice that parallel mode's per-round latency shrinks to $T_T$ (verification only) — the entire benefit case — but only when the pre-generated draft survives verification.</p>
+
+<p><img src="/assets/2605.08151/fig3.png" alt="Figure 3: SPECTRE decoding data flow"></p>
+
+<p><em>Paper's Figure 3.</em> Draft model $M_D$ generates candidates while serving normal requests; target $M_T$ verifies via rejection sampling. When the rollback proportion is high the system switches to ordinary coordination (target waits for repaired draft tokens); otherwise execution proceeds overlapped without interruption. This is the runtime realization of the §3.1 mode-switch rule.</p>
+
+<p>The request/task lifecycle: request arrives at target → target assembles a verification candidate $\mathbf{y}_n^{(i)}$ per request → merges the batch $\mathbf{Y}_n$ → verifies (tree degenerates to a chain of length $\gamma$ in the common case) → commits verified tokens → sends bonus token + round id to draft server → draft reconciles state and generates the next $\gamma$-token continuation. The <strong>scheduler</strong> on the draft side is FCFS-with-speculative-priority (non-preemptive, fairness every $K$ steps). The <strong>KV/state manager</strong> is per-request persistent speculative state $\mathcal{S}_n^{(i)}=(\mathbf{h},\mathbf{d},\mathbf{k})$ with rollback keyed on the first divergence point.</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>The framework's core is a throughput model (§2 + Appendix C, Eqs. 39–50) comparing ordinary and parallel modes and solving for the crossover rollback ratio.</p>
+
+<p><strong>Notation table.</strong></p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$B$</td><td>batch size</td></tr>
+<tr><td>$L$</td><td>accepted length when the draft is valid</td></tr>
+<tr><td>$\gamma$</td><td>speculative tokens verified per round</td></tr>
+<tr><td>$T_D$</td><td>latency of one draft step</td></tr>
+<tr><td>$T_T$</td><td>latency of one target verification</td></tr>
+<tr><td>$r$</td><td>rollback ratio (fraction of requests whose pre-gen draft is invalidated)</td></tr>
+<tr><td>$r^*$</td><td>crossover threshold: ordinary beats parallel above it</td></tr>
+</table>
+
+<p><strong>方程物理意义.</strong></p>
+
+<p>Ordinary throughput — one verification plus $\gamma-1$ fresh draft steps per round, all serialized:</p>
+
+<p>$$\mathrm{Thr}_{\mathrm{ord}} = \frac{BL}{T_T + (\gamma-1)T_D}$$</p>
+
+<p>Parallel effective length — rollback requests salvage only the bonus token (1), others keep $L$:</p>
+
+<p>$$L_{\mathrm{par}} = r\cdot 1 + (1-r)\cdot L$$</p>
+
+<p>Parallel throughput — drafting is hidden, so round latency is just $T_T$:</p>
 
 <p>$$\mathrm{Thr}_{\mathrm{par}} = \frac{B(r + (1-r)L)}{T_T}$$</p>
 
-<p>Setting $\mathrm{Thr}_{\mathrm{ord}} > \mathrm{Thr}_{\mathrm{par}}$ and solving for $r$ yields the switching threshold:</p>
+<p>Setting $\mathrm{Thr}_{\mathrm{ord}} > \mathrm{Thr}_{\mathrm{par}}$ and solving for $r$ gives the threshold:</p>
 
-<p>$$r^* = \frac{(\gamma - 1)L\, T_D}{(T_T + (\gamma - 1)T_D)(L - 1)}$$</p>
+<p>$$r^{*} = \frac{(\gamma-1)L\,T_D}{(T_T + (\gamma-1)T_D)(L-1)}$$</p>
 
-<p>When observed per-round rollback ratio $r_n$ exceeds $r^*$, the system switches to ordinary mode for that round.</p>
-
-<p><strong>2. Speculative priority scheduling.</strong> Non-preemptive policy that prioritizes speculative requests on the draft server, with a fairness rule scheduling regular requests every $K$ ($K{=}10$) speculative steps to prevent starvation. Keeps $\gamma T_D < T_T$ under mixed-tenant load.</p>
-
-<p><strong>3. Draft-side context compression.</strong> StreamingLLM-style prefix+suffix retention on draft-side prefill:</p>
-
-<p>$$\mathcal{E}(x_{1:S}) = [x_{:\lfloor\frac{p}{2}S\rfloor},\; x_{-\lfloor\frac{p}{2}S\rfloor+1:}]$$</p>
-
-<p>At $p{=}0.1$ (retain 10% of prompt), this keeps draft latency below target verification time even under TP8 asymmetry, at acceptable acceptance-length cost.</p>
-
-<p><strong>核心技术壁垒</strong>: The closed-form threshold $r^*$ is the key enabler. It requires recognizing that ordinary and parallel modes have distinct throughput formulas whose crossover is a simple function of four runtime-measurable quantities ($T_D, T_T, \gamma, L$). This transforms a seemingly dynamic scheduling problem into a per-round threshold check on the observed rollback ratio — no RL, no search, no offline profiling needed. The insight that a batch-level rollback ratio alone is sufficient for mode selection (rather than per-request statistics) is what makes the hybrid approach practical for online deployment.</p>
-
-<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
-
-<table>
-<tr><th>Metric</th><th>Value</th><th>Source</th></tr>
-<tr><td>Max speedup over AR</td><td><strong>2.28×</strong></td><td>Qwen3-32B bs=64 LongBench (Table 1)</td></tr>
-<tr><td>Max gain over best baseline</td><td><strong>+66%</strong></td><td>DS-32B bs=128 LongBench Δ over Standalone (Table 1)</td></tr>
-<tr><td>Target throughput degradation under mixed traffic</td><td><strong><2%</strong></td><td>Draft-QPS=8, target-QPS=32 (Figure 5)</td></tr>
-<tr><td>System economic benefit (dollar/1000s/GPU)</td><td><strong>1.81×</strong> over AR</td><td>DS-R1-32B pair (Table 2)</td></tr>
-<tr><td>Accepted length vs Standalone</td><td><strong>82–99%</strong> preserved</td><td>2.59–3.61 vs 3.13–3.77 (Table 3)</td></tr>
-</table>
-
-<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
-
-<p><img src="/assets/2605.08151/fig1.png" alt="Figure 1: SPECTRE system architecture — request pool routes to large/small model pools connected via ZMQ, with speculative priority scheduling and hybrid decode"></p>
-
-<p><em>Paper's Figure 1, verbatim (caption: "A large-model service obtains speculative drafts from an underutilized tail-model service via ZMQ. Blue requests correspond to large-model (target) queries, while orange requests correspond to small-model (draft-side normal traffic) queries.").</em></p>
-
-<p>The upper half shows the multi-model pool topology: a requests pool fans out to large-model and small-model service pools, each containing multiple model instances connected by ZMQ channels. The lower-left inset illustrates speculative priority scheduling — speculative requests (r1, r2) are scheduled before native traffic (r7), but the fairness rule interleaves regular requests after $K$ speculative steps. The lower-right inset shows hybrid speculative decode: round 1 runs in parallel mode (draft and verify overlap), but after a rollback is detected (red ✗ marks), round 2 switches to ordinary mode where the target waits for fresh drafts before verifying.</p>
-
-<p><img src="/assets/2605.08151/fig2.png" alt="Figure 2: Timeline comparison — ordinary speculative decoding, SPECTRE hybrid, and parallel speculative decoding"></p>
-
-<p><em>Paper's Figure 2, verbatim (caption: "Timeline comparison of ordinary speculative decoding, parallel speculative decoding, and SPECTRE. Ordinary speculative decoding is fully serialized. Parallel speculative decoding overlaps draft generation and target verification. SPECTRE adaptively switches between parallel and ordinary coordination.").</em></p>
-
-<p>The three timelines expose the core trade-off. Ordinary mode (top) serializes drafter → verifier, leaving target idle during drafting — high acceptance, high latency. Parallel mode (bottom) fully overlaps drafting and verification, eliminating target idle time but requiring the target to wait when drafts are invalidated. SPECTRE (middle) combines both: the first round runs in parallel mode (D2V/V2D arrows show overlapped communication), detects a rollback, then switches to ordinary coordination for the next round. The time axis annotations show that SPECTRE's two-round completion time falls between the purely serial $2(T_D + (\gamma{-}1)T_T)$ and the purely parallel $2T_T$ bounds.</p>
-
-<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
-
-<h3 id="记号表">记号表 <a class="heading-anchor" href="#记号表" aria-label="Link to 记号表">#</a></h3>
-
-<table>
-<tr><th>Symbol</th><th>Meaning</th><th>Introduced</th></tr>
-<tr><td>$B$</td><td>Batch size</td><td>§2</td></tr>
-<tr><td>$\gamma$</td><td>Speculative tokens per verification round</td><td>§2</td></tr>
-<tr><td>$T_D$</td><td>Latency of one draft step</td><td>§2</td></tr>
-<tr><td>$T_T$</td><td>Latency of one target verification step</td><td>§2</td></tr>
-<tr><td>$L$</td><td>Accepted length (tokens accepted per round, full acceptance)</td><td>§2</td></tr>
-<tr><td>$r$</td><td>Rollback ratio (fraction of requests with invalidated pre-generated drafts)</td><td>§2</td></tr>
-<tr><td>$r^*$</td><td>Switching threshold: parallel → ordinary</td><td>§2</td></tr>
-<tr><td>$r_n$</td><td>Observed rollback ratio at round $n$</td><td>§3.1</td></tr>
-<tr><td>$\mathcal{R}_n, \mathcal{S}_n$</td><td>Rollback / non-rollback request sets at round $n$</td><td>§3.1</td></tr>
-<tr><td>$b_n^{(i)}$</td><td>Bonus token from verification for request $i$ at round $n$</td><td>§3.1</td></tr>
-<tr><td>$p$</td><td>Prompt retention ratio for context compression</td><td>§3.2</td></tr>
-<tr><td>$S$</td><td>Sequence length</td><td>§3.2</td></tr>
-<tr><td>$K$</td><td>Fairness scheduling period (speculative steps between regular batches; $K{=}10$)</td><td>§3.2</td></tr>
-<tr><td>$T_D^{\mathrm{mix}}$</td><td>Per-step draft latency under mixed batching</td><td>§3.2</td></tr>
-<tr><td>$C_{\max}$</td><td>Circuit breaker threshold (max consecutive missed replies)</td><td>App A.1</td></tr>
-<tr><td>$H$</td><td>Cooldown rounds after circuit breaker triggers</td><td>App A.1</td></tr>
-<tr><td>$\delta_n^{(i)}$</td><td>First divergence point in draft-side reconciliation</td><td>App A.2</td></tr>
-</table>
-
-<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
-
-<p><strong>Ordinary throughput</strong> (Eq. 1): $\mathrm{Thr}_{\mathrm{ord}} = BL / (T_T + (\gamma{-}1)T_D)$. Numerator counts total accepted tokens across the batch. Denominator is the serial round latency: one target verification plus $\gamma{-}1$ fresh draft steps (the $\gamma$-th token is the bonus from verification). The key constraint is that target sits idle during drafting.</p>
-
-<p><strong>Parallel accepted length</strong> (Eq. 3): $L_{\mathrm{par}} = r \cdot 1 + (1{-}r) \cdot L$. A two-case expectation: rollback requests contribute exactly 1 token (the bonus token), non-rollback requests contribute full $L$. Boundary check: $r{=}0 \Rightarrow L_{\mathrm{par}}{=}L$ (no rollback, full acceptance); $r{=}1 \Rightarrow L_{\mathrm{par}}{=}1$ (all rollback, minimal acceptance).</p>
-
-<p><strong>Parallel throughput</strong> (Eq. 4): $\mathrm{Thr}_{\mathrm{par}} = B(r + (1{-}r)L) / T_T$. Round latency shrinks to $T_T$ since drafting is fully overlapped, but effective token yield drops via $L_{\mathrm{par}}$. The numerator is $B \cdot L_{\mathrm{par}}$.</p>
-
-<p><strong>Switching threshold</strong> (Eq. 50, Appendix C): $r^<em> = (\gamma{-}1)LT_D / ((T_T + (\gamma{-}1)T_D)(L{-}1))$. Derived from the crossover $\mathrm{Thr}_{\mathrm{ord}} = \mathrm{Thr}_{\mathrm{par}}$ by cross-multiplying and isolating $r$. When $r > r^</em>$, the acceptance loss from rollback outweighs the latency savings from overlapping. Requires $L > 1$ (holds when $\gamma \geq 2$).</p>
-
-<p><strong>Mode switching</strong> (Eq. 5): if $r_n \leq r^<em>$ → parallel; if $r_n > r^</em>$ → ordinary. Applied per-round using the observed batch-level rollback ratio.</p>
-
-<p><strong>Context compression</strong> (Eq. 17): $\mathcal{E}(x_{1:S}) = [x_{:\lfloor pS/2\rfloor},\, x_{-\lfloor pS/2\rfloor+1:}]$. Retains prefix and suffix, discards middle. At $p{=}0.1$ this removes 90% of draft-side context, trading acceptance quality for latency to maintain $\gamma T_D < T_T$ under TP-asymmetric deployments.</p>
-
-<h3 id="形式化验证清单">形式化验证清单 <a class="heading-anchor" href="#形式化验证清单" aria-label="Link to 形式化验证清单">#</a></h3>
+<p><strong>6 checks.</strong></p>
 
 <ol>
-<li><strong>Ordinary throughput</strong> (Eq. 1 → Eq. 41): sequential latency $T_T + (\gamma{-}1)T_D$ per round, $BL$ tokens per round. Dimensionally consistent (tokens/time). ✓</li>
-<li><strong>Parallel accepted-length</strong> (Eq. 3/43): two-case mixture. Boundary conditions verified ($r{=}0$: full acceptance; $r{=}1$: minimal). ✓</li>
-<li><strong>Parallel throughput</strong> (Eq. 4/44): substitutes $L_{\mathrm{par}}$ correctly; round latency $T_T$ consistent with full overlap assumption. ✓</li>
-<li><strong>Threshold derivation</strong> (Eq. 45–50): algebraic manipulation from $\mathrm{Thr}_{\mathrm{ord}} > \mathrm{Thr}_{\mathrm{par}}$ involves cross-multiplication and collecting $r$ terms. Final expression matches Appendix C step-by-step; holds under $L > 1$. ✓</li>
-<li><strong>Overlap precondition</strong> ($\gamma T_D < T_T$, Eq. 39): required for parallel mode. Violations handled by speculative priority scheduling (reduces $T_D^{\mathrm{mix}}$), context compression (reduces $T_D$), and fallback to conservative mode (Eq. 37–38). ✓</li>
-<li><strong>Compression trade-off</strong>: Eq. 17 is a deterministic compression rule. No formal bound on acceptance loss is given — the paper validates empirically that $p{=}0.1$ retains sufficient acceptance under TP8 (§4.3). The acceptance-throughput trade-off is demonstrated but not analytically bounded. ✓</li>
+<li><strong>Denominator of $\mathrm{Thr}_{\mathrm{par}}$ is $T_T$, not $T_T+(\gamma-1)T_D$</strong> — correct: in parallel mode drafting overlaps verification, so it is excluded from the critical path. This exclusion is <em>exactly</em> what parallel mode buys and why $T_D$ vanishes from the parallel denominator.</li>
+<li><strong>Why "1" for rollback requests in $L_{\mathrm{par}}$</strong> — a rolled-back draft is invalid; only the target-verified bonus token survives, contributing a single guaranteed token. Consistent with Eq. 12's padded candidate $[b, \varnothing,\dots]$.</li>
+<li><strong>Boundary/monotonicity</strong>: $r^<em>$ increases in $T_D$ and decreases in $T_T$ — larger draft latency makes overlap more valuable (tolerate more rollback), while a fast target ($T_T\downarrow$, the TP8 case) shrinks $r^</em>$ toward 0, i.e., parallel mode is almost never worth it. This matches the §4.3 finding that pure-parallel PEARL goes sub-AR under TP8.</li>
+<li><strong>$L>1$ requirement</strong>: division by $(L-1)$ demands $L>1$; if $L=1$ (no acceptance beyond bonus) SD has no benefit at all, so the regime is degenerate — the paper explicitly assumes $L>1$ (Eq. 50).</li>
+<li><strong>First-order sanity on the operating assumption $\gamma T_D < T_T$ (Eq. 39)</strong>: with $T_T$ large relative to $\gamma T_D$, $r^<em>$ approaches $\frac{(\gamma-1)L T_D}{T_T (L-1)}$, a small positive number — so ordinary is preferred unless rollbacks are rare. As $T_T \to (\gamma-1)T_D$ the threshold rises toward $\frac{L}{L-1}>1$, meaning parallel is </em>always* preferred (any $r\le 1$ passes). Both limits are physically sensible.</li>
+<li><strong>Interior vs. boundary optimum</strong>: the decision is a threshold test on a single scalar $r_n$; the "optimum" is a boundary switch, not an interior calculus optimum. The controller therefore only needs to <em>measure</em> $r_n$ each round — no per-round optimization. This is why it is cheap enough to run online.</li>
 </ul>
 
-<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+<p>Caveat the paper does not close: $r^*$ treats the whole batch with one rollback ratio; per-request rollback heterogeneity is not modeled.</p>
 
-<h3 id="tp1-主实验">TP1 主实验 <a class="heading-anchor" href="#tp1-主实验" aria-label="Link to tp1-主实验">#</a></h3>
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p><img src="/assets/2605.08151/tab1.png" alt="Table 1: Throughput (Tok/s) and speedup over AR across all model pairs, batch sizes, and benchmarks"></p>
+<p><img src="/assets/2605.08151/tab1.png" alt="Table 1: TP1 target throughput and speedup"></p>
 
-<p><em>Paper's Table 1 and Table 2, verbatim (caption: "Throughput (Tok/s) and speedup over AR for each model, batch size, and benchmark. The best results are marked in bold and the SOTA results are underlined for each benchmark. Light yellow rows correspond to SPECTRE, and light blue rows show SPECTRE's relative speedup gain over the SOTA method.").</em></p>
+<p><em>Paper's Table 1.</em> Throughput (Tok/s, speedup vs AR) for Qwen3-32B and DS-R1-32B targets at bs∈{32,64,128}. SPECTRE is top in every reported TP1 cell; the load-bearing wins are on LongBench (long context), e.g. Qwen3-32B bs=64 reaches 2.28× AR and DS-32B bs=128 LongBench is +66.4% over the best baseline. Note the failure modes it beats: EAGLE3 drops to 0.65–0.81× on LongBench, and PEARL collapses to 0.36× at bs=128 — evidence that naive parallel SD is fragile exactly where SPECTRE's ordinary fallback engages.</p>
 
-<p>SPECTRE achieves the highest throughput in every cell of Table 1 across three model pairs × five benchmarks × three batch sizes. Key observations: (1) the margin over Standalone grows with batch size — at bs=128 DS-32B LongBench, SPECTRE 998 Tok/s vs Standalone 599 Tok/s (+66.4%); (2) PEARL and EAGLE-3 degrade or fall below AR on long-context workloads (EAGLE-3: 0.65× on LongBench bs=128; PEARL: 0.36× on Math500 bs=128); (3) MineDraft consistently underperforms AR and OOMs on ShareGPT/LongBench. The bottom portion of the image shows Table 2: system-level benefit efficiency in dollar/1000s/GPU. SPECTRE leads across all model pairs, with the largest margin on DS-R1-32B at 1.81× over AR. PEARL achieves <em>lower</em> benefit than AR on Qwen3-235B (0.16 vs 0.38 AR) — the dedicated draft GPU is a net cost.</p>
+<p><img src="/assets/2605.08151/fig4.png" alt="Figure 4: TP8 high-concurrency throughput"></p>
 
-<h3 id="tp8-部署">TP8 部署 <a class="heading-anchor" href="#tp8-部署" aria-label="Link to tp8-部署">#</a></h3>
+<p><em>Paper's Figure 4.</em> bs=128 with Qwen3-235B-A22B (TP8) target, Qwen3-0.6B (TP1) draft, on LongBench-v2 / MRCR / ShareGPT. SPECTRE leads by 19% / 12% / 14% over the strongest competitor. The critical observation: PEARL falls <em>below</em> AR here — the TP8 target verifies so fast that the single-GPU draft becomes the bottleneck, exactly the $T_T$-small regime where §4's model predicts $r^*\to 0$ and pure parallel loses.</p>
 
-<p><img src="/assets/2605.08151/fig4.png" alt="Figure 4: TP8 throughput comparison at bs=128 for Qwen3-235B-A22B"></p>
+<p><img src="/assets/2605.08151/tab2.png" alt="Table 2: system-level benefit (\$/1000s/GPU)"></p>
 
-<p><em>Paper's Figure 4, verbatim (caption: "Throughput comparison under high-concurrency settings (batch size=128) using Qwen3-235B-A22B (TP=8) as the target model and Qwen3-0.6B (TP=1) as the draft model.").</em></p>
+<p><em>Paper's Table 2.</em> System benefit including draft-side revenue. SPECTRE is highest on all pairs (up to 1.81× AR on DS-R1). The damning row: PEARL on Qwen3-235B is <strong>0.16 vs AR's 0.38</strong> — a dedicated, non-shared draft GPU is a net economic loss. SPECTRE wins here precisely because its draft server keeps earning on native traffic.</p>
 
-<p>Under TP=8, target verification becomes extremely fast relative to draft generation, making pure parallel approaches untenable. PEARL drops 25–37% below AR across all three workloads (purple arrows). SPECTRE with $p{=}0.1$ context compression surpasses the strongest competing method by +19% (LongBench-v2), +12% (MRCR), and +14% (ShareGPT), demonstrating that hybrid switching + compression handles compute-asymmetric deployments where naive parallelism fails.</p>
+<p><img src="/assets/2605.08151/tab3.png" alt="Table 3: mean accepted length"></p>
 
-<h3 id="多租户共享流量">多租户共享流量 <a class="heading-anchor" href="#多租户共享流量" aria-label="Link to 多租户共享流量">#</a></h3>
+<p><em>Paper's Table 3.</em> Accepted length averaged over batch sizes. Standalone (ordinary SD, no parallel interference) is the ceiling (3.13–3.77); SPECTRE stays close (2.59–3.61) while pure-parallel EAGLE3/PEARL are much shorter (1.66–2.44). This is the mechanistic proof that the $r^*$ switch preserves acceptance — SPECTRE trades a little length for a lot of overlap, whereas PEARL loses both.</p>
 
-<p><img src="/assets/2605.08151/fig5.png" alt="Figure 5: Target and draft throughput under mixed draft-side traffic for two model pairs"></p>
+<p>Additional (Tables 4–5, not embedded here): bs∈{1,16} still SPECTRE-best (2.36–3.12× at bs=1), and temperature-0.6 sampling preserves the gains, growing with batch size.</p>
 
-<p><em>Paper's Figure 5, verbatim (caption: "Throughput under mixed draft-side traffic. The draft model serves both speculative requests from the target model and background user requests (query per second (QPS), denoted by draft-qps-k).").</em></p>
-
-<p>The two panels show Qwen3-32B/0.6B (left) and DS-32B/1.5B (right). Solid bars are target throughput without draft background traffic; hatched bars are with background traffic. At target-QPS=32 with 8 QPS draft background: target throughput drops only 1.6% (Qwen3) and 0.5% (DS). Draft throughput (colored lines) remains stable across background load levels. The speculative priority scheduling mechanism successfully isolates the two workloads.</p>
-
-<h3 id="接受长度">接受长度 <a class="heading-anchor" href="#接受长度" aria-label="Link to 接受长度">#</a></h3>
-
-<p>Accepted length analysis (Table 3, not shown) reveals SPECTRE trades 1–18% acceptance versus Standalone (2.59–3.61 vs 3.13–3.77) but significantly outperforms PEARL (1.66–2.19) and EAGLE-3 (1.90–2.44). The hybrid strategy preserves near-Standalone acceptance on most rounds by switching to ordinary mode when rollback would be costly, and gains throughput on low-rollback rounds through parallelism. ShareGPT shows the smallest gap (3.11 vs 3.13 on Qwen3-32B) because conversational workloads produce more predictable continuations with lower rollback rates.</p>
-
-<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
-<tr><td>1</td><td>Ordinary and parallel speculative modes have distinct throughput formulas parameterized by rollback ratio $r$</td><td>§2 Eq. 1 ($\mathrm{Thr}_{\mathrm{ord}}$), Eq. 3–4 ($L_{\mathrm{par}}$, $\mathrm{Thr}_{\mathrm{par}}$); Appendix C full derivation</td><td>—</td></tr>
-<tr><td>2</td><td>Their crossover occurs at a closed-form threshold $r^*$ that depends only on measurable runtime quantities</td><td>§2 / Appendix C Eq. 50; algebraic steps from $\mathrm{Thr}_{\mathrm{ord}} = \mathrm{Thr}_{\mathrm{par}}$</td><td>Step 1</td></tr>
-<tr><td>3</td><td>Online per-round estimation of $r_n$ enables dynamic mode switching without offline profiling</td><td>§3.1 Eq. 5 (mode selection rule); per-round batch-level rollback ratio is observable at target</td><td>Step 2</td></tr>
-<tr><td>4</td><td>Draft-side optimizations keep the parallel-mode precondition $\gamma T_D < T_T$ valid under multi-tenant and TP-asymmetric conditions</td><td>§3.2 Eq. 16–17 (priority scheduling + compression); App A.2 (fairness rule $K{=}10$, fallback Eq. 37–38)</td><td>Step 3</td></tr>
-<tr><td>5</td><td>The combined system outperforms all baselines across batch sizes (1–128), model pairs (3), and workloads (6 benchmarks) under both greedy and sampled decoding</td><td>§4.2 Table 1, §4.3 Fig 4, Appendix D Tables 4–5</td><td>Steps 3, 4</td></tr>
-<tr><td>6</td><td>Shared draft-GPU serving delivers net positive economic value, unlike dedicated-drafter approaches</td><td>§4.4 Table 2 (SPECTRE 1.81× vs PEARL below AR on 235B); Fig 5 (<2% interference)</td><td>Step 5</td></tr>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Multi-model clouds leave tail-model GPUs idle; those can serve as remote drafters.</td><td>§1 long-tail framing; Fig. 1 topology</td></tr>
+<tr><td>2</td><td>Parallel SD overlaps draft+verify but rollbacks cut effective length to 1, so overlap is only sometimes net-positive.</td><td>§2 Eqs. 1,3,4; Fig. 2 timeline</td></tr>
+<tr><td>3</td><td>A closed-form threshold $r^*$ (Eq. 50) marks where ordinary beats parallel; switch modes per round on measured $r_n$ (Eq. 5).</td><td>§2 + Appendix C derivation</td></tr>
+<tr><td>4</td><td>Switching keeps accepted length near the ordinary-SD ceiling.</td><td>§4.5 Table 3 (SPECTRE 2.59–3.61 vs Standalone 3.13–3.77)</td></tr>
+<tr><td>5</td><td>Draft latency must stay below $T_T$; priority scheduling + context compression enforce this even under shared traffic and TP8.</td><td>§3.2 Eqs. 16–17; §4.3 Fig. 4; §4.4 Fig. 5 (<2% target loss)</td></tr>
+<tr><td>6</td><td>Net effect is highest throughput and highest \$/GPU across all regimes tested.</td><td>§4.2 Table 1; §4.4 Table 2</td></tr>
 </table>
 
-<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p><strong>代码</strong>: SGLang PR <a href="https://github.com/sgl-project/sglang/pull/22272">#22272</a>，基于 SGLang v0.5.7。</p>
+<p>Implementation is in SGLang, PR available: <code>sgl-project/sglang#22272</code> (evaluated on SGLang v0.5.7). Concrete file:line citations are not in the L1; treat below as component-level pointers into that PR. <code>[实现未公开 at file:line granularity — see PR #22272]</code></p>
 
-<p><strong>关键实现细节</strong>:</p>
+<p><strong>核心技术壁垒 (elaboration).</strong> The single hardest-to-replicate insight is the <em>runtime</em> rollback-threshold controller. Anyone can implement parallel SD or ordinary SD; the contribution is measuring $r_n$ each round and comparing to the analytically-derived $r^*$ (Eq. 50), which itself depends on live $T_D$, $T_T$, $\gamma$, $L$. Reproducing it requires (a) instrumenting per-round rollback counts on the target, (b) a stable estimate of $L$ and the two latencies under batching, and (c) a mode switch that can re-assemble the verification batch differently (ordinary: fresh repaired drafts, Eqs. 6–10; parallel: padded rollback candidates, Eqs. 12–15) without stalling. Getting acceptance length to sit near Standalone (Table 3) is the observable evidence the controller is tuned correctly.</p>
 
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
 <ol>
-<li><strong>ZMQ 通信层</strong> (Appendix A.3): 自定义多线程 C++ 扩展实现异步消息传递。Target 端作为 ZMQ ROUTER, 每个 draft server 作为 DEALER endpoint。本机使用 IPC transport, 跨机 TCP。包含心跳机制、批量二进制序列化、有界队列和 stale-message 丢弃。这是区别于 gRPC/HTTP 通信的工程选择 — 在 speculative decoding 的关键路径上，ZMQ 的低延迟对 $\gamma T_D < T_T$ 约束至关重要。</li>
+<li><strong>Round-and-request-id validation of async replies</strong> (Eq. 24): a draft reply is accepted only if both $(i,n)$ match the current request/round — without this, stale or reordered ZMQ replies silently corrupt generation state. There is also a <strong>circuit breaker</strong> (Eqs. 26–27): after $C_{\max}$ missed replies, remote speculation is disabled for $H$ rounds.</li>
+<li><strong>Context compression is only prefix+suffix keep</strong> (Eq. 17, $p=0.1$ ⇒ first 5% + last 5%): dropping 90% of the draft-side context still works because the throughput saving from lower draft latency outweighs the acceptance-length hit — but this only holds when draft latency is on the critical path (TP8 target). At TP1 the paper disables compression.</li>
 </ul>
 
-<ol>
-<li><strong>Circuit breaker</strong> (Appendix A.1, Eq. 24–27): 异步回复通过 $(i, n)$ 标识验证（request-id + round-id 必须同时匹配）。连续 $C_{\max}$ 次未收到有效 draft 回复时，禁用远程推测 $H$ 轮并回退到单 token 自回归。防止 draft server 故障或网络抖动导致 target 持续空等。</li>
-</ul>
+<p><strong>§10 Deployment context.</strong> Both stages (prefill+decode) run on the target; the draft server is a co-tenant serving system, not a sidecar. Best regime: high-concurrency (bs≥32) long-context on a TP-heavy target where a small idle model already exists in the fleet. Integration cost: a scheduler + executor patch to SGLang plus a C++ ZMQ transport — a fork/patch, not a config flag. Migration for a vLLM/SGLang shop: adopt the SGLang PR and stand up (or repurpose) a small-model endpoint as the drafter.</p>
 
-<p><strong>核心技术壁垒（实现层面）</strong>: $r^*$ 的在线计算依赖对 $T_D$, $T_T$, $L$ 的运行时估计。论文未详述这些量的估计策略（滑动窗口大小、EMA vs 均值、冷启动处理等），这一工程选择直接影响模式切换的灵敏度与稳定性 — 估计过于灵敏会导致频繁切换（抖动），过于平滑会导致对突发负载变化的响应滞后。</p>
+<p><em>(§12 software→hardware reverse implication: not triggered — SPECTRE is a scheduling/coordination framework, not hardware-proximal.)</em></p>
 
 </div>
 </div>

@@ -196,11 +196,11 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Maestro: Workload-Aware Cross-Cluster Scheduling for LLM-Based Multi-Agent Systems</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2606.12950</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">llm-serving</span><span class="tag">multi-agent</span><span class="tag">scheduling</span><span class="tag">cross-cluster</span><span class="tag">kv-cache</span><span class="tag">output-length-prediction</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2606.12950</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">multi-agent-serving</span><span class="tag">cross-cluster-scheduling</span><span class="tag">output-length-prediction</span><span class="tag">kv-cache</span><span class="tag">model-colocation</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2606.12950.html">← Synthesis</a>
-<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2606.12950" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
@@ -209,152 +209,109 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>Serving LLM multi-agent workflows under fixed GPU budgets is bottlenecked by unpredictable per-stage output length, long-tail multi-model cold starts, and cross-cluster routing. Maestro predicts each stage's output length / KV footprint / tool-use intent, then drives a 3-tier scheduler (node colocation + cluster fitness routing + global preemptive SRTF), cutting KV-reservation HBM 67.2% and lifting high-contention SLO by 23.6 pp over EDF.</p>
+<p>Serving LLM multi-agent workflows under tight GPU budgets breaks because each stage's decode length and KV footprint are unknown, model demand is long-tailed, and clusters differ in readiness vs latency. Maestro predicts per-stage output length and KV need (tool-intent classifier + role-aware regressor), then drives node-level hierarchical weight residency + elastic KV, cross-cluster fitness routing, and boundary-preemptive SRTF. Result: −67.2% KV-reservation HBM, +23.6 pp SLO over EDF.</p>
 
-<h2 id="2-q1-痛点-q2-方法-q3-结果">2. Q1 痛点 / Q2 方法 / Q3 结果 <a class="heading-anchor" href="#2-q1-痛点-q2-方法-q3-结果" aria-label="Link to 2-q1-痛点-q2-方法-q3-结果">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+<p><strong>Q1 — 痛点.</strong> LLM-MAS treats one user query as a dependency-coupled workflow of stages (e.g. Planner → Coder → Reviewer), each an LLM call whose latency and memory scale with an <em>unknown-in-advance</em> output length. Three concrete failures follow: (a) non-deterministic per-stage cost causes head-of-line (HoL) blocking where a long reasoning step delays short interactive ones; (b) model invocation is heavy-tailed — a few models are hot, most are cold — so dedicating a GPU per model wastes capacity while on-demand loading incurs tens-of-seconds cold starts that break interactive SLOs; (c) in a multi-cluster setting the nearest cluster (low RTT) may lack the warm model or KV headroom, while a farther cluster is ready. Existing systems either target single-turn queries with fixed partitioning (FastServe, MuxServe, QLM) or do static cross-cluster routing oblivious to model readiness (SkyServe, AIBrix). None couples stage-level cost estimation with cross-cluster allocation for agentic workflows.</p>
 
-<p>An LLM-MAS user query is not one request but a dependent workflow of stages (e.g. Planner → Coder → Reviewer), each an LLM call. Three coupled problems make naïve serving fail:</p>
+<p><strong>Q2 — 方法.</strong> Maestro characterizes each workflow stage along five agent-level dimensions (role/position, tool-invocation intent, predicted output length + KV footprint, remaining workflow time, per-cluster model readiness) and coordinates three tiers in one closed loop: node-level memory-safe multi-model colocation via GPU→CPU→disk hierarchical residency + prediction-guided elastic KV; cluster-level fitness-based dispatch balancing RTT, model readiness, and KV feasibility; global-level workflow-aware preemptive SRTF that protects latency-critical stages without starving long jobs. The forecasting stack is a two-stage predictor: an isotonic-calibrated LightGBM tool-intent classifier feeds a role-specific length regressor trained on $\log(1+L)$ to tame the heavy tail.</p>
 
-<ol>
-<li><strong>Non-deterministic cost</strong>: decode length is unknown a priori, and latency/memory of a stage depends on its (unseen) output. Misestimating output length misestimates runtime and memory, causing head-of-line (HoL) blocking where a long reasoning step delays short interactive ones. The effect is amplified because length depends on agent role, tool type, and CoT vs non-CoT mode.</li>
-<li><strong>Long-tail multi-model contention</strong>: a few models are hot, most are rare. Dedicating a GPU per model wastes capacity; on-demand loading pays tens-of-seconds cold starts that breach interactive SLOs; colocation relieves waste but intensifies memory contention, and KV cache grows with output length on top of static weights.</li>
-<li><strong>Cross-cluster routing trade-off</strong>: the topologically nearest cluster minimizes RTT but may lack the resident model or KV headroom (→ cold start of tens of seconds), while a farther cluster may already be warm. Inter-region RTT (tens–hundreds of ms) is orders of magnitude smaller than a cold start (tens of s), so "nearest" is often wrong.</li>
-</ul>
+<p><strong>核心技术壁垒</strong>: the load-bearing insight is that <em>tool-invocation intent is a first-class, cheaply-predictable signal that splits the bimodal output-length distribution</em> — modeling it explicitly (stage-1 classifier as a continuous calibrated feature into stage-2 regression) is what makes stage cost estimable enough to drive SRTF, KV admission, and routing simultaneously. Everything downstream (Eqs 2, 3, 5, 7) consumes $\hat{L}$ / $\hat{p}_{\mathrm{tool}}$; without a low-error length estimate the whole three-tier loop degrades to blind heuristics. Detailed in §7.</p>
 
-<p>Existing systems address these only partially: prediction-aware single-turn schedulers (FASTSERVE), multi-model multiplexers (MuxServe, QLM) with fixed partitioning, and static cross-cluster routers (SkyServe, AIBrix) oblivious to model readiness/KV affinity. None couple low-overhead stage-level cost estimation with cross-cluster allocation for agentic workflows.</p>
-
-<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
-
-<p>Maestro exposes five agent-level dimensions (role/workflow position, tool intent, predicted per-stage output length + KV footprint, remaining workflow time, per-cluster model readiness) and turns each stage into a scheduling unit passing through a 5-phase closed loop: observe → predict → schedule → node execute/manage-memory → profile. Three tiers:</p>
-
-<ul>
-<li><strong>Node level</strong>: memory-safe multi-model colocation via hierarchical weight residency (GPU → host RAM → local disk → remote) with LRU eviction (Algorithm 1), plus explicit memory accounting and elastic virtual-memory KV allocation (kvcached / CUDA VMM). When KV admission fails, a minimum-impact 5-level degradation plan (Algorithm 2) frees memory and reports a disruption cost back to the scheduler.</li>
-<li><strong>Cluster level</strong>: feasibility-aware fitness routing — filter nodes that can safely admit the inflated KV demand $R_{\text{need}}$, then rank feasible nodes by a compact score $S(N,T)$ combining network affinity, time-to-start, and disruption penalty (Algorithm 3).</li>
-<li><strong>Global level</strong>: two-level queueing with workflow-aware Shortest-Remaining-Time-First using predicted remaining workflow time, boundary preemption (only between LLM invocations), hysteresis to avoid oscillation, and aging to prevent starvation.</li>
-</ul>
-
-<p><strong>核心技术壁垒</strong>: the single hardest-to-replicate insight is the <em>tool-intent-first two-stage cost predictor</em> wired as a scheduling signal. A calibrated (isotonic-regression) tool-call probability is used both directly by the scheduler and as an input feature to a per-role log-space output-length regressor, which then feeds <em>every</em> downstream decision (execution-time ordering Eq. 2, KV admission Eq. 3, SRTF remaining-time Eq. 7, and the routing safety margin via EWMA of prediction error). Reproducing Maestro is not about any one equation — it is about making a sub-network-RTT-cheap predictor accurate enough (MAE ↓19% vs Magnus) and <em>calibrated</em> enough that a whole scheduling stack can trust it.</p>
-
-<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
-
-<ul>
-<li>Output-length MAE 165.43 tokens ($R^2=0.7774$), −19.2% vs Magnus, −30.9% vs BERT-MLP; linear baseline has negative $R^2$.</li>
-<li>Five-model colocation on a single 40 GB A100 reaches ~122 GB virtual KV budget = 3.05× effective footprint = 205% overcommit = <strong>67.2% less HBM</strong> than non-overcommitted reservation.</li>
-<li>At high stress (λ=2.0, batch 0.8) SLO attainment 73.6% vs EDF 50.0% → <strong>+23.6 pp</strong>; interactive queueing delay −84.8% vs EDF.</li>
-<li>Activation latency vs QLM: 0.11–2.50 s (Maestro) vs 36–52 s (QLM) across 0.6B–14B.</li>
-</ul>
+<p><strong>Q3 — 结果.</strong> On a 32-server A100 testbed + trace-driven simulation (46,769 jobs / 144,524 stages across 9 apps): length-prediction MAE cut 19.2% vs Magnus; KV-reservation HBM cut 67.2% (205% overcommit, 3.05× effective footprint on a 40 GB GPU); high-contention SLO attainment +23.6 pp over EDF (50.0% → 73.6% at $\lambda=2.0$, batch=0.8) with −84.8% interactive queueing delay.</p>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
+<p>Maestro's system architecture and end-to-end workflow:</p>
+
 <p><img src="/assets/2606.12950/fig5.png" alt="Figure 5: Maestro system architecture and workflow"></p>
 
-<p><em>Paper's Figure 5 ("The system architecture and workflow of Maestro").</em> The three modules map onto the three scheduling tiers: the <strong>Multi-Agent Framework Module</strong> (output-length prediction + runtime profile) supplies the per-stage predictions; the <strong>LLM Inference Load Balancing Module</strong> (queue management) is the global SRTF tier; the <strong>Multi-Cluster Resource Management Module</strong> (OpenAI-compatible interface + cluster monitoring/management) is the cross-cluster fitness router that dispatches to self-hosted or remote clusters. Data-flow and control-flow arrows form the closed loop where post-execution profiles re-calibrate the predictor.</p>
+<p><em>Paper's Figure 5 ("The system architecture and workflow of Maestro").</em> The figure shows the stage-driven closed loop: an incoming workflow stage is intercepted at the dispatch gateway, described (role/position/tool availability + semantic embedding), cost-predicted, then routed by the global scheduler to a node whose runtime manages hierarchical weight residency and elastic KV; post-execution telemetry recalibrates the predictor. Readers should notice that scheduling, node memory management, and prediction are <em>not</em> separate services but signal-coupled stages of one control loop.</p>
 
-<p>The request lifecycle as a control loop:</p>
+<p>The two-stage cost predictor architecture:</p>
+
+<p><img src="/assets/2606.12950/fig6.png" alt="Figure 6: Agent-aware output-length prediction architecture"></p>
+
+<p><em>Paper's Figure 6 ("Agent-aware output-length prediction architecture in Maestro").</em> Structured features (role, workflow position, invocation index, tool availability) are concatenated with a sliding-window MiniLM semantic embedding; a first-stage tool-intent classifier emits a calibrated probability that is fed as a continuous feature into the second-stage length regressor. The key structural point is the explicit intermediate tool-intent node — it is the mechanism that separates the short-structured vs long-free-form output modes.</p>
+
+<p>The per-turn agent scheduling loop, redrawn as a state machine for the five-phase pipeline that the raster figure narrates in prose:</p>
 
 <div class="mermaid">
-sequenceDiagram
-    participant A as Agent stage T
-    participant G as Dispatch gateway (predictor)
-    participant S as Global scheduler (SRTF)
-    participant R as Node runtime (memory mgr)
-    A->>G: intercept invocation, extract descriptor
-    G->>G: predict L̂(T), R̂kv(T), p̂tool(T)
-    G->>S: cost estimates
-    S->>S: filter feasible nodes; rank by fitness S(N,T)
-    S->>R: dispatch to argmax node
-    R->>R: activate weights (tiered), admit KV / degrade
-    R-->>S: readiness, KV headroom, disruption cost Cdeg
-    R-->>G: actual length/latency/memory (profile)
-    G->>G: recalibrate predictor + ρ (EWMA of error)
+stateDiagram-v2
+    [*] --> Observe
+    Observe: Agent-context observation (role, position, tool avail, semantic embedding, src cluster)
+    Predict: Cost prediction (L̂, R̂_kv, p̂_tool)
+    Schedule: Scheduling decision (fitness routing + SRTF ordering + preemption)
+    Execute: Node execution & memory mgmt (load, KV alloc, min-impact reclaim)
+    Profile: Post-execution profiling (actual L, latency, memory)
+    Observe --> Predict
+    Predict --> Schedule
+    Schedule --> Execute
+    Execute --> Profile
+    Profile --> Observe: recalibrate + re-prioritize remaining stages
+    Execute --> Schedule: KV admission fails -> report C_deg, re-route/re-queue
+    Profile --> [*]: workflow done
 </div>
 
-<p><img src="/assets/2606.12950/fig6.png" alt="Figure 6: Agent-aware two-stage output-length prediction architecture"></p>
+<p>The recovery edge matters: when node-level KV admission fails, the runtime does not silently OOM — it computes a minimum-impact degradation plan and reports the disruption cost back, so the scheduler can fall back to re-routing or re-queueing at a stage boundary.</p>
 
-<p><em>Paper's Figure 6 ("Agent-aware output-length prediction architecture").</em> Structured features (system/user role, role-playing, CoT mode, topological order, tool availability, upstream agent) are concatenated with a semantic path (BERT/MiniLM → PCA → sliding-window mean-pooling). The first stage is a binary tool-intent classifier; the second is a gradient-boosted regressor over structured + semantic features + the tool probability. Note: the figure labels the regressor "GBDT" while §IV text calls it "LightGBM" — same family, inconsistent naming.</p>
+<p><strong>Agent scope.</strong> Task class: open-ended agentic workflows (interactive assistants + batch analytic pipelines) covering serial, parallel, loop, and supervisor-worker topologies. Interaction pattern: multi-turn dependency-coupled stages per job. Autonomy: fully autonomous execution; the <em>system</em> under study is the serving/scheduling substrate, not the agent policy. Memory model here is systems-level (KV cache = short-term working state, hierarchical weight tiers = long-term residency), not an agent-cognition memory. Planning style is a predetermined workflow template (not ReAct/ToT search); Maestro exploits the <em>template's</em> rolling execution profile (Eq. 8) rather than performing task planning itself. Budgeting is expressed as GPU-memory feasibility + remaining-time estimates rather than max-step counts.</p>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p>无形式化定理/证明 — Maestro is built on an <strong>analytical cost model</strong> (Eqs. 1–8) with empirical validation, not proofs. Notation and per-equation physical meaning below, followed by 6 consistency checks.</p>
-
-<h3 id="notation">Notation <a class="heading-anchor" href="#notation" aria-label="Link to notation">#</a></h3>
+<p><strong>无形式化作者证明 — 仅实证.</strong> Maestro provides no convergence/optimality proof; it is an empirical systems paper. What <em>could</em> have been bounded but was not: SLO attainment as a function of prediction error $\rho$, or a competitive-ratio bound for the SRTF approximation against Oracle-SRTF. The paper instead relies on a cost model plus sweeps. Notation and the load-bearing equations:</p>
 
 <table>
 <tr><th>Symbol</th><th>Meaning</th></tr>
-<tr><td>$P(T),\ \hat L(T)$</td><td>prompt length; predicted output length of stage $T$</td></tr>
-<tr><td>$\hat p_{\text{tool}}(T)$</td><td>calibrated probability stage $T$ triggers a tool call</td></tr>
-<tr><td>$t_{\text{pre}}(P,M),\ t_{\text{dec}}(M)$</td><td>profiled prefill latency; per-token decode latency for model $M$</td></tr>
-<tr><td>$\hat T_{\text{exec}}(T)$</td><td>predicted stage execution time (Eq. 2)</td></tr>
-<tr><td>$\alpha(M)$</td><td>model-specific KV memory per token</td></tr>
-<tr><td>$\hat R_{\text{kv}}(T),\ R_{\text{need}}(T)$</td><td>predicted KV demand; margin-inflated demand</td></tr>
-<tr><td>$M_{\text{total}},M_{\text{kv}},M_{\text{res}},M^{k}_{\text{ctx}},M_{\text{other}}$</td><td>total GPU mem; live KV; reserved non-KV; per-model warm context; other overhead</td></tr>
-<tr><td>$R^{\text{head}}_{\text{kv}}(N)$</td><td>KV admission headroom on node $N$</td></tr>
-<tr><td>$T_{\text{act}},\text{BW}_{\text{tier}}$</td><td>weight activation latency; storage-tier bandwidth</td></tr>
-<tr><td>$C_{\text{deg}}(N,T),\ c(e,a),\ c_{\text{int}}$</td><td>disruption penalty; per-action restore cost; interrupt penalty</td></tr>
-<tr><td>$S(N,T),\ A(N,T),\ \lambda,\mu$</td><td>fitness score; affinity; ready-time / disruption weights (default 1)</td></tr>
-<tr><td>$T_{\text{ready}},T_q,T_{\text{rem}},T_{\text{future}}$</td><td>time-to-start; queueing delay; remaining/future workflow time</td></tr>
+<tr><td>$T_{\mathrm{TTLT}}$</td><td>time-to-last-token of a stage</td></tr>
+<tr><td>$P,\ L,\ \hat{L}(T)$</td><td>prompt length, true / predicted output length</td></tr>
+<tr><td>$t_{\mathrm{dec}}(M)$</td><td>avg per-token decode latency on model $M$</td></tr>
+<tr><td>$\hat{p}_{\mathrm{tool}}(T)$</td><td>predicted tool-invocation probability</td></tr>
+<tr><td>$\hat{R}_{\mathrm{kv}}(T),\ \alpha(M)$</td><td>predicted KV need; per-token per-model memory coeff</td></tr>
+<tr><td>$M_{\mathrm{res}},\ M_{\mathrm{kv}},\ M_{\mathrm{total}}$</td><td>reserved non-KV footprint, current KV usage, total GPU mem</td></tr>
+<tr><td>$R_{\mathrm{kv}}^{\mathrm{head}}(N)$</td><td>KV admission headroom on node $N$</td></tr>
+<tr><td>$C_{\mathrm{deg}}(N,T)$</td><td>disruption penalty of a degradation plan</td></tr>
+<tr><td>$S(N,T),\ T_{\mathrm{ready}},\ T_{\mathrm{act}}$</td><td>node fitness score, time-to-start, activation latency</td></tr>
+<tr><td>$R_{\mathrm{need}}(T),\ \rho$</td><td>safety-margined KV demand, EWMA-driven margin</td></tr>
+<tr><td>$\widehat{T}_{\mathrm{rem}}(J,k)$</td><td>estimated remaining workflow time (SRTF key)</td></tr>
 </table>
 
-<h3 id="equations-physical-meaning">Equations & physical meaning <a class="heading-anchor" href="#equations-physical-meaning" aria-label="Link to equations-physical-meaning">#</a></h3>
+<p>Cost model (motivates length prediction): $T_{\mathrm{TTLT}}=T_{\mathrm{prefill}}(P)+L\cdot t_{\mathrm{decode}}$ — for large $L$ the decode term dominates, so underestimating $L$ underestimates runtime. Predicted execution time reuses this additive form with calibrated microbenchmarks: $\widehat{T}_{\mathrm{exec}}(T)=t_{\mathrm{pre}}(P(T),M(T))+t_{\mathrm{dec}}(M(T))\cdot\hat{L}(T)$. KV scales linearly: $\hat{R}_{\mathrm{kv}}(T)=\alpha(M(T))\cdot(P(T)+\hat{L}(T))$. Node safety: $M_{\mathrm{kv}}+M_{\mathrm{res}}\leq M_{\mathrm{total}}$ with headroom $R_{\mathrm{kv}}^{\mathrm{head}}(N)=M_{\mathrm{total}}-M_{\mathrm{res}}-M_{\mathrm{kv}}$. Routing score $S(N,T)=A(N,T)-\lambda\,T_{\mathrm{ready}}(N,T)-\mu\,C_{\mathrm{deg}}(N,T)$ where $T_{\mathrm{ready}}=T_{\mathrm{q}}+T_{\mathrm{act}}$ and $T_{\mathrm{act}}\approx\text{Size}/\mathrm{BW}_{\mathrm{tier}}$. SRTF key $\widehat{T}_{\mathrm{rem}}(J,k)=\widehat{T}_{\mathrm{exec}}(T_k)+\widehat{T}_{\mathrm{future}}(J,k)$ with $\widehat{T}_{\mathrm{future}}(J,k)\approx T^{(0.50)}_{\mathrm{next}}(\mathrm{state}(J,k))$.</p>
 
-<ul>
-<li>Cost model roots: $T_{\text{TTLT}} = T_{\text{prefill}}(P) + L \cdot t_{\text{decode}}$ — latency is prefill plus linear-in-output decode; large $L$ dominates, so misestimating $L$ misestimates runtime.</li>
-<li>Eq. 1: $\hat{p}_{\text{tool}}(T) = \Pr[\text{tool}(T)=1 \mid x(T)]$ — a <em>calibrated</em> continuous signal (isotonic regression); set to 0 if no tools available.</li>
-<li>Eq. 2: $\hat{T}_{\text{exec}}(T) = t_{\text{pre}}(P(T),M(T)) + t_{\text{dec}}(M(T)) \cdot \hat{L}(T)$ — same additive form as TTLT but driven by predicted $\hat L$; node-invariant for a fixed model-engine pair.</li>
-<li>Eq. 3: $\hat{R}_{\text{kv}}(T) = \alpha(M(T)) \cdot ( P(T) + \hat{L}(T) )$ — KV scales linearly with total sequence length times per-model per-token constant.</li>
-<li>Memory-safety invariant: $M_{\text{res}} = \sum_{k \in S} M^{k}_{\text{ctx}} + M_{\text{other}}$ and $M_{\text{kv}} + M_{\text{res}} \leq M_{\text{total}}$; headroom $R^{\text{head}}_{\text{kv}}(N) = M_{\text{total}} - M_{\text{res}} - M_{\text{kv}}$.</li>
-<li>Activation model: $T_{\text{act}} \approx \text{Size} / \text{BW}_{\text{tier}}$ — weight bytes over tier bandwidth, unifying cross-tier switch costs.</li>
-<li>Eq. 4: $C_{\text{deg}}(N,T) = \sum_{(e,a)\in P} c(e,a) + \mathbb{1}[I_{\text{active}}] \cdot c_{\text{int}}$ — aggregate restore latency of the degradation plan, plus a fixed penalty when an active execution is interrupted.</li>
-<li>Eq. 5: $S(N,T) = A(N,T) - \lambda\, T_{\text{ready}}(N,T) - \mu\, C_{\text{deg}}(N,T)$ — reward affinity, penalize wait-time and disruption; pick $\arg\max_N S$.</li>
-<li>Eq. 6: $T_{\text{ready}}(N,T) = T_{q}(N,T) + T_{\text{act}}(N,M(T))$ — time-to-start = queue wait + weight activation.</li>
-<li>Eq. 7: $\hat{T}_{\text{rem}}(J,k) = \hat{T}_{\text{exec}}(T_k) + \hat{T}_{\text{future}}(J,k)$; Eq. 8: $\hat{T}_{\text{future}}(J,k) \approx T^{(0.50)}_{\text{next}}(\text{state}(J,k))$ — remaining workflow time = current stage + conditional-median of future stages, driving SRTF.</li>
-<li>Safety margin: $R_{\text{need}}(T) = (1 + \rho) \cdot \hat{R}_{\text{kv}}(T)$, with $\rho$ set as a high quantile (90–95%) of EWMA relative underestimation, typically $\rho \in [0.1, 0.3]$.</li>
-</ul>
-
-<h3 id="6-consistency-checks">6 consistency checks <a class="heading-anchor" href="#6-consistency-checks" aria-label="Link to 6-consistency-checks">#</a></h3>
+<p><strong>Six minimum checks:</strong></p>
 
 <ol>
-<li><strong>Dimensional (Eq. 2)</strong>: $[t_{\text{pre}}] = s$, $[t_{\text{dec}} \cdot \hat L] = (s/\text{tok})\cdot\text{tok} = s$ — consistent time. ✓</li>
-<li><strong>Eq. 3 vs §II</strong>: linear-in-$(P+\hat L)$ KV matches the §II "KV scales with $P+L$" statement; $\alpha(M)$ absorbs layers/heads/precision. ✓</li>
-<li><strong>Safety invariant</strong>: $M_{\text{kv}} + M_{\text{res}} \le M_{\text{total}}$ with $R^{\text{head}}_{\text{kv}} = M_{\text{total}} - M_{\text{res}} - M_{\text{kv}} \ge 0$ is exactly the admission condition (headroom non-negative ⇔ feasible). ✓</li>
-<li><strong>Routing argmin reduction</strong>: $\hat T_{\text{e2e}} \approx \text{RTT} + T_{\text{ready}} + \hat T_{\text{exec}} + \eta C_{\text{deg}}$; since $\hat T_{\text{exec}}$ is node-invariant for a fixed model-engine pair, dropping it yields the compact $S(N,T)$ in Eq. 5 — argmax over $S$ = argmin over $\hat T_{\text{e2e}}$. ✓</li>
-<li><strong>Eq. 5 monotonicity</strong>: $\partial S/\partial A > 0$, $\partial S/\partial T_{\text{ready}} = -\lambda < 0$, $\partial S/\partial C_{\text{deg}} = -\mu < 0$ — the optimum is the max-affinity, min-wait, min-disruption node (boundary of the feasible set), matching Algorithm 3's greedy scan. ✓</li>
-<li><strong>First-order mapping (Table V)</strong>: summing the Virtual KV column $34.24+32.15+27.81+20.07+7.74 = 122.01$ GB on a 40 GB GPU gives $122.01/40 = 3.05\times$, overcommit $(122.01-40)/40 = 205\%$, and $1 - 40/122.01 = 67.2\%$ HBM saved — the headline number is recovered directly from the accounting, not a fitted sweep. ✓</li>
+<li><strong>Success-rate sweep.</strong> SLO attainment is swept over arrival rate $\lambda\in[0.4,2.0]$ and batch ratio $[0.20,0.80]$ (Fig 7); it is monotone-decreasing in load and batch ratio for all methods, and Maestro's advantage over EDF widens under contention (peak +23.6 pp). Reproducible: fixed templates, distinct prompts train/test.</li>
+<li><strong>Latency budget per turn.</strong> Prediction adds median 11.24 ms (Fig 9) — negligible vs inter-region RTT (tens–hundreds of ms) and cold-start (tens of s). The paper's interactivity claim rests on this ordering; verified by the overhead measurement.</li>
+<li><strong>Failure-mode classification.</strong> Node-level failure is handled by five degradation levels (Idle→Sleeping, evict Sleeping, stop pending sleeps, swap KV of Active, abort Active) with ascending cost; the method targets the dominant class (KV admission failure under colocation) via minimum-impact greedy planning (Alg 2).</li>
+<li><strong>Ablation monotonicity.</strong> Removing tool-intent classifier (w/o C) and then semantic embeddings (w/o BERT) monotonically worsens $R^2$ (0.7774 → 0.7722 → 0.7129), confirming each component's marginal contribution (Table VII).</li>
+<li><strong>Baseline loss rows.</strong> Maestro is <em>not</em> free: vs exclusive deployment it is +3.0% (2 GPU) / +12.1% (1 GPU) slower (Table IV); MLP_BayesOpt_3 edges it on F1/Acc (0.9022 vs 0.8999, Table III) — accepted because Maestro wins on calibration (log loss), the property that matters for feeding the regressor.</li>
+<li><strong>Upper-bound sanity.</strong> Oracle-SRTF (perfect remaining-time) is included as an explicit upper bound; Maestro's approximation via Eqs 7–8 is measured against it under the same vLLM backend and arrivals.</li>
 </ul>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p>Testbed: 32 servers × 2 A100, K8s v1.31.2, CUDA 13.0, vLLM v0.11.0 backend extended with elastic paging. Trace: 9 LLM-MAS apps (4 interactive, 5 batch), 46,769 jobs / 144,524 stages (Table I).</p>
+<p><strong>Motivation measurements.</strong> Output length is bimodal and role/mode-dependent:</p>
+
+<p><img src="/assets/2606.12950/fig1.png" alt="Figure 1: output-token length distributions"></p>
+
+<p><em>Paper's Figure 1 ("Output-token length distributions under non-CoT and CoT settings, tool-call and non-tool-call").</em> Tool-call stages cluster at short lengths; CoT and non-tool stages have a heavy tail. This bimodality is the empirical justification for the two-stage predictor — a single regressor would average across the two modes.</p>
 
 <p><img src="/assets/2606.12950/fig3.png" alt="Figure 3: model-invocation long tail and cold-start breakdown"></p>
 
-<p><em>Paper's Figure 3.</em> Left: a Lorenz curve over Chatbot Arena traces showing a pronounced long tail (few models serve most invocations). Right: cold-start decomposition for an 8B model — weight loading 95 s and JIT compilation 42 s dominate, confirming that on-demand loading (tens of s) cannot meet interactive SLOs. This is the empirical basis for hierarchical residency + warm-context retention.</p>
+<p><em>Paper's Figure 3 (left: model-invocation long tail from Chatbot Arena traces; right: cold-start breakdown for an 8B model).</em> The long tail (few hot models, many cold) is why per-model GPU dedication wastes capacity, and the cold-start breakdown (tens of seconds) is why naive on-demand loading violates interactive SLOs — jointly motivating hierarchical residency + the Sleeping state.</p>
 
-<p><img src="/assets/2606.12950/fig7.png" alt="Figure 7: overall SLO attainment, latency, queueing across load and batch ratio"></p>
+<p><strong>Overall scheduling result</strong> — the headline SLO/latency evidence:</p>
 
-<p><em>Paper's Figure 7.</em> Across arrival rates (0.4–2.0 RPS) and batch ratios (0.2–0.8), Maestro tracks the Oracle upper bound while FCFS collapses (<10% SLO) under high load/large batch and EDF degrades when long jobs near deadlines. The load-bearing point: at λ=2.0, batch 0.8, Maestro 73.6% vs EDF 50.0% (+23.6 pp) and −84.8% interactive queueing delay — the whole thesis that remaining-time-aware prioritization beats deadline-first.</p>
+<p><img src="/assets/2606.12950/fig7.png" alt="Figure 7: overall scheduling results across arrival rates and batch ratios"></p>
 
-<p><strong>Table II — preemption ablation</strong> (λ=5.0, batch 0.6). Boundary preemption raises SLO on 2/4 nodes (60% vs 27%; 75% vs 59%) and cuts interactive delay by orders of magnitude (2 ms vs 11 s on 5 nodes). Note the non-monotonic SLO column (29→60→38→75→85%): the 3-node dip breaks monotonicity even though delay decreases monotonically.</p>
+<p><em>Paper's Figure 7 ("Overall scheduling results across arrival rates and batch ratios: SLO attainment, mean latency, and interactive queueing delay").</em> FCFS collapses (<10% SLO) under HoL blocking; EDF is better but degrades as long jobs near deadlines; Maestro holds 73.6% vs EDF 50.0% at the stress point and cuts interactive queueing delay 84.8%. This is the load-bearing figure for the "+23.6 pp over EDF" claim.</p>
 
-<table>
-<tr><th>#Nodes</th><th>Maestro SLO ↑</th><th>Delay (ms) ↓</th><th>w/o Preempt SLO ↑</th><th>w/o Preempt Delay (ms) ↓</th></tr>
-<tr><td>1</td><td>29%</td><td>538k</td><td>29%</td><td>1500k</td></tr>
-<tr><td>2</td><td>60%</td><td>389</td><td>27%</td><td>235k</td></tr>
-<tr><td>3</td><td>38%</td><td>22</td><td>26%</td><td>82k</td></tr>
-<tr><td>4</td><td>75%</td><td>9</td><td>59%</td><td>19k</td></tr>
-<tr><td>5</td><td>85%</td><td>2</td><td>84%</td><td>11k</td></tr>
-</table>
-
-<p><img src="/assets/2606.12950/fig8.png" alt="Figure 8: GPU utilization and VRAM under multi-model colocation"></p>
-
-<p><em>Paper's Figure 8.</em> Under low load, GPU utilization is highly intermittent — exclusive per-model deployment would waste capacity. Maestro keeps models warm and safely overcommits memory, so colocation captures idle capacity without a GPU per model. This motivates the Table V accounting.</p>
-
-<p><strong>Table V — five-model colocation on one A100 40 GB</strong> (recovers the 67.2%/3.05× headline; warm CUDA-graph contexts cost 194–286 MB/model, ~1.15 GB total, counted in $M_{\text{res}}$):</p>
+<p><strong>Memory overcommitment</strong> (source of the 67.2% number), Table V — five Qwen3 models colocated on a single 40 GB A100:</p>
 
 <table>
-<tr><th>Model</th><th>CUDA Graph</th><th>Weight</th><th>Virtual KV</th></tr>
+<tr><th>Model</th><th>CUDA Graph</th><th>Weight Size</th><th>Virtual KV Cache</th></tr>
 <tr><td>Qwen3-0.6B</td><td>194 MB</td><td>1.12 GB</td><td>34.24 GB</td></tr>
 <tr><td>Qwen3-1.7B</td><td>194 MB</td><td>3.21 GB</td><td>32.15 GB</td></tr>
 <tr><td>Qwen3-4B</td><td>256 MB</td><td>7.55 GB</td><td>27.81 GB</td></tr>
@@ -362,52 +319,55 @@ sequenceDiagram
 <tr><td>Qwen3-14B</td><td>286 MB</td><td>27.52 GB</td><td>7.74 GB</td></tr>
 </table>
 
-<p><strong>Prediction accuracy (Table VI / VII)</strong>: Maestro-Pred MAE 165.43 ($R^2$ 0.7774) vs Magnus 204.74 / BERT-MLP 239.33 / Linear 496.86 (neg $R^2$). Ablation: removing BERT drops $R^2$ to 0.7129; removing the tool classifier costs mainly in non-CoT (141.72 vs 134.17 MAE) where tool/non-tool length divergence is sharpest.</p>
+<p>Total virtual KV ≈122 GB on a 40 GB GPU = 3.05× effective footprint (205% overcommit, 67.2% less HBM than non-overcommitted reservation); preserved contexts cost 194–286 MB/model (~1.15 GB total), explicitly counted in $M_{\mathrm{res}}$.</p>
 
-<p><img src="/assets/2606.12950/fig10.png" alt="Figure 10: model activation latency 0.6B–14B, Maestro vs QLM"></p>
+<p><strong>Utilization under colocation:</strong></p>
 
-<p><em>Paper's Figure 10.</em> Maestro activation 0.11–2.50 s vs QLM 36–52 s — a 1–2 order-of-magnitude reduction from reusing runtime contexts (Sleeping state retains CUDA graphs/JIT kernels) instead of QLM's process-level restart. This is what makes long-tail warm colocation practical.</p>
+<p><img src="/assets/2606.12950/fig8.png" alt="Figure 8: GPU utilization and memory under multi-model colocation"></p>
 
-<p><strong>Regime where it wins / loses:</strong></p>
+<p><em>Paper's Figure 8 ("GPU utilization and memory usage under multi-model colocation").</em> Utilization is highly intermittent under low load, showing exclusive deployment would waste capacity; Maestro keeps models warm and overcommits memory safely — the visual case for spatial+temporal multiplexing.</p>
+
+<p><strong>Cost–latency case study</strong> (Table IV, Travel Assistant, 6 invocations / 3 models):</p>
 
 <table>
-<tr><th>Workload regime</th><th>Maestro</th><th>Baseline</th><th>Why</th></tr>
-<tr><td>low load, long-tail multi-model</td><td>big win (67.2% HBM, warm activation)</td><td>No-Colocation wastes GPUs; QLM cold-starts</td><td>warm contexts + elastic KV overcommit</td></tr>
-<tr><td>high load, large batch ratio</td><td>+23.6 pp SLO vs EDF</td><td>FCFS collapses, EDF delays interactive</td><td>remaining-time SRTF + boundary preemption</td></tr>
-<tr><td>3 GPUs / abundant budget</td><td>ties QLM (82.4 s = 82.4 s, Table IV)</td><td>QLM matches</td><td>no colocation pressure → no advantage</td></tr>
-<tr><td>tool-intent classification under CoT</td><td>benefit shrinks</td><td>MLP BayesOpt ties on F1/Acc</td><td>both modes carry reasoning, length divergence flattens</td></tr>
+<tr><th>Method</th><th>1 GPU (s) ↓</th><th>2 GPUs (s) ↓</th><th>3 GPUs (s) ↓</th></tr>
+<tr><td>Maestro</td><td>92.4</td><td>84.9</td><td>82.4</td></tr>
+<tr><td>QLM</td><td>309.1</td><td>139.1</td><td>82.4</td></tr>
 </table>
 
-<p>Other measured overhead: predictor median latency 11.24 ms (vs Magnus 15.76 ms), negligible relative to network RTT (Figure 9). Cross-cluster routing (Table VIII) validated in a 5-node simulator (3 local + 2 remote): KV-aware bin packing −58.3% queueing at λ=0.5, adding network-latency weight (γ=0.25) further favors local for latency-sensitive stages.</p>
+<p>Maestro cuts completion time 38.9% (2 GPU) and 70.0% (1 GPU) vs QLM's process-restart switching; strikingly, Maestro at 1 GPU (92.4 s) beats QLM at 2 GPUs (139.1 s).</p>
+
+<p><strong>Prediction accuracy</strong> (Table VI) and <strong>preemption ablation</strong> (Table II):</p>
+
+<table>
+<tr><th>Metric</th><th>Maestro-Pred</th><th>Magnus</th><th>BERT-MLP</th><th>Linear</th></tr>
+<tr><td>MAE ↓</td><td>165.43</td><td>204.74</td><td>239.33</td><td>496.86</td></tr>
+<tr><td>$R^{2}$ ↑</td><td>0.7774</td><td>0.6721</td><td>0.5620</td><td>-0.3177</td></tr>
+</table>
+
+<p>Linear's negative $R^2$ confirms output length is not a simple function of input length. Under extreme load ($\lambda=5.0$, batch=0.6), preemption raises SLO 60% vs 27% (2 nodes) and 75% vs 59% (4 nodes), and cuts delay to 2 ms vs 11 s (5 nodes) — though SLO is non-monotonic in node count (29%→60%→38%→75%→85%), an unexplained 3-node dip.</p>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>#</th><th>Step</th><th>Support</th></tr>
-<tr><td>1</td><td>Per-stage output length is unpredictable and strongly role/tool/CoT-dependent, and length drives both latency (TTLT) and KV memory.</td><td>§II Obs-1, Figs 1–2, TTLT model</td></tr>
-<tr><td>2</td><td>Therefore a cheap, calibrated two-stage predictor (tool-intent → log-space length regressor) can estimate $\hat T_{\text{exec}}$, $\hat R_{\text{kv}}$, $\hat p_{\text{tool}}$ at ≪RTT cost.</td><td>§III.B Eqs 1–3; Table VI (MAE 165.43, −19.2%)</td></tr>
-<tr><td>3</td><td>Given per-stage cost, a node can colocate many models by keeping warm contexts (Sleeping) + elastic VMM KV, staying memory-safe via explicit accounting and minimum-impact degradation.</td><td>§III.C Alg 1–2, Eq 4; Table V (3.05×), Fig 10 (fast activation)</td></tr>
-<tr><td>4</td><td>Given per-node readiness/headroom/disruption signals, a fitness score picks the cluster minimizing expected completion latency (trading RTT vs readiness).</td><td>§III.D Eq 5–6, Alg 3; Table VIII (−58.3% queueing)</td></tr>
-<tr><td>5</td><td>Given predicted remaining workflow time, global SRTF + boundary preemption protects interactive stages from HoL blocking without starving long jobs.</td><td>§III.D Eq 7–8; Fig 7 (+23.6 pp), Table II (preemption ablation)</td></tr>
-<tr><td>6</td><td>Composed, the closed loop yields the headline gains (67.2% HBM, +23.6 pp SLO, −84.8% interactive delay) that no single existing system achieves.</td><td>§IV.B–C, §VI</td></tr>
+<tr><th>#</th><th>Step</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Stage latency & KV both scale with output length $L$, which is unknown a priori.</td><td>Cost model $T_{\mathrm{TTLT}}=T_{\mathrm{prefill}}(P)+L\cdot t_{\mathrm{decode}}$; KV ∝ $(P+L)$ (§II).</td></tr>
+<tr><td>2</td><td>Output length is bimodal, driven by tool-intent and CoT mode → predictable from agent features.</td><td>Observation-1, Fig 1/2; two-stage predictor cuts MAE 19.2% (Table VI).</td></tr>
+<tr><td>3</td><td>With $\hat{L}$, $\hat{R}_{\mathrm{kv}}$ (Eqs 2–3), the node runtime can do explicit memory accounting and safely overcommit KV under $M_{\mathrm{kv}}+M_{\mathrm{res}}\leq M_{\mathrm{total}}$.</td><td>§III-C; Table V shows 205% overcommit / −67.2% HBM.</td></tr>
+<tr><td>4</td><td>The same predictions feed a fitness score (Eq 5) that routes across clusters balancing RTT, readiness ($T_{\mathrm{act}}$), and disruption ($C_{\mathrm{deg}}$).</td><td>§III-D; Table VIII: bin-packing −58.3% queueing delay, affinity improves further.</td></tr>
+<tr><td>5</td><td>Remaining-time estimates (Eqs 7–8) drive boundary-preemptive SRTF, curbing dependency-induced HoL blocking.</td><td>§III-D; Fig 7 (+23.6 pp SLO), Table II (preemption raises SLO, cuts delay orders of magnitude).</td></tr>
 </table>
 
 <h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p>[实现未公开] — no code repository, commit, or artifact link is provided in the paper; the prototype is described only prose-level as an extension of vLLM v0.11.0's PagedAttention with an elastic paging mechanism, integrating kvcached (CUDA VMM) for the KV pool. Concrete anchors that a reimplementer would target:</p>
+<p><strong>Implementation surface.</strong> Built on vLLM v0.11.0 (extending PagedAttention KV management with an elastic paging mechanism) integrating kvcached [ovg-projectKvcached2025] for CUDA VMM allocate/reclaim; deployed on Kubernetes v1.31.2, CUDA 13.0. Predictor uses MiniLM (sliding-window + mean-pool) for semantic features and LightGBM for both the tool-intent classifier and length regressor. The source paper does not release code; <code>[实现未公开]</code> for the scheduler/runtime source, but the three algorithms are fully specified as pseudocode in L1 (Alg 1 hierarchical residency, Alg 2 minimum-impact coordination, Alg 3 cross-cluster scheduling), so re-implementation is tractable.</p>
 
-<ul>
-<li><strong>Predictor</strong>: BERT/MiniLM sliding-window encoder → PCA → mean-pool for $x_{\text{sem}}$; isotonic-regression-calibrated tool-intent classifier; per-role LightGBM/GBDT regressor on $\log(1+L)$ with inverse transform (§III.B, Fig 6). Training: stratified temporal holdout, latest 20% test / 15% val for early stopping (§IV.A).</li>
-<li><strong>Node runtime</strong>: 5 readiness states (Running / Sleeping / CPU-resident / Disk-resident / Remote); Algorithm 1 cascading load-and-evict with per-tier LRU; Algorithm 2 greedy 5-level degradation sorted Idle→Sleeping→Active (§III.C).</li>
-<li><strong>Scheduler</strong>: Algorithm 3 filter-then-argmax on Eq. 5 with robust 5/95-percentile min–max normalization, default λ=µ=1; boundary-only preemption with hysteresis + per-job cooldown + EWMA-smoothed $T_q$ + aging (§III.D).</li>
-</ul>
+<p><strong>核心技术壁垒 (the single hardest-to-replicate insight).</strong> The stage-1 tool-intent classifier as a <em>calibrated continuous feature</em> into stage-2 length regression. Its value is subtle: on raw accuracy a 3-layer MLP matches or beats it (F1 0.9022 vs 0.8999), but Maestro-Pred wins on log loss (0.2437, lowest) — and calibration, not accuracy, is what matters because the probability is consumed as a regression feature, not a hard label. Isotonic regression aligns predicted confidence with empirical frequency, and the fallback $\hat{p}_{\mathrm{tool}}=0$ when no tools exist keeps the signal well-defined. Getting this calibration right is the non-obvious step that makes the whole downstream loop (KV admission, SRTF, routing) trustworthy; a naively-trained classifier would inject miscalibrated noise into every scheduling decision.</p>
 
-<p><strong>核心技术壁垒 (§7 detail)</strong>: the barrier is not any equation but the <em>coupling</em> — the calibrated tool probability must be good enough to serve simultaneously as (a) a direct scheduler signal, (b) a feature into the length regressor, and (c) an input to the EWMA-driven safety margin $\rho$. If the predictor is uncalibrated (high log-loss), the whole stack mis-admits KV and mis-orders SRTF; the paper's decisive choice of Maestro-Pred over the marginally-higher-accuracy MLP (Table III) is precisely because MLP's log-loss/calibration is worse. Replicating Maestro therefore means replicating a <em>calibrated, sub-11ms, role-aware</em> predictor and threading its outputs through four separate decision points — a systems-integration barrier more than an ML one.</p>
-
-<p><strong>关键实现细节 (easy-to-miss)</strong>:</p>
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
 <ol>
-<li><strong>Long-lived prefix caching is disabled</strong> in the VMM elastic-KV mode (unless explicitly required) to keep pages reclaimable under multi-model colocation — a non-obvious correctness constraint that trades a common vLLM optimization for reclaimability.</li>
-<li><strong>Preemption is boundary-only</strong> (between LLM invocations): the common path merely updates scheduler metadata and preserves KV allocations; only when memory pressure prevents preservation is the resume cost charged through $C_{\text{deg}}$ (Eq. 4). Missing this leads to over-counting preemption overhead or, worse, mid-decode interruption.</li>
+<li><strong>Regress on $\log(1+L)$, invert at inference</strong> — without the log transform the heavy tail dominates the loss and $R^2$ collapses (Linear baseline hits negative $R^2$). This one preprocessing choice is load-bearing for the accuracy claim.</li>
+<li><strong>Sleeping state ≠ free</strong> — offloading weights to host but <em>retaining</em> CUDA graphs / JIT kernels costs 194–286 MB/model of GPU context (Table V), explicitly booked into $M_{\mathrm{res}}$ and traded against activation latency; a re-implementation that forgets this context footprint will over-report achievable overcommit. Boundary-only preemption (between LLM invocations, with hysteresis + EWMA smoothing + aging) is the other quiet correctness detail that avoids oscillation and starvation.</li>
 </ul>
 
 </div>

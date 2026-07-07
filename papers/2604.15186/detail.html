@@ -196,494 +196,203 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Scepsy: Serving Agentic Workflows Using Aggregate LLM Pipelines</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2604.15186</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-workflow</span><span class="tag">multi-LLM-serving</span><span class="tag">GPU-scheduling</span><span class="tag">fractional-GPU</span><span class="tag">topology-aware-placement</span><span class="tag">kubernetes</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2604.15186</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-serving</span><span class="tag">gpu-scheduling</span><span class="tag">llm-inference</span><span class="tag">tensor-parallelism</span><span class="tag">workflow-orchestration</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2604.15186.html">← Synthesis</a>
-<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2604.15186" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
-<h1 id="scepsy-serving-agentic-workflows-using-aggregate-llm-pipelines">Scepsy: Serving Agentic Workflows Using Aggregate LLM Pipelines <a class="heading-anchor" href="#scepsy-serving-agentic-workflows-using-aggregate-llm-pipelines" aria-label="Link to scepsy-serving-agentic-workflows-using-aggregate-llm-pipelines">#</a></h1>
 
-<blockquote>
-Marcel Wagenländer, Otto White, Britannio Jarrett, Pedro Silvestre, Yanda Tao, Guo Li, Huanzhou Zhu, Llúis Vilanova, Peter Pietzuch (Imperial College London) | 2026-04 | <a href="https://arxiv.org/abs/2604.15186">arXiv:2604.15186</a>
-Category: framework | Tags: agentic-workflow, serving, multi-LLM, GPU-scheduling, fractional-GPU, topology-aware-placement
-Read: 2026-04-18
-</blockquote>
+<h1 id="scepsy-serving-agentic-workflows-using-aggregate-llm-pipelines-—-l2">Scepsy: Serving Agentic Workflows Using Aggregate LLM Pipelines — L2 <a class="heading-anchor" href="#scepsy-serving-agentic-workflows-using-aggregate-llm-pipelines-—-l2" aria-label="Link to scepsy-serving-agentic-workflows-using-aggregate-llm-pipelines-—-l2">#</a></h1>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>Scepsy 提出 <strong>Aggregate LLM Pipeline</strong> —— 利用"workflow 的端到端延迟变化剧烈，但每个 LLM 在总执行时间中的相对占比高度稳定"这一经验观察，将不可预测的 agentic workflow 抽象为一个简单的轻量级 pipeline 吞吐/延迟预测器，并以此驱动"分数 GPU × 张量并行度 × 副本数"三维联合搜索，在 16-GPU 集群上实现比 Kubernetes 自动扩缩、Aegaeon 多模型复用与 Ayo 工作流感知调度最多 <strong>2.4× 吞吐、27× 延迟</strong> 的联合提升。</p>
+<p>Agentic workflows have wildly unpredictable end-to-end latency, but each LLM's <em>share</em> of total execution time is stable. Scepsy exploits this: it traces workflows framework-agnostically, folds them into an "Aggregate LLM Pipeline" (a cheap throughput/latency predictor), then jointly searches fractional GPU shares + tensor-parallel degrees + replica counts, placing them topology-aware on Kubernetes. Up to 2.4× throughput, 27× lower latency.</p>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p>当前 agentic workflow（beam search、RAG+reranker、MCTS、multi-agent）将多个异构 LLM 与外部工具编排起来，其端到端执行路径高度数据依赖（循环、分支、fan-out），加之 LLM 数量往往多于可用 GPU，造成 GPU 严重超订购。现有方案要么将每个 LLM 独立自动扩缩（Kubernetes/AIBrix/vLLM Production Stack）—— 忽略跨 LLM 依赖，导致振荡；要么多模型时空复用（AlpaServe/MuxServe/Aegaeon）—— 对 agentic 的执行不确定性束手无策；要么 workflow-aware 但只支持单 LLM（Parrot/Ayo/Autellix/JITServe）。所有这些系统都把"给每个 LLM 分多少 GPU"丢给用户，且不能同时处理 <strong>异构多 LLM + 任意编程模型 + 动态控制流</strong> 的组合。</p>
+<h3 id="q1-—-痛点-pain-point">Q1 — 痛点 (Pain point) <a class="heading-anchor" href="#q1-—-痛点-pain-point" aria-label="Link to q1-—-痛点-pain-point">#</a></h3>
 
-<p>Scepsy 的 key insight 是：<strong>虽然绝对延迟抖动巨大，但每个 LLM 占 workflow 总执行时间的相对份额在大量请求下保持稳定。</strong> 这一稳定性允许系统用一个"聚合 pipeline"近似整个 workflow 的 steady-state 性能：每个 LLM 被抽象成一个 stage，stage 的参数（平均调用次数 $n_m$、平均并行度 $p_m$、吞吐-延迟曲线 $T_m/L_m$）通过轻量级 workflow tracing + 独立 per-LLM profiling 获得，无需做任何静态程序分析。基于此抽象，Scepsy 做三件事：(1) 在 $(d_m, TP_m, \text{frac}_m)$ 三维搜索空间用剪枝枚举找最优分配；(2) 用 latency ratio 驱动的 hierarchical heuristic 把分配映射到 NVLink 拓扑约束下的真实 GPU；(3) 通过扩展的 NVIDIA device plugin + MPS 在 Kubernetes 上落地分数 GPU 隔离。</p>
+<p>Serving agentic workflows (multiple LLMs + tools orchestrated to solve a task) on a <em>self-managed</em> GPU cluster is hard for four reasons that compound:</p>
 
-<p>实验在 16×A6000（4 节点 × 4 GPU，NVLink pair + PCIe4 + 100 Gbps IB）上用 RAG+reranker、beam search 两个真实 workflow 评估：beam search 相对 K8s autoscaler 4/8/16 GPU 分别拿到 2.4×/1.5×/1.8× 吞吐和最高 10.4× 延迟降低；相对 Aegaeon 拿到 7.3×/6.8× 吞吐、14.1×/12.9× 延迟降低（Aegaeon 缺少 prefix caching + prefill 实例切换开销是其主要痛点）；相对 Ayo 拿到 3.2×/8.2× 吞吐（Ayo 在低负载小优势，但吞吐饱和早）。消融表明 co-location（分数 GPU）对 RAG 吞吐最关键、TP 对 beam search 延迟最关键。调度器搜索时间在 16 GPU + 10 fraction + 5 LLM 下 <35s，128 GPU 下 <70s。</p>
-
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
-
-<ul>
-<li><strong>相对份额稳定性假设</strong>：在 500 个 beam search 请求上，generator/verifier 的 <strong>绝对延迟</strong> 分布跨度极大（24~844 次 generator 调用/请求，9~264s 端到端），但每个 LLM 的 <strong>相对延迟占比</strong> 分布集中度比绝对分布高 <strong>4×</strong>（Fig. 3）。这是整个 Aggregate LLM Pipeline 的 empirical 基础。</li>
-<li><strong>Pipeline 近似是合理的</strong>：由于 non-LLM tool/orchestration 时间通常 <few ms，workflow 吞吐由 bottleneck LLM 决定，端到端延迟 ≈ 每个 LLM 的延迟贡献之和（按并行度调整）。这允许用 $L_w = \sum_m L_m(\lambda_w \cdot n_m) \cdot n_m/p_m$ 和 $T_w = \min_m T_m/n_m$ 两个简单解析式做预测。</li>
-<li><strong>三维搜索空间 (fraction, TP, replica) 是 throughput-latency co-optimization 的最小必要维度</strong>：data parallelism (replica) 加吞吐、tensor parallelism 减延迟、fractional GPU 提高利用率，三者缺一不可。</li>
-<li><strong>分数 GPU × 拓扑放置</strong> 不能被现有 orchestrator（Kubernetes、KAI-scheduler）同时支持；Scepsy 用 ahead-of-time 层次化启发式 + MPS 强制 SM/memory 限制补全此空白。</li>
-<li><strong>Workflow-aware 比 multi-LLM-serving 和 single-LLM-in-agentic-context 都强</strong>：对 Ayo（workflow-aware 但单 LLM）拿到 2.1-8.2× 吞吐，对 Aegaeon（多 LLM 但无 workflow 感知）拿到 2.5-7.3× 吞吐。</li>
-<li><strong>搜索复杂度可控</strong>：5 LLM / 16 GPU / 10 fraction 的完整枚举为 $\binom{16 \cdot 10 + 5 - 1}{5-1} \approx 2.9 \times 10^7$，通过"按 latency ratio 排序 LLM → 只连续分配 → 限制 TP 在高带宽域内"三步剪枝后 <35s 完成。</li>
+<ol>
+<li><strong>Arbitrary programs</strong>: workflows are written in diverse frameworks (LangChain, LangGraph, AutoGen, Camel) — no single programming model can be assumed.</li>
+<li><strong>Unpredictable execution</strong>: token-by-token generation plus data-dependent branching, fan-out, and recursion make per-request latency vary drastically. The paper's beam-search trace shows a <em>single</em> request's generator-LLM invocation count spanning 24–844, and end-to-end latency spanning 9–264 s.</li>
+<li><strong>Conflicting objectives</strong>: throughput wants more data-parallel replicas; latency wants more tensor parallelism per replica — they contend for the same GPUs, and adjusting one LLM shifts the bottleneck to another.</li>
+<li><strong>Oversubscribed GPUs</strong>: workflows mix heterogeneous LLMs (embedding, generator, reward), and coarse whole-GPU allocations waste capacity in small clusters where every inefficiency is costly.</li>
 </ul>
 
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
+<p>Existing systems fail on a subset: workflow-aware systems (Parrot, Ayo, Autellix) are single-LLM and/or framework-restricted and leave GPU allocation to the user; multi-LLM systems (AlpaServe, MuxServe, Prism, Aegaeon, Kubernetes autoscaling) schedule each LLM in isolation with no workflow awareness. No prior system has all four properties simultaneously.</p>
 
-<h3 id="figure-1-beam-search-as-an-agentic-workflow">Figure 1: Beam search as an agentic workflow <a class="heading-anchor" href="#figure-1-beam-search-as-an-agentic-workflow" aria-label="Link to figure-1-beam-search-as-an-agentic-workflow">#</a></h3>
+<p><img src="/assets/2604.15186/fig1-beam-search-workflow.png" alt="Figure 1: beam search agentic workflow with generator/verifier loop over a search tree"></p>
 
-<p><img src="/assets/2604.15186/fig1-beam-search-workflow.png" alt="Figure 1: beam search workflow"></p>
+<p><em>Paper's Figure 1, verbatim (caption: "Beam search as an agentic workflow (Beam search uses inference-time scaling, which uses LLMs to explore multiple reasoning paths as a search tree.)").</em> This is the running motivating workload: a small generator LLM (GEN) proposes candidate reasoning steps, a larger verifier LLM (VER) scores them, and only the top beams survive — producing exactly the multi-LLM, heterogeneous-size, fan-out/fan-in pattern that isolated-LLM schedulers cannot reason about.</p>
 
-<p><strong>What it shows</strong>: 一个典型的 agentic workflow 实例 —— beam search 用小的 generator LLM (GEN) 扩展候选推理步骤、用大的 verifier LLM (VER) 打分，循环迭代。展示了 agentic workflow 的三个关键特征：<strong>多异构 LLM、LLM 与非 LLM 代码穿插、数据驱动的 fan-out/fan-in 模式</strong>。</p>
-<p><strong>Why it matters</strong>: 这是整篇论文的 motivating example。所有后续 Aggregate LLM Pipeline 的建模都是在论证"即使 GEN 被调用 24-844 次这种剧烈抖动下，GEN/VER 的相对份额仍稳定"。</p>
-<p><strong>Detailed description</strong>: 左侧用户 prompt 进入系统，中间 GEN 框 fan-out 出多条 beam（实线箭头），每条 beam 送入 VER 打分（虚线聚合），VER 选出最佳 beam 后反馈回 GEN 开始下一轮迭代；整体形成"GEN → VER → GEN → VER …"的循环，最后一次 VER 输出最终答案。</p>
+<h3 id="q2-—-方法-method">Q2 — 方法 (Method) <a class="heading-anchor" href="#q2-—-方法-method" aria-label="Link to q2-—-方法-method">#</a></h3>
 
-<h3 id="figure-2-scepsy-overview">Figure 2: Scepsy Overview <a class="heading-anchor" href="#figure-2-scepsy-overview" aria-label="Link to figure-2-scepsy-overview">#</a></h3>
+<p>Scepsy is an orchestration layer between agentic frameworks and LLM engines. It runs four stages: (①) trace LLM-level requests via an HTTP proxy in front of each engine's completions API (framework/engine-agnostic); (②) fold the trace into an <strong>Aggregate LLM Pipeline</strong> using two per-LLM statistics — average invocations per request $n_m$ and average request-level parallelism $p_m$ — plus replay-based per-LLM throughput/latency profiles; (③) a <strong>GPU scheduler</strong> searches a pruned space over fractional GPU shares, tensor-parallel degree, and replica count for each LLM, using the pipeline as a fast predictor; (④) a <strong>topology-aware placement</strong> heuristic maps fractions onto GPUs respecting NVLink domains, deployed via Kubernetes + Nvidia MPS.</p>
 
-<p><img src="/assets/2604.15186/fig2-scepsy-overview.png" alt="Figure 2: Scepsy overview"></p>
+<p><strong>核心技术壁垒 (THE single hardest-to-replicate insight)</strong>: the decision to <em>abandon modeling control flow entirely</em>. Instead of predicting when/whether a branch or loop fires (what prediction-based schedulers attempt and where they break for multi-LLM), Scepsy reasons only about the <em>aggregate fraction of demand</em> each LLM bears. This works because the relative per-LLM time shares are empirically ~4× more stable than absolute latencies (Fig. 3). Two scalar statistics ($n_m$, $p_m$) captured from timestamp overlaps then suffice to bridge LLM-level and workflow-level load without any static analysis of the workflow. Reproducing this requires trusting — and empirically validating on your own workloads — that steady-state aggregate shares are stable, which is counter-intuitive given the extreme per-request variance.</p>
 
-<p><strong>What it shows</strong>: Scepsy 的四步 pipeline —— ① Workflow Tracing（HTTP proxy 捕获 LLM 调用轨迹）② Aggregate LLM Pipeline Synthesis（聚合成简化 pipeline）③ GPU Scheduler（三维搜索最优分配）④ Topology-Aware Placement（按 NVLink 域放置到 K8s 集群）。</p>
-<p><strong>Why it matters</strong>: 这是论文的"灵魂图"，确立了"tracing → 预测模型 → 搜索 → 放置"这一分层解耦架构。图中把 GEN 的循环 + 并行 fan-out 折叠成单个 stage，是 Aggregate 抽象的核心可视化。</p>
-<p><strong>Detailed description</strong>: 上方输入任意 framework（LangChain/AutoGen/Camel）编写的 workflow，经 HTTP proxy 产生 per-LLM 调用痕迹；中间把循环 / 并行 / 分支合并为两个 stage（GEN, VER），附带统计量 $n_m, p_m$；右侧 scheduler 搜索 $(d_m, TP_m, \text{frac}_m)$ 三元组；底部把最优分配下发到 Kubernetes + MPS 受控的 GPU 集群。</p>
+<h3 id="q3-—-结果-results">Q3 — 结果 (Results) <a class="heading-anchor" href="#q3-—-结果-results" aria-label="Link to q3-—-结果-results">#</a></h3>
 
-<h3 id="figure-3-absolute-vs-relative-execution-time-distribution">Figure 3: Absolute vs Relative execution time distribution <a class="heading-anchor" href="#figure-3-absolute-vs-relative-execution-time-distribution" aria-label="Link to figure-3-absolute-vs-relative-execution-time-distribution">#</a></h3>
+<p>On a 16-GPU on-prem cluster (4 nodes × 4 RTX A6000) with RAG+reranker and beam-search workloads:</p>
 
-<p><img src="/assets/2604.15186/fig3a-absolute-distribution.png" alt="Figure 3a: absolute"></p>
-<p><img src="/assets/2604.15186/fig3b-relative-distribution.png" alt="Figure 3b: relative"></p>
+<ul>
+<li>vs <strong>Kubernetes autoscaler</strong>: up to <strong>2.4×</strong> throughput (beam search, 4 GPU) and <strong>1.4×–27×</strong> latency reduction (RAG+reranker, 16 GPU).</li>
+<li>vs <strong>Aegaeon</strong> (multi-LLM multiplexing): <strong>7.3×</strong> throughput / <strong>14.1×</strong> latency (beam search, 4 GPU).</li>
+<li>vs <strong>Ayo</strong> (workflow-aware): up to <strong>8.2×</strong> throughput (beam search, 8 GPU); Ayo occasionally wins at a few latency-bound points via request batching.</li>
+<li>Scheduler search stays <strong>< 35 s</strong> (16 GPU) and <strong>≤ 70 s</strong> even at 128 GPU, despite a raw space of ~29 million mappings.</li>
+</ul>
 
-<p><strong>What it shows</strong>: 500 个 beam search 请求下，GEN (LLaMA-3.2-1B) 和 VER (LLaMA-3.2-8B) 的执行时间分布。(a) 绝对值横跨两个数量级、重尾严重；(b) 相对占比分布集中度高 <strong>~4×</strong>。</p>
-<p><strong>Why it matters</strong>: <strong>这是整个 Scepsy 方法论的 empirical cornerstone</strong>。如果相对份额也像绝对值一样抖动，那么 Aggregate LLM Pipeline 这个 steady-state 抽象就立不住。</p>
-<p><strong>Detailed description</strong>: 左图 x 轴 execution time (s)，y 轴密度；GEN 和 VER 曲线都呈宽平尾态、峰值相差数倍。右图 x 轴 relative execution time fraction (0-1)，两条曲线都是高窄峰，标准差远小于左图的归一化标准差。论文明确标注"up to 4× more stable"。</p>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<h3 id="figure-4-aggregate-llm-pipeline-construction">Figure 4: Aggregate LLM Pipeline construction <a class="heading-anchor" href="#figure-4-aggregate-llm-pipeline-construction" aria-label="Link to figure-4-aggregate-llm-pipeline-construction">#</a></h3>
+<p>The system is a four-stage pipeline (Fig. 2), and the core abstraction — the Aggregate LLM Pipeline — is built in five steps (Fig. 4).</p>
 
-<p><img src="/assets/2604.15186/fig4-pipeline-construction.png" alt="Figure 4: pipeline construction"></p>
+<p><img src="/assets/2604.15186/fig2-scepsy-overview.png" alt="Figure 2: Scepsy overview showing looped/parallel LLM requests aggregated into GEN and VER pipeline stages"></p>
 
-<p><strong>What it shows</strong>: 从原始 workflow trace 到 Aggregate LLM Pipeline 的五步构造：① Workflow Tracing ② Statistical Workflow Aggregation (提取 $n_m, p_m$) ③ per-LLM Profiling (TP-sweep + arrival-rate sweep) ④ Pipeline Synthesis (转换为 workflow-level 曲线) ⑤ Workflow Prediction。</p>
-<p><strong>Why it matters</strong>: 解释了 Scepsy 如何在不做任何静态分析的情况下，把动态不可预测的 workflow "压缩"成一个可查表 + 算术的轻量预测器。</p>
-<p><strong>Detailed description</strong>: 左端 workflow 经 trace 得到 per-LLM 调用序列；中段汇总出 $n_m, p_m$ 表格；下半是 per-LLM 在 TP=1/2/4 下的 T-L 曲线族；右端合成出 workflow-level 的 "每个 LLM 对 workflow 的延迟贡献曲线"，最终产出上面提到的 $L_w$ 和 $T_w$ 两个解析式。</p>
+<p><em>Paper's Figure 2, verbatim (caption: "Scepsy Overview").</em> The reader should notice the aggregation act at the center: the looped and parallel per-request LLM invocations on the left collapse into two ordered stages (GEN, VER) on the right. This is why the term "pipeline" is slightly misleading — stage ordering does not matter for the prediction (§4); it is really an aggregate resource model that borrows pipeline throughput/latency math.</p>
 
-<h3 id="figure-5-gpu-scheduling-overview">Figure 5: GPU Scheduling overview <a class="heading-anchor" href="#figure-5-gpu-scheduling-overview" aria-label="Link to figure-5-gpu-scheduling-overview">#</a></h3>
+<p><img src="/assets/2604.15186/fig4-pipeline-construction.png" alt="Figure 4: five-step construction of the Aggregate LLM Pipeline for beam search"></p>
 
-<p><img src="/assets/2604.15186/fig5-gpu-scheduling.png" alt="Figure 5: GPU scheduling"></p>
+<p><em>Paper's Figure 4, verbatim (caption: "Construction of an Aggregate LLM Pipeline for beam search workflow").</em> The five steps are: (1) workflow tracing → (2) statistical aggregation into $n_m$, $p_m$ → (3) per-LLM profiling by trace replay at varying arrival rates and TP degrees → (4) synthesis into workflow-level throughput/latency curves → (5) prediction for any candidate allocation. Notice non-LLM tool/orchestration time is discarded here (assumed negligible, "at most a few milliseconds").</p>
 
-<p><strong>What it shows</strong>: 三步调度 —— ① 按 latency ratio 枚举 GPU fraction 到 LLM 的分配；② 把 fraction 连续 pack 到 GPU 上；③ 解 parallelism（TP × replica 必须整除 GPU 数）。</p>
-<p><strong>Why it matters</strong>: 展示了 Scepsy 如何把原本 $\binom{16 \times 10 + 5 - 1}{5-1} \approx 29M$ 的搜索空间剪枝到秒级可枚举。</p>
-<p><strong>Detailed description</strong>: 上方从 Aggregate LLM Pipeline 取出每个 LLM 的 latency ratio（作为 GPU 需求 proxy），中间按 ratio 枚举 fraction 向量并顺序装箱，下方对每个"GPU 数"再枚举 TP × replica 组合，通过"TP × replica 整除 GPU 数 ∧ TP ≤ 高带宽 fabric 度"剪枝。</p>
+<p>Because the target is an agent-serving system, the per-request agent loop is what generates the load being aggregated:</p>
 
-<h3 id="figure-6-throughput-latency-vs-kubernetes-autoscaler">Figure 6: Throughput-latency vs Kubernetes autoscaler <a class="heading-anchor" href="#figure-6-throughput-latency-vs-kubernetes-autoscaler" aria-label="Link to figure-6-throughput-latency-vs-kubernetes-autoscaler">#</a></h3>
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Prompt
+    Prompt --> Generate: GEN LLM expands beams (fan-out, p≈3)
+    Generate --> Verify: VER LLM scores steps (fan-in, p≈2)
+    Verify --> Prune: keep top-scoring beams
+    Prune --> Generate: not converged (loop, data-dependent count 24–844)
+    Prune --> [*]: converged / budget exhausted
+</div>
 
-<p><img src="/assets/2604.15186/fig6-throughput-latency-k8s.png" alt="Figure 6: scepsy vs k8s"></p>
+<ul>
+<li><strong>Memory model</strong>: short-term = each LLM's context window; the "long-term" state that Scepsy cares about is the <em>trajectory log</em> (execution traces captured by the HTTP proxy), which is what feeds the aggregate statistics — Scepsy does not itself add vector-DB memory.</li>
+<li><strong>Tool invocation</strong>: tools are intercepted only insofar as they interleave LLM calls; Scepsy treats non-LLM code as negligible latency and discards it from the resource model.</li>
+<li><strong>Error recovery</strong>: the <em>serving-system</em> recovery path is Kubernetes control-plane restart/health management for a crashed replica; the <em>workflow-level</em> control flow (retry, backtrack over beams) is opaque to Scepsy by design — it only observes aggregate demand.</li>
+</ul>
 
-<p><strong>What it shows</strong>: 4/8/16 GPU × RAG+reranker/beam-search 下，Scepsy vs K8s HPA 的 T-L 曲线。Scepsy 在整个曲线上支配 K8s。</p>
-<p><strong>Why it matters</strong>: 证明 workflow-aware + 静态分配 > 基于观测指标的动态扩缩。K8s 在"扩上去 → 队列空 → 缩回来 → 队列堆积 → 再扩上去"的振荡中损失严重。</p>
-<p><strong>Detailed description</strong>: x 轴 throughput (req/s)，y 轴 latency (s)；每个子图有两条曲线。Scepsy 曲线始终在 K8s 下方且吞吐拐点更靠右。beam search @ 4 GPU 的延迟改善最显著（1.4-7.6×）。</p>
+<h3 id="planning-reasoning-of-the-served-workloads">Planning & reasoning (of the served workloads) <a class="heading-anchor" href="#planning-reasoning-of-the-served-workloads" aria-label="Link to planning-reasoning-of-the-served-workloads">#</a></h3>
 
-<h3 id="figure-10-ablation-study">Figure 10: Ablation study <a class="heading-anchor" href="#figure-10-ablation-study" aria-label="Link to figure-10-ablation-study">#</a></h3>
+<ul>
+<li><strong>Planning style</strong>: the workloads Scepsy serves use inference-time scaling — beam search (a bounded tree search over reasoning steps) and RAG+reranker (retrieve → rerank → generate). Scepsy itself does not plan; it schedules.</li>
+<li><strong>Budget</strong>: per-workflow arrival rate $\lambda_w$ is the operating knob; the search space bounds are number of LLMs, GPUs, and fractions per GPU.</li>
+<li><strong>Backtracking</strong>: at the workflow level, beam search backtracks by pruning beams; at the scheduling level there is no backtracking — the scheduler enumerates and picks the highest-utility feasible allocation once.</li>
+</ul>
 
-<p><img src="/assets/2604.15186/fig10-ablation.png" alt="Figure 10: ablation"></p>
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p><strong>What it shows</strong>: 四条曲线 —— Scepsy 全量 / 无 parallelism / 无 co-location / 都无。RAG 场景下 co-location 是吞吐提升主贡献；beam search 场景下 TP 是延迟降低主贡献。</p>
-<p><strong>Why it matters</strong>: 证明 fractional GPU 和 TP 两个维度互补、缺一不可 —— 也即"三维搜索空间"是必要而非充分。</p>
-<p><strong>Detailed description</strong>: 每个 panel 有 4 条 T-L 曲线，完整版最好、两个 ablation 版本各自在一个维度上退化（ether 延迟抬高或吞吐提前饱和），都禁用时曲线整体下沉。</p>
+<p><strong>无形式化作者证明 — 仅实证.</strong> Scepsy provides an analytical <em>predictor</em> (Eqs. 1–2) but no formal guarantee that the predictor is accurate, that the pruned search finds the optimum, or that aggregate shares remain stable — all three rest on empirical evidence. This matches the agent-serving norm: the load-bearing "proof" is that relative statistics are ~4× more stable (Fig. 3) and that predictions match measured throughput/latency curves (Fig. 6–8). The metric that <em>could</em> have been bounded is prediction error vs. ground-truth profiling, but the paper reports it only implicitly through end-to-end curve fit.</p>
 
-<h3 id="figure-11-scheduler-search-time-scaling">Figure 11: Scheduler search time scaling <a class="heading-anchor" href="#figure-11-scheduler-search-time-scaling" aria-label="Link to figure-11-scheduler-search-time-scaling">#</a></h3>
-
-<p><img src="/assets/2604.15186/fig11-scheduler-latency.png" alt="Figure 11: scheduler latency"></p>
-
-<p><strong>What it shows</strong>: 搜索时间随 LLM 数（指数，但 ≤35s）、GPU 数（≤70s @ 128 GPU）、fraction 粒度（≤1s @ 20 fractions）的变化。</p>
-<p><strong>Why it matters</strong>: 证明即使是 NP-hard 的底层问题，经过三步剪枝后在实际部署规模下仍 <1 分钟，调度开销可忽略。</p>
-<p><strong>Detailed description</strong>: 三个子图 log-log 坐标；LLM 数子图从 2→5 线性增长；GPU 数子图呈指数但斜率低；fractions/GPU 子图几乎平坦。</p>
-
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
-
-<h3 id="table-1-state-of-the-art-agentic-serving-systems-comparison">Table 1: State-of-the-art agentic serving systems comparison <a class="heading-anchor" href="#table-1-state-of-the-art-agentic-serving-systems-comparison" aria-label="Link to table-1-state-of-the-art-agentic-serving-systems-comparison">#</a></h3>
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
 
 <table>
-<tr><th>System</th><th>Workflow-opt</th><th>Auto GPU alloc</th><th>Multi-LLM</th><th>Unrestricted prog</th><th>Opt target</th></tr>
-<tr><td>AlpaServe</td><td>✗</td><td>✓</td><td>✓</td><td>✓</td><td>SLO</td></tr>
-<tr><td>MuxServe</td><td>✗</td><td>✓</td><td>✓</td><td>✓</td><td>throughput</td></tr>
-<tr><td>Prism</td><td>✗</td><td>✓</td><td>✓</td><td>✓</td><td>SLO</td></tr>
-<tr><td>Aegaeon</td><td>✗</td><td>✓</td><td>✓</td><td>✓</td><td>SLO</td></tr>
-<tr><td>Kubernetes HPA / AIBrix / llm-d / vLLM-prod-stack</td><td>✗</td><td>✓</td><td>✓</td><td>✓</td><td>configurable</td></tr>
-<tr><td>Parrot / Ayo / TokenCake</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td><td>latency</td></tr>
-<tr><td>Autellix / JITServe</td><td>✓</td><td>✗</td><td>✗</td><td>✓</td><td>latency / SLO</td></tr>
-<tr><td><strong>Scepsy</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>✓</strong></td><td><strong>latency + throughput</strong></td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$\lambda_w$</td><td>target workflow-level arrival rate</td></tr>
+<tr><td>$\lambda_m$</td><td>induced LLM-level arrival rate, $\lambda_m = \lambda_w \cdot n_m$</td></tr>
+<tr><td>$n_m$</td><td>average invocations of LLM $m$ per workflow request</td></tr>
+<tr><td>$p_m$</td><td>average request-level parallelism of LLM $m$ (overlapping-timestamp count)</td></tr>
+<tr><td>$L_m(\cdot)$</td><td>average per-request latency of LLM $m$ at a given arrival rate</td></tr>
+<tr><td>$L_{w_m}$</td><td>workflow-level latency contribution of LLM $m$</td></tr>
+<tr><td>$L_w(\lambda_w)$</td><td>total workflow latency at $\lambda_w$</td></tr>
+<tr><td>$T_m$</td><td>maximum sustainable throughput of LLM $m$</td></tr>
+<tr><td>$T_w$</td><td>maximum workflow throughput</td></tr>
+<tr><td>$TP_m$, $d_m$</td><td>tensor-parallel degree and replica count for LLM $m$</td></tr>
 </table>
 
-<p><strong>Takeaway</strong>: Scepsy 是唯一同时勾满四个能力项 + 联合优化 throughput/latency 的系统 —— 这张表本身就是其定位声明。</p>
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
 
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
+<p>Workflow latency accumulates along the per-request critical path:</p>
 
-<ul>
-<li><strong>跨 LLM 的 fan-out 被错误建模</strong>：如果 workflow 在 <em>不同 LLM</em> 之间 fan-out（而不是同一 LLM 的并行调用），Aggregate LLM Pipeline 会把它当成串行 pipeline，高估延迟。论文在 Discussion 中承认需要跟踪重叠 trace 来修复。</li>
-<li><strong>双模负载分布</strong>：同一个 LLM 在同一 workflow 中扮演不同角色（或跨多个 workflow 共享）时，会产生 bimodal load distribution，单一 aggregate 分布会误判。论文仅给出"按 pattern 分类后合并"的构想，未实现。</li>
-<li><strong>长 tool 执行时间</strong>：Scepsy 基于"non-LLM 组件延迟 < few ms"假设。对于含有长运行 tool（浏览器、代码执行、训练 job）的 workflow，此假设失效，需要额外建模。</li>
-<li><strong>预测精度依赖 profiling 阶段的代表性</strong>：需要 workflow-level 的"代表性请求序列"来生成 trace。如果生产流量分布漂移（domain shift），重新 profiling 的触发机制未说明。</li>
-<li><strong>评估规模较小</strong>：16 GPU × A6000 × 2 workflow，未触及大规模（>100 节点、MoE、多 workload interference）。搜索时间外推到 128 GPU 是 micro-benchmark，不是真实部署。</li>
-<li><strong>只依赖 MPS 做 isolation</strong>：MPS 的 SM/memory 静态限制在生产环境下有 noisy-neighbor 风险，论文未讨论 QoS 保障。</li>
-<li><strong>TP 被限制在高带宽域内</strong>：放弃了跨 NVLink 域的 TP 方案，这是工程妥协而非根本性解。</li>
+<p>$$L_{w}(\lambda_{w})=\sum_{m}L_{w_{m}}(\lambda_{w})=\sum_{m}L_{m}(\lambda_{w}\cdot n_{m})\cdot\frac{n_{m}}{p_{m}}$$</p>
+
+<p>Each LLM's latency is evaluated at its <em>induced</em> arrival rate $\lambda_w \cdot n_m$, then scaled by $n_m/p_m$ — multiply by how many times the LLM runs per request, divide by how many of those run in parallel. Summation (not max) is used because stages accumulate along a single request's critical path.</p>
+
+<p>Workflow throughput is bottleneck-limited:</p>
+
+<p>$$T_{w}=\min_{m}\frac{T_{m}}{n_{m}}$$</p>
+
+<p>The slowest stage (min over LLMs of sustainable throughput divided by per-workflow invocation count) caps the whole workflow. Parallelism $p_m$ and $\lambda_w$ drop out here — parallel requests do not reduce an LLM's total request count, and max throughput is independent of arrival rate.</p>
+
+<h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Units</strong>: $L_m$ is seconds/request at rate $\lambda_w n_m$; $n_m/p_m$ is dimensionless; product is seconds/workflow-request. ✓ consistent with $L_w$.</li>
+<li><strong>Degenerate $n_m=1, p_m=1$</strong>: a single serial LLM gives $L_w = L_m(\lambda_w)$ and $T_w = T_m$ — reduces to single-LLM serving. ✓</li>
+<li><strong>Parallelism limit</strong>: if $p_m = n_m$ (all invocations fully parallel), the latency scale factor is 1, i.e., the LLM contributes only one request's worth of latency. ✓ physically sensible.</li>
+<li><strong>Replica scaling (§4 Step ⑤)</strong>: $d_m$ replicas rescale the arrival rate to $\lambda_w n_m / d_m$ — consistent with the stated assumption that throughput scales linearly with replicas and latency is replica-independent.</li>
+<li><strong>Monotonicity</strong>: $L_m(\cdot)$ is increasing in arrival rate (measured latency rises toward saturation), so higher $\lambda_w$ raises $L_w$ — matches the throughput–latency curves rising to the right in Fig. 6.</li>
+<li><strong>Bottleneck consistency</strong>: the LLM achieving the min in Eq. 2 is the throughput bottleneck; giving it more replicas raises its $T_m$ and can move the min to another LLM — this is exactly the "shifting bottleneck" the scheduler must chase. ✓</li>
 </ul>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
+<h3 id="agent-specific-asks">Agent-specific asks <a class="heading-anchor" href="#agent-specific-asks" aria-label="Link to agent-specific-asks">#</a></h3>
 
 <ul>
-<li><strong>Algorithm</strong>: N/A — 不提出新的训练/推理算法，但为 inference-time scaling (beam search/MCTS) 提供了可行的生产化部署路径，间接助推这类算法的大规模应用。</li>
-<li><strong>Kernel</strong>: N/A — 使用现成 vLLM/SGLang engine，不触及 kernel。</li>
-<li><strong>Framework</strong>: <strong>直接影响</strong> —— 在 Kubernetes + vLLM/SGLang 生态之上提供 workflow-aware 的编排层，定义了"scheduler 见 workflow、engine 见请求"的分层接口。推动 K8s device plugin 向 fractional + topology-aware 方向演进（vGPU、MPS 配置自动化）。</li>
-<li><strong>LLM</strong>: N/A — 对模型架构无假设，理论上支持任意 vLLM/SGLang 兼容模型。</li>
-<li><strong>Agent</strong>: <strong>核心影响</strong> —— 为 LangChain/LangGraph/AutoGen/Camel 等 agent framework 提供了"不修改代码即可享受 GPU 自动分配"的运行时，是 agentic 自建部署栈的关键缺失拼图。与 Autellix/JITServe 等"workflow-aware 但单 LLM"方案形成互补：Autellix 管 request-level 优先级，Scepsy 管 LLM-level GPU 分配。</li>
-<li><strong>Cluster</strong>: 引入"GPU fraction + NVLink-aware placement"的新需求，对 K8s scheduler 和 gang scheduling 方案（如 Kai-scheduler、Volcano）提出新的约束求解需求。</li>
-<li><strong>Code</strong>: 开源（post-acceptance at github.com/anon/Scepsy），~25K LOC Python，提供可被 AIBrix/llm-d/production-stack 吸收的 reference implementation。</li>
+<li><strong>Success-rate / sweep</strong>: this is a <em>serving</em> paper, so the "success" axis is served throughput at target latency, swept over (workload, cluster size 4/8/16 GPU, baseline). Monotonicity: Scepsy dominates all baselines across all cluster sizes; the <em>margin</em> over Kubernetes is non-monotonic in GPU count (2.4× at 4 GPU, 1.5× at 8, 1.8× at 16 for beam search), reflecting allocation-granularity effects.</li>
+<li><strong>Latency budget per turn</strong>: per-turn cost = LLM inference + negligible tool/orchestration (claimed few ms). No claim of fixed "interactive latency"; instead the pipeline predicts a latency <em>curve</em> vs. arrival rate.</li>
+<li><strong>Failure-mode classification</strong>: §9 identifies exactly three model-breaking cases — (1) fan-out across <em>different</em> LLMs mis-modeled as serial, (2) bimodal load when an LLM is reused in distinct roles, (3) non-negligible long-running tools. The dominant assumption-violation is (3), which the negligible-tool-time claim directly depends on.</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p>Cluster: 16 GPUs (4× RTX A6000 per node, 100 Gbps InfiniBand, NVLink in GPU pairs). Engines: vLLM v0.17 + SGLang router (v0.2/v0.2.2 for the Ayo comparability run). Workloads: RAG+reranker (e5-base-v2 + Llama-3-8B) and beam search (Llama-3.2-1B generator + Llama-3.1-8B-PRM verifier).</p>
+
+<p><img src="/assets/2604.15186/fig6-throughput-latency-k8s.png" alt="Figure 6: throughput–latency comparison vs Kubernetes autoscaler across workloads and 4/8/16 GPUs"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "Throughput–latency comparison across workloads and 4, 8, 16 GPUs").</em> This is the headline figure: x = achieved throughput, y = workflow latency, one panel per (workload × cluster size). Scepsy's curve sits below-and-right of Kubernetes everywhere. Kubernetes oscillates (scales up, empties queues, scales down) and cannot exploit tensor parallelism — the source of the up-to-27× latency gap. This figure is where the 2.4× / 27× headline numbers come from.</p>
+
+<p><img src="/assets/2604.15186/fig5-gpu-scheduling.png" alt="Figure 5: three-step GPU scheduling — enumerate LLM→GPU fractions, map fractions to GPUs, resolve TP + replicas"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "Overview of GPU scheduling in Scepsy").</em> The scheduler's pruned search: (①) enumerate LLM→GPU-fraction mappings ordered by latency ratio, (②) pack fractions contiguously onto physical GPUs (e.g. 1.66 GPUs → 1.0 on GPU 1 + 0.66 on GPU 2), (③) resolve feasible TP × replica combinations (must evenly divide the GPU count; TP capped at the high-bandwidth interconnect degree). This is what keeps a ~29M-mapping space searchable in seconds.</p>
+
+<p><img src="/assets/2604.15186/fig10-ablation.png" alt="Figure 10: ablation of co-location vs tensor parallelism across workloads and cluster scales"></p>
+
+<p><em>Paper's Figure 10, verbatim (caption: "Ablation study showing the contribution of Scepsy's key optimizations across workloads and cluster scales").</em> The load-bearing attribution result: for RAG+reranker, <strong>co-location (fractional GPUs)</strong> is the biggest throughput contributor (heterogeneous small embedding + large generative LLM benefits most from sub-GPU packing); for beam search, <strong>tensor parallelism</strong> drives the latency reduction. Disabling both compounds the degradation — the two mechanisms are synergistic, not redundant.</p>
+
+<p><img src="/assets/2604.15186/fig11-scheduler-latency.png" alt="Figure 11: scheduler search time as number of LLMs, GPUs, and fractions per GPU scale"></p>
+
+<p><em>Paper's Figure 11, verbatim (caption: "Search time as scheduling parameters scale for the combined workflow").</em> Three panels show search time growing exponentially in LLM count and GPU count yet staying practical: < 35 s across LLM counts (16 GPU, 10 fractions), ≤ 70 s at 128 GPU, ≤ 1 s across fractions-per-GPU. This validates the §5 pruning strategies — without them the raw ~29M-mapping enumeration would be intractable.</p>
+
+<p>The distribution figures (Fig. 3a absolute, Fig. 3b relative) are the empirical crux motivating the whole design — absolute per-LLM latencies over 500 beam-search requests are widely spread, whereas relative time shares are up to 4× tighter, justifying allocation by aggregate share rather than absolute prediction.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Agentic workflows have unpredictable <em>absolute</em> latency but stable <em>relative</em> per-LLM time shares</td><td>Fig. 3(a) vs 3(b) over 500 beam-search requests; relative up to 4× more stable (§2.4)</td></tr>
+<tr><td>2</td><td>Therefore workflow performance can be modeled without control-flow prediction, using only aggregate per-LLM demand</td><td>Two statistics $n_m$, $p_m$ from trace timestamps capture loops/branches/fan-out (§4 Step ②)</td></tr>
+<tr><td>3</td><td>An Aggregate LLM Pipeline built from these statistics + per-LLM profiles predicts end-to-end throughput/latency cheaply</td><td>Eqs. 1–2 reduce prediction to profile lookups + arithmetic (§4 Step ⑤, closing para)</td></tr>
+<tr><td>4</td><td>A pruned search over fractional shares + TP + replicas finds a good allocation in seconds</td><td>3 pruning strategies shrink ~29M mappings; search < 35 s / ≤ 70 s (§5 Step ①, §7.5)</td></tr>
+<tr><td>5</td><td>Topology-aware placement realizes the allocation without cluster fragmentation</td><td>Most-constrained-first heuristic + MPS on Kubernetes (§6)</td></tr>
+<tr><td>6</td><td>The full pipeline yields large end-to-end gains vs isolated-LLM and workflow-aware baselines</td><td>Up to 2.4× throughput / 27× latency vs Kubernetes; 7.3× / 8.2× vs Aegaeon / Ayo (§7.2)</td></tr>
+<tr><td>7</td><td>Both co-location and parallelism are individually necessary</td><td>Ablation: co-location dominant for RAG throughput, TP dominant for beam-search latency (§7.4, Fig. 10)</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> — the prototype (25K lines of Python, "available post-acceptance at https://github.com/anon/Scepsy") is anonymized and not accessible at ingest time, so no <code>file:line</code> citations are possible.</p>
+
+<ul>
+<li><strong>Tracing</strong>: implemented as an HTTP proxy in front of each LLM engine's completions API — captures request/response contents + timestamps + workflow id (§4 Step ①). Framework-agnostic by construction.</li>
+<li><strong>Serving stack</strong>: one vLLM or SGLang engine per replica; one SGLang router per workflow for load- and KV-cache-aware routing (§6 Para 4).</li>
+<li><strong>Placement enforcement</strong>: Scepsy emits Kubernetes deployment files that lock inter-node placement, plus an <em>extended Nvidia device plugin</em> for intra-node GPU-fraction placement; Nvidia MPS with static SM/memory limits enforces per-fraction isolation (§6 Para 4).</li>
+</ul>
+
+<p><strong>关键实现细节 (easy-to-miss tricks)</strong>:</p>
+
+<ol>
+<li><strong>Contiguous-only fraction packing as a symmetry-pruning device</strong> (§5 Step ①–②): by allocating GPUs only contiguously and packing the highest-latency LLM's fraction as a whole GPU first (1.66 GPUs → 1.0 + 0.66), Scepsy both minimizes partitioning of latency-critical LLMs <em>and</em> collapses equivalent permutations, which is a large part of why the ~29M space becomes searchable. It is a scheduling correctness detail masquerading as a performance detail.</li>
+<li><strong>Latency-ratio ordering to bound per-LLM fractions</strong> (§5 Step ①): each LLM's lower bound is the fractions needed just to load params + KV cache; its upper bound subtracts the minimum fractions of all <em>lower-latency</em> LLMs. This ordering-derived bound is what excludes nonsensical allocations (small embedding LLM out-resourcing a large generative LLM) without an explicit constraint solver.</li>
 </ul>
 
 <hr>
 
-<h2 id="deep-analysis-framework">Deep Analysis (framework) <a class="heading-anchor" href="#deep-analysis-framework" aria-label="Link to deep-analysis-framework">#</a></h2>
-
-<h3 id="0-phase-2-深度扩展">0. Phase 2 深度扩展 <a class="heading-anchor" href="#0-phase-2-深度扩展" aria-label="Link to 0-phase-2-深度扩展">#</a></h3>
-
-<h4 id="时代定位">时代定位 <a class="heading-anchor" href="#时代定位" aria-label="Link to 时代定位">#</a></h4>
-
-<p>2025-2026 是 agentic workflow 从 demo 走向生产部署的窗口期。早期 (2023-2024) 的 LLM serving 优化几乎全部围绕 <strong>单 LLM 的 request-level 问题</strong> 展开：continuous batching (Orca)、paged attention (vLLM)、chunked prefill (Sarathi-Serve)、P/D disaggregation (DistServe/Mooncake)、speculative decoding。<strong>这些 low-hanging fruit 在 2025 年已经基本采摘殆尽</strong>。下一代问题是 <strong>multi-LLM × workflow-level × GPU-allocation</strong>，属于 agent serving 的"深水区"。Scepsy 所在的位置非常具体：</p>
-
-<pre><code>
-2023  Orca (continuous batching)
-2024  vLLM (paged attention)  Sarathi (chunked prefill)  DistServe (P/D)
-2025  Autellix / JITServe (single-LLM workflow-aware scheduling)
-      Parrot / Ayo (single-LLM static graph optimization)
-      AlpaServe / MuxServe / Aegaeon (multi-LLM 但 workflow-agnostic)
-2026  Scepsy ← 第一个同时勾满 &quot;multi-LLM × workflow-aware × 自动分配 × 任意框架&quot;
-</code></pre>
-
-<p>这不是在单 LLM 维度再抠百分之几，而是把问题 <strong>向上抬了一层</strong> 到 orchestration layer，类似于从 Linux CFS 到 Kubernetes HPA 的跃迁。</p>
-
-<h4 id="约束推导（why-not-x-）">约束推导（Why not X?） <a class="heading-anchor" href="#约束推导（why-not-x-）" aria-label="Link to 约束推导（why-not-x-）">#</a></h4>
-
-<p><strong>为何不可 per-LLM 独立自动扩缩（K8s HPA / AIBrix）？</strong></p>
-<ul>
-<li>每个 LLM 的负载由 workflow 中其他 LLM 的输出驱动。生成器加速会增加验证器负载，触发验证器扩容，反过来又加速了生成器的 downstream → <strong>级联振荡</strong>。数学表述：扩缩控制器是 PID-like 的负反馈系统，但 LLM 之间存在 <strong>未建模的前馈耦合</strong>，在稳态工况下稳定，但在负载瞬变时振荡。</li>
-<li>论文的实验（Fig. 6）直接证实了这一点。</li>
-</ul>
-
-<p><strong>为何不可纯时间/空间多路复用（AlpaServe/MuxServe/Aegaeon）？</strong></p>
-<ul>
-<li>这些系统对每个 LLM 给定 <strong>固定</strong> 的多路复用策略，但 agentic workflow 的 per-LLM 负载随时间剧烈变动（beam search 的 GEN 调用次数 24-844×），固定策略必然在绝大部分时间 misallocate。</li>
-<li>Aegaeon 的 prefill/decode 实例切换开销是 swapping-driven 的，无法利用 prefix cache，对 beam search 这种 <strong>长公共前缀</strong> 的 workload 损失尤其大（论文 Fig. 7 显示 14× 延迟 gap）。</li>
-</ul>
-
-<p><strong>为何不可 single-LLM workflow-aware 调度（Autellix/JITServe）？</strong></p>
-<ul>
-<li>这些系统的建模假设是 <strong>整个 workflow 只用一个 LLM</strong>，每个请求对应一个优先级或一个 SLO 预估。它们无法表达"generator 和 verifier 的负载份额是多少"，因为它们的状态空间里没有"LLM 身份"这一维度。</li>
-<li>把它们硬套到多 LLM，只能把所有 LLM 看作同一个，丢失异构性。</li>
-</ul>
-
-<p><strong>为何不可静态图分析（Parrot/Ayo）？</strong></p>
-<ul>
-<li>需要用户用特定 DSL 重写 workflow，<strong>丧失了 LangChain/AutoGen/Camel 生态</strong>。</li>
-<li>无法处理数据依赖的动态控制流（beam search 的"只对 top-k beam 继续扩展"这种分支）。</li>
-</ul>
-
-<p><strong>为何不可精确模型 per-request 的控制流？</strong></p>
-<ul>
-<li>每个请求的 token 生成路径本质是 stochastic，精确建模需要 sequence-level 模拟，代价与运行 workflow 相当。论文观察到"相对份额稳定"这一 empirical fact，把精确动态模型替换成 <strong>steady-state aggregate 近似</strong>，这是关键的 engineering shortcut。</li>
-</ul>
-
-<p><strong>可行性矩阵</strong>：</p>
-
-<table>
-<tr><th>方案</th><th>Multi-LLM</th><th>Auto alloc</th><th>Dynamic flow</th><th>Framework-agnostic</th><th>Latency+Throughput</th></tr>
-<tr><td>K8s HPA</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✗（振荡）</td></tr>
-<tr><td>Aegaeon</td><td>✓</td><td>✓</td><td>✗</td><td>✓</td><td>✗（固定策略）</td></tr>
-<tr><td>Parrot/Ayo</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>latency only</td></tr>
-<tr><td>Autellix</td><td>✗</td><td>✗</td><td>✓</td><td>✓</td><td>latency only</td></tr>
-<tr><td><strong>Aggregate LLM Pipeline</strong></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
-</table>
-
-<p>排除以上方案后，剩余可行的设计空间是：<strong>用 steady-state 统计替代精确动态建模 + 跨 LLM 联合优化</strong>。</p>
-
-<h4 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h4>
-
-<p><strong>一句话</strong>：<strong>Aggregate LLM Pipeline 抽象 + 三维联合搜索空间的剪枝</strong> 是整个系统能 work 的根本壁垒。</p>
-
-<ul>
-<li>不是"tracing"（HTTP proxy 是烂大街的工程）；</li>
-<li>不是"fractional GPU 放置"（vGPU/MPS 都能做）；</li>
-<li>而是 <strong>把 workflow 的动态行为用两个静态统计量 $(n_m, p_m)$ 压缩，并证明 (a) 相对份额分布窄（Fig. 3）(b) pipeline 公式 $L_w, T_w$ 可以精确预测各种 allocation 的效果</strong>。</li>
-</ul>
-
-<p>这层抽象一旦建立，调度问题瞬间从"非凸 stochastic control"退化为"查表 + 算术 + 剪枝枚举"，后续所有工程实现都是基于这个简化后的 operational 模型。这是整个方案 2.4×/27× 提升的真正 sources。</p>
-
-<p>具体支撑数据：Fig. 3 的"相对份额比绝对值稳定 4×"是这个壁垒能立住的 empirical proof。没有这个 4×，Aggregate Pipeline 就会是一个糟糕的预测器。</p>
-
-<h4 id="质疑假设">质疑假设 <a class="heading-anchor" href="#质疑假设" aria-label="Link to 质疑假设">#</a></h4>
-
-<ol>
-<li><strong>"LLM 相对份额稳定" 的假设在什么条件下失效？</strong></li>
-<li>当 workflow 中某个 LLM 的调用模式与输入强相关（例如代码生成 agent 中 debugger LLM 仅在代码错误时被调用，不同 domain 的出错率差异极大），相对份额会有 bimodal 分布。论文 Discussion 承认此情况但未实现方案。</li>
-<li>当 workflow 规模极小（<10 次 LLM 调用/请求），大数定律不生效，相对份额方差大。beam search @ 小 branching factor 可能出问题。</li>
-<li>笔者不确定在 tool-heavy workflow（e.g. Sutradhara 那类 tool dispatch 为主的场景）下是否仍成立，论文没有评估。</li>
-</ul>
-
-<ol>
-<li><strong>"non-LLM tool 时间 << LLM 时间"的假设？</strong></li>
-<li>论文宣称 "<few ms"。但在真实 agent 中，web search（秒级）、代码执行（秒到分钟级）、视觉处理（数百毫秒）都不能忽略。<strong>论文只测了 RAG+reranker 和 beam search 这两个 LLM 占绝对主导的 workload</strong>，结论不能外推到 general agents。</li>
-</ul>
-
-<ol>
-<li><strong>"TP × replica 整除 GPU 数" 的约束合理吗？</strong></li>
-<li>这是工程简化。在 heterogeneous cluster（4 GPU/节点 vs 8 GPU/节点）或者想做 uneven TP（如 TP=3 on 6 GPU）时会浪费容量。</li>
-</ul>
-
-<ol>
-<li><strong>A6000 的 NVLink 仅有两 pair 这一特殊拓扑是否会让结论失真？</strong></li>
-<li>A6000 只有 NVLink bridge（2-way），不同于 H100/A100 的 NVSwitch。这意味着 TP=2 是上限，完全避开了"TP=4/8 across NVSwitch"这类真实集群核心场景。在 H100 集群上 TP domain 更大、调度空间更复杂，文章未评估。</li>
-</ul>
-
-<h4 id="设计绑定批判">设计绑定批判 <a class="heading-anchor" href="#设计绑定批判" aria-label="Link to 设计绑定批判">#</a></h4>
-
-<p>Scepsy 强制绑定：</p>
-
-<table>
-<tr><th>绑定项</th><th>代价</th></tr>
-<tr><td>需要"代表性 trace"进行 profiling</td><td>Production 流量 drift 时需重新 profile，论文未给出 online re-profile 机制</td></tr>
-<tr><td>把 non-LLM 时间视为可忽略</td><td>在工具长链（自动化实验、RL rollout）上模型失效</td></tr>
-<tr><td>per-LLM 独立 profile、假设 replica 间无干扰</td><td>MPS 的 noisy-neighbor 效应被低估</td></tr>
-<tr><td>Kubernetes + MPS 技术栈</td><td>不支持 bare-metal 或 Slurm 部署</td></tr>
-<tr><td>TP domain 限制在高带宽 fabric 内</td><td>丧失跨 NVLink 域的大 TP 灵活性</td></tr>
-<tr><td>需要 workflow 有稳定 steady-state</td><td>高度 adaptive 的 agent（如 ReAct 类每轮都可能触发完全不同 tool chain）可能不稳定</td></tr>
-</table>
-
-<p>一旦这些前提变化（特别是 "non-LLM 时间可忽略"），Aggregate LLM Pipeline 的预测精度会线性崩溃，整个 scheduler 失去决策依据。</p>
-
-<h4 id="生态影响追踪">生态影响追踪 <a class="heading-anchor" href="#生态影响追踪" aria-label="Link to 生态影响追踪">#</a></h4>
-
-<p>论文太新（2026-04），尚无 downstream 采用数据。但架构上的潜在影响路径：</p>
-
-<ul>
-<li><strong>对 K8s device plugin 生态</strong>：Scepsy 扩展了 NVIDIA device plugin 支持层次化 fractional placement。这方向与 NVIDIA GPU Operator + KAI scheduler + MIG 生态相邻，未来有并入标准 K8s GPU resource model 的可能。</li>
-<li><strong>对 AIBrix / llm-d / vLLM Production Stack</strong>：这些开源 agentic-stack 都以 "per-LLM autoscaling" 为设计中心。Scepsy 的 workflow-aware scheduler 可作为其 control plane 的替代，也可作为"advisor"形式提出 LLM replica 建议。</li>
-<li><strong>对 SGLang router</strong>：论文已经用了 SGLang Model Gateway 作为 request router，这是 downstream 协作的自然接口点。</li>
-</ul>
-
-<h3 id="1-system-scope">1. System Scope <a class="heading-anchor" href="#1-system-scope" aria-label="Link to 1-system-scope">#</a></h3>
-
-<ul>
-<li><strong>Primary goal</strong>: <strong>Serving</strong> —— 不涉及训练/fine-tuning/数据处理。</li>
-<li><strong>Distributed</strong>: 单到多节点均可；实验规模 4 节点 × 4 A6000 = 16 GPU。理论上支持更大，但未验证 >100 GPU。</li>
-<li><strong>Online</strong>（latency-sensitive）—— 同时优化 latency 和 throughput，而不是 offline batch 吞吐。</li>
-<li><strong>Workload</strong>: 多 LLM agentic workflow，具体评估 beam search（inference-time scaling）和 RAG+reranker（检索增强）。</li>
-</ul>
-
-<h3 id="2-architecture-data-flow">2. Architecture & Data Flow <a class="heading-anchor" href="#2-architecture-data-flow" aria-label="Link to 2-architecture-data-flow">#</a></h3>
-
-<p>Request flow:</p>
-
-<pre><code>
-User request
- ↓
-Workflow code (LangChain/AutoGen/arbitrary)
- ↓ LLM call
-HTTP proxy (Scepsy tracer) ─→ trace store
- ↓
-SGLang Router (KV-cache-aware routing)
- ↓ dispatch to replica
-vLLM/SGLang engine replica (on a GPU fraction)
- ↓ compute
-Response → proxy → workflow → user
-</code></pre>
-
-<p><strong>Control plane</strong>（离线/异步）：</p>
-<ul>
-<li>Profiler: trace → $(n_m, p_m)$</li>
-<li>Scheduler: Aggregate LLM Pipeline → 搜索 → allocation decision</li>
-<li>Placer: hierarchical heuristic → K8s deployment YAML</li>
-<li>Device plugin (modified): enforce intra-node fractional GPU placement</li>
-<li>MPS: SM/memory quota enforcement</li>
-</ul>
-
-<p><strong>Data plane</strong>（在线）：请求 → proxy → router → engine → response</p>
-
-<p><strong>Stateful vs stateless</strong>: engine replica 携带 KV cache（stateful），但 router 根据 KV-cache locality 路由可优化 prefix hit。Scheduler decisions 本身是全局状态但变更频率低（allocation-level，不是 request-level）。</p>
-
-<p><strong>Failure handling</strong>: 论文提到"Kubernetes provides the remaining control-plane mechanisms for deployment, restart, and health management" —— 即依赖 K8s 自带的 pod restart / liveness probe。对于 replica 故障后的重分配，论文未详细讨论。</p>
-
-<h4 id="2a-end-to-end-data-flow">2a. End-to-End Data Flow <a class="heading-anchor" href="#2a-end-to-end-data-flow" aria-label="Link to 2a-end-to-end-data-flow">#</a></h4>
-
-<table>
-<tr><th>Stage</th><th>Input → Output</th><th>Location</th><th>Latency</th><th>Data format</th></tr>
-<tr><td>Workflow code execution</td><td>user prompt → LLM call（s）</td><td>CPU (workflow pod)</td><td>ms-scale</td><td>Python objects</td></tr>
-<tr><td>HTTP proxy trace</td><td>LLM call → logged call + forwarded request</td><td>CPU</td><td><1 ms overhead</td><td>HTTP JSON</td></tr>
-<tr><td>SGLang router</td><td>request → target engine replica</td><td>CPU</td><td><1 ms</td><td>HTTP JSON</td></tr>
-<tr><td>vLLM/SGLang engine prefill</td><td>prompt tokens → KV cache + first token</td><td>GPU HBM (fractional)</td><td>10-1000s ms</td><td><code>[L, H, S, D]</code> KV tensors</td></tr>
-<tr><td>Engine decode loop</td><td>KV cache → logits → next token</td><td>GPU HBM</td><td>5-50 ms/token</td><td>logits vector</td></tr>
-<tr><td>Response streaming</td><td>tokens → user</td><td>CPU/network</td><td>network RTT</td><td>text</td></tr>
-<tr><td>Trace aggregation (offline)</td><td>traces → $(n_m, p_m)$ + profiles</td><td>CPU</td><td>minutes</td><td>JSON/parquet</td></tr>
-<tr><td>Scheduler search (offline)</td><td>profiles → allocation</td><td>CPU</td><td><70 s</td><td>allocation struct</td></tr>
-<tr><td>K8s rollout</td><td>allocation → pod deployments</td><td>control plane</td><td>seconds</td><td>YAML</td></tr>
-</table>
-
-<h4 id="2b-data-movement-hotspots">2b. Data Movement Hotspots <a class="heading-anchor" href="#2b-data-movement-hotspots" aria-label="Link to 2b-data-movement-hotspots">#</a></h4>
-
-<ol>
-<li><strong>KV cache within engine</strong> —— 每 token 一次 read + write，对 HBM bandwidth 敏感。Scepsy 不优化此层（交给 vLLM 处理）。</li>
-<li><strong>Request dispatch through router</strong> —— per-request 一次，JSON 序列化开销；cross-node 时走 100 Gbps IB。</li>
-<li><strong>Trace logging</strong> —— per-LLM-call 一次；论文明确 "parallelized by independent deployment"，不阻塞。</li>
-</ul>
-
-<p><strong>Scepsy 不引入新的 data-plane 热点</strong> —— 所有控制开销都在 offline control plane。这是 design win。</p>
-
-<h3 id="3-design-space-constraint-analysis-extends-phase-2">3. Design Space & Constraint Analysis (extends Phase 2) <a class="heading-anchor" href="#3-design-space-constraint-analysis-extends-phase-2" aria-label="Link to 3-design-space-constraint-analysis-extends-phase-2">#</a></h3>
-
-<p>见 Phase 2 深度扩展。此处补充框架特有：</p>
-
-<h4 id="3a-alternative-approaches">3a. Alternative Approaches <a class="heading-anchor" href="#3a-alternative-approaches" aria-label="Link to 3a-alternative-approaches">#</a></h4>
-
-<ol>
-<li><strong>Static partitioning</strong> by user: 最简单；问题是用户不知道 workflow 的真实 bottleneck → 浪费或饥饿。</li>
-<li><strong>Reactive autoscaling</strong>: K8s HPA； cascade oscillation。</li>
-<li><strong>Global dynamic scheduler</strong> (request-level multi-LLM queue): 状态空间爆炸；每请求决策延迟大。</li>
-<li><strong>Static program analysis</strong> (Parrot/Ayo): 限制 framework。</li>
-<li><strong>Aggregate steady-state prediction</strong> (Scepsy): 选中。</li>
-</ul>
-
-<h4 id="3b-constraint-derivation-—-见-phase-2。">3b. Constraint Derivation — 见 Phase 2。 <a class="heading-anchor" href="#3b-constraint-derivation-—-见-phase-2。" aria-label="Link to 3b-constraint-derivation-—-见-phase-2。">#</a></h4>
-
-<h4 id="3c-assumption-audit-—-见-phase-2。">3c. Assumption Audit — 见 Phase 2。 <a class="heading-anchor" href="#3c-assumption-audit-—-见-phase-2。" aria-label="Link to 3c-assumption-audit-—-见-phase-2。">#</a></h4>
-
-<h4 id="3d-core-technical-barrier-—-aggregate-llm-pipeline-抽象-稳定性-empirical-证明。">3d. Core Technical Barrier — <strong>Aggregate LLM Pipeline 抽象 + 稳定性 empirical 证明</strong>。 <a class="heading-anchor" href="#3d-core-technical-barrier-—-aggregate-llm-pipeline-抽象-稳定性-empirical-证明。" aria-label="Link to 3d-core-technical-barrier-—-aggregate-llm-pipeline-抽象-稳定性-empirical-证明。">#</a></h4>
-
-<h4 id="3e-design-binding-critique-—-见-phase-2。">3e. Design Binding Critique — 见 Phase 2。 <a class="heading-anchor" href="#3e-design-binding-critique-—-见-phase-2。" aria-label="Link to 3e-design-binding-critique-—-见-phase-2。">#</a></h4>
-
-<h3 id="4-key-innovations">4. Key Innovations <a class="heading-anchor" href="#4-key-innovations" aria-label="Link to 4-key-innovations">#</a></h3>
-
-<table>
-<tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost/Tradeoff</th></tr>
-<tr><td>Aggregate LLM Pipeline</td><td>用 $(n_m, p_m)$ 聚合 workflow 动态行为 + $L_m/T_m$ 曲线</td><td>秒级预测任意 allocation 性能</td><td>相对份额不稳定时失效</td></tr>
-<tr><td>Joint 3D search space</td><td>$(d_m, TP_m, \text{frac}_m)$ 联合搜索</td><td>同时优化 throughput + latency</td><td>搜索复杂度 $O(\text{LLMs}^k)$，需剪枝</td></tr>
-<tr><td>Fractional GPU allocation</td><td>把 GPU 切 10 份（默认）+ MPS 隔离</td><td>小 LLM 不再独占整卡，GPU 利用率↑</td><td>MPS noisy-neighbor、SM 限制是 coarse</td></tr>
-<tr><td>Topology-aware hierarchical placement</td><td>先跨节点放大 TP 实例，再节点内 pack</td><td>保证 NVLink domain 完整性，减少碎片</td><td>heuristic 非 optimal</td></tr>
-<tr><td>HTTP proxy tracing</td><td>无侵入捕获任意 framework</td><td>支持 LangChain/AutoGen/Camel</td><td>profile trace drift 时需重采</td></tr>
-</table>
-
-<h3 id="5-scheduling-resource-management">5. Scheduling & Resource Management <a class="heading-anchor" href="#5-scheduling-resource-management" aria-label="Link to 5-scheduling-resource-management">#</a></h3>
-
-<ul>
-<li><strong>Batch formation</strong>: 由下游 engine（vLLM/SGLang）处理（continuous batching），Scepsy 不干预。</li>
-<li><strong>Memory management</strong>: per-replica 独立 KV cache；Scepsy 只决定 replica 的 GPU fraction（决定了 KV cache 上限）。</li>
-<li><strong>Idle avoidance</strong>: 通过 fractional GPU 把小 LLM pack 到同一 GPU，消除"整卡给小模型"的浪费。</li>
-<li><strong>Multi-tenancy</strong>: 支持多 workflow（egalitarian welfare 聚合），但未讨论恶意用户隔离。</li>
-<li><strong>Priority / SLO</strong>: 优化目标是 latency 和 target throughput，没有严格 SLO enforcement（不是 SLO-aware）。</li>
-</ul>
-
-<h3 id="6-target-scenarios-workload-characterization">6. Target Scenarios & Workload Characterization <a class="heading-anchor" href="#6-target-scenarios-workload-characterization" aria-label="Link to 6-target-scenarios-workload-characterization">#</a></h3>
-
-<table>
-<tr><th>Scenario</th><th>Workload Pattern</th><th>SLO / Goal</th><th>Why existing fail</th></tr>
-<tr><td>Beam search inference-time scaling</td><td>循环 + fan-out 多 beam；GEN 小、VER 大</td><td>低 E2E latency + target throughput</td><td>K8s autoscaler 振荡；Aegaeon 无 prefix cache</td></tr>
-<tr><td>RAG + Reranker</td><td>embedding 小、generation 大；短查询</td><td>throughput 主导</td><td>per-LLM 独立分配无法 co-locate 小 embedding 到 GPU 碎片</td></tr>
-<tr><td>Combined multi-workflow</td><td>多 workflow 同时跑；arrival rate 异构</td><td>公平性 + aggregate throughput</td><td>独立 scheduler 相互打架</td></tr>
-</table>
-
-<p><strong>Primary bottleneck</strong>: 这类 workload 通常是 <strong>memory-bound</strong>（KV cache 大、decode 阶段 HBM bandwidth 吃紧）和 <strong>scheduling-bound</strong>（LLM 之间的 GPU 分配错配）。Scepsy 直接攻击 scheduling-bound。</p>
-
-<h3 id="7-performance-evaluation-before-after">7. Performance Evaluation & Before-After <a class="heading-anchor" href="#7-performance-evaluation-before-after" aria-label="Link to 7-performance-evaluation-before-after">#</a></h3>
-
-<h4 id="7a-metrics">7a. Metrics <a class="heading-anchor" href="#7a-metrics" aria-label="Link to 7a-metrics">#</a></h4>
-
-<table>
-<tr><th>Metric</th><th>Definition</th><th>Unit</th><th>方向</th></tr>
-<tr><td>Workflow throughput</td><td>workflow-level requests served per second</td><td>req/s</td><td>↑</td></tr>
-<tr><td>Workflow E2E latency</td><td>arrival to final workflow response</td><td>s</td><td>↓</td></tr>
-<tr><td>Peak throughput</td><td>arrival rate at which latency explodes</td><td>req/s</td><td>↑</td></tr>
-<tr><td>Search time</td><td>scheduler 搜索一次 allocation 的耗时</td><td>s</td><td>↓</td></tr>
-</table>
-
-<h4 id="7b-before-after-comparison">7b. Before-After Comparison <a class="heading-anchor" href="#7b-before-after-comparison" aria-label="Link to 7b-before-after-comparison">#</a></h4>
-
-<table>
-<tr><th>Optimization</th><th>Metric</th><th>Baseline</th><th>After</th><th>Δ</th><th>Conditions</th></tr>
-<tr><td>Scepsy vs K8s HPA (beam)</td><td>Peak throughput</td><td>K8s</td><td>Scepsy</td><td><strong>2.4×</strong></td><td>4 GPU</td></tr>
-<tr><td>Scepsy vs K8s HPA (beam)</td><td>Latency</td><td>K8s</td><td>Scepsy</td><td><strong>up to 10.4×</strong></td><td>16 GPU</td></tr>
-<tr><td>Scepsy vs K8s HPA (RAG)</td><td>Latency</td><td>K8s</td><td>Scepsy</td><td><strong>up to 27×</strong></td><td>16 GPU</td></tr>
-<tr><td>Scepsy vs Aegaeon (beam)</td><td>Throughput</td><td>Aeg</td><td>Scepsy</td><td><strong>7.3×</strong></td><td>4 GPU</td></tr>
-<tr><td>Scepsy vs Aegaeon (beam)</td><td>Latency</td><td>Aeg</td><td>Scepsy</td><td><strong>14.1×</strong></td><td>4 GPU</td></tr>
-<tr><td>Scepsy vs Ayo (beam)</td><td>Throughput</td><td>Ayo</td><td>Scepsy</td><td><strong>8.2×</strong></td><td>8 GPU</td></tr>
-<tr><td>Ablation: -co-location (RAG)</td><td>Throughput</td><td>full</td><td>w/o</td><td>~0.5×</td><td>4/8 GPU</td></tr>
-<tr><td>Ablation: -TP (beam)</td><td>Latency</td><td>full</td><td>w/o</td><td>1.5-2× 变大</td><td>4/8 GPU</td></tr>
-</table>
-
-<p><strong>Condition awareness</strong>: 以上全部在 A6000（2-pair NVLink）+ PCIe 4.0 + 100Gbps IB + Llama-3.2/3-8B 模型规模下。<strong>在 H100/NVSwitch 上数据可能差别巨大</strong> —— A6000 的 TP 上限是 2，H100 一节点 TP 可达 8，搜索空间完全不同。</p>
-
-<h4 id="7c-bottleneck-shift">7c. Bottleneck Shift <a class="heading-anchor" href="#7c-bottleneck-shift" aria-label="Link to 7c-bottleneck-shift">#</a></h4>
-
-<pre><code>
-Before Scepsy: scheduling-bound（LLM-GPU 分配错配）
- ↓ apply Aggregate LLM Pipeline + 3D search
-After: memory-bound (KV cache capacity) 或 compute-bound（decode batching）
- ↓ (remaining bottleneck 属于 engine layer，Scepsy 不负责)
-</code></pre>
-
-<p>Scepsy 把瓶颈从 orchestration layer 推到了 engine layer，后续再优化需要进入 vLLM/SGLang 本身。</p>
-
-<h4 id="7d-baselines-fairness">7d. Baselines & Fairness <a class="heading-anchor" href="#7d-baselines-fairness" aria-label="Link to 7d-baselines-fairness">#</a></h4>
-
-<ul>
-<li><strong>K8s HPA</strong>: 公平 —— 同硬件、同 engine (vLLM)。但 HPA 的 scaling 策略 tuning 参数未说明（冷启动时间、scale-up 速度）—— 可能 under-tuned。</li>
-<li><strong>Aegaeon</strong>: 可能有点不公平 —— Aegaeon 设计为 prefill/decode 分离的多模型复用，在 beam search 这种 long-prefix workload 上天然吃亏（无 prefix cache）。论文承认此点。</li>
-<li><strong>Ayo</strong>: 用了旧版 vLLM v0.2（为了兼容性）。引擎老旧会拖累 Ayo，对 Scepsy 有利。<strong>这是一个需要注意的 fairness 点</strong>。</li>
-</ul>
-
-<p><strong>Scenarios where baseline wins</strong>: Ayo 在 4 GPU 低 arrival rate 区有轻微优势（batching 更激进）。</p>
-
-<h3 id="8-api-usability">8. API & Usability <a class="heading-anchor" href="#8-api-usability" aria-label="Link to 8-api-usability">#</a></h3>
-
-<ul>
-<li><strong>API compatibility</strong>: 完全透明 —— workflow 用原 framework（LangChain 等）编写，通过 HTTP proxy 无侵入接入。</li>
-<li><strong>Model format</strong>: 继承 vLLM/SGLang 支持（HF、GGUF）。</li>
-<li><strong>Deployment</strong>: Kubernetes only（具体是 MicroK8s）+ 扩展 NVIDIA device plugin + MPS。</li>
-<li><strong>Configuration</strong>: 相对 K8s HPA 简化 —— 用户只需指定 workflow 和 target arrival rate；GPU allocation 全自动。但需要初始 profiling 数据，这是额外 onboarding 成本。</li>
-</ul>
-
-<h3 id="9-infrastructure-impact-—-见前文-infrastructure-impact-段。">9. Infrastructure Impact — 见前文 Infrastructure Impact 段。 <a class="heading-anchor" href="#9-infrastructure-impact-—-见前文-infrastructure-impact-段。" aria-label="Link to 9-infrastructure-impact-—-见前文-infrastructure-impact-段。">#</a></h3>
-
-<h3 id="10-comparison-matrix">10. Comparison Matrix <a class="heading-anchor" href="#10-comparison-matrix" aria-label="Link to 10-comparison-matrix">#</a></h3>
-
-<table>
-<tr><th>Feature</th><th>Scepsy</th><th>vLLM</th><th>SGLang</th><th>AlpaServe</th><th>Aegaeon</th><th>Parrot</th><th>Ayo</th><th>Autellix</th></tr>
-<tr><td>Continuous batching</td><td>via engine</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
-<tr><td>Paged attention</td><td>via engine</td><td>✓</td><td>✓</td><td>?</td><td>?</td><td>✓</td><td>✓</td><td>✓</td></tr>
-<tr><td>Multi-LLM aware</td><td>✓</td><td>✗</td><td>✗</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td></tr>
-<tr><td>Workflow-aware</td><td>✓</td><td>✗</td><td>partial (router)</td><td>✗</td><td>✗</td><td>✓</td><td>✓</td><td>✓</td></tr>
-<tr><td>Auto GPU allocation</td><td>✓</td><td>✗</td><td>✗</td><td>✓ (SLO)</td><td>✓ (SLO)</td><td>✗</td><td>✗</td><td>✗</td></tr>
-<tr><td>Fractional GPU</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td><td>✓ (time-slice)</td><td>✗</td><td>✗</td><td>✗</td></tr>
-<tr><td>Topology-aware placement</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
-<tr><td>Joint throughput+latency</td><td>✓</td><td>N/A</td><td>N/A</td><td>SLO only</td><td>SLO only</td><td>latency</td><td>latency</td><td>latency</td></tr>
-<tr><td>Unrestricted programming</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td><td>✓</td></tr>
-</table>
-
-<p>Scepsy 在 "workflow-aware × auto alloc × fractional GPU × topology-aware × joint opt × framework-agnostic" 六维上唯一勾满。</p>
-
-<h3 id="11-adoption-maturity-ecosystem-influence">11. Adoption, Maturity & Ecosystem Influence <a class="heading-anchor" href="#11-adoption-maturity-ecosystem-influence" aria-label="Link to 11-adoption-maturity-ecosystem-influence">#</a></h3>
-
-<ul>
-<li><strong>Open source</strong>: 是 —— "Available post-acceptance at github.com/anon/Scepsy" (anonymized, 预计 ACM 接收后放出)。</li>
-<li><strong>LOC</strong>: ~25K Python，中等规模。</li>
-<li><strong>Release cadence / community</strong>: 尚未发布，学术 prototype。</li>
-<li><strong>Production deployments</strong>: 无（arXiv 2026-04 最新论文）。</li>
-<li><strong>Adoption effort</strong>: 对已有 K8s + vLLM 栈较低 —— 需要（1）部署 Scepsy controller；（2）替换 NVIDIA device plugin；（3）启用 MPS；（4）运行一次 profiling。对非 K8s 栈（Slurm/bare-metal）需重新适配。</li>
-<li><strong>Downstream influence</strong>: 预测路径</li>
-<li>与 AIBrix / llm-d / vLLM Production Stack 的融合：Scepsy scheduler 可作为这些系统的 workflow-aware layer。</li>
-<li>对 K8s DRA (Dynamic Resource Allocation) 生态：推动 fractional-GPU-as-first-class-citizen。</li>
-<li>学术跟进：下一步会有人把 Aggregate Pipeline 与 request-level online scheduling 结合（补 Autellix 的 request-level 优先级层），形成完整的 two-layer scheduler。</li>
-</ul>
+<p><em>核心壁垒 recap</em>: the replicable engineering is standard (proxy tracing, MPS, Kubernetes); the non-obvious, hard-to-replicate bet is that discarding all control-flow modeling in favor of two aggregate scalars ($n_m$, $p_m$) is <em>sufficient</em> to schedule dynamic workflows — validated only empirically by the relative-stability observation (Fig. 3), and explicitly bounded by the three §9 failure modes.</p>
 
 </div>
 </div>

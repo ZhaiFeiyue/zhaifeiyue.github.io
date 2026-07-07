@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ForkKV: Scaling Multi-LoRA Agent Serving via Copy-on-Write Disaggregated KV Cache — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">ForkKV: Scaling Multi-LoRA Agent Serving via Copy-on-Write Disaggregated KV Cache</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2604.0637</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">multi-lora-serving</span><span class="tag">kv-cache</span><span class="tag">copy-on-write</span><span class="tag">attention-kernel</span><span class="tag">agentic-workflow</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2604.0637" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="forkkv-scaling-multi-lora-agent-serving-via-copy-on-write-disaggregated-kv-cache-—-l2">ForkKV: Scaling Multi-LoRA Agent Serving via Copy-on-Write Disaggregated KV Cache — L2 <a class="heading-anchor" href="#forkkv-scaling-multi-lora-agent-serving-via-copy-on-write-disaggregated-kv-cache-—-l2" aria-label="Link to forkkv-scaling-multi-lora-agent-serving-via-copy-on-write-disaggregated-kv-cache-—-l2">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Multi-LoRA agent serving breaks prefix caching: distinct adapters make identical-text KV caches diverge, so each agent keeps a redundant full cache and GPU memory saturates linearly. ForkKV physically splits KV into a shared base cache ($xW$) + tiny per-agent residual ($xA_i$), forks it with OS-style copy-on-write via a DualRadixTree, and reconstructs it in SRAM with a fused ResidualAttention kernel — up to 3.0× throughput at ~0.71% quality loss.</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 — 痛点 (pain).</strong> Modern agentic workflows (coding assistants doing ReAct-style reason→act loops, or MapReduce fan-out) run many specialized agents that share a massive static prefix (system prompt, codebase). LoRA lets these agents co-host on one base model cheaply (a rank-16 adapter on Llama3.1-70B is ~0.28% of the model, ~400MB vs 140GB). But each adapter's unique activations make the KV cache <em>diverge across agents even for identical text</em>, so classic prefix caching cannot share it. The system keeps an independent full KV cache per agent; memory scales linearly with agent count and saturates GPU capacity, collapsing batch parallelism. Concretely throughput for ReAct/MapReduce drops <strong>90.8% / 90.1%</strong> as workflows scale 1→8.</p>
+
+<p><strong>Q2 — 方法 (method).</strong> Exploit LoRA's additive algebra $Y=xW+xA_iB_i$. Decouple the cache into a <strong>bCache</strong> ($xW$, shared globally, RoPE already applied) and a <strong>rCache</strong> ($xA_i$, per-agent, tiny because $r\ll n$). Since $r\ll n$, bCache is ~dozens× larger than rCache, so sharing it once amortizes memory across all agents. Three pieces make this work: (1) a <strong>DualRadixTree</strong> with a base tree (keyed by token ids) and a residual tree (keyed by token ids + agent id); (2) <strong>CoW fork semantics</strong> — a new agent prefix-matches to inherit the read-only bCache and copy-on-write-allocates only its rCache; (3) <strong>ResidualAttention</strong>, a fused Triton kernel that reconstructs the disaggregated cache inside SRAM.</p>
+
+<blockquote>
+<strong>核心技术壁垒 (the single hardest-to-replicate insight):</strong> the ResidualAttention kernel that reconstructs the full Key in on-chip SRAM using a <strong>deferred RoPE</strong> (RoPE cannot be applied to rCache because its dimension is $r\neq n$, so it is delayed until after $K_{res}B_k$ up-projection <em>inside the attention loop</em>) and then fuses the Value path via <strong>matrix associativity</strong> — pushing the up-projection $B_v$ out of the inner loop so it runs once at the end. This is what makes disaggregation computationally free instead of memory-negating; it is a non-obvious coupling of positional encoding, low-rank projection, and online-softmax accumulation that a reimplementer would most likely get wrong. See §7.
+</blockquote>
+
+<p><strong>Q3 — 结果 (results).</strong> Built on SGLang v0.5.6 (~3K LoC + custom Triton kernels). Throughput <strong>1.25–3.04×</strong> on ReAct and <strong>1.68–2.60×</strong> on MapReduce across Llama3-8B / Qwen2.5-7B / Qwen2.5-14B on LooGLE/NarrativeQA/APIGen, with avg quality drop of only <strong>0.71 F1 points</strong> (max 1.60). Root causes: <strong>12.7×</strong> lower per-agent memory, <strong>6.93×</strong> higher cache hit rate, <strong>12.0×</strong> larger decode batch size. Full-reuse baseline (naively sharing across adapters) instead loses <strong>5.40</strong> avg / <strong>21.95</strong> on APIGen — showing the residual path is what preserves quality.</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><strong>The disaggregation.</strong> The core transformation: instead of caching the merged $xW+xA_iB_i$ into one unified pool, ForkKV caches $xW$ (with RoPE) and $xA_i$ (without RoPE) separately.</p>
+
+<p><img src="/assets/2604.06370/fig8.png" alt="Figure 8: unified vs disaggregated KV cache"></p>
+
+<p><em>Paper's Figure 8: "Unified v.s. Disaggregated KV Cache." (a) unified path merges base + LoRA and applies RoPE before caching; (b) disaggregated path stores bCache (RoPE-applied) and rCache (no RoPE, dimension mismatch defers it).</em> The key structural point: RoPE lives on bCache but is deferred for rCache until reconstruction — this asymmetry propagates into the kernel design.</p>
+
+<p><strong>OS fork analogy.</strong> ForkKV frames cache creation as <code>fork()</code> + copy-on-write: the shared bCache = parent's read-only pages, the rCache = child's private CoW pages.</p>
+
+<p><img src="/assets/2604.06370/fig6.png" alt="Figure 6: OS-inspired fork with copy-on-write"></p>
+
+<p><em>Paper's Figure 6: "ForkKV use OS-inspired fork semantics to create memory space for new agents with copy-on-write." (a) OS creating a child process vs (b) ForkKV creating a new agent.</em> A new agent inherits the parent's bCache by mapping (Step 1) and only pays for its own rCache (Step 2), exactly like CoW page mapping.</p>
+
+<p><strong>End-to-end system.</strong> The serving pipeline threads a request from queue → scheduler → DualRadixTree prefix-match → agent runner (LoRA load + agent loop) → GPU executor + cache controller + ResidualAttention.</p>
+
+<p><img src="/assets/2604.06370/fig7.png" alt="Figure 7: overview of ForkKV"></p>
+
+<p><em>Paper's Figure 7: "Overview of ForkKV."</em> Note the agent loop lives inside the agent runner — this is where model reasoning interleaves with external tool invocations, i.e. the actual agentic control loop that reuses the forked cache across turns.</p>
+
+<p><strong>The agent turn as a state machine.</strong> One agent turn cycles between reasoning (LLM generation over the forked cache) and acting (tool call), each act appending new tokens whose bCache stays shared and whose rCache is CoW-private:</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> PrefixMatch: agent launched
+    PrefixMatch --> ForkBase: longest shared prefix found in base tree
+    PrefixMatch --> ExtendBase: prefix miss (allocate new shared blocks)
+    ExtendBase --> ForkBase
+    ForkBase --> AllocResidual: CoW-allocate rCache in residual tree
+    AllocResidual --> Reason: LLM generation via ResidualAttention
+    Reason --> Act: emit tool call
+    Act --> Observe: mock/real tool response (append tokens)
+    Observe --> Reason: continue turn (rCache grows, bCache shared)
+    Reason --> Store: update DualRadixTree after generation
+    Store --> [*]
+</div>
+
+<p><strong>Error / eviction recovery.</strong> Because base and residual pools have very different footprints and access frequencies, ForkKV uses a <strong>decoupled eviction policy</strong>: independent LRU per tree. If a large bCache node is evicted but its rCache survives, the request is a <strong>partial hit</strong> — recompute only the missing $xW$ base projection, reinsert into the base tree, and reuse the surviving $xA_i$. This is the fallback state when a cache slot is lost, avoiding a full recompute.</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证.</strong> There is no convergence or accuracy guarantee. The authors explicitly concede that sharing bCache beyond the first layer is <em>mathematically lossy</em> (adapter activations make $x$ diverge across agents at each layer); the claim that this is <em>bounded</em> is empirical, backed by two mechanistic arguments and measured similarity, not a bound. What <em>could</em> have been bounded: a per-layer input-drift bound $\|x_l^{(i)}-x_l^{(j)}\|$ as a function of adapter magnitude and residual-connection contraction — the paper measures cosine similarity (>99.4%) but does not prove it.</p>
+
+<p>Notation table (from the two load-bearing equations):</p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$x\in\mathbb{R}^{s\times m}$</td><td>input hidden state; $s$ = tokens in batch</td></tr>
+<tr><td>$W\in\mathbb{R}^{m\times n}$</td><td>frozen base weight</td></tr>
+<tr><td>$A_i\in\mathbb{R}^{m\times r}$, $B_i\in\mathbb{R}^{r\times n}$</td><td>LoRA down / up projections, adapter $i$</td></tr>
+<tr><td>$r$</td><td>LoRA rank, $r\ll m,n$ (e.g. $r=16$, $n=1024$)</td></tr>
+<tr><td>$bCache = xW\in\mathbb{R}^{s\times n}$</td><td>shared base cache</td></tr>
+<tr><td>$rCache = xA_i\in\mathbb{R}^{s\times r}$</td><td>per-agent residual cache</td></tr>
+<tr><td>$M_R$</td><td>disaggregated / unified memory ratio</td></tr>
+<tr><td>$N$</td><td>number of concurrent agents</td></tr>
+</table>
+
+<p>方程物理意义 (physical meaning of the equations):</p>
+
+<ul>
+<li>Reconstruction: $Y = bCache + rCache \times B_i$ — the full projection is the shared base plus the small residual up-projected once; this additivity is the algebraic license to physically split storage.</li>
+<li>Memory ratio: $M_R = \frac{sn + N\cdot sr}{N\cdot sn} = \frac{1}{N} + \frac{r}{n}$ — one shared base ($sn$) plus $N$ residuals ($sr$) versus $N$ full caches. As $N\to\infty$, $M_R\to r/n$; with $r=16,n=1024$ that is ~1.6% of unified memory.</li>
+<li>Attention fusion: $\sum sm(QK^{T})V = \sum sm(QK^{T})V_{base} + \big(\sum sm(QK^{T})V_{res}\big)B_v$ — associativity lets $B_v$ apply once to the <em>accumulated</em> residual scores instead of to every value block.</li>
+</ul>
+
+<p>6 minimum reproduction checks:</p>
+
+<ol>
+<li><strong>Memory-ratio monotonicity.</strong> Verify $M_R=1/N+r/n$ decreases in $N$ and increases in $r$; matches the §3.2 example (16 agents, 32K, Llama3-8B: 64GB → ~5GB = 11.8×).</li>
+<li><strong>Size asymmetry.</strong> Confirm $n/r$ ratio: $n=1024,r=16 \Rightarrow$ bCache ~64× rCache; sanity-check against "64MB rCache vs 4GB bCache".</li>
+<li><strong>RoPE dimension check.</strong> rCache is $r$-dim, RoPE matrix $R_p$ is $n$-dim → RoPE cannot apply to rCache; it must be deferred to after $K_{res}B_k$. (Algorithm 1, line 8.)</li>
+<li><strong>Associativity fusion.</strong> Verify Eq.(4) numerically: eager $\sum sm(QK^T)(V_{base}+V_{res}B_v)$ equals fused $acc + acc_r\cdot B_v$ (Algorithm 1, lines 15–16, 20).</li>
+<li><strong>Quality-vs-similarity coupling.</strong> Reproduce the sweep: ForkKV keeps >99.4% input similarity → 1.60% max loss; full reuse drops to ~92.4% → 21.0% loss. Monotone: lower similarity ⇒ larger quality drop.</li>
+<li><strong>Online-softmax correctness.</strong> The kernel maintains running $m,l$ and rescales both $acc$ and $acc_r$ by $\exp(m-m_{new})$ (lines 15–16) — check that the residual accumulator is rescaled identically to the base accumulator, else the final $acc_r B_v$ term is misweighted.</li>
+</ul>
+
+<p><strong>Success-rate / sweep model (agent-specific).</strong> The paper's "success" axis is generation quality (F1), swept over (model × dataset × sharing policy) in Table 2 and (LoRA rank × output length) in Fig.15. Monotonicity: quality drop grows with task complexity (APIGen worst), throughput gain grows with memory contention (larger model, more workflows, higher arrival rate, longer outputs) and <em>shrinks</em> with LoRA rank (larger rank = larger rCache).</p>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>Motivation — the bottleneck is real.</strong> Prefix caching cannot bridge distinct adapters, so throughput collapses as concurrent workflows grow.</p>
+
+<p><img src="/assets/2604.06370/fig3.png" alt="Figure 3: throughput of prefix caching vs number of workflows"></p>
+
+<p><em>Paper's Figure 3: "End-to-end throughput of prefix caching with different number of concurrent workflows."</em> Throughput drops ~90% (1→8 workflows) because redundant per-agent caches exhaust GPU memory and starve batch parallelism — this is the collapse ForkKV targets.</p>
+
+<p><strong>The lossy-but-bounded claim.</strong> The central risk is that sharing bCache across layers degrades quality; the data says it barely does, while naive full reuse fails badly.</p>
+
+<p><img src="/assets/2604.06370/fig5.png" alt="Figure 5: generation quality and input-x similarity"></p>
+
+<p><em>Paper's Figure 5: "(a) generation quality and (b) input x similarity compared to prefix caching" on APIGen.</em> ForkKV holds >99.4% input similarity and only 1.60% quality loss; full reuse falls to ~92.4% similarity and 21.0% loss — the ~13× gap is entirely attributable to keeping the per-adapter rCache.</p>
+
+<p><strong>End-to-end throughput.</strong> The headline sweep across three models × three datasets × two workflow patterns.</p>
+
+<p><img src="/assets/2604.06370/fig11.png" alt="Figure 11: end-to-end throughput evaluation"></p>
+
+<p><em>Paper's Figure 11: "End-to-end throughput evaluation ... (tasks/s) of ForkKV against prefix caching baselines."</em> Gains are largest where memory pressure is worst — 3.04× on Qwen2.5-14B (LooGLE, ReAct) but only 1.25× on the smaller Qwen2.5-7B, confirming ForkKV's value is proportional to contention.</p>
+
+<p><strong>Why it wins — the causal chain.</strong> The improvement decomposes into three measured levers.</p>
+
+<p><img src="/assets/2604.06370/fig14.png" alt="Figure 14: underlying causes of performance gains"></p>
+
+<p><em>Paper's Figure 14: "(a) average per-agent memory usage, (b) cache hit rate, (c) average decode batch size."</em> Lower per-agent memory (12.7×) → higher hit rate (6.93×) → larger decode batch (12.0×). This is the load-bearing evidence that memory reduction, not kernel micro-optimization, drives throughput.</p>
+
+<p><strong>Accuracy verification (Table 2).</strong></p>
+
+<table>
+<tr><th>Model</th><th>Sharing Policy</th><th>HotpotQA</th><th>APIGen</th></tr>
+<tr><td>Llama3-8B</td><td>Prefix Caching</td><td>57.63</td><td>39.77</td></tr>
+<tr><td>Llama3-8B</td><td>ForkKV</td><td>57.17</td><td>38.17</td></tr>
+<tr><td>Llama3-8B</td><td>Full Reuse</td><td>54.02</td><td>17.82</td></tr>
+<tr><td>Qwen2.5-7B</td><td>Prefix Caching</td><td>57.14</td><td>92.28</td></tr>
+<tr><td>Qwen2.5-7B</td><td>ForkKV</td><td>56.37</td><td>91.52</td></tr>
+<tr><td>Qwen2.5-7B</td><td>Full Reuse</td><td>55.47</td><td>90.08</td></tr>
+<tr><td>Qwen2.5-14B</td><td>Prefix Caching</td><td>70.91</td><td>94.56</td></tr>
+<tr><td>Qwen2.5-14B</td><td>ForkKV</td><td>70.66</td><td>94.16</td></tr>
+<tr><td>Qwen2.5-14B</td><td>Full Reuse</td><td>68.86</td><td>93.66</td></tr>
+</table>
+
+<p>ForkKV sits just under the lossless Prefix-Caching upper bound everywhere (avg −0.71, max −1.60 on Llama3-8B/APIGen); Full Reuse craters on APIGen (39.77 → 17.82). Note the honest negative result in Fig.12: at light load (4 ReAct workflows) ForkKV is <em>slower</em> than baselines because the specialization overhead isn't amortized when memory is abundant — mitigated (proposed, not evaluated) by adaptive fallback scheduling.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Multi-LoRA agents share a massive static prefix but each adapter's activations make identical-text KV caches diverge, so prefix caching cannot share them.</td><td>§3.1; Fig.2 (ReAct/MapReduce reuse failure), Takeaway #1</td></tr>
+<tr><td>2</td><td>Therefore per-agent redundant caches scale memory linearly with agent count, exhausting GPU memory and collapsing throughput (~90% drop, 1→8).</td><td>§3.1; Fig.1, Fig.3</td></tr>
+<tr><td>3</td><td>LoRA's additive form $Y=xW+xA_iB_i$ permits splitting cache into shared bCache + tiny rCache; because $r\ll n$, bCache dominates size, so sharing it amortizes memory ($M_R=1/N+r/n$).</td><td>§2.2, §3.2, §5.1 Eq.(3); Fig.4</td></tr>
+<tr><td>4</td><td>Cross-layer bCache sharing is mathematically lossy but empirically bounded by residual connections + preserved per-adapter QKV interactions (>99.4% similarity, 1.60% loss), unlike full reuse (92.4%, 21.0%).</td><td>§3.2, §7.3; Fig.5, Table 2</td></tr>
+<tr><td>5</td><td>Realizing this needs (a) lifecycle management of 1-to-N base→residual mappings and (b) cheap reconstruction; solved by DualRadixTree + CoW fork and by ResidualAttention (SRAM reconstruction, deferred RoPE, associativity fusion).</td><td>§3.3, §4, §5.2, §5.3 Eq.(4), Algorithm 1; Fig.6, Fig.7, Fig.9, Fig.10</td></tr>
+<tr><td>6</td><td>Result: 12.7× less per-agent memory → 6.93× hit rate → 12.0× decode batch → 1.25–3.04× throughput at ~0.71% quality cost.</td><td>§7.2; Fig.11, Fig.14, Table 2</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>Built on SGLang v0.5.6, ~3K LoC Python + custom Triton kernels (§6). The public artifact is not linked in the source, so concrete file:line citations are unavailable — <strong>[实现未公开]</strong>. The design maps to these modules per §6:</p>
+
+<ul>
+<li><strong>Disaggregation</strong> — a custom LoRA replacement module for the linear projection layer separates residual activations from base activations and stores rCache in a dedicated pool indexed by the residual RadixTree. (§6 "Disaggregated KV Cache")</li>
+<li><strong>Control plane</strong> — SGLang's native <code>RadixCache</code> extended into the coordinated DualRadixTree; scheduler adapted to orchestrate the two-tiered pool across chunked prefill / non-chunked prefill / decode. (§6 "Control Plane and DualRadixTree Storage")</li>
+<li><strong>Kernel</strong> — ResidualAttention in Triton, adapted from SGLang's RadixAttention, with separate prefill and decode versions. Algorithm 1 (L1 §5.3) is the reference pseudocode.</li>
+</ul>
+
+<p><strong>核心技术壁垒 (再述).</strong> The ResidualAttention kernel is the replication wall. Two things must be exactly right and are easy to get wrong: (1) <strong>deferred RoPE</strong> — because rCache is $r$-dimensional, RoPE is applied <em>after</em> the up-projection $K_{res}B_k$ inside the block loop (Algorithm 1 line 8: <code>K_lora ← RoPE(K_res · B_k)</code>), not at projection time; (2) <strong>matrix-associativity fusion</strong> — the up-projection $B_v$ must be lifted out of the inner loop and applied once at the end (<code>acc_final ← acc + acc_r · B_v</code>, line 20), which requires maintaining a <em>separate</em> residual accumulator <code>acc_r</code> that is rescaled by the online-softmax factor identically to <code>acc</code> (lines 15–16). Doing $V_{res}B_v$ eagerly per block instead negates the memory savings and destroys parallelism (the explicitly rejected naive path, §5.3).</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+
+<ol>
+<li><strong>Decoupled eviction with partial hit</strong> (§5.2): base and residual trees carry <em>independent</em> LRU state. A bCache miss while rCache survives triggers a <em>partial</em> recompute of only $xW$, reinserted into the base tree, reusing the surviving $xA_i$ — not a full cache miss. Coupling the two LRUs (cascading eviction) would force a low-contention pool to discard active cache and cause avoidable recomputation.</li>
+<li><strong>Residual tree key = token ids + agent id</strong> (§5.2): the base tree keys purely on token ids (enabling zero-copy sharing), but the residual tree <em>extends</em> the key with the agent id to isolate per-agent branches — miss this and agents would collide on each other's rCache.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

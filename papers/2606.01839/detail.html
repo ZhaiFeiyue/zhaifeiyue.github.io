@@ -196,176 +196,203 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Observation, Not Prediction: Conversation-Level Disaggregated Scheduling for Agentic Serving</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2606.01839</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-serving</span><span class="tag">PD-disaggregation</span><span class="tag">conversation-level-scheduling</span><span class="tag">KV-cache</span><span class="tag">heterogeneous-GPU</span><span class="tag">energy-efficiency</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2606.01839</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-serving</span><span class="tag">disaggregation</span><span class="tag">kv-cache</span><span class="tag">scheduling</span><span class="tag">heterogeneous-gpu</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2606.01839.html">← Synthesis</a>
-<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2606.01839" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
 
-<h1 id="conserve-—-conversation-level-disaggregated-scheduling-for-agentic-serving">ConServe — Conversation-Level Disaggregated Scheduling for Agentic Serving <a class="heading-anchor" href="#conserve-—-conversation-level-disaggregated-scheduling-for-agentic-serving" aria-label="Link to conserve-—-conversation-level-disaggregated-scheduling-for-agentic-serving">#</a></h1>
+<h1 id="observation-not-prediction-conversation-level-disaggregated-scheduling-for-agentic-serving">Observation, Not Prediction: Conversation-Level Disaggregated Scheduling for Agentic Serving <a class="heading-anchor" href="#observation-not-prediction-conversation-level-disaggregated-scheduling-for-agentic-serving" aria-label="Link to observation-not-prediction-conversation-level-disaggregated-scheduling-for-agentic-serving">#</a></h1>
 
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>Agentic serving is fragile because the scheduling unit is the <em>turn</em>: per-turn placement must predict unobservable decode-side cost (decode length, tool calls, KV growth). Raising the unit to the <em>conversation</em> collapses turn irregularity into one compute-bound turn-1 prefill + one long memory-bound tail, so placement reduces to two directly-observable signals — first-turn input length and per-decoder KV occupancy. ConServe routes turn-1 prefill to a prefiller, transfers KV once, and pins the conversation to one decoder for life. Result: p95 TTFET −51.08% and +7.51% energy vs a per-turn prediction baseline, +22.75% more energy on heterogeneous tiers, with zero learned cost model.</p>
+<p>Agentic serving is irregular at the turn but stable at the conversation: one compute-bound turn-1 prefill + a long memory-bound tail. Scheduling the conversation (not the turn) replaces unobservable decode-cost prediction with two observable signals — turn-1 input length and per-decoder KV occupancy. ConServe cuts p95 TTFET by 51% vs a per-turn baseline with zero SLO violations.</p>
 
-<h2 id="2-痛点-方法-结果-q1-q2-q3">2. 痛点 / 方法 / 结果 (Q1/Q2/Q3) <a class="heading-anchor" href="#2-痛点-方法-结果-q1-q2-q3" aria-label="Link to 2-痛点-方法-结果-q1-q2-q3">#</a></h2>
+<h2 id="2-q1-q2-q3-—-痛点-方法-结果">2. Q1/Q2/Q3 — 痛点 / 方法 / 结果 <a class="heading-anchor" href="#2-q1-q2-q3-—-痛点-方法-结果" aria-label="Link to 2-q1-q2-q3-—-痛点-方法-结果">#</a></h2>
 
-<p><strong>Q1 痛点 (what breaks).</strong> In single-shot serving the scheduled unit (a request = one prefill+decode) coincides with the unit the user values, so per-turn optimization is harmless. Agentic workloads break this coincidence: a user task is a stateful multi-turn ReAct program whose total cost is unknown at arrival, and most intermediate turns emit only tool calls the user never reads. This produces a <strong>scheduling–value mismatch</strong> — the system optimizes per-turn latency while the user waits for the conversation's final externally-meaningful output. Prior multi-turn systems (AMPD, PPD) keep the turn as the decision unit and, for each turn, decide whether to disaggregate by predicting/profiling its cost. But the cost driver (decode length, whether a tool is called, KV growth) is <em>unobservable</em> at the moment the scheduler must act, so any predictor eventually misroutes. The paper's sharpest claim: <strong>this dependence on prediction is imposed by the scheduling unit, not the workload.</strong></p>
+<p><strong>Q1 (痛点).</strong> An agentic task is not a single request but a stateful multi-turn program: turn 1 is a long compute-bound prefill (tens of thousands of tokens); turns 2+ append only short tool outputs and are memory-bound decode over a KV cache that only grows. Prior multi-turn systems keep the <em>turn</em> as the scheduling unit and decide per-turn whether to disaggregate. That decision depends on decode length, tool behavior, and KV growth — all <strong>unobservable at the moment the scheduler acts</strong> — so they must <em>predict</em>. Any predictor eventually misroutes a turn. There is also a <strong>scheduling–value mismatch</strong>: systems optimize per-turn TTFT/TBT, but the user only reads the conversation's final effective output; most intermediate turns emit tool calls no user sees.</p>
 
-<p><strong>Q2 方法 (the mechanism).</strong> Schedule the conversation, not the turn. At conversation granularity the irregularity collapses into a stable two-phase structure: (1) an initial compute-bound turn-1 prefill that materializes task state, (2) a memory-bound trajectory (first decode + every subsequent append-prefill/decode turn) where appends are tiny relative to accumulated KV. This restores the classical prefill–decode abstraction at conversation level: one compute phase, one memory phase, one KV transfer at the boundary. ConServe instantiates it with a <em>minimal</em> policy — route turn-1 prefill unconditionally to the prefiller, transfer KV exactly once, bind the conversation to the least-KV-occupied decoder, and pin it there for its entire tail (no re-evaluation, no learned decode-cost model). Placement reads only two observable signals: the offline-profiled deterministic prefill-latency curve (from input length) and live per-decoder KV occupancy.</p>
+<p><strong>Q2 (方法).</strong> Raise the scheduling unit from turn to conversation. At conversation granularity the turn-level irregularity collapses into a stable two-phase structure — one compute-bound first-turn prefill, then one long memory-bound tail — which <em>restores the classical prefill–decode abstraction</em> with a single KV transfer at the boundary. ConServe instantiates this: route turn-1 prefill to a high-throughput prefiller, transfer KV <strong>exactly once</strong>, then pin the conversation to one decoder for its entire tail (all turn-2+ append-prefill and decode run locally with full KV reuse). Placement reads only two observable signals: the offline-profiled deterministic prefill-latency curve (indexed by turn-1 input length) and per-decoder active KV occupancy. No learned decode-cost model. The <strong>核心技术壁垒</strong> is the reframing itself: <em>the prediction dependence is a property of the scheduling unit, not the workload</em> — coarsening the unit to the conversation makes placement deterministic and provisions the prefiller (whose load is observable) as the deliberate bottleneck.</p>
 
-<p><strong>核心技术壁垒 (the single hardest-to-replicate insight).</strong> The load-bearing move is <strong>deliberately making the prefiller the throughput bottleneck by overprovisioning decoders</strong>, so the system's ceiling sits on the side where the driving signal (input-token rate) is observable at admission and maps deterministically to utilization via the offline prefill curve. This converts capacity management, admission, and autoscaling from <em>forecasting problems</em> into <em>reading-current-state problems</em>. It is counterintuitive (one normally avoids hard bottlenecks) and is what lets the whole scheme run with no cost model — the part a re-implementer is most likely to get wrong by "balancing" the tiers instead.</p>
+<p><strong>Q3 (结果).</strong> vs AMPD (per-turn prediction, 10% wrong-prediction rate): −51.08% p95 TTFET, +7.51% energy efficiency, similar last-turn TBT, zero SLO violations through the 1.634 conv/s saturation point. Mapping the two phases onto heterogeneous tiers (200W decoders) adds a further +22.75% tokens-per-joule with essentially unchanged latency.</p>
 
-<p><strong>Q3 结果 (what it buys).</strong> Against the per-turn AMPD baseline: p95 TTFET −51.08% (gmean −19.17%), +7.51% tokens/J, zero SLO violations up to the 1.634 conv/s saturation point, while last-turn TBT and SLOs are preserved. Mapping the two phases onto heterogeneous tiers (300W prefiller / 200W decoders) adds a further +22.75% tokens/J with essentially unchanged p95 latencies. SLO violations and energy of the per-turn baseline degrade <em>linearly</em> in prediction-error rate, while ConServe holds constant by construction.</p>
+<h3 id="agent-scope">Agent scope <a class="heading-anchor" href="#agent-scope" aria-label="Link to agent-scope">#</a></h3>
+
+<ul>
+<li><strong>Task class</strong>: closed-loop but long-horizon coding/agentic workload (SWE-bench + swe-agent trace); this paper serves the <em>inference</em> of such agents rather than authoring the agent policy.</li>
+<li><strong>Interaction pattern</strong>: multi-turn ReAct — model reasons, emits a tool call, suspends until the tool returns, resumes with the result appended.</li>
+<li><strong>Autonomy</strong>: fully autonomous agent trajectories; ConServe is the serving substrate, agnostic to the agent's decision logic.</li>
+</ul>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p><img src="/assets/2606.01839/fig9.png" alt="Figure 9: ConServe system architecture — one prefiller feeding a pinned decoder pool"></p>
+<p><img src="/assets/2606.01839/fig9.png" alt="Figure 9: ConServe system architecture — one prefiller feeding N pinned decoders"></p>
 
-<p><em>Paper's Figure 9, verbatim (caption: "ConServe System Architecture.").</em></p>
+<p><em>Paper's Figure 9 (caption: "ConServe System Architecture").</em> The system runs PD-disaggregated: one prefiller node processes input prompts, N decoder replicas generate output. A conversation is bound to one decoder at arrival and stays there for life; turn-1 prefill runs on the prefiller, its KV cache transfers once to the bound decoder, and all later turns' incremental prefill + decode run locally on that decoder with full KV reuse. One routing decision per conversation, zero decode-side prediction.</p>
 
-<p>The system runs a prefill-decode disaggregated topology: one <strong>prefiller node</strong> (compute-bound, processes turn-1 prompts) and N <strong>decoder replicas</strong> (memory-bound tail). The <code>ConServe Scheduler</code> box consumes two monitoring signals — <code>Prefiller Context Monitoring</code> (against an offline <code>Prefill Latency Modeling</code>) and <code>Decoder KV-Cache Utilization Monitoring</code> — shown as dashed "Monitoring Signal" arrows distinct from the solid "Data Path". A new conversation's turn-1 prompt flows to the prefiller; on <code>Prefill Completion</code> its KV cache is transferred once to a bound decoder (<code>KV Occupancy</code> decides which), and the conversation is then "pinned" there. The reader should notice the asymmetry the diagram encodes: exactly one compute-bound hop per conversation, then a permanently local memory-bound tail — no arrow ever routes turn 2+ back to the prefiller.</p>
-
-<p>Request lifecycle as a state machine:</p>
+<p>The per-turn agent loop and how ConServe places it:</p>
 
 <div class="mermaid">
 stateDiagram-v2
-    [*] --> Turn1Prefill: new conversation (read L_in)
-    Turn1Prefill --> KVTransfer: prefill done on prefiller
-    KVTransfer --> Bind: transfer KV once
-    Bind --> Tail: pin to least-KV-occupied decoder
-    Tail --> Tail: turn 2+ append-prefill + decode (local, prefix-cache reuse)
-    Tail --> [*]: conversation ends (decrement KV occupancy)
+    [*] --> Turn1Prefill: new conversation arrives
+    Turn1Prefill --> KVTransfer: prefiller processes long prompt
+    KVTransfer --> BindDecoder: KV moved once to lowest-occupancy decoder
+    BindDecoder --> Decode: turn-1 decode
+    Decode --> ToolCall: model emits tool call
+    ToolCall --> AppendPrefill: tool result appended (short)
+    AppendPrefill --> Decode: local, full KV reuse
+    Decode --> [*]: final effective output (TTFET)
 </div>
 
-<p>The binding is persistent: once <code>Bind</code> fires, every later turn re-enters <code>Tail</code> on the <em>same</em> decoder, so KV state never crosses the network again after the single transfer. Scheduling decisions occur only on the <code>[*] --> Turn1Prefill</code> and <code>Bind</code> edges — nowhere inside the tail loop.</p>
+<ul>
+<li><strong>Memory model</strong>: short-term = the growing KV cache pinned on the bound decoder (never re-transferred); long-term/episodic memory is external to ConServe (agent-side).</li>
+<li><strong>Tool invocation</strong>: ReAct — structured tool call, suspend, resume with result appended; from ConServe's view a tool call is a wall-clock gap (<code>W</code> includes it) during which the KV slot stays reserved.</li>
+<li><strong>Error recovery</strong>: ConServe never migrates an already-placed conversation. Under prefiller saturation or decoder KV pressure, it routes the <em>next</em> conversation elsewhere rather than reshuffling live ones — so a placement is never revisited.</li>
+</ul>
+
+<h3 id="planning-reasoning">Planning & reasoning <a class="heading-anchor" href="#planning-reasoning" aria-label="Link to planning-reasoning">#</a></h3>
+
+<ul>
+<li><strong>Planning style</strong>: not a reasoning agent per se — ConServe is a <em>reactive</em> scheduler. Placement is a fixed policy conditioned on observable state, deliberately <em>not</em> a search or learned planner.</li>
+<li><strong>Decomposition</strong>: top-down — the conversation is decomposed once into (compute-bound prefill phase, memory-bound tail phase).</li>
+<li><strong>Budget</strong>: provisioning is bounded by two decoder-side constraints (throughput and memory, §4) and one prefill saturation point $R^{*}$; there is no per-turn token/step budget.</li>
+<li><strong>Backtracking</strong>: none by design — the "commit once, never revisit" property is what removes prediction from the loop.</li>
+</ul>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p>The paper offers a lightweight <strong>analytical provisioning model</strong> (no learned model, no convergence theorem), plus load-bearing empirical fits. The formalization lives in §4.1.</p>
+<p>This is an analytical-provisioning model, not a formal-guarantee proof: <strong>无形式化作者证明 — 仅实证</strong> for the scheduling <em>outcome</em> (latency/SLO/energy). What <em>could</em> have been bounded but is left empirical: end-to-end TTFET as a function of arrival rate, and the SLO-violation rate under prediction error. The paper does give a closed-form provisioning model for how many decoders to allocate.</p>
 
-<p><strong>Notation table:</strong></p>
+<p><strong>Notation table</strong></p>
 
 <table>
 <tr><th>Symbol</th><th>Meaning</th></tr>
 <tr><td>$N$</td><td>number of decoder replicas</td></tr>
 <tr><td>$T_d$</td><td>per-decoder token throughput</td></tr>
 <tr><td>$R$</td><td>conversation arrival rate</td></tr>
-<tr><td>$L_d$</td><td>mean per-conversation token volume handled by decoders (turn-1 decode + all turn 2+ prefill & decode)</td></tr>
-<tr><td>$B$</td><td>concurrent conversation slots per decoder (GPU mem ÷ per-conversation peak KV footprint)</td></tr>
-<tr><td>$W$</td><td>mean wall-clock conversation lifetime (incl. external tool-call time)</td></tr>
+<tr><td>$L_d$</td><td>mean per-conversation token volume handled by decoders (turn-1 decode + all turn-2+ prefill & decode)</td></tr>
+<tr><td>$B$</td><td>concurrent-conversation slots per decoder (KV-capacity bound)</td></tr>
+<tr><td>$W$</td><td>mean wall-clock conversation lifetime incl. external tool-call time</td></tr>
 <tr><td>$T_p$</td><td>prefill input throughput</td></tr>
-<tr><td>$L_{in}$</td><td>mean first-turn input length</td></tr>
-<tr><td>$R^{*}$</td><td>arrival rate at which the prefiller saturates</td></tr>
+<tr><td>$L_{in}$</td><td>mean turn-1 input length</td></tr>
+<tr><td>$R^{*}$</td><td>prefill-saturation arrival rate</td></tr>
 </table>
 
-<p><strong>Equations and their physical meaning:</strong></p>
+<p><strong>方程物理意义.</strong> Two decoder-side constraints must hold simultaneously:</p>
 
-<p>Throughput constraint — aggregate decoder throughput must keep up with token generation demand:</p>
+<p>$$N \cdot T_{d} \geq R \cdot L_{d} \quad \text{(throughput)}$$</p>
 
-<p>$$N \cdot T_d \geq R \cdot L_d$$</p>
+<p>$$N \cdot B \geq R \cdot W \quad \text{(memory)}$$</p>
 
-<p>Memory constraint — total pinned-conversation slots must hold all concurrently live conversations (Little's law, $R \cdot W$):</p>
+<p>Constraint 1: aggregate decoder throughput must keep up with total token demand. Constraint 2: aggregate KV slots must hold every concurrently-live conversation, including those blocked on tool calls. The prefill node saturates at</p>
 
-<p>$$N \cdot B \geq R \cdot W$$</p>
+<p>$$R^{*} = \frac{T_{p}}{L_{in}}$$</p>
 
-<p>Prefill saturation point — dividing prefiller throughput by mean input length gives conversations/sec the prefiller absorbs:</p>
+<p>ConServe picks integer $N$ that <em>over</em>-satisfies both inequalities at $R = R^{*}$, deliberately placing the bottleneck on the prefiller — where the driving signal (input token rate) is observable at admission and maps deterministically to utilization via the offline latency curve.</p>
 
-<p>$$R^{*} = \frac{T_p}{L_{in}}$$</p>
-
-<p>ConServe provisions $N$ as an integer that <em>more than</em> satisfies both inequalities at $R = R^{*}$. The design intent: force the binding constraint onto the prefill side, where $L_{in}$ is observable at admission and $T_p$ maps deterministically to utilization.</p>
-
-<p><strong>Load-bearing empirical fits</strong> (the "observability" claim rests on these):</p>
-
-<p>Turn-1 prefill latency is a near-deterministic quadratic in input length (attention-dominated at agentic scales):</p>
-
-<p>$$\text{TTFT}_{\text{prefill}}(L) \approx 1.47\,\text{ns}\cdot L^{2} + 10.5\,\mu\text{s}\cdot L + 13.8\,\text{ms} \quad (R^{2}=1.000,\; L \geq 1024)$$</p>
-
-<p>With a prefix-cache hit, turn 2+ prefill collapses to near-constant $\approx 27\,\text{ms}$ regardless of $L$ — the justification for running appends locally on the decoder. KV-transfer cost is linear in $L$ and therefore dwarfed by quadratic prefill exactly in the agentic long-input regime, justifying "transfer once":</p>
-
-<p>$$\text{KV-transfer}(L) = \begin{cases} 4.8\,\text{ms} & L < 1024 \\ 0.98\,\mu\text{s/tok}\cdot L + 5.3\,\text{ms} & L \geq 1024 \end{cases} \quad (R^{2}=0.981)$$</p>
-
-<p><strong>6 minimum checks:</strong></p>
+<p><strong>Six minimum checks:</strong></p>
 
 <ol>
-<li><strong>Notation reproduced</strong> — all 9 symbols above ($N,T_d,R,L_d,B,W,T_p,L_{in},R^{*}$) defined verbatim from §4.1.</li>
-<li><strong>Why <code>≥</code> not <code>=</code></strong> — both constraints are floors; overprovisioning $N$ pushes the equality (bottleneck) onto the prefill side deliberately.</li>
-<li><strong>Monotonicity / boundary</strong> — both constraints are increasing in $R$; the operating point is the boundary $R=R^{*}$, chosen so the prefiller (not decoders) is the active constraint. The optimum is a boundary, not interior, by construction.</li>
-<li><strong>First-order mapping (verify reported numbers)</strong> — §5.1 gives $T_p \approx 25\text{k}$ input tok/s, $T_d \approx 1\text{k}$ output tok/s, $B \approx 300\text{k}$ KV tokens/decoder; a conversation averages ~15k input + ~1k output tokens. Throughput floor: $R L_d/T_d$ with $L_d\approx$ (1k decode + append work) yields the paper's stated "at least 1.67 decoders per prefiller," so $N=3$ (integer, exceeds both floors at $R^*$) — matches the reported config and the "prefiller saturates first" guarantee.</li>
-<li>*<em>$R^{</em>}$ sanity*<em> — $R^{</em>}=T_p/L_{in}=25\text{k}/15\text{k}\approx 1.67$ conv/s, matching the 1.634 conv/s synthesized saturation rate used in §5.2/§5.3.</li>
-<li><strong>No learned model</strong> — the entire policy conditions on $L_{in}$ (observable) and live KV occupancy (observable); no decode-side quantity is forecast, consistent with eqs (1)–(2) containing only measured aggregates.</li>
+<li><strong>Units.</strong> Eq.1: $[N][T_d]$ = (replicas · tokens/s/replica) = tokens/s; RHS $[R][L_d]$ = (conv/s · tokens/conv) = tokens/s. ✓ balanced. Eq.2: $[N][B]$ = slots; $[R][W]$ = (conv/s · s) = conversations. ✓.</li>
+<li><strong>Limiting case $R \to 0$.</strong> Both RHS → 0, so any $N \geq 1$ satisfies; matches intuition (idle system needs one replica).</li>
+<li><strong>Limiting case $L_{in}$ large.</strong> $R^{*} = T_p/L_{in} \to 0$: very long turn-1 prompts saturate the prefiller at a low arrival rate — consistent with the quadratic prefill regime (Fig.2).</li>
+<li><strong>Monotonicity.</strong> $N$ required grows linearly in $R$ under both constraints; increasing $T_d$ or $B$ lowers required $N$. Consistent.</li>
+<li><strong>Sanity number.</strong> With 15k in + 1k out per conversation the paper computes ≥1.67 decoders/prefiller; they deploy 3, i.e. over-provisioned so the prefiller saturates first. ✓ internally consistent.</li>
+<li><strong>Binding constraint.</strong> Which of Eq.1/Eq.2 binds depends on the input/output ratio; the design chooses $N$ so that <em>neither</em> decoder constraint binds before $R^{*}$, i.e. the prefiller is always the first bottleneck. ✓ matches the "bounded prefiller load" SLO argument (§5.3).</li>
+</ul>
+
+<h3 id="agent-specific-asks">Agent-specific asks <a class="heading-anchor" href="#agent-specific-asks" aria-label="Link to agent-specific-asks">#</a></h3>
+
+<ul>
+<li><strong>Success-rate / sweep model</strong>: the paper sweeps arrival rate (0.5→1.634 conv/s) × system (5 baselines) × wrong-prediction rate (0→50% for AMPD) × hardware (homogeneous vs 200W-capped). Monotonicity holds: latency and SLO violations grow ~linearly in AMPD's error rate; ConServe is flat along that axis by construction.</li>
+<li><strong>Latency budget per turn</strong>: prefiller ~25k input tok/s; each decoder ~1k output tok/s and ~300k KV tokens; KV transfer happens once per conversation and is dominated by quadratic prefill at agentic input sizes (Fig.3). The paper does not claim a hard "interactive latency" bound but demonstrates zero SLO violation at the 5× threshold.</li>
+<li><strong>Failure-mode classification</strong>: three failure classes for the per-turn baseline (§5.4) — (i) cost model ignores decoder KV utilization, (ii) collocation-batch variance uncapturable offline, (iii, dominant) prefiller queueing pressure from misrouted turn-2+ prefills. ConServe's design targets exactly (iii) by never routing turn-2+ to the prefiller.</li>
 </ul>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p>Setup: SWE-bench bm25 13K traces via swe-agent (generated with Qwen3-Coder-30B-A3B), replayed on a 4× NVIDIA A40 machine serving Qwen3-0.6B (bf16); 1 prefiller + 3 decoders; implemented on vLLM + LMCache. Baselines: Collocated, Full Disaggregation, and a best-effort AMPD (per-turn prediction, default 10% wrong-prediction rate). SLO = 5× single-request baseline latency.</p>
+<p>Workload: SWE-bench_bm25_13K traces via swe-agent (generated with Qwen3-Coder-30B-A3B), replayed on a 4-GPU A40 machine serving Qwen3-0.6B (small served model chosen for KV headroom). Baselines: Collocated, Full Disaggregation, AMPD (per-turn prediction).</p>
 
-<p><img src="/assets/2606.01839/fig10.png" alt="Figure 10: normalized TTFET / SLO / last-turn TBT / E2E across request rates"></p>
+<p><img src="/assets/2606.01839/fig1.png" alt="Figure 1: input/output token distribution over the first 10 turns"></p>
 
-<p><em>Paper's Figure 10, verbatim (caption: "Normalized agentic performance results over multiple request arrival rates (lower is better). AMPD has 10% wrong prediction rate.").</em></p>
+<p><em>Paper's Figure 1.</em> Turn-1 input is tens of thousands of tokens; turn-2+ appends (tool responses) are hundreds. Output-token counts are high-variance and unpredictable — the empirical root of why decode-side cost cannot be forecast, motivating the whole thesis.</p>
 
-<p>ConServe beats AMPD by up to 19.17% (gmean) and 51.08% (p95) on TTFET. At saturation (1.5–1.634 conv/s) ConServe holds steady while Collocated and AMPD degrade sharply at p95 — Collocated from prefill-decode contention, AMPD from accumulated routing-error queue pressure on the prefiller. Full Disaggregation is uncompetitive everywhere (gmean TTFET/E2E >10× baseline) because routing every turn through the prefiller forfeits cross-turn KV reuse. The honest loss row: last-turn TBT <em>inverts</em> — Full Disagg (1.35× baseline) beats ConServe (2.49×, i.e. 91.85% higher) since its decoders never touch prefill; but that penalty is dwarfed by Full Disagg's 18.78× vs ConServe's 2.53× gmean TTFET (→4.7× worse E2E). Collocated has the worst p95 TBT at saturation (7.52×, 72% worse than ConServe).</p>
+<p><img src="/assets/2606.01839/fig2.png" alt="Figure 2: TTFT vs input length, with/without prefix caching"></p>
 
-<p><img src="/assets/2606.01839/fig11.png" alt="Figure 11: per-turn TTFT and TBT CDFs at RPS 1.634"></p>
+<p><em>Paper's Figure 2 (caption notes $R^2=1.0$).</em> Uncached prefill TTFT grows <em>quadratically</em> (attention-dominated) once inputs exceed $10^4$ tokens — contradicting the common linear model — but is highly predictable ($R^2=1.0$). Prefix caching flattens TTFT to near-constant, cutting latency ~2 orders of magnitude at long inputs. This is what makes turn-1 input length a usable deterministic scheduling signal.</p>
 
-<p><em>Paper's Figure 11, verbatim (caption: "Overall TTFT and TBT distribution at RPS 1.634.").</em></p>
+<p><img src="/assets/2606.01839/fig4.png" alt="Figure 4: heat map of mean TBT over batch size × context length"></p>
 
-<p>The TTFT CDF resolves into three regimes: below the 0.7 percentile (turn 2+ prefills) ConServe/AMPD/Collocated overlap; between 0.7–0.8 (turn-1 prefills) ConServe pulls ahead because Collocated batches them with ongoing appends and AMPD queues behind wrongly-disaggregated turn 2+ prefills; above 0.8 the order flips as AMPD's accumulated prefill queue stretches into the tail. The TBT CDF shows ConServe ≈ AMPD throughout, and Collocated winning below 0.7 only because it dedicates 4 GPUs to decode vs ConServe's 3 (one-third more aggregate bandwidth) — an advantage that inverts once long turn-1 prefills contend with decode.</p>
+<p><em>Paper's Figure 4.</em> Mean TBT is stable at small batch/context but climbs sharply once memory bandwidth saturates (upper-right of the dashed boundary). Agentic tasks' long contexts sit firmly in the saturated (memory-bound) region — confirming the tail phase is memory-bound.</p>
 
-<p><img src="/assets/2606.01839/fig12.png" alt="Figure 12: ConServe vs AMPD across wrong-prediction rate — the structural-brittleness result"></p>
+<p><img src="/assets/2606.01839/fig10.png" alt="Figure 10: normalized agentic performance over arrival rates (lower is better)"></p>
 
-<p><em>Paper's Figure 12, verbatim (caption: "Comparison between ConServe and AMPD over different wrong prediction rate.").</em></p>
+<p><em>Paper's Figure 10 (AMPD at 10% wrong prediction).</em> The load-bearing result: at saturation ConServe holds steady on p95 TTFET while Collocated and AMPD degrade sharply. Full Disaggregation is >10× baseline on TTFET/E2E (it re-pays prefill + KV transfer every turn) yet wins last-turn TBT (1.35× vs ConServe's 2.49×) — a baseline that dominates one metric while losing the headline one.</p>
 
-<p>This is the load-bearing case study. At 0% wrong-prediction rate AMPD routes all appends locally and <strong>reduces exactly to ConServe</strong> — i.e. the per-turn baseline's best case <em>is</em> ConServe's policy. At just 5% wrong predictions, SLO violations already hit ~7.8% (TTFET) and 6.3% (E2E); by 50% both gmean/p95 latencies grow linearly and violations exceed 50%. The linearity is mechanistic: each wrong decision injects one unit of unanticipated load into a system running at saturation, so queue delay scales with cumulative excess load. Panel (d) shows energy: at saturation with 10% wrong predictions AMPD takes 15% longer to drain and delivers 7.5% fewer tokens/J, declining monotonically toward 58 tokens/J at 50%; ConServe is a flat line — it makes no per-turn decision, so it has no degradation curve.</p>
+<p><img src="/assets/2606.01839/fig12.png" alt="Figure 12: ConServe vs AMPD across wrong-prediction rate"></p>
 
-<p><img src="/assets/2606.01839/fig13.png" alt="Figure 13: p95 performance and tokens/J on heterogeneous GPUs"></p>
-
-<p><em>Paper's Figure 13, verbatim (caption: "P95 agentic performance and energy efficiency on heterogeneous GPUs.").</em></p>
-
-<p>Testing the phase-fidelity hypothesis: homogeneous (300W/300W) vs heterogeneous (300W prefiller / 200W decoders). Capping decoders to 200W raises tokens/J by 22.75% while p95 TTFET, last-turn TBT, and E2E stay essentially unchanged — the memory-bound tail absorbs the power cap because its throughput is gated by memory bandwidth, not the compute the cap removes. Baselines can't exploit it: Collocated's p95 TTFET worsens 11.15% (the cap starves its co-batched prefill), and Full Disagg misses SLO in both configs.</p>
-
-<p><strong>Workload regime table (where it wins / loses):</strong></p>
-
-<table>
-<tr><th>Workload regime</th><th>ConServe</th><th>Baseline</th><th>Why</th></tr>
-<tr><td>long turn-1 prompts, high concurrency (agentic)</td><td>wins TTFET/E2E, zero SLO viol.</td><td>AMPD/Collocated degrade at p95 saturation</td><td>prefiller bottleneck is observable; no prediction error to accumulate</td></tr>
-<tr><td>pure decode / last-turn TBT</td><td>loses (2.49× vs 1.35×)</td><td>Full Disagg best</td><td>ConServe keeps prefill+decode reuse on one decoder; Full Disagg isolates decode</td></tr>
-<tr><td>low arrival rate (0.5–1.25 conv/s)</td><td>within 2× baseline (tied)</td><td>AMPD/Collocated also within 2×</td><td>no tier saturated; placement differences don't yet bind</td></tr>
-<tr><td>heterogeneous power tiers</td><td>+22.75% tokens/J, latency flat</td><td>Collocated −11.15% TTFT; Full Disagg SLO fail</td><td>only ConServe's clean phase split maps to tiers with one transfer</td></tr>
-</table>
+<p><em>Paper's Figure 12.</em> At 0% error AMPD <em>reduces exactly to ConServe</em> (local turn-2+ execution always dominates in this workload), so the per-turn mechanism only ever adds error, never benefit. At 5% error, SLO violations already reach ~7.8% (TTFET)/6.3% (E2E); by 50% both grow linearly past 50% violations and tokens-per-joule declines toward 58 tok/J. This linear degradation is the paper's core empirical demonstration of <em>structural</em> brittleness; ConServe has no such curve.</p>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>#</th><th>Step (paper-internal)</th><th>Support</th></tr>
-<tr><td>1</td><td>Agentic conversations are structurally one heavy compute-bound turn-1 prefill + a long light memory-bound tail (appends are hundreds of tokens vs tens-of-thousands turn-1).</td><td>§3 Fig 1 token distributions</td></tr>
-<tr><td>2</td><td>Turn-1 prefill latency is deterministic in input length ($R^2=1.0$ quadratic); prefix-cached appends are near-constant (~27 ms); KV transfer is linear and dwarfed by prefill at agentic input sizes.</td><td>§3.1 Figs 2–3 + fits</td></tr>
-<tr><td>3</td><td>Decode latency is highly variable and depends on unknown factors (output length, KV occupancy, collocation), so per-turn decode cost cannot be reliably predicted.</td><td>§3.2 Figs 4–6</td></tr>
-<tr><td>4</td><td>Therefore the <em>observable</em> signals are exactly the ones the conversation-level split exposes (turn-1 input length + per-decoder KV occupancy); per-turn scheduling instead conditions on the <em>unobservable</em> ones.</td><td>§3 → §4.2 signal definition</td></tr>
-<tr><td>5</td><td>A minimal policy (unconditional turn-1 prefill routing + least-KV-occupancy binding + persistent pin) suffices; provisioning eqs (1)–(2) at $R^{*}$ place the bottleneck on the observable prefill side.</td><td>§4.1–§4.2</td></tr>
-<tr><td>6</td><td>Empirically this beats per-turn routing on TTFET/E2E/SLO, and the per-turn baseline degrades linearly with prediction error while ConServe stays flat — confirming brittleness is from the unit, not the predictor.</td><td>§5.2–§5.4 Figs 10–12</td></tr>
-<tr><td>7</td><td>Because placement reads only observable state, tier-aware mapping and energy savings follow with no scheduler change.</td><td>§4.3 → §5.5 Fig 13</td></tr>
+<tr><th>#</th><th>Step</th><th>Support</th></tr>
+<tr><td>1</td><td>Agentic conversations = one long compute-bound turn-1 prefill + a long memory-bound tail of short appends (input distribution).</td><td>§1, §3 / Fig.1</td></tr>
+<tr><td>2</td><td>Turn-1 prefill TTFT is a deterministic (quadratic, $R^2=1.0$) function of input length; prefix caching makes turn-2+ prefill near-free; KV transfer is marginal at agentic input sizes.</td><td>§3.1 / Fig.2, Fig.3</td></tr>
+<tr><td>3</td><td>Decode is memory-bound and its per-iteration/end-to-end latency is high-variance and unpredictable.</td><td>§3.2 / Fig.4, Fig.5, Fig.6</td></tr>
+<tr><td>4</td><td>Therefore per-turn schedulers must predict unobservable decode-side cost; raising the unit to the conversation makes placement depend only on observable turn-1 input length + KV occupancy.</td><td>§1, §4.2</td></tr>
+<tr><td>5</td><td>Provisioning $N$ decoders to over-satisfy the throughput/memory constraints at $R^{*}$ places the bottleneck on the observable prefiller, bounding its load → zero SLO violations by construction.</td><td>§4.1, §5.3 / Fig.10</td></tr>
+<tr><td>6</td><td>Per-turn prediction degrades SLO/energy linearly with error rate; ConServe stays flat.</td><td>§5.4 / Fig.12</td></tr>
+<tr><td>7</td><td>The compute/memory phase split maps onto GPU tiers: capping decoders to 200W adds +22.75% tokens/J with unchanged latency, since the memory-bound tail absorbs the power cut.</td><td>§3.3, §4.3, §5.5 / Fig.7, Fig.8, Fig.13</td></tr>
 </table>
 
 <h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p>The paper reports an implementation but does not release code in the L1 source; concrete integration points are stated in prose (§5.1), so replication rests on published components:</p>
+<p>Built on vLLM (Kwon et al. 2023) as the serving engine and LMCache (Cheng et al. 2025) as the PD-disaggregation manager. No public ConServe repository is referenced in the source. <code>[实现未公开]</code></p>
 
-<ul>
-<li><strong>Serving engine</strong>: vLLM (Kwon et al., 2023) — <code>[实现未公开]</code> at file:line granularity; prefiller configured with vLLM standard 8192 chunked-token size per batch (§5.1 para 3).</li>
-<li><strong>PD-disaggregation / KV manager</strong>: LMCache (Cheng et al., 2025, arXiv:2510.09665) used as the prefill-decode disaggregation manager and the KV-transfer path (§5.1 para 3).</li>
-<li><strong>AMPD baseline</strong>: reconstructed best-effort — bidirectional KV transfer <em>simulated</em> (latency modeled + requests stalled), traces post-processed with offline profiling; default 10% wrong-prediction rate (§5.1 para 3). This is a fairness caveat to flag, not a defect.</li>
-<li><strong>Collocated baseline</strong>: 2944 chunked-token size, derived so iteration latency stays within 5× SLO per DynamoLLM practice (§5.1).</li>
-</ul>
+<p><strong>核心技术壁垒 (single hardest-to-replicate insight).</strong> The value is not an engineering trick but the <em>reframing</em>: recognizing that prediction dependence is imposed by the scheduling unit, not the workload, and that coarsening to the conversation collapses turn irregularity into the classical two-phase (compute-bound / memory-bound) abstraction with a single KV-transfer boundary. Everything else (reactive placement, over-provisioning, tier mapping) follows mechanically once you accept the conversation is the unit. Replicating the <em>idea</em> is trivial; arriving at it against the field's per-turn default is the hard part, and it is validated by the fact that the strongest per-turn baseline degenerates to ConServe at 0% error (its mechanism is net-negative here).</p>
 
-<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
 
 <ol>
-<li>*<em>KV-occupancy signal must be </em>active<em>, not </em>allocated<em>.</em><em> The scheduler decrements per-decoder occupancy on conversation </em>termination* so the signal reflects only live working-set KV, never allocated-but-idle memory (§4.2 para 1). Binding to the "least-KV-occupied" decoder is only correct if this bookkeeping is exact — a re-implementer using allocated memory would mis-bind under churn.</li>
-<li>*<em>Provision $N$ as an integer that strictly exceeds </em>both<em> eqs (1)+(2) at $R=R^{</em>}$**, not a balanced value — the "1.67 decoders needed → deploy 3" jump is intentional slack so the prefiller (observable side) saturates first (§4.1, §5.1). Losing this slack silently moves the bottleneck to the unobservable decoder side and reintroduces the prediction problem the design eliminates.</li>
+<li><strong>Deliberate prefiller-first bottleneck.</strong> $N$ is over-provisioned (3 decoders when ≥1.67 suffice) specifically so the prefiller — whose load is the <em>only</em> observable, deterministic signal — saturates before the decoders. This is what converts "SLO robustness" from a tuning outcome into a structural guarantee.</li>
+<li><strong>Pin-and-never-migrate + bind to lowest-KV-occupancy decoder.</strong> After the one KV transfer, the conversation is pinned; new conversations bind to the decoder with lowest current KV occupancy, and saturation is handled by routing the <em>next</em> conversation elsewhere rather than migrating a live one. This keeps KV state from ever crossing the network more than once and removes any per-turn re-evaluation.</li>
+</ul>
+
+<h3 id="tool-environment-interface">Tool & environment interface <a class="heading-anchor" href="#tool-environment-interface" aria-label="Link to tool-environment-interface">#</a></h3>
+
+<ul>
+<li><strong>Tool catalog</strong>: opaque to ConServe — tool calls are the agent's; the scheduler only sees the resulting wall-clock suspension and appended short input.</li>
+<li><strong>Side effects</strong>: the KV cache is the only state ConServe mutates; it decrements occupancy on conversation termination so the signal reflects active (not allocated-but-idle) memory.</li>
+<li><strong>Error surface</strong>: a saturated prefiller / KV-pressured decoder surfaces as an observable state, not an exception — capacity management uses the same two signals as placement.</li>
+<li><strong>Environment contract</strong>: decoder is assumed to hold KV across turns (stateful within a conversation) and tool-call time is folded into lifetime $W$.</li>
+</ul>
+
+<h3 id="llm-backbone-requirements">LLM backbone requirements <a class="heading-anchor" href="#llm-backbone-requirements" aria-label="Link to llm-backbone-requirements">#</a></h3>
+
+<ul>
+<li>Served model here is Qwen3-0.6B — deliberately tiny to leave KV-cache headroom, <em>not</em> a capability floor for the method (the scheduler is model-agnostic). Traces were generated by a much larger Qwen3-Coder-30B-A3B, so decode dynamics reflect a 0.6B backbone while the <em>trajectory shape</em> comes from the 30B agent.</li>
+<li>Required capability: ReAct-style tool-call formatting; long-context prefill.</li>
+<li>Sensitivity: qualitative observations claimed to hold across model sizes/GPU generations since they are architectural (compute-bound prefill / memory-bound decode) rather than config-specific.</li>
+</ul>
+
+<h3 id="evaluation">Evaluation <a class="heading-anchor" href="#evaluation" aria-label="Link to evaluation">#</a></h3>
+
+<ul>
+<li>Benchmark: SWE-bench (bm25_13K) traces with swe-agent. Metrics: TTFET (new, conversation-level), last-turn TBT, E2E latency; plus conventional per-turn TTFT/TBT CDFs for comparison. SLO = 5× single-request baseline latency per metric.</li>
+<li>Baselines: Collocated, Full Disaggregation, AMPD (He et al. 2026, per-turn prediction; PPD by Li et al. 2026 discussed but AMPD is the implemented primary baseline).</li>
+<li>Caveat: AMPD's bidirectional KV transfer was <em>simulated</em> (latency modeled, traces post-processed), not fully re-implemented.</li>
+</ul>
+
+<h3 id="production-readiness">Production readiness <a class="heading-anchor" href="#production-readiness" aria-label="Link to production-readiness">#</a></h3>
+
+<ul>
+<li><strong>Sandboxing / secrets</strong>: out of scope — the paper serves inference, not tool execution.</li>
+<li><strong>Observability</strong>: placement is deterministic from two logged signals (input length, KV occupancy), so scheduling decisions are reproducible even though decode itself is non-deterministic.</li>
+<li><strong>Cost / concurrency controls</strong>: over-provisioned decoders absorb length variation; autoscaling triggers off the same observable prefiller-saturation and KV-pressure signals — no learned cost model to retrain.</li>
 </ul>
 
 </div>

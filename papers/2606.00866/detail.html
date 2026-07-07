@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">Idleness is Relative: Exploiting Tool-Call Idle Windows for Offloading in Agentic Systems with MORI</h1>
 <div class="card-meta"><span class="badge badge-agent">agent</span> 2606.00866</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-serving</span><span class="tag">kv-offloading</span><span class="tag">program-aware-scheduling</span><span class="tag">idleness-ranking</span><span class="tag">cache-affinity</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-serving</span><span class="tag">kv-cache-offloading</span><span class="tag">scheduling</span><span class="tag">memory-tiering</span><span class="tag">load-balancing</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2606.00866.html">← Synthesis</a>
 <a href="/overview/agent.html">← agent Survey</a>
@@ -205,185 +205,161 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
-<h1 id="idleness-is-relative-exploiting-tool-call-idle-windows-for-offloading-in-agentic-systems-with-mori-—-l2">Idleness is Relative: Exploiting Tool-Call Idle Windows for Offloading in Agentic Systems with MORI — L2 <a class="heading-anchor" href="#idleness-is-relative-exploiting-tool-call-idle-windows-for-offloading-in-agentic-systems-with-mori-—-l2" aria-label="Link to idleness-is-relative-exploiting-tool-call-idle-windows-for-offloading-in-agentic-systems-with-mori-—-l2">#</a></h1>
+<h1 id="idleness-is-relative-—-mori-l2">Idleness is Relative — MORI (L2) <a class="heading-anchor" href="#idleness-is-relative-—-mori-l2" aria-label="Link to idleness-is-relative-—-mori-l2">#</a></h1>
 
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>MORI把agent程序的“空闲”建模为连续相对指标而非二值标签，按全局idleness排序在GPU HBM/CPU DRAM/Waiting三层之间做粘性重平衡与双层准入控制，在真实编码agent回放中实现更高吞吐和更低TTFT。</p>
+<p>Agentic programs alternate between busy phases (bursts of short tool calls) and idle phases (blocked on long tool calls). MORI ranks all live programs by a continuous <em>idleness</em> metric, places the busiest in GPU HBM and the most idle in CPU DRAM, slides the tier boundary to fit any hardware ratio, and enforces per-tier admission control — yielding 20–71% higher throughput and 18–43% lower TTFT than the best offloading baseline.</p>
 
-<h2 id="2-q1-q2-q3（痛点-方法-结果）">2. Q1 / Q2 / Q3（痛点 / 方法 / 结果） <a class="heading-anchor" href="#2-q1-q2-q3（痛点-方法-结果）" aria-label="Link to 2-q1-q2-q3（痛点-方法-结果）">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-痛点：工具调用时长高方差让“每次调用都决策”不可行">Q1 痛点：工具调用时长高方差让“每次调用都决策”不可行 <a class="heading-anchor" href="#q1-痛点：工具调用时长高方差让“每次调用都决策”不可行" aria-label="Link to q1-痛点：工具调用时长高方差让“每次调用都决策”不可行">#</a></h3>
+<p><strong>Q1 — 痛点.</strong> Serving agentic (ReAct-loop) workloads accumulates per-program KV cache across tool-call steps that quickly exceeds GPU HBM, forcing offload to CPU DRAM. But tool-call durations vary by 3+ orders of magnitude and are unpredictable, so re-placing KV on every call is impractical: transfer cost dominates short gaps. LRU and static context-length eviction are phase-blind — they may evict a program about to resume while keeping a long-blocked one GPU-resident. A binary busy/idle label also fails: the busy:idle demand ratio rarely matches the fixed GPU:CPU capacity ratio, so one tier is oversubscribed while the other sits idle.</p>
 
-<ul>
-<li>Agent程序由推理与工具调用交替构成，KV缓存跨步增长，显存压力随并发和上下文长度迅速上升。</li>
-<li>工具调用呈重尾分布：同类工具时长可跨数量级，短调用时频繁搬移KV会得不偿失，长调用时继续占GPU又浪费HBM。</li>
-<li>传统LRU或仅按上下文长度的策略不感知“程序阶段”，会把即将恢复推理的busy程序赶走，导致reload/recompute抖动。</li>
-<li>仅做busy/idle二分类也不够，因为实时busy与idle工作集比例会漂移，常与固定硬件容量比例不匹配，造成一层拥塞一层闲置。</li>
-</ul>
-
-<h3 id="q2-方法：连续idleness排序-三层粘性调度-分层类型化驱逐">Q2 方法：连续idleness排序 + 三层粘性调度 + 分层类型化驱逐 <a class="heading-anchor" href="#q2-方法：连续idleness排序-三层粘性调度-分层类型化驱逐" aria-label="Link to q2-方法：连续idleness排序-三层粘性调度-分层类型化驱逐">#</a></h3>
+<p><strong>Q2 — 方法.</strong> Define each program's <strong>idleness</strong> $\iota$ as the fraction of recent wall-clock time spent in tool calls (Acting) vs. total (Acting + Reasoning) over a sliding window of the last $k{=}5$ cycles. Rank all active programs on this continuous spectrum; a <em>sticky</em> control loop (5 s tick) demotes the highest-$\iota$ programs from GPU→CPU→Waiting and promotes the lowest-$\iota$ programs back up, filling each tier exactly to its hardware capacity (which is what enforces admission control). Typed offloading hints (busy / idle / inactive) propagate to the engine, whose LRU eviction is re-sorted by type with <strong>reversed priority per tier</strong>. In multi-replica mode, an affinity-aware balancer routes a returning program back to the replica holding its cache (GPU <em>or</em> CPU).</p>
 
 <ul>
-<li>定义最近$k$步窗口的程序空闲度：</li>
-<p>$$\iota=\frac{T_{\text{acting}}^{(k)}}{T_{\text{reasoning}}^{(k)}+T_{\text{acting}}^{(k)}}$$</p>
-<p>其中$T_{\text{acting}}^{(k)}$与$T_{\text{reasoning}}^{(k)}$只统计程序自身行为，不计调度等待时间；$k=5$用于实验。</p>
-<li>调度核心不是预测单次工具调用时长，而是基于近期行为估计“相对更闲/更忙”，并在容量约束触发时做最小必要迁移（sticky placement）。</li>
-<li>每个副本维护GPU队列与CPU队列，集群共享Waiting队列；GPU满时优先降级高$\iota$且处于Acting的程序，GPU空出时优先提升低$\iota$且等待推理的程序。</li>
-<li>调度器把busy/idle/inactive类型下发给推理引擎，GPU层与CPU层采用相反的类型优先级驱逐，保证“该留在本层的程序块最后被驱逐”。</li>
-<li>核心技术壁垒：在不可靠预测工具调用时长的前提下，把“程序阶段信号”稳定转化为跨两级容量约束和多副本亲和性的统一排序机制，同时抑制频繁搬移带来的传输开销。</li>
+<li><strong>核心技术壁垒</strong>: reframing idleness from a binary label into a <em>continuous, relative</em> ranking whose partition boundary auto-adapts to any GPU:CPU capacity ratio — no per-hardware tuning, and it unifies GPU + CPU admission control into a single sort-and-fill operation.</li>
 </ul>
 
-<h3 id="q3-结果：单副本与多副本都证明“相对空闲排序”在高压下更稳">Q3 结果：单副本与多副本都证明“相对空闲排序”在高压下更稳 <a class="heading-anchor" href="#q3-结果：单副本与多副本都证明“相对空闲排序”在高压下更稳" aria-label="Link to q3-结果：单副本与多副本都证明“相对空闲排序”在高压下更稳">#</a></h3>
+<p><strong>Q3 — 结果.</strong> At 80 concurrent programs (DP=1): 20–71% higher output throughput and 18–43% lower TTFT than TA+O (offloading baseline), 1.6–2.1× throughput and up to 2.8× lower TTFT vs non-offloading systems. DP=3: 54–79% higher throughput than TA+O while sustaining 99%+ GPU utilization (vs 59–76% for phase-oblivious schedulers that collapse at high concurrency). Program churn drops from 14–15% to 0.3–2.9%.</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<h3 id="3-1-agent-scope">3.1 Agent scope <a class="heading-anchor" href="#3-1-agent-scope" aria-label="Link to 3-1-agent-scope">#</a></h3>
 
 <ul>
-<li>单副本80并发下，相对最强offloading基线TA+O，MORI输出吞吐提升20-71%，TTFT降低18-43%。</li>
-<li>相对非offloading系统（SMG/TA），吞吐可达1.6-2.1x，说明仅有程序感知但无协同分层管理仍受GPU容量硬约束。</li>
-<li>多副本（DP=3）时，基线在高并发出现吞吐回落与GPU利用率下降；MORI保持99%+ GPU利用率并显著降低program churn。</li>
-<li>调度CPU开销略增但被GPU步长掩蔽，未进入关键路径。</li>
+<li><strong>Task class</strong>: open-ended coding agents (Claude Code / Codex / Cursor), ReAct-style dynamic workflows — not fixed-graph function calling.</li>
+<li><strong>Interaction pattern</strong>: multi-turn, long-horizon (tens of inference steps interleaved with tool calls over minutes per session).</li>
+<li><strong>Autonomy</strong>: fully autonomous with occasional human-in-the-loop tool calls (approval waits are one source of idle phases). MORI itself is infrastructure and needs only a <code>program_id</code> per request — no phase hints from the client.</li>
 </ul>
 
-<h2 id="3-架构-方法图（含-agent-loop）">3. 架构 / 方法图（含 agent loop） <a class="heading-anchor" href="#3-架构-方法图（含-agent-loop）" aria-label="Link to 3-架构-方法图（含-agent-loop）">#</a></h2>
+<h3 id="3-2-system-overview">3.2 System overview <a class="heading-anchor" href="#3-2-system-overview" aria-label="Link to 3-2-system-overview">#</a></h3>
 
-<p><img src="/assets/2606.00866/fig1.png" alt="Figure 1: MORI end-to-end overview"></p>
+<p><img src="/assets/2606.00866/fig1.png" alt="Figure 1: MORI overview — idleness spectrum, adaptive offloading scheduler, affinity-aware load balancer"></p>
 
-<p><em>Paper's Figure 1, verbatim (caption: "Overview of MORI. (1) MORI categorizes programs into a continuous idleness spectrum reflecting how likely each is to remain GPU-resident. (2) An adaptive offloading scheduler places busy programs (low idleness) in GPU HBM and idle programs (high idleness) in CPU DRAM, with admission control for both tiers. (3) In multi-replica deployments, an affinity-aware load balancer routes requests to engines that already cache each program’s KV state while respecting load balance across replicas.").</em></p>
+<p><em>Paper's Figure 1: MORI (1) categorizes programs on a continuous idleness spectrum, (2) an adaptive offloading scheduler places busy (low-$\iota$) programs in HBM and idle (high-$\iota$) programs in DRAM with two-tier admission control, and (3) an affinity-aware balancer routes to engines that already cache each program's KV state.</em> This figure is the load-bearing summary: the three numbered stages map exactly to the idleness metric (§4.2 of paper), the tiering policy (§4.3), and the multi-replica router (§4.1).</p>
 
-<p>图1给出方法的全链路：先估计每个程序在连续谱上的相对空闲度，再把低$\iota$优先放入GPU、高$\iota$下沉到CPU，并在多副本层面保持KV亲和路由。</p>
+<p><img src="/assets/2606.00866/fig2.png" alt="Figure 2: Structure of an agentic program — inference steps interleaved with tool-call gaps; KV cache grows across steps"></p>
 
-<p><img src="/assets/2606.00866/fig6.png" alt="Figure 6: Three-tier queue architecture"></p>
+<p><em>Paper's Figure 2: a program alternates shaded inference steps with tool-call gaps; the KV cache grows monotonically because each invocation shares the prefix of all preceding ones.</em> This is the unit-of-scheduling premise: the gap is <em>inside</em> one logical execution, so the cache stays valuable during it — the whole reason offloading (not eviction) is the right move.</p>
 
-<p><em>Paper's Figure 6, verbatim (caption: "MORI three-tier queue architecture. Each replica maintains a GPU queue (HBM) and a CPU queue (DRAM); a global Waiting queue is shared across replicas. Programs are colored by their idleness (red = busy, green = idle). Idle programs are demoted from a higher tier to a lower one (GPU -> CPU or CPU -> Waiting), and busy programs are promoted from a lower tier to a higher one (Waiting -> CPU or CPU -> GPU).").</em></p>
+<h3 id="3-3-the-agent-loop-state-model">3.3 The agent-loop state model <a class="heading-anchor" href="#3-3-the-agent-loop-state-model" aria-label="Link to 3-3-the-agent-loop-state-model">#</a></h3>
 
-<p>图6把策略实体化为“每副本双队列+全局等待队列”，强调了两种关键成本：GPU<->CPU传输成本与Waiting重算成本。</p>
-
-<h3 id="3-1-单轮agent-loop与状态迁移">3.1 单轮agent loop与状态迁移 <a class="heading-anchor" href="#3-1-单轮agent-loop与状态迁移" aria-label="Link to 3-1-单轮agent-loop与状态迁移">#</a></h3>
+<p>One turn cycles through two instantaneous statuses whose <em>sustained pattern</em> defines the phase:</p>
 
 <div class="mermaid">
 stateDiagram-v2
-  [*] --> Observe
-  Observe: Observe request/program state
-  Observe --> Plan
-  Plan: compute idleness rank\nand target tier
-  Plan --> Act
-  Act: admit / promote / demote\nwith capacity checks
-  Act --> Verify
-  Verify: enforce engine type label\nand request gating
-  Verify --> Reflect
-  Reflect: update recent reasoning/acting windows
-  Reflect --> Observe
-
-  Act --> Recovery: transfer or capacity failure
-  Verify --> Recovery: tier mismatch detected
-  Recovery: fallback to lower tier\nor Waiting queue
-  Recovery --> Observe
+    [*] --> Reasoning: request arrives
+    Reasoning --> Acting: response emitted (tool call starts)
+    Acting --> Reasoning: tool result returns (next request)
+    Reasoning --> GPUqueue: iota low (busy)
+    Acting --> CPUqueue: iota high (idle) & GPU over capacity
+    CPUqueue --> Waiting: CPU over capacity
+    Waiting --> GPUqueue: capacity frees (full prefill recompute)
+    CPUqueue --> GPUqueue: promote (PCIe reload)
+    GPUqueue --> CPUqueue: demote (offload)
 </div>
 
-<p>这个循环对应论文实现中的控制tick：观察程序状态与容量后做最小迁移，验证类型标签与准入一致性，再滚动更新窗口统计。</p>
-
-<h3 id="3-2-planning-memory-tool-interface要点">3.2 Planning / memory / tool interface要点 <a class="heading-anchor" href="#3-2-planning-memory-tool-interface要点" aria-label="Link to 3-2-planning-memory-tool-interface要点">#</a></h3>
-
 <ul>
-<li><strong>Planning风格</strong>：固定周期控制环而非树搜索；每tick做全体排序并在容量违规或可提升时动作。</li>
-<li><strong>Memory模型</strong>：短期记忆是每程序最近$k$步的Reasoning/Acting时间窗，长期状态由程序ID绑定在副本GPU/CPU队列与全局Waiting队列。</li>
-<li><strong>Tool接口契约</strong>：调度器接收<code>program_id</code>与请求边界事件；程序在请求完成后进入Acting，下一次请求到来前可能被降级或保持原层。</li>
-<li><strong>失败恢复</strong>：若目标层无容量，降到更低层；若两层都无法准入则进Waiting并在恢复时重算KV。</li>
+<li><strong>Memory model</strong>: short-term = KV cache in HBM (busy); "long-term" spill = KV in CPU DRAM (idle, per-replica for affinity); discarded = Waiting queue (must recompute via full prefill). There is no vector-DB / episodic store — memory here means the KV working set only.</li>
+<li><strong>Tool invocation</strong>: opaque to the scheduler; a tool call simply flips the program to Acting for an unknown duration. Parallel tool calls are collapsed into one gap = max of individual durations. A spawned subagent is a <em>separate program</em>; from the parent's view its whole execution is one long tool call.</li>
+<li><strong>Error recovery / fallback</strong>: if a program cannot be admitted to GPU <em>or</em> CPU, it falls back to the Waiting queue and loses its cache entirely (recompute on resume). Gated (queued) time is excluded from $\iota$ so the scheduler's own delays don't pollute the phase signal.</li>
 </ul>
 
-<h2 id="4-作者证明（无形式化作者证明-—-仅实证）">4. 作者证明（无形式化作者证明 — 仅实证） <a class="heading-anchor" href="#4-作者证明（无形式化作者证明-—-仅实证）" aria-label="Link to 4-作者证明（无形式化作者证明-—-仅实证）">#</a></h2>
+<h3 id="3-4-planning-scheduling-style">3.4 Planning & scheduling style <a class="heading-anchor" href="#3-4-planning-scheduling-style" aria-label="Link to 3-4-planning-scheduling-style">#</a></h3>
 
-<h3 id="4-1-记号与物理含义">4.1 记号与物理含义 <a class="heading-anchor" href="#4-1-记号与物理含义" aria-label="Link to 4-1-记号与物理含义">#</a></h3>
+<ul>
+<li><strong>Planning style</strong>: not agent planning — this is a <em>predetermined control-loop</em> scheduler over program placement. Sticky rebalancing: a program stays put until a capacity violation forces demotion or free capacity allows promotion.</li>
+<li><strong>Decomposition</strong>: top-down capacity fitting — rank by $\iota$, fill GPU from the busiest end, spill the rest to CPU, overflow to Waiting.</li>
+<li><strong>Budget</strong>: 5 s control tick; $k{=}5$-cycle idleness window; GPU/CPU/Waiting admission bounded by physical HBM/DRAM.</li>
+<li><strong>Backtracking</strong>: promotion undoes demotion; because transitions cost offload/reload, the sticky policy deliberately minimizes churn.</li>
+</ul>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证.</strong> As is typical for agent-serving systems, there are no convergence or optimality guarantees. The only formal object is the idleness definition (Eq. 1); everything else is validated empirically across a hardware/model/concurrency sweep.</p>
+
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
 
 <table>
-<tr><th>记号</th><th>含义</th></tr>
-<tr><td>$\iota$</td><td>程序近期空闲度，越大表示更多时间阻塞于工具调用</td></tr>
-<tr><td>$T_{\text{acting}}^{(k)}$</td><td>最近$k$个推理-工具周期中的工具调用总时长</td></tr>
-<tr><td>$T_{\text{reasoning}}^{(k)}$</td><td>最近$k$个周期中的GPU推理总时长</td></tr>
-<tr><td>GPU/CPU/Waiting</td><td>三层驻留状态：HBM、DRAM、无缓存待重算</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$\iota$</td><td>idleness of a program, $\in [0,1)$</td></tr>
+<tr><td>$T_{\text{acting}}^{(k)}$</td><td>wall-clock time in tool-call (Acting) status over last $k$ cycles</td></tr>
+<tr><td>$T_{\text{reasoning}}^{(k)}$</td><td>wall-clock time in GPU inference (Reasoning) status over last $k$ cycles</td></tr>
+<tr><td>$k$</td><td>sliding-window length in inference–tool-call cycles ($k{=}5$)</td></tr>
 </table>
 
-<p>方程的物理意义是“GPU占用有效性比率”的互补刻画：$\iota$高表示把该程序留在HBM的机会成本高，应该优先下沉。</p>
+<h3 id="the-one-equation-and-its-physical-meaning">The one equation and its physical meaning <a class="heading-anchor" href="#the-one-equation-and-its-physical-meaning" aria-label="Link to the-one-equation-and-its-physical-meaning">#</a></h3>
 
-<h3 id="4-2-最低六项实证检查">4.2 最低六项实证检查 <a class="heading-anchor" href="#4-2-最低六项实证检查" aria-label="Link to 4-2-最低六项实证检查">#</a></h3>
+<p>$$\iota = \frac{T_{\text{acting}}^{(k)}}{T_{\text{reasoning}}^{(k)} + T_{\text{acting}}^{(k)}}$$</p>
 
-<table>
-<tr><th>检查项</th><th>结论</th><th>论文内证据</th></tr>
-<tr><td>1) 工具调用时长是否重尾且跨数量级</td><td>通过</td><td>Fig.3</td></tr>
-<tr><td>2) busy phase是否持续到足以支撑稳定决策</td><td>通过（2s阈值下中位20s，p90约81s）</td><td>Fig.5</td></tr>
-<tr><td>3) 连续指标是否优于固定二分类边界</td><td>通过（跨硬件比例更稳）</td><td>§3.4 + §6</td></tr>
-<tr><td>4) GPU与CPU双层准入是否必要</td><td>通过（避免CPU侧同样thrash）</td><td>§3.4 + §4.1</td></tr>
-<tr><td>5) 高并发下吞吐与TTFT是否同时改善</td><td>通过</td><td>Fig.7/8/9/10</td></tr>
-<tr><td>6) 多副本下是否维持亲和并减少迁移</td><td>通过（churn显著下降）</td><td>§6.2.2 + Fig.10</td></tr>
-<tr><td>7) 调度开销是否进入关键路径</td><td>未进入关键路径</td><td>Tab.2</td></tr>
-</table>
+<p>$\iota$ is the fraction of recent time a program left its KV cache sitting idle in HBM while blocked on tools. $\iota \to 1$ = idle phase (offload it); $\iota \to 0$ = busy phase (keep it GPU-resident). It is a <em>proxy for wasted HBM</em>, not a duration prediction.</p>
 
-<p>论文没有给出收敛性或最优性形式化证明，属于典型的“系统机制 + 工作负载实证”论证范式。</p>
+<h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Success-rate / performance sweep</strong> — swept over <code>(GPU tier × model size × concurrency × CPU:GPU ratio)</code>: {H200-80GB/7B, H200/30B-MoE, B200/70B-TP2} × {20,50,80 programs} × {1×, 2× CPU}. Monotonicity: MORI throughput rises monotonically with concurrency (e.g. B200 136→191→189 tok/s) where TA+O is non-monotonic (147→181→146). The gain over TA+O <em>widens</em> with memory pressure (2% at 20 programs → up to 71% at 80).</li>
+<li><strong>Latency budget per turn</strong> — TTFT decomposes into queue + reload + prefill; MORI's GPU queue prioritizes already-resident programs, cutting reload stalls. No "interactive latency" claim at 80 programs (TTFT 33–38 s on B200), but it is the lowest of all systems.</li>
+<li><strong>Failure-mode classification</strong> — the paper isolates three baseline failure classes: (a) phase-blind eviction (LRU/context-length keeps idle caches on GPU), (b) uncoordinated CPU LRU (extra DRAM gives TA+O no benefit), (c) affinity break on eviction (cross-replica churn). MORI is targeted at all three; the dominant one under load is (a) → throughput collapse.</li>
+<li><strong>Backbone sensitivity</strong> — method is backbone-agnostic (7B Qwen-2.5, 30B Qwen-3 MoE, 70B Llama-3.1 all benefit); it depends on <em>timing behavior</em>, not model capability.</li>
+<li><strong>Overhead check</strong> — Table 2: MORI adds 2.3 ms CPU scheduling (21.5→23.8 ms) but this is fully overlapped with the ~32 ms GPU step, so zero critical-path cost.</li>
+<li>*<em>What </em>could<em> have been bounded</em>* — the reload-vs-recompute cost tradeoff could be formalized (transfer cost linear in KV size vs. gap duration), giving a competitive-ratio bound; the paper argues it informally in §3.2 instead.</li>
+</ul>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p><img src="/assets/2606.00866/fig3.png" alt="Figure 3: CDF of tool-call durations"></p>
+<p>Workload: 186 replayed Claude Code traces on SWE-bench Pro (claude-sonnet-4-6, high effort), closed-loop replay for 1 hour per run. Baselines: SMG (prefix-aware gateway), TA (program-aware, no offload), TA+O (TA + uncoordinated HiCache CPU offload).</p>
 
-<p><em>Paper's Figure 3, verbatim (caption: "CDF of tool-call durations from coding-agent traces. Durations span from milliseconds (file I/O) to up to minutes (human input, subagents), exhibiting a heavy-tailed distribution with over three orders of magnitude of variance.").</em></p>
+<p><img src="/assets/2606.00866/tab1.png" alt="Table 1: Hardware and model configurations"></p>
 
-<p>该图是方法出发点：单次工具调用不可预测，但分布结构揭示了存在可利用的长空闲窗口。</p>
+<p><em>Paper's Table 1: three GPU configs spanning H200-80GB/7B, H200/30B-MoE (DP=1 and DP=3), and B200/70B-TP2.</em> The sweep deliberately spans a loose regime (7B leaves ample KV room) to the tightest (70B TP=2), so the widening MORI advantage tracks memory pressure rather than a single lucky config.</p>
 
-<p><img src="/assets/2606.00866/fig5.png" alt="Figure 5: Busy-phase duration CDF"></p>
+<p><img src="/assets/2606.00866/fig3.png" alt="Figure 3: CDF of tool-call durations — heavy-tailed, 3+ orders of magnitude"></p>
 
-<p><em>Paper's Figure 5, verbatim (caption: "CDF of wall-clock busy-phase duration under three short-call thresholds (1 s, 2 s, 5 s). Medians are approximately 4 s, 20 s, and 41 s. Short tool calls cluster into sustained busy phases lasting tens of seconds.").</em></p>
+<p><em>Paper's Figure 3: tool-call durations span from sub-second file I/O to minutes (human input / subagents).</em> This heavy tail is the entire motivation: because per-call duration is unpredictable and spans decades, per-call placement is hopeless and coarser phase-level signal is required.</p>
 
-<p>图5支撑“用近期窗口估计阶段”的可行性：阶段持续性足够强，避免每次边界都重判带来的振荡。</p>
+<p><img src="/assets/2606.00866/fig5.png" alt="Figure 5: CDF of wall-clock busy-phase duration under 1s/2s/5s short-call thresholds"></p>
 
-<p><img src="/assets/2606.00866/fig7.png" alt="Figure 7: Single-replica end-to-end performance"></p>
+<p><em>Paper's Figure 5: median busy-phase durations of ~4 s / 20 s / 41 s across thresholds; robust to threshold choice.</em> This is the load-bearing evidence that phases <em>persist</em> (median 20 s at the 2 s threshold), long enough that sticky placement won't oscillate — and that 13% of long calls hold 58% of tool-call wall-time.</p>
 
-<p><em>Paper's Figure 7, verbatim (caption: "End-to-end performance on H200 (80 GB) with DP=1 and Qwen-2.5 7B.").</em></p>
+<p><img src="/assets/2606.00866/fig9.png" alt="Figure 9: End-to-end performance on B200, DP=1, Llama-3.1 70B"></p>
 
-<p>单副本实验显示在并发上升后，phase-aware分层管理开始明显拉开与phase-oblivious offloading的差距。</p>
+<p><em>Paper's Figure 9: the tightest memory regime; TA+O throughput is non-monotonic (collapses at 80 programs) while MORI grows monotonically and reaches the largest relative gain (+71%).</em> This is the case-study config: it most cleanly separates phase-aware from phase-oblivious placement because eviction thrashing is unavoidable.</p>
 
-<p><img src="/assets/2606.00866/fig10.png" alt="Figure 10: Multi-replica end-to-end performance"></p>
+<p><img src="/assets/2606.00866/fig10.png" alt="Figure 10: End-to-end performance on H200, DP=3, Qwen-3 30B-A3B"></p>
 
-<p><em>Paper's Figure 10, verbatim (caption: "End-to-end performance on H200 with DP=3 and Qwen-3 30B-A3B.").</em></p>
+<p><em>Paper's Figure 10: multi-replica setting; MORI sustains 99%+ GPU utilization and 54–79% higher throughput while phase-oblivious baselines suffer throughput collapse (falling from 1147→798 tok/s as concurrency rises).</em> It shows memory tiering and cross-replica load balancing can be co-optimized rather than trading off.</p>
 
-<p>多副本结果显示MORI不仅提高吞吐，还缓解高并发下基线的吞吐塌陷，证明“分层调度+亲和路由”必须协同设计。</p>
+<p>Honest tie: at 20 programs on H200-80GB/1× CPU, MORI 546 vs TA+O 534 tok/s (+2%) — when the working set fits in CPU, phase-awareness is marginal.</p>
 
-<p><img src="/assets/2606.00866/tab2.png" alt="Table 2: Scheduling overhead"></p>
-
-<p><em>Paper's Table 2, verbatim (caption: "Scheduling overhead on H200, 30B model, DP=1, 50 programs.").</em></p>
-
-<p>表2说明MORI调度逻辑更复杂但可与GPU计算重叠，额外CPU调度耗时未直接放大端到端延迟。</p>
-
-<h2 id="6-论证链（paper-内部）">6. 论证链（paper 内部） <a class="heading-anchor" href="#6-论证链（paper-内部）" aria-label="Link to 6-论证链（paper-内部）">#</a></h2>
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>Step</th><th>论点（要成立什么）</th><th>关键机制/假设</th><th>证据</th></tr>
-<tr><td>1</td><td>Agent程序应作为调度单位而非单请求单位</td><td>多步前缀依赖与跨调用KV积累</td><td>§3.1 + Fig.2</td></tr>
-<tr><td>2</td><td>工具调用高方差使“按单次调用决策”低效</td><td>offload/reload成本与gap时长耦合，且时长难预测</td><td>§3.2 + Fig.3</td></tr>
-<tr><td>3</td><td>稳定存在的busy/idle阶段可被近期行为识别</td><td>阶段持续时间达秒级到分钟级</td><td>§3.3 + Fig.5</td></tr>
-<tr><td>4</td><td>相对连续idleness比固定阈值更适配不同容量比硬件</td><td>动态工作集比例与静态容量比错配</td><td>§3.4 + §4.2</td></tr>
-<tr><td>5</td><td>三层粘性调度与双层准入可在高压下保持效率</td><td>最小必要迁移、类型化驱逐、亲和路由</td><td>§4.3 + Fig.6</td></tr>
-<tr><td>6</td><td>实证上吞吐/TTFT/GPU利用率在单副本与多副本均改善</td><td>回放工作负载下对比SMG/TA/TA+O</td><td>§6 + Fig.7/8/9/10</td></tr>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>The scheduling unit is the <em>program</em>, not the request; its KV cache grows and stays valuable across tool-call gaps.</td><td>§3.1 + Fig. 2 (prefix dependencies, monotone KV growth).</td></tr>
+<tr><td>2</td><td>Per-call tool durations are unpredictable and heavy-tailed, so per-call placement is impractical.</td><td>§3.2 + Fig. 3 (3+ orders of magnitude variance).</td></tr>
+<tr><td>3</td><td>But at program granularity, behavior clusters into persistent busy/idle <em>phases</em>.</td><td>§3.3 + Fig. 4, Fig. 5 (median 20 s busy phases; 13% long calls = 58% of tool time).</td></tr>
+<tr><td>4</td><td>A binary busy/idle label can't match a fixed GPU:CPU capacity ratio, and LRU/context-length eviction is phase-blind.</td><td>§3.4 (three challenges: no program-aware control, fixed classification, no CPU admission control).</td></tr>
+<tr><td>5</td><td>Therefore idleness must be a continuous, relative ranking $\iota$ that adapts the partition boundary to hardware.</td><td>§4.2 Eq. 1 + §4.3 sticky ranking policy.</td></tr>
+<tr><td>6</td><td>Ranking-driven placement + typed reversed-LRU + affinity routing yields the throughput/TTFT/utilization gains.</td><td>§6.2.1 (DP=1, +20–71%), §6.2.2 (DP=3, 99%+ util, churn 14%→<3%).</td></tr>
 </table>
 
-<h2 id="7-实现-cross-reference（壁垒与关键细节）">7. 实现 cross-reference（壁垒与关键细节） <a class="heading-anchor" href="#7-实现-cross-reference（壁垒与关键细节）" aria-label="Link to 7-实现-cross-reference（壁垒与关键细节）">#</a></h2>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p>[实现未公开]</p>
-
-<h3 id="7-1-核心技术壁垒（最难复现）">7.1 核心技术壁垒（最难复现） <a class="heading-anchor" href="#7-1-核心技术壁垒（最难复现）" aria-label="Link to 7-1-核心技术壁垒（最难复现）">#</a></h3>
-
-<p>最难复现的是把“程序级相对空闲排序”与“引擎内块级驱逐”做一致化闭环：上层必须稳定地产生跨副本可比较的idleness排序，下层必须在GPU与CPU两层执行相反类型优先级驱逐且保持亲和；任何一侧失配都会退化为局部最优并引入搬移抖动。</p>
-
-<h3 id="7-2-关键实现细节（易忽略）">7.2 关键实现细节（易忽略） <a class="heading-anchor" href="#7-2-关键实现细节（易忽略）" aria-label="Link to 7-2-关键实现细节（易忽略）">#</a></h3>
+<p><strong>[实现未公开]</strong> — no public repository is cited in the L1 source; citations below are to the paper's own implementation description.</p>
 
 <ul>
-<li><strong>计时口径</strong>：等待队列造成的调度阻塞时间必须从$T_{\text{acting}}$与$T_{\text{reasoning}}$剔除，否则idleness会把“系统拥塞”误判为“程序本性更闲”。</li>
-<li><strong>懒降级策略</strong>：当只剩Reasoning程序可降级时，需允许其完成当前推理步再迁移，避免中断活跃批次并放大尾延迟。</li>
+<li>Built on <strong>ThunderAgent</strong> + <strong>SGLang v0.5.10</strong>: ~3,300 LoC Python added to ThunderAgent's scheduler + ~500 LoC to SGLang's cache subsystem via HiCache (§5).</li>
+<li><strong>User API</strong>: OpenAI-compatible chat/completions augmented with a single <code>program_id</code> field; a spawned subagent uses a distinct id. This is the <em>only</em> client-side requirement — no tool-call annotations or phase hints (§5).</li>
+<li><strong>Scheduler</strong>: async control loop in the ThunderAgent router, default 5 s tick; request handlers for demoted programs block until re-promotion so no request reaches the engine before its KV is GPU-resident (§5).</li>
 </ul>
 
-<h3 id="7-3-agent系统落地约束（backbone-cost-production）">7.3 Agent系统落地约束（backbone / cost / production） <a class="heading-anchor" href="#7-3-agent系统落地约束（backbone-cost-production）" aria-label="Link to 7-3-agent系统落地约束（backbone-cost-production）">#</a></h3>
+<p><strong>核心技术壁垒 (dedicated paragraph).</strong> The single hardest-to-replicate insight is treating idleness as <em>relative</em> rather than absolute. A binary or threshold classifier is easy; the non-obvious move is that ranking programs against <em>each other</em> makes the busy/idle partition boundary slide automatically to whatever the local GPU:CPU capacity ratio happens to be — so the same code serves a 1:1.6 and a 1:3.1 node with zero retuning, and the act of "filling each tier to capacity from the busiest end" simultaneously <em>is</em> the admission-control mechanism for both tiers. Getting this right requires the windowed $\iota$ (responsive to phase change, robust to a single outlier long call) and the sticky policy (adapt without churn) working together.</p>
 
-<ul>
-<li><strong>Backbone要求</strong>：方法不依赖特定模型家族的推理技巧，但依赖稳定可观测的程序边界事件与可控KV offloading接口。</li>
-<li><strong>成本形态</strong>：收益来自减少无效HBM占用与重算；成本来自GPU<->CPU传输、控制环开销和潜在亲和牺牲，实际最优点随并发与模型大小变化。</li>
-<li><strong>生产要点</strong>：需要程序ID贯穿客户端到调度器、跨副本缓存驻留追踪、以及对CPU层同等严格的准入控制，否则高并发下会在CPU侧重演thrash。</li>
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+<ol>
+<li><strong>Reversed per-tier LRU sort key</strong> (§4.3.2): the engine keeps plain LRU but adds the type label (busy/idle/inactive) as a higher-priority sort key, and the priority order is <em>inverted</em> between tiers — GPU evicts inactive→idle→busy (busy last), CPU evicts inactive→busy→idle (idle last) — so each tier preferentially retains exactly the programs the scheduler assigned to it.</li>
+<li><strong>Excluding scheduler-gated time from $\iota$</strong> (§4.1/§4.2): time a program spends waiting in the CPU/Waiting queue is subtracted from both $T_{\text{acting}}$ and $T_{\text{reasoning}}$, so the metric measures the program's <em>intrinsic</em> behavior and never feeds the scheduler's own queuing delay back into its placement decision.</li>
 </ul>
 
 </div>

@@ -196,360 +196,152 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">ThunderAgent: A Simple, Fast and Program-Aware Agentic Inference System</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2602.13692</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-inference</span><span class="tag">kv-cache-scheduling</span><span class="tag">program-abstraction</span><span class="tag">rl-rollout</span><span class="tag">tool-orchestration</span><span class="tag">agent-serving</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2602.13692</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-inference</span><span class="tag">kv-cache</span><span class="tag">scheduling</span><span class="tag">rl-rollout</span><span class="tag">tool-orchestration</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2602.13692.html">← Synthesis</a>
-<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2602.13692" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
+
 <h1 id="thunderagent-a-simple-fast-and-program-aware-agentic-inference-system">ThunderAgent: A Simple, Fast and Program-Aware Agentic Inference System <a class="heading-anchor" href="#thunderagent-a-simple-fast-and-program-aware-agentic-inference-system" aria-label="Link to thunderagent-a-simple-fast-and-program-aware-agentic-inference-system">#</a></h1>
-<blockquote>
-Hao Kang, Ziyang Li, Xinyu Yang, Weili Xu, Yinfang Chen, Junxiong Wang, Beidi Chen, Tushar Krishna, Chenfeng Xu, Simran Arora | 2026-02 | https://arxiv.org/abs/2602.13692
-Category: framework | Tags: agentic-inference, kv-cache-scheduling, program-abstraction, rl-rollout, tool-orchestration
-Read: 2026-04-18
-</blockquote>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
-<p>ThunderAgent introduces an <strong>agentic program</strong> as a first-class scheduling unit that persists across multiple LLM calls and tool executions, enabling a program-aware scheduler (global waiting queue, state-aware pause/restore with a provably optimal exponential time-decay caching function) and a lifecycle-aware tool resource manager to eliminate KV-cache thrashing, cross-node memory imbalance, and tool-environment leakage in multi-turn agent serving and RL rollout.</p>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
+<p>Agentic inference stacks glue a stateless LLM engine (vLLM) to a stateless tool orchestrator (Kubernetes), scheduling each LLM/tool call independently — causing KV-cache thrashing, cross-node memory imbalance, and leaked tool resources. ThunderAgent makes the whole multi-turn workflow a first-class "agentic program" and schedules at that granularity, yielding 1.5–3.6× serving and 1.8–3.9× RL-rollout throughput.</p>
 
-<p>现代 Agent 工作流（coding agents、SWE-Agent、OpenHands、ToolOrchestra）由多轮 LLM 调用和外部工具执行交错组成。主流部署方式是把一个 LLM 推理引擎（vLLM / SGLang）松耦合地拼到一个通用工具编排器（Kubernetes）上。两个组件各自以 <strong>per-request</strong> 粒度调度，对整个 workflow 的拓扑、未来 reuse、工具生命周期<strong>毫无知觉</strong>。作者在 8×H100 上用 GLM-4.6 + SWE-Bench Lite 跑实测，发现这种组合方式在高并发下会发生三类系统性失败：(1) <strong>KV-cache thrashing</strong>——工具执行期间旧请求的 KV 被激进驱逐，工具返回后必须重跑整个历史 prefill，端到端延迟放大最高 7.14×；(2) <strong>跨节点内存不均衡</strong>——vLLM KV-aware router 把同一 workflow 的所有请求钉到同一节点，由于 agent 上下文快速不可预测地增长，出现某些节点爆满、另一些节点空闲，90 分钟 rollout 中峰值内存差达 51%；(3) <strong>工具生命周期无感</strong>——完成的 workflow 留下的 Docker sandbox / 端口占用不会被回收，磁盘线性上涨直至系统崩溃；同时每个新 workflow 必须等环境 ready 才能开始推理。</p>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p>ThunderAgent 的解决方案是把整个 agent workflow 抽象成一个 <strong>Agentic Program</strong> 元组 $P=\langle \mathit{ID}, c, \mathcal{T}, \mathcal{L}, \tau, s\rangle$，包括程序 ID、上下文 token 数、所需工具环境集、后端放置位置、执行阶段（Reasoning / Acting）和调度状态（Active / Paused / Terminated）。基于这个抽象，scheduler 把调度问题公式化为一个 <strong>cost model</strong>：$\text{Cost}_{\text{total}} = \text{Cost}_{\text{decode}} + \text{Cost}_{\text{prefill}} + \text{Cost}_{\text{recompute}} + \text{Cost}_{\text{unused}} + \text{Cost}_{\text{caching}}$，目标是最大化 decode/prefill 两项生产性开销、最小化后三项浪费。具体机制包括：<strong>周期性 thrashing 检测</strong>（每 $\Delta t$ 查询各 DP backend 内存）、<strong>State-aware pausing</strong>（优先 pause 在 Acting 状态的 program，保留 Reasoning program 的 KV）、<strong>Shortest-first eviction</strong>（数学证明重计算代价 $\propto c_i^2$，故 pause 最短 program 最优）、<strong>时间衰减函数</strong> $f(t)$（作者证明在 memoryless 的工具延迟假设下，最优衰减函数必为指数形式 $e^{-\lambda t}$）、<strong>Global program-aware waiting queue</strong>（跨 DP 节点共享队列，允许 paused program 在任何节点 restore 以缓解不均衡）、以及 <strong>生命周期感知的工具资源管理器</strong>（显式 release 信号驱动 GC、与 reasoning 重叠异步准备环境）。</p>
+<p><strong>Q1 — 痛点 (Pain).</strong> Modern inference engines lose throughput as the number of concurrent agentic workflows grows, and RL rollout eats >70% of training wall-clock. The root cause is that request-aware components have no end-to-end view of a workflow, producing three concrete pathologies: (1) <strong>KV-cache thrashing</strong> — the engine evicts a workflow's KV cache during its tool-execution interval with no knowledge it will be reused, forcing a full re-prefill on resume (up to $7.14\times$ latency inflation); (2) <strong>cross-node memory imbalance</strong> — prefix/KV-aware routers pin all requests with identical agent system prompts to one node, so some DP replicas saturate while others idle (peak 51% imbalance); (3) <strong>tool lifecycle obliviousness</strong> — orchestrators can't distinguish a temporary tool-wait from termination, so sandboxes/Docker images/ports are never reclaimed and disk grows linearly to exhaustion.</p>
 
-<p>实验使用 GLM-4.6 MoE 在 8×H100 上对比 vLLM+Kubernetes、Continuum、Autellix 等 SOTA 系统。在 Serving 场景，ThunderAgent 在 ToolOrchestra/SWE-Agent/OpenHands 三种 agent 上实现 <strong>1.48–3.58× 吞吐提升</strong>；在分布式 RL Rollout 场景实现 <strong>1.79–3.92× 提升</strong>（mini-SWEAgent: 375 → 672 req/h；OpenHands: 69 → 271 req/h）；磁盘占用节省 <strong>4.2×</strong>。Ablation 证明时间衰减函数和 $\Delta t$ 周期对结果稳健，主要吞吐增益来自 prefill/decode latency 的下降，而 tool resource management 额外贡献约 10% 延迟收益。</p>
+<p><strong>Q2 — 方法 (Method).</strong> Abstract each workflow as an <strong>agentic program</strong> $P = \langle \mathit{ID}, c, \mathcal{T}, \mathcal{L}, \tau, s \rangle$ — a persistent scheduling unit carrying its token count, tool set, node placement, execution phase (Reasoning/Acting), and status (Active/Paused/Terminated). Built on this: (a) a <strong>program-aware waiting queue</strong> that periodically (every $\Delta t$) detects imminent thrashing and pauses <em>acting</em> programs (whose caches are idle) while restoring <em>reasoning</em> ones, using a time-decay weight $f(t)$ on acting programs and shortest-context-first eviction; (b) a <strong>global</strong> version of that queue that migrates paused programs to any underutilized replica (recomputation is node-agnostic once paused, so locality is not sacrificed); (c) <strong>tool resource management</strong> with lifecycle-hook GC (reclaim on Terminated) and asynchronous environment pre-build overlapped with LLM reasoning.</p>
 
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
-<ul>
-<li><strong>KV-cache thrashing 是 agent serving 的头号瓶颈</strong>：per-request 调度完全忽视 workflow 内强 prefix 依赖，工具等待期 KV 被驱逐，导致重 prefill 放大端到端延迟 <strong>7.14×</strong>。</li>
-<li><strong>Session-pinning 的 KV-aware 路由在 agent 场景下反而有害</strong>：vLLM 把同一 workflow 钉在同一节点 → 两节点 DP 场景 90 min 内有 37 min 内存差 >20%，峰值 51%；SGLang 前缀路由在共享 system prompt 场景下会把几乎所有请求送到同一节点。</li>
-<li><strong>Shortest-first eviction 是最优 pause 策略</strong>（数学证明）：重计算成本 $\text{Cost}_{\text{recompute}} \propto c_i^2$，且目标函数 $x^2$ 严格凸 + super-additive，必然选择最短 context 程序可获全局最优。</li>
-<li><strong>指数衰减是唯一合法的缓存衰减函数</strong>（理论结果）：在 memoryless（工具剩余时间与已等待时间独立）假设下，满足时间同质性和边界条件 $f(0)=1, f(\infty)=0$ 的所有 $f$ 必为 $e^{-\lambda t}$ 或离散几何 $x^{-k}$。</li>
-<li><strong>KV cache hit rate 并非万灵指标</strong>：在工具延迟不稳定的场景，Continuum 的 TTL pin 策略 hit rate 更高，但 caching cost 被放大，吞吐反而低于 ThunderAgent——证明生产性/非生产性内存占用的 tradeoff 必须显式建模。</li>
-<li><strong>PD 分离在 agent workload 下退化</strong>：把集群切成 prefill-only / decode-only 后，单侧 HBM 池变小，在更低并发就触发 thrashing，与 chatbot 场景下的优化直觉相反。</li>
-<li><strong>KV cache offloading (LMCache) 无法救场</strong>：PCIe 带宽不足以承接 agent 高频上下文切换，swap-in/out 抵消掉扩容收益。</li>
-<li><strong>Low-touch API</strong>：只需 3 处改动（请求体加 <code>program_id</code>、工具调用传 <code>program_id</code>、程序结束显式 <code>POST /programs/release</code>），OpenAI 接口完全兼容。</li>
+<p>The <strong>核心技术壁垒</strong>: the insight that once a program is <em>paused</em> its KV cache is assumed evicted, which makes its recomputation cost <strong>node-agnostic</strong> — this single observation is what simultaneously breaks the false tradeoff between KV-locality (pin to one node) and load-balance (spread across nodes), letting one global queue solve thrashing and imbalance together. Reproducing this requires wiring program-phase state into both the memory-pressure detector <em>and</em> the cross-node dispatcher coherently; it is not a drop-in engine patch.</p>
+
+<p><strong>Q3 — 结果 (Result).</strong> $1.48$–$3.58\times$ serving throughput over vLLM ($1.17$–$3.31\times$ over Continuum) across coding/routing/science agents; $1.79$–$3.92\times$ RL-rollout throughput over vLLM+Gateway on 2×H100; up to $4.2\times$ disk-memory savings; near-100% KV hit rate under high concurrency for deterministic tools. Notably ThunderAgent wins on throughput even when its KV hit rate is <em>lower</em> than Continuum's (stochastic tools), because it prioritizes active GPU utilization over cache pinning.</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p>The agent-loop granularity is the whole workflow. One program alternates between a <strong>Reasoning</strong> phase (on-GPU LLM inference producing thought $\ell_t$ + action $a_t$) and an <strong>Acting</strong> phase (off-GPU tool execution), accumulating context $c_t = (o_1, e_1, \dots, o_t)$ where each $c_{t+1}$ extends $c_t$ as a prefix — hence near-complete theoretical KV reuse across steps. Planning style is a <strong>predetermined ReAct-style think→act loop</strong> external to the system (ThunderAgent schedules it, it does not do tree search or backtracking itself). Memory model: short-term = KV cache of $c_t$ in HBM; long-term/environment = persistent tool assets (sandboxes, DB connections, ports) held across the whole trajectory; episodic = the program metadata table. Autonomy is fully autonomous multi-turn; the system optimizes sustained throughput, not tail latency.</p>
+
+<p><img src="/assets/2602.13692/fig3-overview.png" alt="Figure 3: ThunderAgent system overview — global waiting queue over DP backends"></p>
+
+<p><em>Paper's Figure 3.</em> The global waiting queue is queried every $\Delta t$. Backend #1 is thrashing (over capacity) and Backend #3 is underutilized. The scheduler pauses <strong>acting</strong> Program #2 back into the queue and restores <strong>reasoning</strong> Programs #6 and #9 onto the idle backend — killing thrashing in #1 and rebalancing #3 in one coordinated action. Notice a single shared queue is what couples the within-node (pause) and cross-node (restore-elsewhere) decisions.</p>
+
+<p>The per-turn state machine and the pause/restore transitions are:</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Active_Reasoning
+    Active_Reasoning --> Active_Acting: emit action a_t (tool call)
+    Active_Acting --> Active_Reasoning: tool result -> incremental prefill
+    Active_Reasoning --> Paused: memory pressure (thrashing detected)
+    Active_Acting --> Paused: S_pause prioritizes Acting; KV evicted
+    Paused --> Active_Reasoning: restore on backend L' with capacity (re-prefill)
+    Active_Reasoning --> Terminated: program completes
+    Terminated --> [*]: GC reclaims tool resources
+</div>
+
+<p>Error recovery is structural rather than semantic: a tool failure or termination surfaces as a status transition to Terminated (triggering GC); a paused program that must resume simply pays a re-prefill on restore. The system does not model tool <em>correctness</em> — it only manages the resource lifecycle around tool calls.</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 (success guarantee) — 仅实证</strong> for the end-to-end throughput claims. There is <strong>no</strong> convergence or success-rate bound; success rate is not even a metric (the system is workload-agnostic and preserves the underlying agent's outputs). What <em>is</em> formally proved is the scheduling-optimality of two mechanisms. What <em>could</em> have been bounded but was not: a worst-case throughput ratio vs. an oracle scheduler.</p>
+
+<p><strong>Notation table</strong></p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$P = \langle \mathit{ID}, c, \mathcal{T}, \mathcal{L}, \tau, s\rangle$</td><td>Agentic program tuple</td></tr>
+<tr><td>$c$ / $c_p$</td><td>Context token count (KV footprint) of a program</td></tr>
+<tr><td>$\mathcal{T}$</td><td>Set of tool environments required</td></tr>
+<tr><td>$\mathcal{L}$</td><td>Backend (GPU node) placement</td></tr>
+<tr><td>$\tau \in \{R, A\}$</td><td>Execution phase: Reasoning / Acting</td></tr>
+<tr><td>$s$</td><td>Status: Active / Paused / Terminated</td></tr>
+<tr><td>$\text{C}_{\text{total}}$</td><td>Fixed KV-cache token capacity of a backend</td></tr>
+<tr><td>$M_x(t)$</td><td>Memory (KV tokens) used by process $x$ at time $t$</td></tr>
+<tr><td>$f(t)$</td><td>Time-decay weight on an acting program's tokens</td></tr>
+<tr><td>$\Delta C$</td><td>Memory to release to stop thrashing</td></tr>
+</table>
+
+<p><strong>方程物理意义.</strong> Cost is the Space-Time Product $\text{Cost}_x = \int_0^{t_x} M_x(t)\,dt$ — area under the memory–time curve. It decomposes as $\text{Cost}_{\text{total}} \approx \text{Cost}_{\text{decode}} + \text{Cost}_{\text{prefill}} + \text{Cost}_{\text{recompute}} + \text{Cost}_{\text{unused}} + \text{Cost}_{\text{caching}}$, where the last three are exactly the three pathologies (thrashing, imbalance, idle-cache-during-tool-wait). The scheduler minimizes those three while maximizing the first two. Thrashing on backend $\mathcal{L}$ is declared when $\text{C}_{\text{total}} < \sum_{p\in\mathcal{L}} c_p$; with the decay, acting-program tokens are discounted: $\text{C}_{\text{total}} < \sum_{p,\tau=R} c_p + \sum_{q,\tau=A} c_q \cdot f(t_q)$. Eviction chooses subset $S$ solving $\min_S \sum_{i\in S} c_i^2$ s.t. $\sum_{i\in S} c_i \ge \Delta C$.</p>
+
+<p><strong>Minimum checks (6):</strong></p>
+
+<ol>
+<li><strong>Decay-form derivation.</strong> Time-homogeneity $f(t+\Delta)=f(t)f(\Delta)$ + boundary $f(0)=1,\ f(\infty)=0$ is the semigroup/Cauchy equation; log-linearity forces $f(t)=e^{-\lambda t}$ (continuous) or $f(k)=x^{-k},\ x>1$ (discrete). ✔ closed-form consistent.</li>
+<li><strong>Boundary sanity.</strong> $f(0)=1$ ⇒ zero tool time = pure reasoning (no discount); $f(\infty)=0$ ⇒ infinite tool time = request-level (fully evictable). ✔ endpoints match the two baseline regimes.</li>
+<li><strong>Quadratic recompute.</strong> With chunked prefill processing constant KV/iter, $c_i(t)\propto t$, so $\text{Cost}_{\text{recompute}}=\int_0^{t_{\text{rec}}} c_i(t)\,dt \propto t_{\text{rec}}^2$; and $t_{\text{rec}}\propto c_i$ ⇒ $\propto c_i^2$. ✔ dimensionally an area, quadratic in length.</li>
+<li><strong>Shortest-first optimality.</strong> For strictly-convex $x^2$: if $c_{\text{short}}<c_{\text{long}}$ then $(c_{\text{short}}+r)^2 = c_{\text{short}}^2 + r^2 + 2c_{\text{short}}r > c_{\text{short}}^2 + r^2$, so swapping the long for the short strictly lowers $\sum c_i^2$ while keeping $\sum c_i \ge \Delta C$. ✔ exchange argument valid.</li>
+<li><strong>Scoring-function consistency.</strong> $S_{\text{restore}}=\tfrac{1}{c_P}+\mathbb{I}(\tau=R)$ and $S_{\text{pause}}=\tfrac{1}{c_P}+\mathbb{I}(\tau=A)$: the indicator (0 or 1) dominates the $\tfrac{1}{c_P}\in(0,1)$ term, so phase is the primary key and shortest-context the tiebreak — matches both Lemma 4.1 (evict short) and the intent (pause Acting / restore Reasoning). ✔</li>
+<li><strong>Node-agnostic recompute claim.</strong> Once paused, KV is evicted, so restore cost is a full re-prefill independent of destination node ⇒ $\text{Cost}_{\text{unused}}$ can be driven to zero by dispatching any paused program to any idle replica without extra penalty. ✔ internally consistent with the STP model.</li>
 </ul>
 
-<h3 id="figure-1a-throughput-degradation-of-existing-systems">Figure 1a: Throughput Degradation of Existing Systems <a class="heading-anchor" href="#figure-1a-throughput-degradation-of-existing-systems" aria-label="Link to figure-1a-throughput-degradation-of-existing-systems">#</a></h3>
-<p><img src="/assets/2602.13692/fig1a-throughput-degradation.png" alt="Figure 1a: Throughput degradation"></p>
-<p><strong>What it shows</strong>: 随 parallel workflow 数量（batch size）增加，vLLM、Continuum、Autellix 等 baseline 吞吐不升反降，曲线在某个阈值后陡降。</p>
-<p><strong>Why it matters</strong>: 这是论文的 <strong>motivation 一号图</strong>——它证明 agentic serving 不是通过"简单加大并发"就能线性扩展的，为引入 program-aware 调度奠定合法性。</p>
-<p><strong>Detailed description</strong>: 横轴是并发 workflow 数，纵轴是吞吐 (req/s 或 tokens/s)。baseline 曲线呈现"先升后降"的倒 U 形，说明 KV 内存成为硬约束后，新增请求反而拖垮已有请求的 prefill。ThunderAgent 曲线则保持单调上升并稳定在饱和平台。</p>
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<h3 id="figure-1c-thunderagent-speedup-across-agents">Figure 1c: ThunderAgent Speedup Across Agents <a class="heading-anchor" href="#figure-1c-thunderagent-speedup-across-agents" aria-label="Link to figure-1c-thunderagent-speedup-across-agents">#</a></h3>
-<p><img src="/assets/2602.13692/fig1c-thunder-speedup.png" alt="Figure 1c: ThunderAgent speedup"></p>
-<p><strong>What it shows</strong>: 在 SWE-Agent、OpenHands、ToolOrchestra 三种不同 agent 框架上，ThunderAgent 相对 prior inference system 的吞吐加速比（1.48–3.58×）。</p>
-<p><strong>Why it matters</strong>: 证明 program-aware 调度的收益不依赖特定 agent；只要 workflow 具有"多轮 LLM + 工具调用"结构，就能从抽象中受益。</p>
-<p><strong>Detailed description</strong>: 分组柱状图，每组对应一个 agent benchmark，组内柱子分别是 vLLM+Kubernetes、Continuum、ThunderAgent。颜色编码一致，ThunderAgent 柱始终最高，加速比作为数字标签标在柱子上方。</p>
+<p>Models: GLM-4.6 (MoE), also Qwen-3; TP on H100. Serving on 1×8H100, RL rollout on 2×8H100. Baselines: vLLM + Kubernetes/Gateway, and Continuum (TTL-based KV pinning).</p>
 
-<h3 id="figure-2a-cross-node-memory-imbalance">Figure 2a: Cross-Node Memory Imbalance <a class="heading-anchor" href="#figure-2a-cross-node-memory-imbalance" aria-label="Link to figure-2a-cross-node-memory-imbalance">#</a></h3>
-<p><img src="/assets/2602.13692/fig2a-memory-imbalance.png" alt="Figure 2a: Memory imbalance"></p>
-<p><strong>What it shows</strong>: 2×H100 节点在 90 分钟 OpenHands RL rollout 中的内存使用时间序列，两节点差异持续显著，峰值 51%。</p>
-<p><strong>Why it matters</strong>: 直接否定 "KV-aware routing 在 agent 场景是 best practice" 这个流行观点——pin-to-node 策略在 agent 上下文爆炸式增长下必然走向不均衡，全局 waiting queue 才是解。</p>
-<p><strong>Detailed description</strong>: 双折线图，横轴为 wall-clock 时间，纵轴为节点内存利用率。两条曲线代表 node0 / node1，频繁交叉但 37 min 以上差距 >20%。阴影区域标出峰值 51% 的时间段，作为 ThunderAgent 引入动态迁移机制的实证依据。</p>
+<p><img src="/assets/2602.13692/fig1a-throughput-degradation.png" alt="Figure 1a: throughput degradation of prior systems vs batch size"></p>
 
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
+<p><em>Paper's Figure 1(a).</em> Prior inference systems fail to sustain throughput as the parallel-workflow (batch) count rises — the motivating symptom. This is the curve ThunderAgent is designed to flatten.</p>
 
-<h3 id="table-2-thunderagent-glm-4-6-rl-rollout-on-2×h100">Table 2: ThunderAgent GLM-4.6 RL Rollout on 2×H100 <a class="heading-anchor" href="#table-2-thunderagent-glm-4-6-rl-rollout-on-2×h100" aria-label="Link to table-2-thunderagent-glm-4-6-rl-rollout-on-2×h100">#</a></h3>
+<p><img src="/assets/2602.13692/fig2a-memory-imbalance.png" alt="Figure 2a: cross-node memory imbalance during RL rollout"></p>
+
+<p><em>Paper's Figure 2(a).</em> Over a 90-minute rollout snapshot across two DP nodes, memory usage diverges >20% for over 37 minutes and peaks at <strong>51%</strong> imbalance — direct evidence that prefix-aware routing wastes half of one node's capacity. This is the $\text{Cost}_{\text{unused}}$ term made visible.</p>
+
+<p><img src="/assets/2602.13692/fig4-main-results.png" alt="Figure 4: serving throughput of ThunderAgent vs vLLM and Continuum"></p>
+
+<p><em>Paper's Figure 4.</em> Throughput (steps/min) vs parallel-workflow count across agent–benchmark pairs. ThunderAgent ($1.48$–$3.58\times$ over vLLM) holds near-flat maximum throughput past the point where baselines collapse once workload exceeds GPU-memory limits, and adapts to available capacity without manual tuning.</p>
+
+<p><img src="/assets/2602.13692/fig1c-thunder-speedup.png" alt="Figure 1c: ThunderAgent speedup at scale"></p>
+
+<p><em>Paper's Figure 1(c).</em> Head-to-head speedup for SWE-Agent, OpenHands, and ToolOrchestra: the gain grows with concurrency, confirming that reduced KV-thrashing plus tool-lifecycle management is what buys sustained throughput rather than a fixed constant offset.</p>
+
+<p><img src="/assets/2602.13692/fig6-ablation.png" alt="Figure 6: ablation — latency breakdown and Δt / f(t) sensitivity"></p>
+
+<p><em>Paper's Figure 6.</em> (a) End-to-end latency breakdown for OpenHands rollout: gains come <strong>primarily from prefill+decode reductions</strong>, while tool-resource management adds only ~10% latency improvement yet delivers the $4.2\times$ disk savings. (b) Sensitivity to detection period $\Delta t$ and decay base $x$ in $f(t)=x^{-t}$: throughput is robust across settings; larger $\Delta t$ risks thrashing between checks, larger $x$ trades recomputation for reduced caching cost.</p>
+
+<p><strong>RL rollout (Table 2, 2×H100, N=144, 3 h):</strong></p>
+
 <table>
-<tr><th>Workflow</th><th>Serving System</th><th>Throughput (req/h)</th></tr>
+<tr><th>Workflow</th><th>System</th><th>Throughput</th></tr>
 <tr><td>mini-SWEAgent</td><td>vLLM + Gateway</td><td>375.4</td></tr>
-<tr><td>mini-SWEAgent</td><td><strong>ThunderAgent</strong></td><td><strong>671.8 (1.79×)</strong></td></tr>
+<tr><td>mini-SWEAgent</td><td>ThunderAgent</td><td>671.8 ($1.79\times$)</td></tr>
 <tr><td>OpenHands</td><td>vLLM + Gateway</td><td>69.1</td></tr>
-<tr><td>OpenHands</td><td><strong>ThunderAgent</strong></td><td><strong>270.8 (3.92×)</strong></td></tr>
+<tr><td>OpenHands</td><td>ThunderAgent</td><td>270.8 ($3.92\times$)</td></tr>
 </table>
-<p><strong>Takeaway</strong>: 在 OpenHands（工具调用更复杂、上下文更长）场景中加速比最大（3.92×），说明 workflow 越"重"，program-aware 抽象带来的收益越大——RL rollout 场景因为 policy lag 对 throughput 高度敏感，这是直接可落地的工业价值。</p>
 
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-<ul>
-<li><strong>硬绑定 OpenAI 接口</strong>：所有集成假设 LLM backend 提供 OpenAI 兼容的 chat_completion endpoint，自定义私有 API 或 streaming-only backend 需要额外 adapter。</li>
-<li><strong>需要应用层显式 release</strong>：程序结束必须 <code>POST /programs/release</code>，若开发者忘记发送，仍会出现资源泄漏——相比纯被动 GC 不够"简单"。</li>
-<li><strong>Memoryless 假设在真实远程 API 上可能不成立</strong>：指数衰减的最优性依赖工具延迟 memoryless，但论文自己在 Appendix C 承认远程 API 呈重尾（p99 远大于中位数），最优衰减形式在重尾分布下是否仍是指数是 open question。</li>
-<li><strong>未评估多模型混部</strong>：所有实验用单一 GLM-4.6 模型，多租户多模型场景的 program routing 未涉及。</li>
-<li><strong>未对比更新的 agent 系统</strong>（如 MegaFlow / RollArt）的端到端数据**，仅在 Related Work 中定性提及。</li>
-<li><strong>$\lambda_{\min} = \lambda_{\max} = 1$ 的选择</strong>：论文说"共享 prompt 已提供 buffer"，但若 system prompt 短或 workflow 异质，无 hysteresis 窗口可能导致震荡。</li>
-</ul>
+<p>Benchmarks: SWE-Bench / SWE-Bench Lite (coding), HLE-Bench (routing, ToolOrchestra), ScienceAgentBench (science). Metrics are throughput (steps/min), KV-cache hit rate, and end-to-end latency — <strong>not</strong> task success (the system is output-preserving). The most instructive result is the counter-intuitive one: in stochastic-tool settings Continuum reaches a <em>higher</em> KV hit rate yet <em>lower</em> throughput, because pinning caches for long tool calls inflates $\text{Cost}_{\text{caching}}$ — so hit rate is not a monotone proxy for throughput.</p>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-<ul>
-<li><strong>Algorithm</strong>: 为 async RL rollout 提供基础设施底座——rollout 吞吐 ≈ policy-lag 削减，直接提升 PPO/GRPO 类 agent-RL 训练的 convergence speed 和 final reward。</li>
-<li><strong>Kernel</strong>: N/A —— 不涉及 kernel/numerical format 改动；完全工作在调度层，与 FlashAttention / FP8 GEMM 正交。</li>
-<li><strong>Framework</strong>: <strong>直接竞品/增强层</strong>。作为 vLLM/SGLang 的中间件，在其上包装 program-level 语义。可视为 Autellix、Continuum、Sutradhara 等 agent-serving 系统的下一代——把"进程表"细化为"程序元组 + 全局队列 + 证明最优的衰减函数"。</li>
-<li><strong>LLM</strong>: N/A（模型无关；任何 multi-turn + tool 的模型都可受益）。</li>
-<li><strong>Agent</strong>: <strong>重要</strong>。为 agent 框架（SWE-Agent / OpenHands / ToolOrchestra）提供 throughput-optimal 的 runtime；显式建模了 agent 的双态（Reasoning / Acting）——今后 agent 框架设计会更明确地上暴露这两个状态给 runtime。</li>
-<li><strong>Code</strong>: 开源仓库（见 <code>https://github.com/HaoKang-Timmy/ThunderAgent</code> / arXiv 摘要同时提到 <code>Agentic-Kinetics/ThunderAgent</code>）——值得深入阅读 <code>program_abstraction</code>、<code>global_waiting_queue</code>、<code>time_decay</code> 三个关键模块的实现。</li>
-</ul>
-
-<hr>
-
-<h2 id="deep-analysis-framework">Deep Analysis (framework) <a class="heading-anchor" href="#deep-analysis-framework" aria-label="Link to deep-analysis-framework">#</a></h2>
-
-<h3 id="inherited-phase-2-deepening">Inherited Phase 2 Deepening <a class="heading-anchor" href="#inherited-phase-2-deepening" aria-label="Link to inherited-phase-2-deepening">#</a></h3>
-
-<h4 id="时代定位-era-positioning">时代定位 (Era Positioning) <a class="heading-anchor" href="#时代定位-era-positioning" aria-label="Link to 时代定位-era-positioning">#</a></h4>
-<p>2026 年的 LLM 推理系统栈中，<strong>chatbot serving 的 low-hanging fruits</strong> 已被 paged attention、continuous batching、chunked prefill、PD 分离、MoE EP、speculative decoding 等技术采摘干净。vLLM/SGLang/TRT-LLM 三巨头的性能差距缩小到 <20%。此时真正的瓶颈从<strong>单请求效率</strong>转向<strong>multi-turn agent workload 的调度语义</strong>——当一个 workflow 会在 LLM 与外部工具间往返 10–50 次、上下文从 2k 增长到 100k 时，过去所有"per-request 视角"的优化都失效。ThunderAgent 代表了推理系统进入 <strong>program-aware</strong> 深水区的第一批工作之一（与 2026 年前后的 MegaFlow、Sutradhara、Continuum 并列），其核心主张是：<strong>workflow 不能是 runtime 的无名气一等公民</strong>。</p>
-
-<h4 id="约束推导：为什么过去的路径都不通？">约束推导：为什么过去的路径都不通？ <a class="heading-anchor" href="#约束推导：为什么过去的路径都不通？" aria-label="Link to 约束推导：为什么过去的路径都不通？">#</a></h4>
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>替代方案</th><th>是否可行</th><th>失败证明</th></tr>
-<tr><td>更激进的 KV-aware routing（把 workflow 永久钉死）</td><td>❌</td><td>agent 上下文不可预测增长 → 不均衡 51%（Fig 2a 实测）</td></tr>
-<tr><td>TTL-based cache pinning（Continuum）</td><td>❌</td><td>远程工具 p99 重尾，TTL 总是错；thrashing 不可避免</td></tr>
-<tr><td>KV offload to CPU/SSD（LMCache）</td><td>❌</td><td>PCIe 带宽不足支撑 agent 高频 context switch（Fig 7a）</td></tr>
-<tr><td>PD 分离（decode-only + prefill-only）</td><td>❌</td><td>agent 工作流上下文单调增长 → HBM 池被拆小 → 更早 thrashing（Fig 7b）</td></tr>
-<tr><td>Session-aware prefetch（Vortex）</td><td>部分</td><td>不能主动迁移 running program → 仅优化冷启动</td></tr>
-<tr><td>Pure disaggregation（MegaFlow / RollArt）</td><td>部分</td><td>把 engine 和 executor 当黑箱，无法协调 KV 与工具</td></tr>
-<tr><td><strong>Program-aware scheduling (本工作)</strong></td><td>✅</td><td>把 workflow 提升为一等调度单元，全局队列 + state-aware pause</td></tr>
+<tr><th>#</th><th>Step</th><th>Support</th></tr>
+<tr><td>1</td><td>Agentic workflows have near-complete theoretical KV reuse across steps ($c_{t+1}\supseteq c_t$) and hold persistent tool state.</td><td>§2.1 formal model</td></tr>
+<tr><td>2</td><td>Request-level schedulers ignore this: they evict KV during tool waits and never reclaim tool resources, so throughput collapses (7.14× latency, 51% imbalance, linear disk growth).</td><td>§3 profiling, Fig 1a/1b/2</td></tr>
+<tr><td>3</td><td>Therefore the correct scheduling unit is the whole workflow; encode it as a program tuple $P$ carrying phase and status.</td><td>§4.1 abstraction</td></tr>
+<tr><td>4</td><td>Cast the objective as STP-cost minimization; the three pathologies map to $\text{Cost}_{\text{recompute}}, \text{Cost}_{\text{unused}}, \text{Cost}_{\text{caching}}$.</td><td>§4.2 cost model</td></tr>
+<tr><td>5</td><td>Minimize those terms: pause Acting programs (shortest-first, decay-weighted) to stop thrashing; because paused-cost is node-agnostic, a global queue can also rebalance nodes; hook-GC + async prep kill the tool-resource terms.</td><td>§4.3–§4.4, Thm E.1, Lemma 4.1</td></tr>
+<tr><td>6</td><td>Result: sustained throughput that does not collapse past memory limits — 1.48–3.58× serving, 1.79–3.92× rollout, 4.2× disk.</td><td>§5 experiments, Table 2, Fig 4/6</td></tr>
 </table>
 
-<h4 id="核心技术壁垒-core-technical-barrier">核心技术壁垒 (Core Technical Barrier) <a class="heading-anchor" href="#核心技术壁垒-core-technical-barrier" aria-label="Link to 核心技术壁垒-core-technical-barrier">#</a></h4>
-<p>ThunderAgent 真正难以复制的不是"全局队列"或"state machine"——这些是工程量。<strong>壁垒是 §4.3.1 中那个时间衰减函数 $f(t)$ 的最优性证明</strong>，它把 engineer 可能随手写的"衰减 heuristic" 升格为<strong>唯一合法的指数形式</strong>（memoryless 假设下的 Cauchy 函数方程闭解）。这使得 ThunderAgent 在理论上击败所有非指数衰减的 TTL/LRU/热度分策略。实操意义是：同行再造类似系统时，如果选了别的衰减形式（如线性、多项式），论文作者可以直接用 Theorem E.1 解释为何他们次优。这是论文的"护城河"。</p>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<h4 id="质疑假设-challenge-assumptions">质疑假设 (Challenge Assumptions) <a class="heading-anchor" href="#质疑假设-challenge-assumptions" aria-label="Link to 质疑假设-challenge-assumptions">#</a></h4>
+<p>Open-sourced at <code>github.com/Agentic-Kinetics/ThunderAgent</code> (specific file:line not extracted in L1) → treat concrete internals as <strong>[实现未公开 at file:line granularity]</strong>, but the interface contract is fully specified.</p>
+
 <ul>
-<li><strong>Memoryless 假设可能过强</strong>：Appendix C 图 9 显示 HLE-search / HLE-enhance-reasoning 这类远程工具的延迟是重尾 + p99 拉到百秒级。如果延迟符合 Pareto 或 Log-Normal，条件概率 $P(T > t+\Delta | T > t)$ 会<strong>随 $t$ 变大</strong>（老化效应），此时最优衰减可能不是指数。论文没有在重尾数据上重新求解最优 $f$，这是一个可被后续工作攻击的点。</li>
-<li><strong>$\text{Cost}_{\text{recompute}} \propto c_i^2$ 依赖 chunked prefill 线性累积</strong>：如果 backend 使用非均匀 chunk（如按 MoE expert balance 动态切），二次关系可能退化为 $O(c_i^{1+\alpha})$，shortest-first 仍最优但比例系数变。</li>
-<li><strong>Global waiting queue 的延迟开销被默认为 0</strong>：跨节点决策每 $\Delta t$ 查询所有 backend，当 DP 扩到数百节点时，查询带宽和调度器本身的 CPU 处理能力可能成为新瓶颈——论文实验只到 2 节点 16 GPU。</li>
+<li><strong>Integration surface (Appendix B.3, Fig 8):</strong> adoption is three changes — attach <code>program_id</code> to each LLM request, attach <code>program_id</code> to each tool execution, and send an explicit release signal with <code>program_id</code> on program end. All other OpenAI-style API fields are unchanged. ThunderAgent wraps existing engines/orchestrators as a middleware runtime layer.</li>
+<li><strong>State schema (Appendix B.1, Tables 3–4):</strong> <code>ProgramState{status: ProgramStatus, backend_url: str, step_count: int, total_tokens: int}</code>; <code>ProgramStatus ∈ {REASONING (on-GPU), ACTING (off-GPU tool), PAUSED (global paused set), STOPPED (reclaimed)}</code>; <code>BackendState{url, healthy: bool, cache_config: Optional[CacheConfig], active_program_tokens: int}</code>.</li>
+<li><strong>核心技术壁垒 (§4.3.2):</strong> the load-bearing engineering trick is that pausing marks the KV as evicted, decoupling recomputation cost from placement. This is what lets a <em>single</em> global waiting queue serve both thrashing-prevention (which program to pause on an over-full node) and load-balancing (which idle node to restore onto) without a separate KV-migration path over the interconnect — the thing distributed-KV systems (BanaServe, LMCache) pay bandwidth for, ThunderAgent sidesteps by recomputing.</li>
 </ul>
 
-<h4 id="设计绑定批判-design-binding-critique">设计绑定批判 (Design Binding Critique) <a class="heading-anchor" href="#设计绑定批判-design-binding-critique" aria-label="Link to 设计绑定批判-design-binding-critique">#</a></h4>
-<p>ThunderAgent 强制绑定以下前提：</p>
+<p><strong>关键实现细节 (easy-to-miss):</strong></p>
 <ol>
-<li><strong>backend 必须支持 pause/restore 语义</strong>：要求 vLLM/SGLang 暴露"驱逐某个 program 的 KV 并保留能力"——当前 vLLM 的 <code>abort_request</code> 可用但 SGLang 的类似接口未必成熟。</li>
-<li><strong>应用层必须正确发 <code>release</code> 信号</strong>：假设所有 agent 开发者都记得调 <code>POST /programs/release</code>，否则 tool resource GC 会退化为 timeout-based（和 K8s 没区别）。</li>
-<li><strong>KV cache 粒度是整个 program 的 context</strong>：无法对 program 内部做细粒度 KV 驱逐（例如仅保留 system prompt 部分）。这让 ThunderAgent 与 Shadow-KV / Pensieve 等 sparse-KV 方案不正交。</li>
-<li><strong>OpenAI 接口必须兼容</strong>：pure streaming 或多模态 embedded protocol 需要写 adapter。</li>
-<li><strong>DP 而非 PD 架构</strong>：Fig 7b 已经承认 PD 分离和 ThunderAgent 不兼容。</li>
+<li><strong>Both watermarks $\lambda_{\max}=\lambda_{\min}=1$</strong> (§4.3.1) — no explicit hysteresis margin; the shared agent system prompt implicitly reserves buffer. Fragile for heterogeneous-prompt workloads; no analysis of the breaking point.</li>
+<li><strong>Tool env preparation is triggered by the queue, not the LLM</strong> — when a high-priority program nears the restore threshold, its Docker/deps are pre-built asynchronously <em>before</em> GPU memory is granted (§4.4), hiding init latency; this coupling of the tool-orchestrator prefetch to the GPU-scheduler's lookahead is what yields the ~10% latency slice plus 4.2× disk savings.</li>
+<li><strong>Production posture:</strong> sandboxing via Docker containers reclaimed by reference-count on program termination; observability via the central program metadata table; tool-time is treated as heavy-tailed/unpredictable (Appendix C, Fig 9), which is precisely why static TTL (Continuum) is rejected in favor of the memoryless-decay $f(t)$.</li>
 </ul>
-
-<h4 id="生态影响追踪-ecosystem-influence">生态影响追踪 (Ecosystem Influence) <a class="heading-anchor" href="#生态影响追踪-ecosystem-influence" aria-label="Link to 生态影响追踪-ecosystem-influence">#</a></h4>
-<p>ThunderAgent 在 2026 初发布，生态影响可观察以下路径：</p>
-<ul>
-<li><strong>短期</strong>：vLLM / SGLang 会吸收其"global program queue + release signal"设计到 router 层（预计 vLLM v0.8+ 的 agent-router、SGLang gateway v2）。</li>
-<li><strong>中期</strong>：agent 框架（SWE-Agent / OpenHands）将上暴露"reasoning vs acting"的显式状态字段到 OpenAI 兼容的 extra_body 中，形成事实标准。</li>
-<li><strong>长期</strong>：program-aware 成为下一代 agent-serving system 的默认姿态，类似 2023–2024 paged attention 从可选优化变成默认项。</li>
-<li><strong>横向竞争</strong>：与 MegaFlow（更重的多组件编排）、Sutradhara（orchestrator-engine co-design）形成"轻量 middleware vs 重型 co-design"两条路线。</li>
-</ul>
-
-<hr>
-
-<h3 id="1-system-scope">1. System Scope <a class="heading-anchor" href="#1-system-scope" aria-label="Link to 1-system-scope">#</a></h3>
-
-<ul>
-<li><strong>主要目标</strong>：Agent workflow 的 <strong>多轮 serving</strong> 以及 <strong>RL rollout</strong> 两个场景的高吞吐推理服务。</li>
-<li><strong>单机 vs 分布式</strong>：既适配单节点也适配多节点 DP（实验 1×H100 到 2×8H100，即 16 GPU）。</li>
-<li><strong>在线 vs 离线</strong>：偏向<strong>吞吐优先</strong>（论文明确说 agentic workload 由 sustained throughput 决定；human-in-the-loop 由 tail latency 决定）——选择面向前者。</li>
-<li><strong>工作负载</strong>：LLM agent（SWE-Agent / OpenHands / ToolOrchestra），模型用 GLM-4.6 MoE，涉及 coding、computer-use、scientific discovery、routing 四类任务。</li>
-</ul>
-
-<h3 id="2-architecture-data-flow">2. Architecture & Data Flow <a class="heading-anchor" href="#2-architecture-data-flow" aria-label="Link to 2-architecture-data-flow">#</a></h3>
-
-<h4 id="2a-end-to-end-data-flow">2a. End-to-End Data Flow <a class="heading-anchor" href="#2a-end-to-end-data-flow" aria-label="Link to 2a-end-to-end-data-flow">#</a></h4>
-
-<pre><code>
-[Agent App] 
-   │ (1) chat_completion(messages, extra_body={program_id=PID})
-   ▼
-[ThunderAgent Router / Scheduler] ← Global Program-Aware Waiting Queue
-   │   - 周期性查询各 backend BackendState
-   │   - 维护 ProgramState (REASONING/ACTING/PAUSED/STOPPED)
-   │   - 根据 S_restore / S_pause 决策迁移与驱逐
-   ▼
-[DP Backend pool: vLLM#1 / vLLM#2 / ... / SGLang#k]  ← LLM 推理
-   │   - Prefill → KV cache → Decode → return tokens
-   ▼
-[Agent App] receives emission e_t=(thought, action)
-   │ (2) run_tool(command, sandbox, program_id=PID)
-   ▼
-[Tool Resource Manager]
-   │   - 异步 prepare env (与 LLM reasoning 重叠)
-   │   - sandbox / port 分配
-   │   - 执行结果回传
-   ▼
-[Agent App] 拼接 observation → 下一轮
-   ...
-   │ (3) 程序结束
-   ▼
-POST /programs/release {program_id: PID}
-   │
-   ▼
-[GC]: 释放 sandbox/Docker/port/KV cache
-</code></pre>
-
-<h4 id="end-to-end-数据流表">End-to-End 数据流表 <a class="heading-anchor" href="#end-to-end-数据流表" aria-label="Link to end-to-end-数据流表">#</a></h4>
-
-<table>
-<tr><th>Stage</th><th>Input → Output</th><th>Location</th><th>Latency</th><th>Data format & size</th></tr>
-<tr><td>Program registration</td><td><code>program_id</code> tag</td><td>CPU (router)</td><td>μs</td><td>string</td></tr>
-<tr><td>LLM request routing</td><td>program metadata → backend URL</td><td>CPU (router)</td><td>μs (lookup global queue)</td><td>struct</td></tr>
-<tr><td>Prefill</td><td>tokens → KV cache</td><td>GPU HBM</td><td>10–1000 ms</td><td><code>[L, H, seq, d_head]</code> per layer</td></tr>
-<tr><td>Decode</td><td>KV → logits</td><td>GPU HBM</td><td>15–30 ms/token</td><td><code>[vocab]</code></td></tr>
-<tr><td>Tool prep (async)</td><td>(repo, image) → sandbox</td><td>CPU + Docker</td><td>秒级</td><td>Docker image MB–GB</td></tr>
-<tr><td>Tool exec</td><td>command → observation</td><td>CPU (sandbox) / Network</td><td>秒到分钟</td><td>text / JSON</td></tr>
-<tr><td>Pause(P)</td><td>Active → Paused</td><td>Router issues cmd to backend</td><td>ms</td><td>drop KV in backend</td></tr>
-<tr><td>Restore(P)</td><td>Paused → Active</td><td>Router assigns new backend</td><td>ms + re-prefill cost</td><td>re-prefill Cost ∝ c²</td></tr>
-<tr><td>Release</td><td>Program → Terminated</td><td>Router + Tool Manager</td><td>ms</td><td>GC sandbox/port</td></tr>
-</table>
-
-<h4 id="2b-data-movement-hotspots">2b. Data Movement Hotspots <a class="heading-anchor" href="#2b-data-movement-hotspots" aria-label="Link to 2b-data-movement-hotspots">#</a></h4>
-
-<ol>
-<li><strong>KV cache 在 Pause 时被丢弃（不做 offload），Restore 时需要重 prefill</strong>。这是<strong>每次 Pause/Restore 的主要成本</strong>，与 $c^2$ 成正比——论文选择"接受重算 + 精选 pause 对象"而非 offload（因为 PCIe 带宽不够）。</li>
-<li><strong>跨节点 program migration 的 state transfer</strong>：一旦 program 被 Pause，其 KV 被驱逐 → migration 实际上只迁移"元数据 + 待 prefill 的 context"，<strong>数据量极小</strong>，这是全局队列能工作的关键前提。</li>
-<li><strong>Tool environment 准备期的 Docker 镜像拉取</strong>：数 GB 级别，与 LLM reasoning 重叠后 hidden（异步执行）。</li>
-</ul>
-
-<h3 id="3-design-space-constraint-analysis-见-inherited-phase-2-约束推导表">3. Design Space & Constraint Analysis (见 Inherited Phase 2 约束推导表) <a class="heading-anchor" href="#3-design-space-constraint-analysis-见-inherited-phase-2-约束推导表" aria-label="Link to 3-design-space-constraint-analysis-见-inherited-phase-2-约束推导表">#</a></h3>
-
-<h3 id="4-key-innovations">4. Key Innovations <a class="heading-anchor" href="#4-key-innovations" aria-label="Link to 4-key-innovations">#</a></h3>
-
-<table>
-<tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost/Tradeoff</th></tr>
-<tr><td>Agentic Program 抽象</td><td>元组 <code><ID, c, T, L, τ, s></code> 跨 LLM/tool 调用持久</td><td>调度器第一次拥有 workflow-level 视图</td><td>要求 app 层打标签 <code>program_id</code></td></tr>
-<tr><td>周期性 thrashing 检测</td><td>每 $\Delta t$ 检查内存是否 > λ_max·C_total</td><td>preemptive 而非 reactive 响应</td><td>查询开销 O(N_backend × N_program)</td></tr>
-<tr><td>Shortest-first eviction</td><td>pause 最短 context 的 program</td><td>重计算成本 $\propto c^2$ 最小化</td><td>长程序永远不被驱逐 → 饥饿风险</td></tr>
-<tr><td>Time-decay $f(t)=e^{-\lambda t}$</td><td>acting 程序按 tool 等待时间折扣其有效占用</td><td>平衡 caching vs recompute</td><td>需要选 $\lambda$；memoryless 假设</td></tr>
-<tr><td>Global program-aware queue</td><td>所有 DP backend 共享 waiting queue</td><td>解决跨节点不均衡（Cost_unused ↓）</td><td>放弃严格 KV locality（但 paused 的 KV 已被 evict，无损）</td></tr>
-<tr><td>工具生命周期 GC + 异步 prep</td><td>release signal 驱动，env prep 与 reasoning 重叠</td><td>4.2× 磁盘节省 + hide env setup</td><td>依赖应用层正确发 release</td></tr>
-</table>
-
-<h3 id="5-scheduling-resource-management">5. Scheduling & Resource Management <a class="heading-anchor" href="#5-scheduling-resource-management" aria-label="Link to 5-scheduling-resource-management">#</a></h3>
-
-<ul>
-<li><strong>Batch formation</strong>：仍然依赖底层 backend（vLLM continuous batching），ThunderAgent 在其上做 <strong>哪些 program 的请求被允许进入 backend</strong> 的决策。</li>
-<li><strong>Memory management</strong>：显式维护每个 backend 的 <code>active_program_tokens</code> 和 <code>C_total</code>；λ_max=1（实测共享 prompt 已经提供隐式 buffer）。</li>
-<li><strong>GPU 利用率</strong>：通过 pause acting program → 把 HBM 让给 reasoning program，保证 decode/prefill 生产性开销最大化。</li>
-<li><strong>多租户</strong>：每个 program 对应一个 isolated tool env（Docker sandbox）；GC 保证 cross-program 不相互影响。</li>
-<li><strong>SLO-aware</strong>：论文未显式建模 SLO；专注 throughput 最大化。P99 latency 在 ablation 有间接显示。</li>
-</ul>
-
-<h3 id="6-target-scenarios-workload-characterization">6. Target Scenarios & Workload Characterization <a class="heading-anchor" href="#6-target-scenarios-workload-characterization" aria-label="Link to 6-target-scenarios-workload-characterization">#</a></h3>
-
-<table>
-<tr><th>Scenario</th><th>Workload</th><th>SLO/Goal</th><th>现有系统失败原因</th></tr>
-<tr><td>SWE-Agent coding serving</td><td>多轮 + 本地 shell 工具（确定性）</td><td>Max throughput</td><td>KV thrashing</td></tr>
-<tr><td>ToolOrchestra routing</td><td>轮询远程 API（重尾工具延迟）</td><td>Throughput</td><td>TTL 失效、KV pinned 长时间浪费</td></tr>
-<tr><td>OpenHands scientific discovery</td><td>长 context + 多次 Python cell</td><td>Throughput</td><td>内存不均衡、磁盘泄漏</td></tr>
-<tr><td>RL rollout (async)</td><td>大批量 GLM-4.6 rollout</td><td>Throughput 提升 → 降 policy lag</td><td>内存压力 + 工具资源爆炸</td></tr>
-</table>
-
-<p><strong>Primary bottleneck</strong>：在所有场景都是 <strong>memory-bound</strong>（HBM 容量而非带宽或 FLOPS）——agent context 增长速度远快于 decode compute。</p>
-
-<h3 id="figure-3-thunderagent-overview">Figure 3: ThunderAgent Overview <a class="heading-anchor" href="#figure-3-thunderagent-overview" aria-label="Link to figure-3-thunderagent-overview">#</a></h3>
-<p><img src="/assets/2602.13692/fig3-overview.png" alt="Figure 3: ThunderAgent overview"></p>
-<p><strong>What it shows</strong>: 顶层架构图——全局 program waiting queue 连接多个 DP backend，scheduler 周期性查询每个 backend 状态，并执行 pause/restore 操作；程序元数据（ID/c/T/L/τ/s）在右侧展示。</p>
-<p><strong>Why it matters</strong>: 这是整篇论文的<strong>灵魂图</strong>。理解这张图就理解了 ThunderAgent 为什么叫 "program-aware"——program 是一等公民、state 显式分 Reasoning/Acting、backend 只是执行器。</p>
-<p><strong>Detailed description</strong>: 图左是 Backend #1/#2/#3 三个 DP 节点，每个节点内部画了 active 的 program 方块，颜色代表 τ（蓝=Reasoning，橙=Acting）。中央是 scheduler 圆圈，每 Δt 向所有 backend 发起 query 箭头。图右是全局 Waiting Queue，里面存放 Paused 程序。下方示例展示 Backend #1 发生 thrashing、Backend #3 underutilized，scheduler pause Acting Program #2 并 restore Reasoning Program #6/#9 到 Backend #3，实现同时解决 thrashing 和不均衡。最右侧列出一个 program 元组示例 <code><ID=12, c=4200, T={docker#3}, L=Backend#2, τ=A, s=Active></code>。</p>
-
-<h3 id="7-performance-evaluation">7. Performance Evaluation <a class="heading-anchor" href="#7-performance-evaluation" aria-label="Link to 7-performance-evaluation">#</a></h3>
-
-<h4 id="7a-metrics">7a. Metrics <a class="heading-anchor" href="#7a-metrics" aria-label="Link to 7a-metrics">#</a></h4>
-
-<table>
-<tr><th>Metric</th><th>Definition</th><th>Unit</th><th>Direction</th></tr>
-<tr><td>Throughput</td><td>完成 workflow 数 / 时间</td><td>req/h or tok/s</td><td>↑</td></tr>
-<tr><td>E2E Latency</td><td>从提交到完成全工作流</td><td>s</td><td>↓</td></tr>
-<tr><td>KV cache hit rate</td><td>prefill 命中率</td><td>%</td><td>↑（但不绝对——见 §5.2）</td></tr>
-<tr><td>Disk saving</td><td>稳定运行下 workflow 累积磁盘</td><td>GB</td><td>↓</td></tr>
-<tr><td>Memory imbalance</td><td>max - min across DP nodes</td><td>%</td><td>↓</td></tr>
-</table>
-
-<h4 id="7b-before-after-comparison">7b. Before-After Comparison <a class="heading-anchor" href="#7b-before-after-comparison" aria-label="Link to 7b-before-after-comparison">#</a></h4>
-
-<table>
-<tr><th>Optimization</th><th>Metric</th><th>Baseline</th><th>ThunderAgent</th><th>Gain</th><th>Conditions</th></tr>
-<tr><td>Global queue + state-aware pause</td><td>Throughput (SWE-Agent serving)</td><td>(baseline)</td><td>1.48–3.58×</td><td>+48–258%</td><td>GLM-4.6, 8×H100, SWE-Bench Lite</td></tr>
-<tr><td>全部优化组合</td><td>RL rollout (mini-SWEAgent)</td><td>375 req/h</td><td>672 req/h</td><td>1.79×</td><td>2×8H100, 3h</td></tr>
-<tr><td>全部优化组合</td><td>RL rollout (OpenHands)</td><td>69 req/h</td><td>271 req/h</td><td>3.92×</td><td>2×8H100, 3h</td></tr>
-<tr><td>Tool lifecycle GC</td><td>Disk</td><td>(基线线性上涨直至 OOM)</td><td>4.2× 节省</td><td>-</td><td>长运行</td></tr>
-<tr><td>Tool env prep async</td><td>E2E latency</td><td>(阻塞)</td><td>-10%</td><td>-</td><td>OpenHands</td></tr>
-</table>
-
-<h3 id="figure-4-main-serving-results">Figure 4: Main Serving Results <a class="heading-anchor" href="#figure-4-main-serving-results" aria-label="Link to figure-4-main-serving-results">#</a></h3>
-<p><img src="/assets/2602.13692/fig4-main-results.png" alt="Figure 4: Main results"></p>
-<p><strong>What it shows</strong>: 在六个 agent × benchmark 组合上，ThunderAgent / vLLM+K8s / Continuum / Autellix 随并发数变化的吞吐曲线。</p>
-<p><strong>Why it matters</strong>: 证明 ThunderAgent 在<strong>确定性</strong>（SWE-Bench）和<strong>随机性</strong>（HLE + ToolOrchestra 远程 API）两类工具延迟场景下都赢——这是 time-decay 函数加分项。</p>
-<p><strong>Detailed description</strong>: 六宫格分组：行方向是 benchmark（SWE-Bench Lite / ScienceAgentBench / HLE），列方向是 agent framework（SWE-Agent / OpenHands / ToolOrchestra）。每个子图横轴是 parallel workflow 数（1 → 256），纵轴是 throughput。baseline 曲线在 batch 超过一定值后崩塌，ThunderAgent 曲线单调非下降或在高并发平稳。</p>
-
-<h4 id="7c-bottleneck-shift">7c. Bottleneck Shift <a class="heading-anchor" href="#7c-bottleneck-shift" aria-label="Link to 7c-bottleneck-shift">#</a></h4>
-
-<pre><code>
-Baseline: thrashing-bound (KV 驱逐风暴)
-  → 引入 program queue + state-aware pause: → 变为 memory-bound（仍受 C_total 限制，但稳定）
-  → 引入 time-decay f(t):                    → 变为 tool-latency-bound（最优 trade-off 后由远程工具 p99 决定）
-  → 引入 tool lifecycle GC + async prep:     → 变为 RL / workflow-logic-bound（真实业务瓶颈）
-</code></pre>
-
-<p>剩余瓶颈：<strong>远程工具 p99 延迟</strong> 和 <strong>单 program 的 context 长度增长速度</strong>——这两者都是<strong>应用层问题</strong>，推理层已无进一步优化空间（论文在 §A.2 明示 offload 和 PD 都不可行）。</p>
-
-<h4 id="7d-baselines-fairness">7d. Baselines & Fairness <a class="heading-anchor" href="#7d-baselines-fairness" aria-label="Link to 7d-baselines-fairness">#</a></h4>
-
-<ul>
-<li><strong>对比对象</strong>：vLLM + Kubernetes（工业默认）、Continuum（TTL pin）、Autellix（进程表跟踪）、vLLM + LMCache（offload）、vLLM + PD 分离。</li>
-<li><strong>公平性</strong>：同模型同硬件同 benchmark，确实公平。但未对比 MegaFlow / RollArt（仅在 Related Work 讨论）。</li>
-<li><strong>ThunderAgent 是否存在 lose case？</strong>：Continuum 在<strong>短 + 可预测</strong>的 tool 调用下 hit rate 更高（Fig 5），但 throughput 仍低——作者已诚实披露。</li>
-</ul>
-
-<h4 id="7e-ablation">7e. Ablation <a class="heading-anchor" href="#7e-ablation" aria-label="Link to 7e-ablation">#</a></h4>
-
-<h3 id="figure-6-ablation-of-Δt-and-f-t">Figure 6: Ablation of Δt and f(t) <a class="heading-anchor" href="#figure-6-ablation-of-Δt-and-f-t" aria-label="Link to figure-6-ablation-of-Δt-and-f-t">#</a></h3>
-<p><img src="/assets/2602.13692/fig6-ablation.png" alt="Figure 6: Ablation"></p>
-<p><strong>What it shows</strong>: (a) 端到端延迟分解：prefill/decode/tool prep 各阶段占比；(b) $\Delta t$ 和 $f(t)=x^{-t}$ 中 $x$ 的参数敏感性扫描。</p>
-<p><strong>Why it matters</strong>: 证明 (1) 主要加速来自 prefill+decode 阶段（scheduler 工作到位），tool mgmt 仅贡献 10%；(2) ThunderAgent 对超参不敏感，工程可操作性高。</p>
-<p><strong>Detailed description</strong>: 图 (a) 是堆叠柱状图，baseline 柱子高、ThunderAgent 柱子明显矮，其中 prefill 块缩小最多；图 (b) 是 2D 热力图/折线，x 轴是 $\Delta t$（0.5s → 30s），y 轴是 throughput；$x$ 从 1.01 → 2.0 扫；中心区域平坦，边缘（Δt 过大或 x 过大）下降 10–20%。</p>
-
-<h3 id="8-api-usability">8. API & Usability <a class="heading-anchor" href="#8-api-usability" aria-label="Link to 8-api-usability">#</a></h3>
-
-<ul>
-<li><strong>API</strong>：完全 OpenAI 兼容；只加 <code>extra_body["program_id"]</code>。</li>
-<li><strong>模型格式</strong>：透传（任何 vLLM/SGLang 支持的即可）。</li>
-<li><strong>Deployment</strong>：论文未展开 Docker/K8s manifest，只给了 Python 端 3 行改动例。</li>
-<li><strong>配置复杂度</strong>：核心超参 2 个（$\Delta t$, $\lambda$ 或 $x$），都不敏感。</li>
-</ul>
-
-<h3 id="9-infrastructure-impact-见-summary-部分">9. Infrastructure Impact (见 Summary 部分) <a class="heading-anchor" href="#9-infrastructure-impact-见-summary-部分" aria-label="Link to 9-infrastructure-impact-见-summary-部分">#</a></h3>
-
-<h3 id="10-comparison-matrix">10. Comparison Matrix <a class="heading-anchor" href="#10-comparison-matrix" aria-label="Link to 10-comparison-matrix">#</a></h3>
-
-<table>
-<tr><th>Feature</th><th>ThunderAgent</th><th>vLLM + K8s</th><th>SGLang Gateway</th><th>Continuum</th><th>Autellix</th><th>MegaFlow</th></tr>
-<tr><td>Continuous batching</td><td>✅ (底层)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><td>Paged attention</td><td>✅ (底层)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><td>Program abstraction</td><td>✅</td><td>❌ (request-level)</td><td>❌ (session-level)</td><td>❌</td><td>⚠ (进程表，无状态机)</td><td>⚠ (部分)</td></tr>
-<tr><td>跨节点动态迁移</td><td>✅ (global queue)</td><td>❌ (pin)</td><td>❌ (prefix pin)</td><td>❌</td><td>❌</td><td>⚠</td></tr>
-<tr><td>状态感知 pause</td><td>✅ (R vs A)</td><td>❌</td><td>❌</td><td>❌ (TTL)</td><td>❌</td><td>❌</td></tr>
-<tr><td>最优衰减理论证明</td><td>✅ (指数)</td><td>-</td><td>-</td><td>❌ (静态 TTL)</td><td>-</td><td>-</td></tr>
-<tr><td>工具资源 GC</td><td>✅ (release signal)</td><td>⚠ (K8s timeout)</td><td>⚠</td><td>⚠</td><td>❌</td><td>⚠</td></tr>
-<tr><td>Async env prep</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>OpenAI 兼容</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>⚠</td><td>⚠</td></tr>
-</table>
-
-<h3 id="11-adoption-ecosystem">11. Adoption & Ecosystem <a class="heading-anchor" href="#11-adoption-ecosystem" aria-label="Link to 11-adoption-ecosystem">#</a></h3>
-
-<ul>
-<li><strong>开源</strong>：GitHub <code>Agentic-Kinetics/ThunderAgent</code>（abstract）或 <code>HaoKang-Timmy/ThunderAgent</code>（HTML 版本）——需要实际检查，合作多单位 (Georgia Tech, CMU, UIUC, Together AI) 说明项目背景扎实。</li>
-<li><strong>成熟度</strong>：arXiv 初次发布（2026-02-14），尚未有下游版本采纳记录；但作者团队 Beidi Chen (CMU) + Simran Arora (Together) 的 track record 决定该工作大概率会被 vLLM/SGLang 社区吸收。</li>
-<li><strong>集成成本</strong>：Appendix B 图 8 显示只需 3 处改动，对既有 agent 代码<strong>侵入极小</strong>。</li>
-<li><strong>Downstream 预测</strong>：</li>
-<li>3 个月内：vLLM router 会出现 <code>program_id</code>-aware path（PR 级别）。</li>
-<li>半年内：SGLang Gateway v2 的 agent-mode 会吸收 shortest-first eviction + global queue。</li>
-<li>1 年内：program-aware scheduling 写入主流 serving 教材的"现代 agent serving"章节。</li>
-<li>与 2026 同期的 MegaFlow、Sutradhara、DualPath、Continuum 一起，共同定义"agent serving 1.0"标准。</li>
-</ul>
-
-<h2 id="open-questions">Open Questions <a class="heading-anchor" href="#open-questions" aria-label="Link to open-questions">#</a></h2>
-<ul>
-<li>当远程工具延迟是<strong>重尾分布</strong>（非 memoryless）时，最优衰减函数 $f(t)$ 是否仍为指数？或需要 Pareto-aware 修正？</li>
-<li>Shortest-first eviction 会不会让<strong>长 program 饥饿</strong>？是否需要公平性 guard？</li>
-<li>ThunderAgent 与 <strong>sparse KV</strong>（ShadowKV / Pensieve）能否组合？program-aware + sub-program KV 裁剪的协同空间？</li>
-<li>当 DP 扩展到<strong>数百节点</strong>时，global waiting queue 的中心化调度器是否会成为新瓶颈？</li>
-<li>多租户多模型场景下，program 的 routing 在模型维度如何处理？</li>
-</ul>
-
 
 </div>
 </div>

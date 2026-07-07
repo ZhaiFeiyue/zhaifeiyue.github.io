@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">Orla: A Library for Serving LLM-Based Multi-Agent Systems</h1>
 <div class="card-meta"><span class="badge badge-agent">agent</span> 2603.13605</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">multi-agent</span><span class="tag">serving</span><span class="tag">kv-cache</span><span class="tag">scheduling</span><span class="tag">workflow-orchestration</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-serving</span><span class="tag">workflow-orchestration</span><span class="tag">kv-cache</span><span class="tag">model-routing</span><span class="tag">multi-agent</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2603.13605.html">← Synthesis</a>
 <a href="/overview/agent.html">← agent Survey</a>
@@ -207,185 +207,120 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h1 id="orla-a-library-for-serving-llm-based-multi-agent-systems-—-l2">Orla: A Library for Serving LLM-Based Multi-Agent Systems — L2 <a class="heading-anchor" href="#orla-a-library-for-serving-llm-based-multi-agent-systems-—-l2" aria-label="Link to orla-a-library-for-serving-llm-based-multi-agent-systems-—-l2">#</a></h1>
 
-<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>Orla 是面向 multi-agent LLM 系统的 workflow 级 serving 库，将请求执行与 agent 级策略分离——通过 stage mapper（异构模型路由）、workflow orchestrator（DAG 调度）、memory manager（跨 stage KV cache 生命周期管理）三组件，在 SWE-bench Lite 上实现 38–60% 延迟降低与 35% 成本节约。</p>
+<p>Orla is a serving layer that sits <em>between</em> agent-orchestration frameworks and LLM inference engines. It models an agentic task as a DAG of stages and adds three workflow-aware mechanisms — a stage mapper (per-stage model/backend routing), a workflow orchestrator (two-level scheduling), and a memory manager (workflow-scoped KV-cache lifecycle) — cutting latency 38–60% and cost 35% vs. a single-model vLLM baseline.</p>
 
-<h2 id="§2-核心三问">§2 核心三问 <a class="heading-anchor" href="#§2-核心三问" aria-label="Link to §2-核心三问">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+<p><strong>Q1 — 痛点 (problem).</strong> Modern agentic apps are workflows of many LLM calls + tool calls spanning heterogeneous models and backends. Today developers hand-glue orchestration code onto request-level serving engines (vLLM, SGLang). Those engines optimize <em>within</em> a single inference call (prefill/decode scheduling, continuous batching, LRU KV eviction) but are blind to workflow structure. Two gaps result: (a) <strong>heterogeneity</strong> — different stages want different model sizes / backends / hardware, but the stack has no place to express per-stage mapping; (b) <strong>coordination</strong> — nothing decides which model runs where, how to schedule across stages sharing a backend, or when a KV-cache entry belonging to a still-running workflow can be evicted. A request-level LRU can evict cache <em>mid-workflow</em>, forcing an expensive re-prefill on the next stage.</p>
 
-<p>当前 agentic 系统的 serving 栈是松散拼凑的：开发者手动将编排代码（LangGraph / AutoGen）与 request 级 LLM 引擎（vLLM / SGLang）粘合。这些引擎通过 prefill/decode 调度、continuous batching 和 PagedAttention 优化单请求执行，但对 workflow 结构毫无感知。两个核心缺口：</p>
+<p><strong>Q2 — 方法 (method).</strong> Introduce a workflow-level serving abstraction that <strong>separates request execution from agent-level policy</strong>. Three core abstractions — Stage (one LLM-inference unit that may loop over tool calls), Workflow (a DAG of stages; a stage is eligible once all upstream stages finish), Backend (an OpenAI-compatible HTTP endpoint) — are acted on by three components: (1) <strong>Stage mapper</strong> assigns each stage a (model, backend, inference params), via explicit developer mapping or dynamic routing (e.g. <code>OneBitStageMapper</code> classifies each request simple/complex with a cheap LLM call and routes light/heavy); (2) <strong>Workflow orchestrator</strong> runs the plan with two-level scheduling (a <em>stage scheduler</em> picks which per-stage sub-queue to serve, a <em>request scheduler</em> orders within it; both FCFS default, priority/SJF pluggable) plus context builders that assemble each stage's prompt from upstream outputs; (3) <strong>Memory manager</strong> governs KV cache at <em>workflow</em> granularity using orchestrator signals (stage transitions, backend switches, workflow completion), with three policies: preserve-on-small-increment, flush-at-workflow-boundary, flush-under-pressure.</p>
 
-<ol>
-<li><strong>异构性（heterogeneity）</strong>——同一 workflow 的不同 stage 需要不同规模模型（路由/分类用小模型，综合/代码生成用大模型）、不同后端（SGLang on GPU vs. Ollama on edge）、不同性能目标。</li>
-<li><strong>跨 stage 协调（coordination）</strong>——需要决定每个 stage 用哪个模型、在哪执行、如何调度共享资源和传播 context，但现有 request 级引擎缺乏跨 stage 协调机制。</li>
-</ul>
+<p><strong>核心技术壁垒</strong>: the load-bearing insight is that <strong>KV-cache lifecycle decisions require workflow-level signals that are structurally invisible to a request-level backend</strong> — stage dependencies, predicted context reuse between consecutive same-backend stages, backend transitions, and workflow completion. An engine seeing only independent requests cannot know that a just-finished stage's cache will be reused by its DAG successor (so preserve) versus belongs to a completed workflow (so reclaim). Orla's contribution is placing a control plane exactly where these signals exist. (See §7.)</p>
 
-<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+<p><strong>Q3 — 结果 (results).</strong> On SWE-bench Lite (2,294 requests) with <code>OneBitStageMapper</code> splitting traffic (956 to Qwen3-4B, rest to Qwen3-8B) across two vLLM backends: wall-clock time −38%, mean completion time −60%, estimated inference cost −35% vs. an all-Qwen3-8B vLLM baseline. On DAG-MATH (first 5 problems) with a Qwen3-8B SGLang backend: workflow-level cache management (flush-per-workflow) shifts the entire TTFT CDF left vs. flush-per-request.</p>
 
-<p>核心 insight：<strong>将 request 执行与 workflow 级策略分离</strong>，在现有推理引擎之上插入一层 serving 控制面。三个组件：</p>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<ol>
-<li><strong>Stage mapper</strong>——将 workflow DAG 中的每个 stage 映射到具体 model + backend + 推理参数。支持静态显式映射和动态路由（内置 OneBitStageMapper：用轻量 LLM 将请求分为 simple/complex 再路由到不同规模模型）。</li>
-<li><strong>Workflow orchestrator</strong>——两级调度：(a) stage scheduler 在 per-backend queue 中选择服务哪个 stage（FCFS / priority / 可扩展 SJF），(b) request scheduler 在 stage 子队列中选择请求。Stage 完成后通过 prompt builder 函数将输出传播为下游 stage 的 context。</li>
-<li><strong>Memory manager</strong>——在 workflow 级管理 KV cache 生命周期，使用 orchestrator 的结构信号（stage 依赖、backend 切换、workflow 完成）决定 preserve / flush。三种策略：小增量保留、workflow 边界 flush、内存压力驱逐。</li>
-</ul>
+<p><img src="/assets/2603.13605/fig1.png" alt="Figure 1: Orla three-component design over pluggable backends"></p>
 
-<p><strong>核心技术壁垒</strong>：将 serving 层定位为 workflow 级控制面——介于上层编排框架（LangGraph / AutoGen）与下层推理引擎（vLLM / SGLang）之间——利用 workflow 结构信号（stage 转换、DAG 依赖、workflow 完成）做出两层都无法独立做出的 serving 决策（跨 backend 路由、跨 stage cache 生命周期、结构感知调度）。这种"夹层"定位需要同时理解上下两层的接口契约，是单纯优化 request 级引擎或单纯扩展编排框架都无法替代的。</p>
+<p><em>Paper's Figure 1 ("Orla design").</em> This is the primary architecture view: developer-defined workflows (DAGs of stages) enter the Orla layer, which houses the stage mapper, workflow orchestrator, and memory manager, and dispatches to heterogeneous backends (SGLang / vLLM / Ollama) through a uniform OpenAI-compatible HTTP interface. Note that Orla is a <em>control plane</em> — actual inference happens entirely in the underlying engines.</p>
 
-<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+<p><img src="/assets/2603.13605/fig4.png" alt="Figure 4: Customer-support running-example workflow DAG"></p>
 
-<table>
-<tr><th>实验</th><th>数据集</th><th>指标</th><th>提升</th></tr>
-<tr><td>Stage mapping</td><td>SWE-bench Lite (2,294 req)</td><td>Wall-clock time</td><td>−38%</td></tr>
-<tr><td>Stage mapping</td><td>SWE-bench Lite</td><td>Mean completion time</td><td>−60%</td></tr>
-<tr><td>Stage mapping</td><td>SWE-bench Lite</td><td>Estimated inference cost</td><td>−35%</td></tr>
-<tr><td>Cache management</td><td>DAG-MATH (5 problems)</td><td>TTFT distribution</td><td>Improved (CDF shift left)</td></tr>
-</table>
+<p><em>Paper's Figure 4 ("The workflow of our running example").</em> The concrete DAG that grounds every design section: <code>classify</code> (light backend) fans out to <code>policy_check</code> and <code>route_ticket</code> (heavy backend), and <code>policy_check → reply</code> (heavy). This is what a "workflow" literally is in Orla, and it shows heterogeneity in one graph — a light model for cheap metadata extraction, a heavy model for the policy/reply reasoning.</p>
 
-<p>OneBitStageMapper 将 956/2,294 请求路由至轻量 Qwen3-4B，其余走 Qwen3-8B。Workflow 级 cache 管理 vs. per-request flush 在整个 TTFT 分布上取得一致改善。</p>
-
-<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
-
-<p><img src="/assets/2603.13605/fig1.png" alt="Figure 1: Orla architecture — stage mapper, workflow orchestrator, memory manager"></p>
-
-<p><em>Paper Figure 1, verbatim (caption: "Orla design.").</em></p>
-
-<p>Orla 的三组件架构：开发者定义 workflow DAG（stage + 依赖），stage mapper 将 stage 分配到 model/backend，workflow orchestrator 执行 DAG 调度与 context 传播，memory manager 管理跨 stage KV cache 生命周期。所有 backend 通过 OpenAI-compatible HTTP API 统一接入，切换只需改 endpoint URL。</p>
-
-<p><img src="/assets/2603.13605/fig4.png" alt="Figure 4: Customer support workflow DAG — classify → policy_check → reply, classify → route_ticket"></p>
-
-<p><em>Paper Figure 4, verbatim (caption: "The workflow of our running example, a customer support workflow.").</em></p>
-
-<p>Running example 的 DAG 结构：classify（轻量后端 Qwen3-4B）→ policy_check（重后端 Qwen3-8B）→ reply（重后端），classify → route_ticket（重后端）。classify 产生结构化 JSON（ticket category, escalation flag），驱动下游分支和优先级。</p>
-
-<p><img src="/assets/2603.13605/fig6.png" alt="Figure 6: Two-level scheduling — stage scheduler selects stage queue, request scheduler orders within queue"></p>
-
-<p><em>Paper Figure 6, verbatim (caption: "An illustration of Orla's two-level scheduling policy in our running example.").</em></p>
-
-<p>两级调度示意：每个 backend 维护 per-stage 子队列，stage scheduler 选择 dequeue 哪个 stage（支持 FCFS / priority / 自定义），request scheduler 在 stage 内排序。Priority hints 可在运行时根据 classify 输出动态设置（如 billing/technical tickets 优先级 8，general 优先级 5）。</p>
+<p>Because Orla is fundamentally a per-turn agent loop wrapped by DAG scheduling, the intra-stage control flow is best shown as a state machine the original figures do not draw:</p>
 
 <div class="mermaid">
-graph TB
-    subgraph Developer
-        WF[Workflow DAG<br/>stages + deps]
-    end
-    subgraph Orla
-        SM[Stage Mapper<br/>model/backend selection]
-        WO[Workflow Orchestrator<br/>DAG scheduling + context]
-        MM[Memory Manager<br/>KV cache lifecycle]
-    end
-    subgraph Backends
-        B1[SGLang<br/>Qwen3-8B on GPU]
-        B2[SGLang<br/>Qwen3-4B on GPU]
-        B3[Ollama<br/>on CPU]
-        B4[Simulated<br/>no GPU]
-    end
-    WF --> SM
-    SM --> WO
-    WO --> MM
-    MM --> B1 & B2 & B3 & B4
+stateDiagram-v2
+    [*] --> Eligible: all upstream stages done
+    Eligible --> BuildContext: prompt builder consumes upstream outputs
+    BuildContext --> Inference: dispatch to mapped (model, backend)
+    Inference --> ToolCall: model emits tool invocation
+    ToolCall --> Inference: tool result fed back into context
+    Inference --> Complete: no more tool calls
+    Complete --> CachePreserve: next stage same backend + shared prefix
+    Complete --> CacheFlush: backend switch OR workflow boundary OR pressure
+    CachePreserve --> [*]
+    CacheFlush --> [*]
 </div>
 
-<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+<p><strong>Planning & reasoning.</strong> Planning style is a <strong>predetermined DAG workflow</strong>, not ReAct or tree search — the developer authors the graph; Orla does not synthesize plans. Decomposition is <strong>top-down</strong> (task pre-split into stages). <em>Within</em> a stage the model runs a bounded ReAct-like tool loop until it stops emitting calls. There is <strong>no backtracking / undo</strong> across stages; the DAG is executed forward only. Budget knobs are per-stage inference params (max output length 4,096 tokens in the mapping experiment, 256 in the cache experiment).</p>
 
-<p><strong>无形式化作者证明 — 仅实证。</strong></p>
+<p><strong>Memory model.</strong> Short-term = the KV cache / context prefix shared across consecutive same-backend stages; there is <strong>no long-term vector store or episodic trajectory log</strong> — "memory" here means inference state (KV cache), managed at workflow scope. <strong>Error recovery</strong> across stages is not addressed; the paper describes no fallback state when a tool or stage fails.</p>
 
-<p>这是一篇系统/库论文，来自有深厚排队论背景的作者组（Mitzenmacher, Shahout），但未提供任何形式化模型或理论保证。所有论证均为实证。</p>
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p>以下 6 项检查均为实证层面：</p>
+<p><strong>无形式化作者证明 — 仅实证.</strong> The paper presents no formal model, convergence result, or success-rate bound; it is a systems/library paper validated purely empirically. This is notable given the authors' queueing-theory background.</p>
 
-<table>
-<tr><th>#</th><th>检查项</th><th>状态</th></tr>
-<tr><td>1</td><td>Stage mapping 降低延迟</td><td>实证：Fig 2(a)(b) 显示 38% wall-clock、60% completion time 降低</td></tr>
-<tr><td>2</td><td>Stage mapping 降低成本</td><td>实证：Fig 2(c) 显示 35% 成本降低，基于轻量模型更便宜的 per-token 定价</td></tr>
-<tr><td>3</td><td>Workflow cache 降低 TTFT</td><td>实证：Fig 3 CDF 整体左移</td></tr>
-<tr><td>4</td><td>后端可插拔</td><td>工程声明：通过 OpenAI-compatible HTTP API，切换仅需改 URL</td></tr>
-<tr><td>5</td><td>自定义调度 <20 行代码</td><td>声明但未展示代码</td></tr>
-<tr><td>6</td><td>DAG 依赖正确性</td><td>架构保证：stage 仅在上游完成后调度</td></tr>
-</table>
-
-<p><strong>Agent-specific 检查</strong>：</p>
+<p>Agent-specific reconstruction against the category checks:</p>
 
 <ul>
-<li><strong>Success-rate model</strong>: 不适用——Orla 是 serving 层，不改变任务成功率，仅改变延迟/成本。</li>
-<li><strong>Latency budget per turn</strong>: stage mapping 实验报告了 per-request completion time CDF，但未分解为 tool call / LLM inference / memory read 各阶段延迟。</li>
-<li><strong>Failure mode classification</strong>: 论文未讨论故障模式、错误恢复或 agent 失败场景。</li>
-<li>可以被形式化但未做的：给定 DAG 结构和各 stage 的到达率/服务率，建立 multi-class queueing model 分析各调度策略下的平均延迟——这对 Mitzenmacher 的背景来说是自然延伸。</li>
+<li><strong>Notation / metrics.</strong> Reported metrics are wall-clock duration, per-request completion time (CDF), estimated inference cost, and TTFT (CDF). No symbol table exists because there are no equations; the simulated backend models prefill/decode latency parametrically but the paper does not publish that model's closed form.</li>
+<li><strong>Success-rate sweep matrix <code>(task difficulty, planning depth, tool set, backbone)</code>.</strong> Not swept. Only two axes vary across two disjoint experiments: {routing on/off} on SWE-bench Lite, and {cache flush-per-request vs. flush-per-workflow} on DAG-MATH. Planning depth (DAG shape) and tool set are held fixed; backbone is fixed to the Qwen3 family. So monotonicity along the guide's four axes <strong>cannot</strong> be verified from the paper.</li>
+<li><strong>Latency budget per turn.</strong> The paper claims latency <em>reductions</em> (−38% wall-clock, −60% mean completion) but does <strong>not</strong> decompose a turn into tool-call + inference + memory-read, and makes no explicit "interactive latency" claim with absolute numbers.</li>
+<li><strong>Failure-mode classification.</strong> Zero failure classes are enumerated; no negative results or cases where the single-model baseline wins are shown — itself a gap.</li>
+<li>What <em>could</em> have been bounded: given the OneBitStageMapper routes r fraction to the light model, an expected-cost model $E[c] = r \cdot c_{light} + (1-r) \cdot c_{heavy}$ and an expected-latency mixture are analytically available but the paper reports only the empirical 35% / 38% aggregates rather than deriving or fitting them.</li>
 </ul>
 
-<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
-
-<h3 id="stage-mapping（swe-bench-lite）">Stage mapping（SWE-bench Lite） <a class="heading-anchor" href="#stage-mapping（swe-bench-lite）" aria-label="Link to stage-mapping（swe-bench-lite）">#</a></h3>
-
-<p><img src="/assets/2603.13605/fig2.png" alt="Figure 2: Stage mapping results — (a) wall-clock time, (b) completion time CDF, (c) cost comparison"></p>
-
-<p><em>Paper Figure 2, verbatim (caption: "(a) Wall-clock time (b) Cost (c) Completion time.").</em></p>
-
-<p>实验设置：单机 NVIDIA RTX PRO 6000 Blackwell Max-Q 96 GB VRAM, CUDA 13.0。vLLM 同时 serve Qwen3-8B（60% GPU 内存）和 Qwen3-4B（35%），max context 32,768 tokens, temperature 0, max output 4,096 tokens。</p>
-
-<p>OneBitStageMapper 将 956/2,294 请求分类为 simple 并路由至 Qwen3-4B，其余走 Qwen3-8B。三项指标均有显著改善：wall-clock −38%、mean completion −60%、cost −35%。Completion time CDF 在 Orla 配置下全分布左移，说明改善不仅来自平均值而是全局性的。</p>
-
-<p>注意：SWE-bench Lite 实验使用简化的单 stage prompt（提取 gold-patch 文件 → 生成 diff），并未使用多 stage 工作流——这意味着 stage mapping 评估实际未行使 Orla 的 workflow 编排能力。</p>
-
-<h3 id="cache-management（dag-math）">Cache management（DAG-MATH） <a class="heading-anchor" href="#cache-management（dag-math）" aria-label="Link to cache-management（dag-math）">#</a></h3>
-
-<p><img src="/assets/2603.13605/fig3.png" alt="Figure 3: Cache management — TTFT CDF for flush-per-request vs. flush-per-workflow"></p>
-
-<p><em>Paper Figure 3, verbatim (caption: "Cache management (request vs. workflow flush).").</em></p>
-
-<p>实验设置：SGLang serve Qwen3-8B，temperature 0, max output 256 tokens。比较两种 KV cache 策略：flush-per-request（每次 LLM 调用后清空）vs. flush-per-workflow（Orla 默认，跨 stage 保留 cache，workflow 完成时 flush）。</p>
-
-<p>结果：flush-per-workflow 在整个 TTFT 分布上优于 flush-per-request。但实验仅使用 DAG-MATH 的前 5 个问题（共 2,894 个），且未报告绝对 TTFT 数值、cache hit rate 或内存节省量。</p>
-
-<h3 id="memory-manager-workflow-示意">Memory manager workflow 示意 <a class="heading-anchor" href="#memory-manager-workflow-示意" aria-label="Link to memory-manager-workflow-示意">#</a></h3>
-
-<p><img src="/assets/2603.13605/fig8.png" alt="Figure 8: Memory manager in customer support workflow — flush at backend switch, preserve within same backend"></p>
-
-<p><em>Paper Figure 8, verbatim (caption: "In the customer support workflow, classify runs on a lightweight backend while later stages run on a heavier backend...").</em></p>
-
-<p>Memory manager 行为示意：classify（轻后端）→ policy_check（重后端）时 flush cache（backend 切换），policy_check → reply（同一重后端，共享 context）时 preserve cache，workflow 完成时 reclaim 所有 cache。显式 per-stage hint <code>SetCachePolicy("flush"/"preserve")</code> 可覆盖默认策略，但 Orla 在 backend 切换时会自动识别并 flush。</p>
-
-<h3 id="未评估的维度">未评估的维度 <a class="heading-anchor" href="#未评估的维度" aria-label="Link to 未评估的维度">#</a></h3>
-
-<ul>
-<li>Workflow orchestrator 的调度组件（FCFS vs. priority vs. SJF）未做定量评估。</li>
-<li>无 multi-agent 并发场景下的 throughput 实验。</li>
-<li>无 ThunderAgent 对比（尽管定位为最近相关工作）。</li>
-</ul>
-
-<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
-
-<table>
-<tr><th>步骤</th><th>论点</th><th>支撑</th><th>风险/假设</th></tr>
-<tr><td>1</td><td>Agentic workflow 的 stage 具有异构性（模型规模、后端、性能目标各异），需要 workflow 级协调</td><td>§1 motivating examples: routing/classification → 小模型, synthesis/code-gen → 大模型; 跨 backend 部署</td><td>假设 stage 间差异足够大到值得 routing 开销</td></tr>
-<tr><td>2</td><td>现有 request 级引擎（vLLM / SGLang）仅优化单请求执行，无法跨 stage 协调 model routing / cache lifecycle / scheduling</td><td>§1, Appendix D: request-level KV cache management (LRU) 不感知 workflow 结构，可能在 workflow 中间驱逐 cache</td><td>如果 workflow 仅单 stage 或 cache 容量充裕，request 级策略可能已足够</td></tr>
-<tr><td>3</td><td>Orla 在引擎之上插入 workflow 控制面：stage mapper 路由到最优 model/backend → workflow orchestrator DAG 调度 + context 传播 → memory manager 利用 workflow 信号管理 KV cache</td><td>§2 设计, Fig 1 架构, Appendix A-B API listings</td><td>依赖 backend 暴露 OpenAI-compatible API + KV cache 管理 API（仅 SGLang 支持后者）</td></tr>
-<tr><td>4</td><td>Stage mapping 实证有效：OneBitStageMapper 将 42% 请求路由至轻量模型，wall-clock −38%, completion −60%, cost −35%</td><td>§4, Fig 2(a)(b)(c), SWE-bench Lite 2,294 req</td><td>实验使用单 stage prompt 而非 multi-stage DAG；仅 OneBit 一种 router 策略</td></tr>
-<tr><td>5</td><td>Workflow 级 cache 管理实证有效：跨 stage preserve cache 改善 TTFT 分布</td><td>§4, Fig 3, DAG-MATH 5 problems</td><td>极小样本量（5/2,894）；无绝对数值；仅 TTFT 单一指标</td></tr>
-<tr><td>6</td><td>后端可插拔：同一 workflow 定义可跨 SGLang / vLLM / Ollama / 模拟后端运行</td><td>§1, §3, Appendix B.1: 切换仅需改 endpoint URL</td><td>未评估后端切换的性能一致性；模拟后端不能替代真实 GPU 评估</td></tr>
-</table>
-
-<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
-
-<p><strong>开源仓库</strong>：<a href="https://github.com/dorcha-inc/orla">github.com/dorcha-inc/orla</a>（Go 语言实现）</p>
-
-<ul>
-<li>核心 API 定义在 Appendix A（Figure 5）：<code>orla.NewOrlaClient</code>, <code>orla.NewSGLangBackend</code>, stage 定义, <code>wf.AddDependency</code>, <code>wf.Execute(ctx)</code></li>
-<li>Stage mapper interface 支持自定义 mapper，内置 <code>OneBitStageMapper</code></li>
-<li>Scheduling 策略通过 <code>SetSchedulingPolicy("priority")</code> / <code>SetRequestSchedulingPolicy("fifo")</code> 配置</li>
-<li>Cache 策略通过 <code>SetMemoryPolicy(orla.NewFlushAtBoundaryPolicy())</code> / <code>SetCachePolicy("flush"/"preserve")</code> 配置</li>
-<li>Backend 统一通过 OpenAI-compatible HTTP API 通信，<code>orla.NewSGLangBackend</code> / <code>orla.NewOllamaBackend</code> / <code>orla.NewSimulatedBackend</code> 三种后端</li>
-</ul>
-
-<p><strong>核心技术壁垒实现</strong>：workflow 控制面的"夹层"定位体现在代码架构上——Orla 不修改底层引擎，仅通过 HTTP API 交互；也不替代上层编排逻辑，仅通过 stage/workflow 抽象暴露 serving 决策点。这使得同一 workflow 定义可跨硬件环境运行（Docker Compose 一键部署，GPU path 或 CPU path）。</p>
-
-<p><strong>关键实现细节</strong>：</p>
-
+<p>Six minimum checks:</p>
 <ol>
-<li><strong>Simulated backend</strong> 用参数化 prefill/decode 延迟模型替代真实 LLM 推理，隔离编排行为与推理方差——研究者无需 GPU 即可进行 scheduling policy 实验。</li>
-<li><strong>Builder 函数模式</strong>——stage 间 context 传播通过 <code>SetPromptBuilder(func(upstream map[string]*orla.StageResult) (string, error))</code> 实现，每个 stage 声明如何从上游输出构造 prompt，而非全局状态传递。</li>
+<li><strong>Baseline identity</strong> — all requests on Qwen3-8B / vLLM; consistent across §4 and Appendix C. ✔</li>
+<li><strong>Routing split</strong> — 956/2,294 → Qwen3-4B; arithmetic consistent (1,338 to heavy). ✔</li>
+<li><strong>Cost mechanism</strong> — 35% cost drop attributed to cheaper per-token light model; plausible given ~42% of traffic offloaded. ✔ (directional, not derived)</li>
+<li><strong>Cache mechanism</strong> — TTFT improvement attributed to avoided re-prefill via preserved prefix; mechanism matches the LRU-mid-workflow-eviction problem stated in §2.2. ✔</li>
+<li><strong>Hardware feasibility</strong> — both models co-resident on one 96 GB GPU at 60%/35% split (=95%, leaves headroom). ✔</li>
+<li><strong>Reproducibility knob</strong> — temperature 0 in both experiments. ✔</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><img src="/assets/2603.13605/fig2.png" alt="Figure 2: Stage-mapping wall-clock, cost, and completion-time comparisons"></p>
+
+<p><em>Paper's Figure 2 ("(a) Wall-clock time (b) Cost (c) Completion time").</em> The load-bearing result for the stage mapper: (a) total wall-clock −38%, (c) mean completion time −60% (shown as a completion-time CDF that Orla shifts left), (b) estimated cost −35%. Reader should notice the mapper wins on <em>all three</em> axes simultaneously because offloading ~42% of requests to the 4B model both frees the 8B backend (latency) and lowers per-token price (cost).</p>
+
+<p><img src="/assets/2603.13605/fig3.png" alt="Figure 3: TTFT CDF, request-flush vs. workflow-flush cache management"></p>
+
+<p><em>Paper's Figure 3 ("Cache management (request vs. workflow flush)").</em> The load-bearing result for the memory manager: the CDF of TTFT for flush-per-workflow lies entirely to the left of flush-per-request, i.e. the <em>whole</em> distribution improves, not just the mean. Caveat the reader should notice: this is on only the first 5 of 2,894 DAG-MATH problems, and no absolute TTFT, hit-rate, or memory-savings numbers are given.</p>
+
+<p><img src="/assets/2603.13605/fig6.png" alt="Figure 6: Two-level scheduling — stage sub-queues and request ordering"></p>
+
+<p><em>Paper's Figure 6 (two-level scheduling illustration).</em> Shows how ready requests are organized: each backend holds a queue partitioned into per-stage sub-queues keyed by stage ID; the stage scheduler picks a sub-queue, the request scheduler picks within it, and priority hints derived from <code>classify</code> output re-order downstream stages. This is design illustration — the scheduling component is <strong>not</strong> quantitatively evaluated anywhere in the paper.</p>
+
+<p><strong>Setup (Appendix C).</strong> Single machine: 2× AMD EPYC 7313 (64 cores), 528 GB RAM, one NVIDIA RTX PRO 6000 Blackwell Max-Q (96 GB VRAM), CUDA 13.0. Mapping experiment: vLLM co-serves Qwen3-8B (60% GPU mem) and Qwen3-4B (35%), 32,768-token context, 4,096 max output. Cache experiment: Qwen3-8B on SGLang (needs its KVCache management API), 256 max output. Temperature 0 throughout.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim (paper-internal)</th><th>Support</th></tr>
+<tr><td>1</td><td>Agentic workloads are multi-stage workflows with heterogeneous per-stage needs (model size, backend, complexity).</td><td>§1 examples: routing/summarization vs. synthesis/code-gen; deployments span SGLang/vLLM/Ollama.</td></tr>
+<tr><td>2</td><td>Request-level serving engines optimize within a call but cannot coordinate across stages, models, and backends.</td><td>§1: prefill/decode scheduling & LRU eviction are per-request and workflow-unaware.</td></tr>
+<tr><td>3</td><td>Therefore a serving layer <em>above</em> the engine and <em>below</em> orchestration frameworks is needed, separating request execution from workflow policy.</td><td>§1 key insight; Appendix D positioning vs. LangGraph/AutoGen (above) and vLLM/SGLang (below).</td></tr>
+<tr><td>4</td><td>That layer needs exactly three mechanisms: stage mapper, workflow orchestrator, memory manager.</td><td>§2 design; each maps to one gap dimension (heterogeneity, coordination, memory reuse).</td></tr>
+<tr><td>5</td><td>A uniform OpenAI-compatible HTTP backend interface makes backends plug-and-play (swap = change endpoint URL).</td><td>§1, §3: same workflow runs on GPU (SGLang/vLLM) or laptop (Ollama) via one env-var change.</td></tr>
+<tr><td>6</td><td>Instantiating the mapper and memory manager yields measurable latency/cost/TTFT wins over a single-model baseline.</td><td>§4: Fig 2 (−38%/−60%/−35%), Fig 3 (TTFT CDF).</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>Open-source at <code>github.com/dorcha-inc/orla</code>; the L1 records API code listings but no file:line locations, so [实现未公开] at line granularity. Key API surface reconstructed from Appendix A–B:</p>
+
+<ul>
+<li>Backend clients: <code>orla.NewOrlaClient</code>, <code>orla.NewSGLangBackend(model, url)</code>, <code>orla.NewOllamaBackend(model, url)</code>, <code>orla.NewSimulatedBackend(name, url)</code> (Appendix A, B.1).</li>
+<li>DAG assembly: <code>wf.AddDependency(downstream.ID, upstream.ID)</code>, <code>wf.Execute(ctx)</code> (Appendix A).</li>
+<li>Scheduling: <code>stage.SetSchedulingPolicy("priority")</code>, <code>SetRequestSchedulingPolicy("fifo")</code>, <code>stage.SetSchedulingHints(&orla.SchedulingHints{Priority: &p})</code> (Appendix B.2).</li>
+<li>Context: <code>stage.SetPromptBuilder(func(upstream map[string]*orla.StageResult)(string,error){...})</code> reading <code>upstream[classify.ID]</code> (Appendix B.3).</li>
+<li>Memory: <code>wf.SetMemoryPolicy(orla.NewFlushAtBoundaryPolicy())</code>, <code>stage.SetCachePolicy("flush"|"preserve")</code> (Appendix B.4).</li>
+</ul>
+
+<p><strong>核心技术壁垒 (dedicated).</strong> The single hardest-to-replicate insight is workflow-scoped KV-cache lifecycle management. Re-implementing the stage mapper or DAG scheduler is routine; the differentiator is that the memory manager must (a) observe orchestrator signals a request-level engine never exposes — the DAG edge from a finishing stage to its successor, whether that successor lands on the <em>same</em> backend with a <em>shared prefix</em>, and whether the workflow has completed — and (b) translate those into preserve/flush commands the backend actually honors, which requires a backend that exposes a KV-cache management API (why the cache experiment runs only on SGLang, not vLLM). The barrier is thus half design (surfacing the signals) and half backend-capability dependence.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+<ol>
+<li>Backend changes are detected <em>automatically</em> — the explicit <code>SetCachePolicy("flush")</code> on the light→heavy boundary "is not strictly needed, as Orla's memory manager will recognize a backend change automatically" (Appendix B.4); the manual hint is redundant defensive coding.</li>
+<li>The simulated backend parametrically models prefill/decode latency so orchestration behavior can be studied on CPU-only machines with no GPU, decoupling scheduling/memory experiments from real inference variance (§1) — this is what lets the live demo run the full workflow on a laptop via Ollama.</li>
 </ul>
 
 </div>

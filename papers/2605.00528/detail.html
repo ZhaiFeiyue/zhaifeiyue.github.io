@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">SAGA: Workflow-Atomic Scheduling for AI Agent Inference on GPU Clusters</h1>
 <div class="card-meta"><span class="badge badge-agent">agent</span> 2605.00528</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">scheduling</span><span class="tag">workflow-aware</span><span class="tag">fairness</span><span class="tag">distributed-systems</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-serving</span><span class="tag">kv-cache</span><span class="tag">scheduling</span><span class="tag">distributed-inference</span><span class="tag">fairness</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2605.00528.html">← Synthesis</a>
 <a href="/overview/agent.html">← agent Survey</a>
@@ -207,260 +207,185 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <h1 id="saga-workflow-atomic-scheduling-for-ai-agent-inference-on-gpu-clusters-—-l2">SAGA: Workflow-Atomic Scheduling for AI Agent Inference on GPU Clusters — L2 <a class="heading-anchor" href="#saga-workflow-atomic-scheduling-for-ai-agent-inference-on-gpu-clusters-—-l2" aria-label="Link to saga-workflow-atomic-scheduling-for-ai-agent-inference-on-gpu-clusters-—-l2">#</a></h1>
 
-<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>SAGA treats entire agent workflows—not individual LLM calls—as first-class schedulable units. Using Agent Execution Graphs to predict KV cache reuse across tool-call boundaries, it achieves 1.31× of Bélády's optimal offline eviction and reduces task completion time by 1.64× (geo-mean) over vLLM+APC on a 64-GPU cluster serving SWE-bench and WebArena agents.</p>
+<p>Agent tasks fire 10–100 chained LLM calls, but request-level GPU schedulers discard each session's KV cache across tool calls, inflating latency 3–8×. SAGA makes the whole agent workflow the schedulable unit: workflow-aware eviction (within 1.31× of Bélády), session-affinity batching with work stealing, and a Lyapunov-bounded fairness metric. Result: 1.64× lower task-completion time vs vLLM+APC, 99.2% SLO, at ~30% throughput cost.</p>
 
-<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
+<p><strong>Q1 — 痛点 (what breaks).</strong> Modern serving stacks (vLLM, SGLang, Orca) optimize <em>request-level</em> metrics (TTFT, throughput) and assume requests are (a) independent and (b) arrive memorylessly. Agent workloads violate both. A ReAct loop's step <code>i+1</code> depends on step <code>i</code>'s output plus a tool observation; between steps the agent idles for a tool call ranging 50 ms → 30+ s. During that idle, current systems evict the session's KV cache (2–12 GB for a 70B GQA model at 32K context), then must re-prefill on resume. Instrumentation on a 32-GPU SWE-bench cluster shows 38% of wall-time spent regenerating discarded cache, 42% average memory utilization, and 6.0× higher end-to-end latency than the sum of individual inference times.</p>
 
-<p><strong>Agent scope</strong>: SAGA targets open-ended multi-turn autonomous agents (coding agents on SWE-bench, browser agents on WebArena) running iterative ReAct loops with 10–150 LLM calls per task, interleaved with external tool invocations of highly variable latency (45 ms file ops to 45 s web API calls at P99).</p>
+<p><strong>Q2 — 方法 (the fix).</strong> Elevate the <em>agent program</em> (not the inference call) to the first-class schedulable unit. SAGA surfaces workflow structure as an <strong>Agent Execution Graph (AEG)</strong> $G=(V,E,P,\phi)$ and uses it in three coordinating mechanisms: (1) <strong>WA-LRU</strong> eviction that scores sessions by predicted future reuse from the AEG, plus tool-call-aware TTL; (2) <strong>session-affinity batching</strong> that co-locates a task's steps on one worker, with randomized work stealing to rebalance; (3) <strong>Agent Fair Share (AFS)</strong>, a completion-time fairness metric with a Lyapunov-drift bound.</p>
 
-<p>GPU cluster schedulers (vLLM, SGLang, Orca) treat each LLM call independently: KV cache is evicted via LRU during tool-call idle periods, requests from the same session scatter across workers, and fairness is defined per-request rather than per-task. Instrumentation on a 32-GPU cluster shows 38% of total execution time spent regenerating discarded KV cache, 42% average GPU memory utilization, and 6.0× end-to-end latency inflation vs. inference-only baseline. The mismatch is quadratic: a $k$-step agent with per-step cache $c$ incurs $O(k^2 c)$ regeneration under request-level scheduling vs. $O(c)$ with perfect workflow awareness.</p>
+<p><strong>核心技术壁垒 (the single hardest-to-replicate insight):</strong> the AEG-driven reuse predictor <code>overlap(s,u)</code> (Eq. 4–5) that converts observable workflow structure into a per-session eviction score good enough to land online cache management within 1.31× of Bélády's <em>offline-optimal</em> oracle on production traces. The scientific claim of the paper is precisely this quantified upper bound on what an online scheduler can achieve once the workflow DAG is observable — the first such empirical bound for agent inference. The barrier is not the LRU machinery but the calibrated <code>prefix_est(u)</code> estimate combined with tool-type-specific observation-length EMAs.</p>
 
-<p><img src="/assets/2605.00528/fig1.png" alt="Figure 1: Inefficiency breakdown under request-level scheduling"></p>
+<p><strong>Q3 — 结果.</strong> On a 64-GPU A100 cluster: 1.73× (SWE-bench) / 1.55× (WebArena) TCT reduction over vLLM+APC v0.15.1, geomean <strong>1.64×</strong> ($p<0.001$); up to <strong>3.01×</strong> vs vanilla vLLM; <strong>1.22×</strong> memory-utilization gain; <strong>99.2%</strong> SLO attainment under multi-tenant interference. Cost: ~30% lower peak throughput than throughput-optimal batching.</p>
 
-<p><em>Paper's Figure 1, verbatim (caption: "Inefficiencies in serving agent workloads with request-level scheduling").</em></p>
+<h3 id="agent-scope">Agent scope <a class="heading-anchor" href="#agent-scope" aria-label="Link to agent-scope">#</a></h3>
 
-<p>Three sub-panels quantify the gap: (a) 38% time in KV regeneration for vLLM vs. 8% for SAGA; (b) GPU memory utilization rising from 42% to 71%; (c) latency overhead dropping from 6.0× to 1.5× on log scale. The figure makes the case that the overhead is dominated by cache churn during tool-call gaps, not by compute itself.</p>
-
-<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
-
-<p>Three mechanisms unified under the "workflow-as-unit" thesis:</p>
-
-<ol>
-<li><strong>Agent Execution Graphs (AEGs) + WA-LRU eviction</strong> — formalize agent workflows as DAGs $G=(V,E,P,\phi)$ with transition probabilities and tool-type mappings. WA-LRU scores eviction candidates by a weighted combination of recency, predicted reuse probability (computed from AEG successor structure), and size: $P_{evict}(s) = 0.3\hat{R}(s) + 0.5(1 - P_{reuse}(s)) + 0.2\hat{S}(s)$. Tool-call-aware TTL fits log-normal distributions to per-tool-type latency histories and scales retention by memory pressure.</li>
+<ul>
+<li><strong>Task class:</strong> open-ended — long-horizon coding (SWE-bench, mean 37 / max 150 steps) and browser automation (WebArena, mean 18 steps). Not single-turn RAG.</li>
+<li><strong>Interaction pattern:</strong> multi-turn ReAct loops with external tool invocations interleaved between LLM calls.</li>
+<li><strong>Autonomy:</strong> fully autonomous per task; SAGA sits <em>below</em> the agent frameworks (LangChain / AutoGen / CrewAI) as a serving-layer scheduler, requiring no changes to agent code.</li>
 </ul>
 
-<ol>
-<li><strong>Session-affinity batching with work stealing</strong> — routes requests to the worker holding the session's KV cache unless that worker exceeds 80% load. Randomized work stealing (Blumofe–Leiserson) redistributes load with mean 230 ms migration overhead via Llumnix, narrowing worker utilization from 23–94% to 68–79%.</li>
-</ul>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<ol>
-<li><strong>Agent Fair Share (AFS)</strong> — defines per-tenant urgency as remaining-work-over-remaining-time ($AFS_i = \sum_{t \in \mathcal{T}_i} work_{remain}(t) / (deadline(t) - t_{now})$), allocates capacity proportionally, and preempts via KV migration. Lyapunov drift analysis proves bounded deviation from proportional completion times (Theorem 2).</li>
-</ul>
-
-<p><strong>核心技术壁垒</strong>: The reuse probability computation $P_{reuse}(s) = \sum_{u \in succ(v_s)} P(v_s \to u) \cdot overlap(s, u)$ is the single mechanism that closes the gap to Bélády-optimal. It requires both structural knowledge (AEG successor set and transition probabilities) and semantic knowledge (per-tool-type observation length estimates via exponential moving averages). Without it, the system degrades to prefix caching (+96% TCT, Table 4 ablation). No prior system computes this cross-tool-call reuse signal.</p>
-
-<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
-
-<table>
-<tr><th>Metric</th><th>Value</th></tr>
-<tr><td>TCT reduction vs. vLLM+APC (geo-mean)</td><td>1.64× ($p < 0.001$)</td></tr>
-<tr><td>TCT reduction vs. vLLM v0.6.0 (SWE-bench)</td><td>3.01×</td></tr>
-<tr><td>Competitive ratio vs. Bélády optimal</td><td>1.31× (SWE-bench), 1.28× (WebArena)</td></tr>
-<tr><td>GPU memory utilization</td><td>71.3% (+29 pp over vLLM)</td></tr>
-<tr><td>SLO attainment (multi-tenant)</td><td>99.2% vs. 67.3% for vLLM</td></tr>
-<tr><td>Throughput tradeoff</td><td>~30% lower than throughput-optimal BFS</td></tr>
-</table>
-
-<h2 id="§3-架构-方法図">§3 架构 / 方法図 <a class="heading-anchor" href="#§3-架构-方法図" aria-label="Link to §3-架构-方法図">#</a></h2>
-
-<h3 id="system-architecture">System architecture <a class="heading-anchor" href="#system-architecture" aria-label="Link to system-architecture">#</a></h3>
+<p>SAGA is a three-layer distributed scheduler. Layer 1 (Agent Interface) captures workflows as AEGs from framework hints or infers them from request streams. Layer 2 (Global Scheduler) routes each AEG as one unit through three engines — Affinity Router, AFS Engine, Work Stealer — sharing a Cluster State (worker loads, KV-cache map, fairness counters). Layer 3 (Worker Pool) runs extended vLLM workers under WA-LRU eviction.</p>
 
 <p><img src="/assets/2605.00528/fig2.png" alt="Figure 2: SAGA three-layer architecture"></p>
 
-<p><em>Paper's Figure 2, verbatim (caption: "SAGA architecture. Layer 1 captures workflows ... Layer 2 routes each AEG as a single schedulable unit ... Layer 3 runs extended vLLM workers under workflow-aware LRU eviction").</em></p>
+<p><em>Paper's Figure 2, verbatim (caption: "SAGA architecture. Layer 1 captures workflows from LangChain, AutoGen, and CrewAI as Agent Execution Graphs (AEGs)... Layer 2 routes each AEG as a single schedulable unit through three coordinating engines that share a Cluster State... Layer 3 runs extended vLLM workers under workflow-aware LRU eviction (WA-LRU)...").</em></p>
 
-<p>The architecture cleanly separates concerns: Layer 1 (Agent Interface) constructs AEGs from framework annotations or infers them from request patterns (87% accuracy without hints). Layer 2 (Global Scheduler) holds three coordinating engines—Affinity Router, AFS Engine, Work Stealer—sharing cluster state updated with bounded staleness of one epoch (100 ms). Layer 3 (Worker Pool) extends vLLM with WA-LRU eviction per worker. Cross-layer state is read-mostly; the only write-heavy path is AFS urgency updates.</p>
+<p>This figure is the load-bearing system diagram: notice the dashed state-traffic arrows into Cluster State (bounded staleness = one 100 ms epoch) and the color-coded per-session KV slots in Layer 3, which visualize the cache-continuity property that request-level schedulers lose across tool-call boundaries.</p>
 
-<h3 id="agent-execution-graph-structure">Agent Execution Graph structure <a class="heading-anchor" href="#agent-execution-graph-structure" aria-label="Link to agent-execution-graph-structure">#</a></h3>
+<p>The AEG itself is the pivot abstraction. For a concrete SWE-bench coding agent it is a mostly-linear chain with retry back-edges and per-step tool annotations.</p>
 
 <p><img src="/assets/2605.00528/fig3.png" alt="Figure 3: Concrete AEG for a SWE-bench coding agent"></p>
 
-<p><em>Paper's Figure 3, verbatim (caption: "Concrete AEG for a SWE-bench coding agent. Nodes are LLM inference steps; forward edges carry transition probabilities, backward edges encode retry loops").</em></p>
+<p><em>Paper's Figure 3, verbatim (caption: "Concrete AEG for a SWE-bench coding agent. Nodes are LLM inference steps; forward (teal) edges carry transition probabilities, backward (coral) edges encode retry loops... idle durations span 53× (45 ms for read_file versus 2.4 s for run_test), which is precisely the regime where workflow-aware TTL prediction beats fixed-TTL or eager-eviction policies.").</em></p>
 
-<p>The AEG for a typical SWE-bench task is a 5-node linear chain with backward retry edges. Tool latencies span 53× (45 ms <code>read_file</code> to 2.4 s <code>run_test</code>), which is the regime where fixed-TTL fails and adaptive TTL is essential. Transition probabilities decay along the chain (0.95 → 0.85 → 0.70 → 0.60), reflecting increasing termination probability as the agent approaches a solution.</p>
+<p>The reader should notice the 53× spread in tool-idle durations across a single task: this variance is exactly why a single fixed TTL fails and why per-tool-type TTL prediction is needed. The teal brace ($v_0$–$v_3$) marks the 12K-token cache span SAGA preserves during idle rather than recomputing on resumption.</p>
 
-<h3 id="agent-loop-state-machine">Agent loop (state machine) <a class="heading-anchor" href="#agent-loop-state-machine" aria-label="Link to agent-loop-state-machine">#</a></h3>
+<h3 id="the-agent-loop-as-saga-sees-it">The agent loop as SAGA sees it <a class="heading-anchor" href="#the-agent-loop-as-saga-sees-it" aria-label="Link to the-agent-loop-as-saga-sees-it">#</a></h3>
 
 <div class="mermaid">
 stateDiagram-v2
-    [*] --> Prefill: new task admitted
-    Prefill --> Decode: KV cache populated
-    Decode --> ToolDispatch: action ≠ "finish"
-    Decode --> TaskComplete: action = "finish"
-    ToolDispatch --> ToolWait: tool invoked
-    ToolWait --> CacheCheck: tool returns observation
-    CacheCheck --> Prefill: cache MISS (regenerate)
-    CacheCheck --> Decode: cache HIT (append obs)
-    ToolWait --> TTLExpiry: TTL exceeded
-    TTLExpiry --> CacheEvict: memory pressure > threshold_low
-    CacheEvict --> Prefill: next request arrives
-    TaskComplete --> [*]
-
-    note right of ToolWait
-        WA-LRU retains cache
-        TTL = P95(tool_type) × pressure_factor
-    end note
+    [*] --> Prefill: AEG submitted (unit dispatch)
+    Prefill --> Decode: LLM inference (thought, action)
+    Decode --> Finish: action = "finish"
+    Decode --> ToolCall: dispatch to named tool
+    ToolCall --> Retain: WA-LRU keeps KV, TTL = f(tool type, pressure)
+    Retain --> Prefetch: speculatively load argmax successor
+    Prefetch --> Decode: observation appended, resume same worker
+    Retain --> Evict: TTL expired / memory pressure high
+    Evict --> Prefill: regenerate cache (cost SAGA minimizes)
+    Finish --> [*]
 </div>
 
-<p><strong>Planning style</strong>: The paper does not propose a new planning method; it schedules agents that follow ReAct (linear chain) or tree-of-thought (branching DAG) patterns. Decomposition is bottom-up from observed request patterns. Budget is implicit: tasks terminate when the agent emits <code>action = "finish"</code> or hits the benchmark's step limit. No backtracking support at the scheduler level; retry loops are captured as backward edges in the AEG.</p>
+<ul>
+<li><strong>Memory model:</strong> short-term = the session KV cache pinned across tool idle by WA-LRU + TTL; there is no long-term vector store — "memory" here is the accumulated LLM context (2–4K → 16–128K tokens) whose KV cache is the scheduled resource. Episodic = historical traces feed transition-probability estimation for pattern inference.</li>
+<li><strong>Tool invocation:</strong> each ReAct iteration = one LLM call then one tool execution; tool result (<code>observation</code>) appended to context.</li>
+<li><strong>Error recovery:</strong> on AEG misprediction the system detects the mismatch when the actual next request arrives and corrects routing for subsequent steps (errors do not cascade); on TTL expiry the session falls back to a fresh prefill (graceful degradation to standard LRU per Eq. 6).</li>
+</ul>
 
-<p><strong>Memory model</strong>: Short-term memory is the KV cache (2–12 GB per session for 70B model at 32K context). Long-term memory management is outside SAGA's scope (delegated to agent frameworks). SAGA's contribution is preserving short-term memory across tool-call boundaries.</p>
+<h3 id="planning-reasoning">Planning & reasoning <a class="heading-anchor" href="#planning-reasoning" aria-label="Link to planning-reasoning">#</a></h3>
 
-<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+<ul>
+<li><strong>Planning style:</strong> the <em>agent's</em> reasoning is ReAct (think-then-act) or tree-of-thought; SAGA does not plan the agent, it observes the resulting AEG. The scheduler's own "planning" is a per-100ms-epoch capacity allocation.</li>
+<li><strong>Decomposition:</strong> top-down — the workflow DAG is admitted whole (workflow-atomic dispatch), then decomposed into per-node prefill/decode work estimates.</li>
+<li><strong>Budget:</strong> <code>TTL_max = 300 s</code>; tasks span up to 150 steps; work-stealing migration bounded to ~2.3 events/task (max 5 observed).</li>
+<li><strong>Backtracking:</strong> retry back-edges in the AEG are modeled as branching probabilities; the scheduler does not undo tool side effects.</li>
+</ul>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>The paper carries <strong>two</strong> formal results (§6.3 fairness bound, §7.1 competitive ratio; note both are labeled "Theorem 2" — numbering resets per section). This is not purely empirical, so the notation table + checks below apply.</p>
 
 <h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
 
 <table>
-<tr><th>Symbol</th><th>Definition</th><th>Where introduced</th></tr>
-<tr><td>$G=(V,E,P,\phi)$</td><td>Agent Execution Graph</td><td>Def. 1, §3.2</td></tr>
-<tr><td>$P_{evict}(s)$</td><td>Eviction priority score for session $s$</td><td>Eq. 1, §4.1</td></tr>
-<tr><td>$P_{reuse}(s)$</td><td>Predicted reuse probability from AEG</td><td>Eq. 4, §4.1</td></tr>
-<tr><td>$\alpha, \beta, \gamma$</td><td>WA-LRU weight parameters (0.3, 0.5, 0.2)</td><td>§4.1</td></tr>
-<tr><td>$m$</td><td>Memory pressure, linear ramp in [0,1]</td><td>Eq. 6, §4.2</td></tr>
-<tr><td>$\theta$</td><td>Session-affinity load threshold (0.8)</td><td>Eq. 7, §5.1</td></tr>
-<tr><td>$AFS_i$</td><td>Agent Fair Share score for tenant $i$</td><td>Eq. 8, §6.1</td></tr>
-<tr><td>$CR(\mathcal{A})$</td><td>Competitive ratio of online policy $\mathcal{A}$</td><td>Eq. 15, §7.1</td></tr>
-<tr><td>$\epsilon$</td><td>AEG prediction error rate</td><td>Theorem 3, §7.1</td></tr>
-<tr><td>$\rho$</td><td>Demand heterogeneity ratio $\max_i W_i / \min_i W_i$</td><td>Theorem 2, §6.3</td></tr>
-<tr><td>$V(t)$</td><td>Lyapunov function $\sum_i (S_i(t) - \mu_i t)^2$</td><td>§6.3 proof</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$P_{evict}(s)$</td><td>eviction priority of session $s$ (higher → evict first)</td></tr>
+<tr><td>$\hat{R}, \hat{S}$</td><td>normalized recency, normalized size ($\in[0,1]$)</td></tr>
+<tr><td>$P_{reuse}(s)$</td><td>AEG-predicted reuse probability</td></tr>
+<tr><td>$\alpha,\beta,\gamma$</td><td>eviction weights (0.3, 0.5, 0.2)</td></tr>
+<tr><td>$overlap(s,u)$</td><td>fraction of cached tokens reused by successor $u$</td></tr>
+<tr><td>$m$</td><td>memory pressure $\in[0,1]$</td></tr>
+<tr><td>$AFS_i$</td><td>tenant $i$'s aggregate urgency score</td></tr>
+<tr><td>$e_i(t)$</td><td>service deviation $S_i(t)-\mu_i t$ for tenant $i$</td></tr>
+<tr><td>$V(t)$</td><td>Lyapunov function $\sum_i e_i(t)^2$</td></tr>
+<tr><td>$\eta$</td><td>restoring-drift coefficient</td></tr>
+<tr><td>$CR(\mathcal{A})$</td><td>competitive ratio of policy $\mathcal{A}$ vs Bélády OPT</td></tr>
+<tr><td>$\epsilon, k_{max}$</td><td>AEG misprediction prob, max task length</td></tr>
 </table>
 
-<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+<h3 id="方程物理意义-load-bearing-equations">方程物理意义 (load-bearing equations) <a class="heading-anchor" href="#方程物理意义-load-bearing-equations" aria-label="Link to 方程物理意义-load-bearing-equations">#</a></h3>
 
-<p><strong>WA-LRU eviction score</strong> (Eq. 1): $P_{evict}(s) = \alpha \hat{R}(s) + \beta(1 - P_{reuse}(s)) + \gamma \hat{S}(s)$ — a linear combination that approximates Bélády's "farthest future reuse" by replacing oracle knowledge with AEG-predicted reuse. The $\beta$-weighted reuse term dominates ($\beta = 0.5$), so entries with high predicted reuse survive even when stale. Sensitivity: ≤8% TCT variation across tested ranges.</p>
-
-<p><strong>Reuse probability</strong> (Eq. 4): $P_{reuse}(s) = \sum_{u \in succ(v_s)} P(v_s \to u) \cdot overlap(s, u)$ — expected fraction of cached tokens reused in the next step, weighted by AEG transition probabilities. For linear ReAct chains, this simplifies to $(1 - p_{term}) \cdot n_{curr}/(n_{curr} + \hat{n}_{obs})$. The overlap estimation uses per-tool-type exponential moving averages.</p>
-
-<p><strong>Lyapunov drift</strong> (Eqs. 10–14): The Lyapunov function $V(t) = \sum_i (S_i(t) - \mu_i t)^2$ measures cumulative deviation of actual service from proportional fair share. AFS creates negative drift: underserved tenants get higher urgency → more allocation → gap shrinks. The key lemma $\mathbb{E}[(a_i(t+1) - \mu_i) \cdot e_i(t)] \leq -\eta \cdot e_i(t)^2$ guarantees quadratic restoring force with $\eta = C / (N \cdot (deadline_{max} - t)^2)$.</p>
-
-<p><strong>Competitive ratio</strong> (Theorem 3, Eq. 16): $CR_{empirical}(\text{WA-LRU}) \leq 1 + \epsilon \cdot k_{max} + O(\sigma_{tool}/TTL_{adaptive})$ — worst-case bound is extremely loose ($\approx 20.5$ for SWE-bench parameters) because it assumes all mispredictions cause maximum-length regeneration. Empirical 1.31× shows average-case behavior is far better.</p>
+<ul>
+<li><strong>Eq. 1</strong> — $P_{evict}(s)=\alpha\hat{R}(s)+\beta(1-P_{reuse}(s))+\gamma\hat{S}(s)$: linear weighted eviction priority; the $\beta$ term (workflow-predicted non-reuse) dominates recency, which is the whole departure from LRU.</li>
+<li><strong>Eq. 4</strong> — $P_{reuse}(s)=\sum_{u\in succ(v_s)}P(v_s\rightarrow u)\cdot overlap(s,u)$: expected reusable-cache fraction over the successor distribution, i.e. the AEG turned into a scalar retention signal.</li>
+<li><strong>Eq. 5</strong> — $overlap(s,u)=\frac{|prefix(s)\cap prefix_{est}(u)|}{|prefix(s)|}$; for linear ReAct chains simplifies to $n_{current}/(n_{current}+\hat{n}_{obs})$ with $\hat{n}_{obs}$ from tool-type EMAs.</li>
+<li><strong>Eq. 8</strong> — $AFS_i=\sum_{t\in\mathcal{T}_i}\frac{work_{remain}(t)}{deadline(t)-t_{now}}$: sum of urgency; higher AFS → higher priority.</li>
+<li><strong>Eq. 10</strong> — $Pr[TCT_i\leq(1+\epsilon)\mathbb{E}[TCT_i]]\geq 1-\delta$ with $\epsilon=O(\rho\sqrt{\log(N/\delta)/n})$: TCT concentrates within $(1+\epsilon)$ of expectation, tightening as $1/\sqrt{n}$.</li>
+<li><strong>Eq. 16</strong> — $CR_{empirical}(\text{WA-LRU})\leq 1+\epsilon\cdot k_{max}+O(\sigma_{tool}/TTL_{adaptive})$: overhead = misprediction cost + long-tail TTL underestimate.</li>
+</ul>
 
 <h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
 
-<table>
-<tr><th>#</th><th>Check</th><th>Result</th></tr>
-<tr><td>1</td><td>Theorem 2 (AFS bound): assumptions stated?</td><td>✓ — requires $\sum_i W_i \leq C$ (capacity not exceeded) and $\rho \leq \rho_{max}$ (bounded heterogeneity). Heavy tenants ($W_i > C/N$) fall outside the hypothesis.</td></tr>
-<tr><td>2</td><td>Theorem 3 (competitive ratio): conditioned on distributional assumptions?</td><td>✓ — explicitly stated: bounded prediction error $\epsilon$, bounded tool-latency variance. Not a worst-case adversarial bound.</td></tr>
-<tr><td>3</td><td>Eq. 1 weights: sensitivity characterized?</td><td>✓ — Table 9 sweeps all parameters; max variation <8% for single-axis perturbation. Multi-axis adversarial perturbation explicitly left as future work.</td></tr>
-<tr><td>4</td><td>Work stealing bound (Theorem 1): migration cost accounted for?</td><td>✓ — paper notes Blumofe–Leiserson assumes zero-cost migration; additional $N_{steals} \cdot T_{migrate}$ term (mean 530 ms) is empirically small vs. 203 s mean TCT.</td></tr>
-<tr><td>5</td><td>Pattern inference degradation quantified?</td><td>✓ — 87% accuracy, 15.6% TCT degradation vs. explicit hints (Table 5). Cold-start fallback adds ≤8% for first 30 tasks.</td></tr>
-<tr><td>6</td><td>Throughput tradeoff quantified?</td><td>✓ — ~30% lower than throughput-optimal BFS (Table 8). Explicitly stated as a limitation in abstract.</td></tr>
-</table>
-
-<h3 id="agent-specific-checks">Agent-specific checks <a class="heading-anchor" href="#agent-specific-checks" aria-label="Link to agent-specific-checks">#</a></h3>
-
-<ul>
-<li><strong>Success-rate model</strong>: Not applicable—SAGA is a serving system, not an agent. Task success rates are determined by the agent itself (SWE-bench resolution rate not reported as a SAGA metric).</li>
-<li><strong>Latency budget per turn</strong>: LLM inference dominates; tool-call latency is external. SAGA's overhead per turn: 12.3 ms coordinator cycle + 3.1 ms AFS computation (Table 7). Interactive latency is achieved (1.5× overhead vs. ideal, Figure 1c).</li>
-<li><strong>Failure mode classification</strong>: Three failure modes identified: (1) AEG misprediction → unnecessary cache eviction or retention; (2) TTL underestimate for tail tool latencies → premature eviction; (3) work-stealing migration cost for short tasks. Dominant failure mode is TTL underestimate under high tool-latency variance (CV > 2.0, Table 10).</li>
-<li><strong>无形式化作者证明 — 仅实证</strong>: The paper provides formal bounds (Theorems 2, 3) but these are extremely loose compared to empirical results. The competitive ratio bound (20.5×) is 15× above the empirical 1.31×. The AFS concentration bound requires $n$ scheduling epochs to tighten — practical tightness not quantified. Formal guarantees serve as existence proofs rather than operational bounds.</li>
+<ol>
+<li><strong>Dimensional check (Eq. 1):</strong> all three terms are dimensionless (normalized to $[0,1]$) and weights sum to 1.0 (0.3+0.5+0.2) — the score is a convex combination, so $P_{evict}\in[0,1]$. ✓</li>
+<li><strong>Limit check (Eq. 5):</strong> if the successor's prompt is entirely the current context ($\hat{n}_{obs}\to 0$), overlap → 1 (full reuse); if the observation dwarfs context ($\hat{n}_{obs}\to\infty$), overlap → 0 (nothing reusable). Behaves correctly at both ends. ✓</li>
+<li><strong>Sign / drift check (Eq. 12):</strong> $\mathbb{E}[(a_i(t+1)-\mu_i)e_i(t)]\leq-\eta e_i(t)^2$ with $\eta>0$ — the drift is strictly restoring; an underserved tenant ($e_i<0$) gets $\mathbb{E}[a_i]>\mu_i$. Sign is consistent with self-correction. ✓</li>
+<li><strong>Asymptotic check (Eq. 10):</strong> $\epsilon\to 0$ as epochs $n\to\infty$ — the fairness bound is only meaningful for long-running multi-tenant load, consistent with the empirical result that AFS matters under contention, not in single-benchmark runs. ✓</li>
+<li><strong>Complexity check (Observation 1):</strong> worst-case naive regeneration $\sum_{j=1}^k jc = O(k^2 c)$ vs workflow-aware $O(c)$; the quadratic-vs-constant gap is what motivates retention and is monotone in step count $k$. ✓</li>
+<li><strong>Tightness / honesty check (Eq. 16):</strong> with $\epsilon=0.13$, $k_{max}=150$ the analytic bound is $1+\epsilon k_{max}\approx 20.5$, but measured CR is 1.31× because $k_{avg}=37$ dominates — the authors explicitly flag the ~16× slack, and label Eq. 16 an <em>expected-case</em> (not worst-case adversarial) ratio. The worst-case remains open. ✓</li>
 </ul>
 
-<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+<p><strong>Success-rate / sweep model:</strong> the fairness guarantee (Eq. 10) is validated by the SLO sweep across tenant classes (Table 6); monotonicity holds — light tenants (most starvation-prone) gain most (43.2% → 98.7%). The competitive-ratio claim is validated by a policy sweep (Table 2). <strong>Latency budget per turn:</strong> coordinator cycle 12.3 ms mean / 28.7 ms P95; AEG construction 45.2 ms; migration 230 ms mean — all small vs 203.4 s mean SWE-bench TCT, so the "interactive" claim holds. <strong>Failure modes:</strong> the paper names three failure axes — workflow observability, tool-latency tail, and task-duration estimation for novel agents; the dominant one is observability, and WA-LRU plus pattern inference directly target it.</p>
 
-<h3 id="end-to-end-performance-table-3">End-to-end performance (Table 3) <a class="heading-anchor" href="#end-to-end-performance-table-3" aria-label="Link to end-to-end-performance-table-3">#</a></h3>
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p>The headline end-to-end table drives every downstream claim: SAGA lands lowest TCT and highest memory utilization on both benchmarks against six baselines.</p>
 
 <p><img src="/assets/2605.00528/tab3.png" alt="Table 3: End-to-end performance on agent benchmarks"></p>
 
-<p><em>Paper's Table 3, verbatim. TCT = Task Completion Time (seconds), Mem = GPU memory utilization (%).</em></p>
+<p><em>Paper's Table 3, verbatim (caption: "End-to-end performance on agent benchmarks. TCT = Task Completion Time (seconds). Mem = GPU memory utilization (%)... Significance: </em>*<em> p<0.001 ...").</em> SAGA reaches 203.4 s SWE-bench TCT (vs 352.1 s for the strongest baseline vLLM+APC) at 71.3% memory utilization; the reader should note the strongest baseline is vLLM+KVFlow (298.4 s), so the 1.47× margin over it isolates the value of SAGA's <em>distributed + fairness</em> additions beyond workflow-aware caching alone.</p>
 
-<p>SAGA achieves 203.4 s mean TCT on SWE-bench vs. 352.1 s for vLLM+APC (1.73×) and 298.4 s for KVFlow (1.47×). The closest competitor is KVFlow, which has workflow-aware eviction but lacks distributed scheduling and fairness. The gap widens on SWE-bench (longer tasks, more cache reuse opportunity) vs. WebArena (shorter tasks, higher tool-call variance).</p>
+<p>The central <em>scientific</em> result — that observable workflow structure closes most of the gap to the offline oracle — is Table 2.</p>
 
-<h3 id="ablation-table-4">Ablation (Table 4) <a class="heading-anchor" href="#ablation-table-4" aria-label="Link to ablation-table-4">#</a></h3>
+<p><img src="/assets/2605.00528/tab2.png" alt="Table 2: Competitive ratio vs Bélády's optimal"></p>
 
-<p><img src="/assets/2605.00528/tab4.png" alt="Table 4: Ablation study on SWE-bench"></p>
+<p><em>Paper's Table 2, verbatim (caption: "Competitive ratio of eviction policies against Bélády's optimal offline algorithm on production traces. Lower is better (1.0 = optimal).").</em> WA-LRU hits 1.30× mean vs 2.48× for standard LRU and 1.86× for prefix caching. This is the number the abstract foregrounds and the one that upper-bounds achievable online performance given AEG observability.</p>
 
-<p><em>Paper's Table 4, verbatim. Each row removes one component from the full system.</em></p>
+<p>The ablation reveals which lever actually carries the win, and it is not the marquee one.</p>
 
-<p>Session affinity is the dominant contributor (+96% TCT when disabled), followed by workflow-aware eviction (+54%) and tool-call TTL (+42%). AFS contributes only +8% in single-tenant mode but becomes essential under multi-tenant load (§9.6). Speculative prefetching (+19%) provides diminishing returns when cache is already retained by TTL. The ablation reveals a clear importance hierarchy: routing > eviction > TTL > prefetch > fairness (for single-tenant).</p>
+<p><img src="/assets/2605.00528/tab4.png" alt="Table 4: Ablation on SWE-bench"></p>
 
-<h3 id="multi-tenant-fairness-table-6">Multi-tenant fairness (Table 6) <a class="heading-anchor" href="#multi-tenant-fairness-table-6" aria-label="Link to multi-tenant-fairness-table-6">#</a></h3>
+<p><em>Paper's Table 4, verbatim (caption: "Ablation study on SWE-bench. Each row removes one component from full system.").</em> Removing <strong>session affinity</strong> costs +96% TCT — nearly double the +54% from removing workflow-aware eviction. The load-bearing insight for practitioners: co-location dominates, and AFS fairness contributes only +8% here (its value surfaces only under multi-tenant load, below).</p>
+
+<p>Fairness is where the AFS theorem earns its keep — single-benchmark runs hide it, multi-tenant interference exposes it.</p>
 
 <p><img src="/assets/2605.00528/tab6.png" alt="Table 6: SLO attainment by tenant type"></p>
 
-<p><em>Paper's Table 6, verbatim. SLO = fraction of tasks completing within 1.5× expected TCT.</em></p>
+<p><em>Paper's Table 6, verbatim (caption: "SLO attainment (% of tasks meeting deadline) by tenant type.").</em> SAGA holds 98.7–99.4% across heavy/medium/light tenants while vLLM starves light tenants to 43.2% — this is the empirical face of Theorem 2's bounded-deviation guarantee.</p>
 
-<p>The most dramatic result: light tenants' SLO attainment jumps from 43.2% (vLLM) to 98.7% (SAGA), a 55.5 pp improvement. vLLM's FCFS scheduling causes starvation for light tenants whose short tasks get queued behind heavy tenants' long-running sessions. AFS's urgency-proportional allocation directly addresses this. The 99.1% attainment for heavy tenants (vs. 89.4% for vLLM) shows that fairness does not come at the cost of heavy-tenant performance.</p>
+<p>The motivation figure quantifies the three inefficiencies the whole design targets.</p>
 
-<h3 id="tool-environment-interface">Tool & environment interface <a class="heading-anchor" href="#tool-environment-interface" aria-label="Link to tool-environment-interface">#</a></h3>
+<p><img src="/assets/2605.00528/fig1.png" alt="Figure 1: Inefficiencies of request-level scheduling"></p>
 
-<p>SAGA intercepts requests at the agent framework level and does not modify tool execution. Tool catalog is whatever the agent framework provides (code execution, file ops, web/API calls, database queries per Table 1). All tools are opaque to SAGA—it observes only invocation time and return time. Side effects: SAGA is read-only with respect to tool execution; all writes are within the scheduling layer (cache management, routing state). Error surface: if a tool call times out beyond $TTL_{max}$ (300 s), the KV cache is evicted and must be regenerated on the next LLM call. The agent framework handles tool-level retries.</p>
+<p><em>Paper's Figure 1, verbatim (caption: "Inefficiencies in serving agent workloads with request-level scheduling. (a) Time breakdown: vLLM v0.6.0 spends 38% of execution time regenerating KV cache between agent steps; SAGA reduces this to 8% (−30 pp)... (c) End-to-end latency normalized to inference-only baseline (log scale): vLLM is 6.0×, +APC is 3.5×, SAGA is 1.5× ...").</em> Panel (c) is the elevator pitch: SAGA gets 4.0× closer to the inference-only ideal than vanilla vLLM.</p>
 
-<h3 id="execution-strategy-tradeoff-table-8">Execution strategy tradeoff (Table 8) <a class="heading-anchor" href="#execution-strategy-tradeoff-table-8" aria-label="Link to execution-strategy-tradeoff-table-8">#</a></h3>
+<p><strong>Where SAGA loses (honest downside rows):</strong> in the BFS/DFS strategy comparison, Pure BFS achieves higher throughput (12.4 vs 8.7 tasks/min) — SAGA trades ~30% throughput for its TCT win. And under extreme tool-latency variance (CV=3.0), TCT degrades +53% as TTL-prediction accuracy falls to 71%; production CV is 1.0–1.5, inside the safe band.</p>
 
-<p>The BFS-DFS spectrum is fundamental: pure BFS maximizes throughput (12.4 tasks/min) but evicts 78% of cache; pure DFS minimizes eviction (3%) but serializes tasks (4.2 tasks/min). SAGA's hybrid achieves optimal TCT (203.4 s) at 8.7 tasks/min—the ~30% throughput reduction vs. BFS is the explicit price paid for latency optimization.</p>
-
-<h3 id="parameter-robustness">Parameter robustness <a class="heading-anchor" href="#parameter-robustness" aria-label="Link to parameter-robustness">#</a></h3>
-
-<p>All 10 tunable parameters show <8% TCT variation under single-axis perturbation (Table 9). The most sensitive are $\beta$ (reuse weight, <8%) and $T_{idle}$ (steal trigger, <7%). Robustness is structural: session affinity (the largest contributor) is binary, and the continuous parameters enter as smoothly weighted contributions to normalized scores.</p>
-
-<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
-<tr><td>1</td><td>Request-level scheduling wastes 38% of time on KV cache regeneration for agent workloads</td><td>Figure 1 instrumentation on 32 A100 GPUs with SWE-bench. Regeneration cost is $O(k^2 c)$ vs. $O(c)$ with workflow awareness (Observation 1, §7.1).</td><td>—</td></tr>
-<tr><td>2</td><td>Agent workflows follow stereotyped patterns (ReAct loops, tree-of-thought branches) that can be captured as DAGs with predictable transition probabilities</td><td>AEG formalization (Def. 1); pattern inference achieves 87% accuracy without framework hints (Table 5).</td><td>Step 1 (patterns cause the cache reuse opportunity)</td></tr>
-<tr><td>3</td><td>AEG-predicted reuse enables WA-LRU to approach Bélády-optimal cache management</td><td>Empirical competitive ratio 1.31× on SWE-bench, 1.28× on WebArena vs. Bélády oracle (Table 2). Formal bound via Theorem 3, though loose (20.5× worst case).</td><td>Step 2 (AEG accuracy feeds $P_{reuse}$)</td></tr>
-<tr><td>4</td><td>Session-affinity routing eliminates cross-worker cache misses; work stealing prevents affinity-induced load imbalance</td><td>Ablation: removing affinity → +96% TCT (Table 4). Worker utilization narrows from 23–94% to 68–79% with stealing. Migration overhead small (2.3 steals × 230 ms vs. 203 s TCT).</td><td>Step 3 (retained cache has value only if requests land on the right worker)</td></tr>
-<tr><td>5</td><td>AFS provides task-completion-time fairness under multi-tenant contention, preventing light-tenant starvation</td><td>SLO attainment 99.2% overall vs. 67.3% for vLLM (Table 6). Light tenants: 43.2% → 98.7%. Lyapunov drift proof bounds deviation (Theorem 2).</td><td>Steps 3–4 (fairness operates on top of cache + routing)</td></tr>
-<tr><td>6</td><td>Combined system achieves 1.64× geometric mean TCT reduction over vLLM+APC with 1.22× memory utilization gain, at ~30% throughput cost</td><td>Table 3 end-to-end results, $p < 0.001$. Table 8 quantifies throughput tradeoff. 10 trials, outliers removed.</td><td>Steps 3–5 (all three mechanisms contribute)</td></tr>
+<tr><th>Step</th><th>Claim (paper-internal)</th><th>Support</th></tr>
+<tr><td>1</td><td>Agent workloads violate the independence + memorylessness assumptions of request-level schedulers (sequential dependency, KV continuity, bursty correlated arrivals).</td><td>§1.1 three characteristics; §2.3 two broken assumptions</td></tr>
+<tr><td>2</td><td>Under those violations, discarding KV cache across tool calls wastes 38% of wall-time and holds memory to 42%, inflating latency 6.0×.</td><td>§1.1 instrumentation; Fig 1</td></tr>
+<tr><td>3</td><td>Making the workflow the schedulable unit, surfaced as an AEG, lets an online policy predict cross-step reuse.</td><td>§3.2 AEG definition; Eq. 4–5</td></tr>
+<tr><td>4</td><td>With that prediction, WA-LRU eviction reaches within 1.31× of Bélády's offline optimum (Eq. 16 bound; Table 2 empirics).</td><td>§7.1 Theorem; Table 2</td></tr>
+<tr><td>5</td><td>Co-locating a task's steps via session affinity + work stealing preserves the retained cache while keeping the cluster balanced (util 23–94% → 68–79%).</td><td>§5.1–5.2; §9.5</td></tr>
+<tr><td>6</td><td>Allocating capacity by urgency (AFS) yields a Lyapunov-drift bound on completion-time deviation, giving 99.2% SLO under multi-tenant load.</td><td>§6.3 Theorem 2; Table 6</td></tr>
+<tr><td>7</td><td>Together these reduce TCT 1.64× geomean vs the strongest baseline, at ~30% throughput cost — the right trade for interactive deployments.</td><td>§9.2 Table 3; §9.8 Table 8</td></tr>
 </table>
 
-<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<h3 id="implementation-details">Implementation details <a class="heading-anchor" href="#implementation-details" aria-label="Link to implementation-details">#</a></h3>
-
-<p>8.5K lines Python + 1.2K lines C++/CUDA extending vLLM v0.6.0 (V1 engine). Four components: Workflow Analyzer, Distributed Scheduler (Ray + gRPC, P99 <5 ms), KV Cache Manager (PagedAttention + WA-LRU + TTL + prefetch on separate CUDA streams), Fairness Module (AFS computation). Runs as a standalone intercepting service—no agent code modifications required.</p>
-
-<p><strong>[实现未公开]</strong> — code is not released as of the paper date. Implementation details are described at the design level only; no repository URL, file paths, or reproducible build instructions are provided.</p>
-
-<h3 id="核心技术壁垒-expanded">核心技术壁垒 (expanded) <a class="heading-anchor" href="#核心技术壁垒-expanded" aria-label="Link to 核心技术壁垒-expanded">#</a></h3>
-
-<p>The hard-to-replicate insight is that AEG-predicted reuse probability (Eq. 4) must be computed online, per-session, using both structural (successor set, transition probabilities from historical traces) and semantic (per-tool-type observation length EMAs) information. This requires:</p>
-
-<ol>
-<li>A framework integration layer that extracts workflow metadata from LangChain callbacks / AutoGen message logs / CrewAI hooks, or infers it from bare request sequences.</li>
-<li>Online maintenance of per-tool-type latency distributions (log-normal fit) and observation length distributions (exponential moving averages).</li>
-<li>Tight coupling between the cache manager and the scheduler: eviction decisions (Eq. 1) depend on predicted reuse (Eq. 4) which depends on AEG state managed by the scheduler.</li>
-</ul>
-
-<p>No existing system computes this cross-tool-call reuse signal. KVFlow has workflow-aware eviction but lacks the distributed scheduling and tool-type-specific TTL prediction that complete the picture.</p>
-
-<h3 id="关键実装细节">关键実装细节 <a class="heading-anchor" href="#关键実装细节" aria-label="Link to 关键実装细节">#</a></h3>
-
-<ol>
-<li><strong>Contention mitigation</strong>: Thread-local update buffering with 10 ms / 100-update batched flush reduces coordinator overhead by 12× vs. per-update synchronization. Lock-free session tables use atomic CAS; 64-byte cache-line alignment avoids NUMA false sharing.</li>
-</ul>
-
-<ol>
-<li><strong>Speculative prefetching on separate CUDA streams</strong>: When a node completes inference and begins tool execution, the most likely successor's prefix KV cache is prefetched asynchronously. This overlaps cache loading with tool execution at no compute cost (uses spare memory and idle CUDA streams).</li>
-</ul>
-
-<h3 id="llm-backbone-requirements">LLM backbone requirements <a class="heading-anchor" href="#llm-backbone-requirements" aria-label="Link to llm-backbone-requirements">#</a></h3>
+<p>The artifact is described but the code is <strong>[实现未公开]</strong> — no repository or file:line references are given in the source. Implementation facts from §8:</p>
 
 <ul>
-<li>Evaluated on Llama-3-70B-Instruct only (4-way tensor parallelism, GQA with $n_{kv} = 8$).</li>
-<li>KV cache size scales linearly with model size: ~1.5 GB (8B) → ~10.7 GB (70B) → ~50 GB+ (405B). SAGA's benefit is proportional to cache size—larger models benefit more.</li>
-<li>MoE architectures require routing-aware extensions (stated limitation).</li>
-<li>No backbone sensitivity study across model families (Mistral, Qwen, DeepSeek not tested).</li>
-<li>Required capabilities: standard autoregressive generation with tool-call output parsing. No special structured output or chain-of-thought format requirements from the serving layer.</li>
+<li>~8.5K lines Python + 1.2K lines C++/CUDA, extending <strong>vLLM v0.6.0 (V1 engine)</strong>, four components: Workflow Analyzer, Distributed Scheduler (on Ray + gRPC, P99 worker↔coordinator < 5 ms), KV Cache Manager (extends PagedAttention with WA-LRU + TTL + speculative prefetch on separate CUDA streams), and Fairness Module.</li>
+<li>Runs as a standalone interception service — <strong>no agent-code modifications required</strong>; framework annotations are optional and only improve inference accuracy.</li>
 </ul>
 
-<h3 id="evaluation-benchmarks">Evaluation benchmarks <a class="heading-anchor" href="#evaluation-benchmarks" aria-label="Link to evaluation-benchmarks">#</a></h3>
+<p><strong>核心技术壁垒 (elaboration).</strong> The hardest part to reproduce is not the WA-LRU scoring arithmetic but the calibration of <code>overlap(s,u)</code> / <code>prefix_est(u)</code>: getting the expected-observation-length estimate $\hat{n}_{obs}$ right per tool type (via EMAs) is what makes $P_{reuse}$ predictive enough to hit 1.31× of Bélády. A naive reimplementation with a fixed observation-length prior would push the competitive ratio back toward the 1.86× prefix-caching regime. This calibration is the single insight that upper-bounds online performance under AEG observability, and it lives entirely in the (unpublished) tool-latency/observation profiling code.</p>
 
-<ul>
-<li><strong>SWE-bench</strong> (500 verified tasks): coding agent, mean 37 steps, max 150. 2–4K prompt + 100–500 output tokens per step.</li>
-<li><strong>WebArena</strong> (812 tasks): browser agent, mean 18 steps. 4–8K prompt + 50–200 output tokens per step.</li>
-<li><strong>BurstGPT-derived</strong>: synthetic multi-tenant (10 tenants: 3 heavy / 4 medium / 3 light) with Poisson arrival at ~80% peak throughput.</li>
-<li>Metrics: TCT, GPU memory utilization, throughput (tasks/min), SLO attainment (1.5× expected TCT deadline).</li>
-<li>Baselines: vLLM v0.6.0, vLLM+APC v0.15.1, SGLang v0.5.8, Llumnix v1.2, TRT-LLM+Scaffolding, vLLM+KVFlow.</li>
-</ul>
-
-<h3 id="multi-agent-considerations">Multi-agent considerations <a class="heading-anchor" href="#multi-agent-considerations" aria-label="Link to multi-agent-considerations">#</a></h3>
-
-<p>The paper does not evaluate multi-agent coordination (AutoGen-style multi-agent conversations). §1.5 notes degradation on dynamic multi-agent frameworks requiring AEG re-inference per epoch. Topology, coordination, and failure isolation are not addressed.</p>
-
-<h3 id="production-readiness">Production readiness <a class="heading-anchor" href="#production-readiness" aria-label="Link to production-readiness">#</a></h3>
-
-<ul>
-<li><strong>Sandboxing</strong>: Tool execution is outside SAGA's scope (delegated to agent framework). SAGA itself runs as a standalone service with no direct tool access.</li>
-<li><strong>Observability</strong>: Coordinator logs session routes, AFS scores, migration events. No explicit trace logging for reproducibility of non-deterministic runs.</li>
-<li><strong>Cost controls</strong>: AFS provides per-tenant fairness; $TTL_{max} = 300$ s caps memory retention. Memory pressure (Eq. 6) provides graceful degradation.</li>
-<li><strong>Limitations for production</strong>: Single-datacenter only; no geo-distributed support. Behavior under >95% memory utilization not empirically validated (degrades to standard LRU per Eq. 6). Workflow observability degrades 12–18% TCT without framework hints.</li>
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+<ol>
+<li><strong>Fairness preemption preserves cache predictions:</strong> when AFS preempts a task, the migrating task carries its WA-LRU/TTL state via Llumnix migration metadata, so the destination worker continues retaining the migrated cache rather than treating it as a fresh entry — without this, fairness and caching would fight each other.</li>
+<li><strong>Anti-thrashing gating:</strong> because the steal trigger $T_{idle}=100$ ms is <em>shorter</em> than mean migration latency (230 ms), work stealing needs three guards — the $R_{max}=2.0\times$ load-ratio guard, post-migration affinity re-pinning (prevents a second migration of the same session), and asynchronous source-side migration with stale-request rejection at acceptance time. Miss any one and the cluster oscillates.</li>
 </ul>
 
 </div>

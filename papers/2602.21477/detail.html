@@ -196,401 +196,170 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="page-title">Pancake: Hierarchical Memory System for Multi-Agent LLM Serving</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2602.21477</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-memory</span><span class="tag">multi-agent</span><span class="tag">vector-db</span><span class="tag">ANN</span><span class="tag">GPU-CPU-coordination</span><span class="tag">hybrid-graph</span></div>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2602.21477</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-memory</span><span class="tag">multi-agent</span><span class="tag">vector-db</span><span class="tag">ANN</span><span class="tag">gpu-cpu-coordination</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2602.21477.html">← Synthesis</a>
-<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/agent.html">← agent Survey</a>
 <a href="https://arxiv.org/abs/2602.21477" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
-<h1 id="pancake-hierarchical-memory-system-for-multi-agent-llm-serving">Pancake: Hierarchical Memory System for Multi-Agent LLM Serving <a class="heading-anchor" href="#pancake-hierarchical-memory-system-for-multi-agent-llm-serving" aria-label="Link to pancake-hierarchical-memory-system-for-multi-agent-llm-serving">#</a></h1>
 
-<blockquote>
-Zhengding Hu, Zaifeng Pan, Prabhleen Kaur, Vibha Murthy, Zhongkai Yu, Yue Guan, Zhen Wang, Steven Swanson, Yufei Ding (UCSD) | 2026-02 | https://arxiv.org/abs/2602.21477
-Category: framework | Tags: agent-memory, multi-agent, ANN, vector-db, ivf, gpu-cpu-coordination, rag, memgpt
-Read: 2026-04-18
-</blockquote>
+<h1 id="pancake-hierarchical-memory-system-for-multi-agent-llm-serving-—-l2">Pancake: Hierarchical Memory System for Multi-Agent LLM Serving — L2 <a class="heading-anchor" href="#pancake-hierarchical-memory-system-for-multi-agent-llm-serving-—-l2" aria-label="Link to pancake-hierarchical-memory-system-for-multi-agent-llm-serving-—-l2">#</a></h1>
 
-<h2 id="core-contribution">Core Contribution <a class="heading-anchor" href="#core-contribution" aria-label="Link to core-contribution">#</a></h2>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p><strong>Pancake</strong> 是首个针对 <strong>多 agent 长期记忆</strong> 设计的多层级动态 ANN (approximate nearest neighbor) 索引系统——通过 (i) 基于 FSM 的多级 cluster 缓存、(ii) 跨 agent 的 hybrid-graph 统一粗索引、(iii) GPU-CPU 协同的热点簇管理，把 agent 记忆操作从占端到端 82% 的开销压缩到 3.2%，端到端吞吐平均提升 <strong>4.29×</strong>。</p>
+<p>Agent memory turns every generation step into a frequent, interleaved ANN search/insert against a growing vector index; at scale this consumes 82%+ of runtime. Pancake attacks this with three coordinated tiers — locality-aware multi-level cache (FSM-driven), a hybrid graph unifying multi-agent coarse indexes, and dynamic GPU–CPU coordination — cutting memory-op share to ~3.2% and delivering >4.29× average end-to-end speedup.</p>
 
-<h2 id="summary">Summary <a class="heading-anchor" href="#summary" aria-label="Link to summary">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p><strong>Motivation.</strong> LLM agent 越来越依赖一个"外部长期记忆"数据库（Mem-GPT、A-Mem、LangChain、LlamaIndex 都有），里面存着 user profile、action history、外部知识等 embedding 向量。每一步生成都要对这个数据库做 ANN 搜索 + 插入。问题是：① <strong>记忆规模大</strong>（MS MARCO 8M 条 passage，>100GB）；② <strong>更新频繁</strong>（interleaved search-insert，批次极小）；③ <strong>多 agent 并存</strong>（每个 agent 维护自己的 memory，但也要 search 别的 agent 的）。现有 vector DB（Faiss、Milvus、SPFresh、Quake、DiskANN）都是为<strong>静态 / batch-update</strong> 的传统数据库场景设计的，在 agent 场景下跑到 memory op 占 82% 以上执行时间。</p>
+<p><strong>Q1 — 痛点 (pain).</strong> Memory-based agents (MemGPT, A-Mem) perform three operations per step: LLM generation, memory <em>search</em> (retrieve relevant items), and memory <em>update</em> (insert/delete/modify). Both search and update are ANN queries over a vector index. Unlike static RAG, the index is <em>highly dynamic</em>: small-batch inserts interleave with searches at every step. Existing vector DBs are either static-optimized (Faiss, SPANN, DiskANN) or batch/periodic-update oriented (Quake, SPFresh, IncrementalIVF, FreshDiskANN) — both mismatched to agent workloads. Consequence: as memory grows, query latency dominates, reaching >99% of end-to-end runtime at scale. Three specific failures: (i) in-place small-batch inserts scatter semantically-close vectors across up to 175 clusters (high-dimensional shell effect); (ii) multi-agent wide-scope queries must traverse <em>every</em> agent's coarse index, exceeding 80% of latency at 20 agents; (iii) static GPU caching is infeasible because hotspot clusters are also frequently <em>updated</em>, and CUDA cannot cheaply expand cached lists.</p>
 
-<p><strong>Method.</strong> Pancake 的设计是"多层级 × 多 agent × 多设备"三个正交维度的协同：</p>
+<p><strong>Q2 — 方法 (method).</strong> A three-tier memory system:</p>
 <ol>
-<li><strong>Pattern-Driven Multi-Level Index Cache (§4.2)</strong>：把 IVF cluster 组织成 3 层 L0/L1/L2 缓存，上层是下层的 subset 但用更贴合 agent 访问模式的方式聚类；用 <strong>FSM (Finite-State Machine)</strong> 对 agent 的 memory access 序列建模（state = semantic cluster，transition = step 间跳转），据此做 reordering、prefetching、early termination。</li>
-<li><strong>Multi-Agent Hybrid Graph Indexing (§4.3)</strong>：把每个 agent 的独立 HNSW coarse index 通过 <strong>跨 graph 的 inter-connection portal</strong> 合并成一个 hybrid graph，一次 BFS 就能遍历多个 agent 的 coarse index；每个静态 cluster 上加 <strong>agent profile</strong>（per-agent 访问过的 vector ID 有序列表）处理非均匀 fine-search 访问模式。</li>
-<li><strong>GPU-CPU Coordinated Dynamic Index (§4.4)</strong>：GPU 缓存 hotspot cluster，但由于 CUDA 不擅长动态 list 扩展，Pancake 把 insert 先放到 <strong>CPU-side per-cluster buffer</strong>（≤128 条），search 时 GPU（缓存部分）+ CPU（buffer）并行算然后 merge，buffer 满就异步把整个 cluster 搬到新 GPU 区再释放旧区；还把 K-means cluster splitting 也 onload 到 GPU。</li>
+<li><strong>Pattern-driven multi-level cache</strong> (L0 tiny/recent, L1 intermediate top-k′ neighborhood, L2 stable coarse). Access patterns modeled as a per-agent Finite-State-Machine over semantic cluster states; a similarity score matches incoming request embedding sequences to FSMs to drive search <em>reordering</em>, <em>early termination</em>, and background <em>prefetching</em> overlapped with LLM generation.</li>
+<li><strong>Hybrid graph</strong> connecting each agent's coarse index and the static memory index into one HNSW-like structure, with probabilistic inter-graph "portal" nodes for single-traversal cross-scope coarse search; plus per-cluster <em>agent profiles</em> that record each agent's recently-accessed vector IDs to align fine search to that agent's distribution.</li>
+<li><strong>Dynamic GPU–CPU coordination</strong>: hotspot clusters cached on GPU, a per-cluster CPU insertion buffer (size $B_{insert}=128$) absorbing updates so cached GPU clusters stay stable, and fully asynchronous cluster-expansion (double-buffer allocate + async transfer) for consistency without stalls. On-GPU K-means kernel onloads cluster splitting.</li>
 </ul>
 
-<p><strong>Results.</strong> 在 UltraChat / UltraFeedback / Prm800k / Gsm8k / APIGen / AgentGym 六个数据集 + Llama3.1-8B/70B + GPT-5 上，相比 Mem-GPT / A-Mem / LangChain / LlamaIndex，end-to-end 吞吐提升 <strong>1.12×–26.18×（平均 4.29×）</strong>；memory-op 时间占比从 >82% 降到平均 <strong>3.2%</strong>。对比独立 vector DB（Quake/SPFresh/DiskANN）query 吞吐提升 1.9×–4.2×，加 GPU 再 2.2×（合计 3.9×）。多 agent 扩展到 20 个 agent 时 degradation <10.2%；coarse search cost 比独立 index 降低 <strong>>20×</strong>。</p>
+<p><strong>核心技术壁垒 (core moat).</strong> The FSM-based agent access-pattern abstraction and its use to convert a dynamic ANN problem into a <em>predictable</em> cache-locality problem. Recognizing that agent memory accesses exhibit both intra-agent and inter-request <em>step-wise</em> locality (planning/tool-call/reflection steps of different requests cluster together), then encoding that as a lightweight online-constructed FSM over cluster states, is the single hardest-to-replicate insight — it is what lets caching, early termination, and prefetching all work without a learned model. See §7.</p>
 
-<h2 id="key-findings">Key Findings <a class="heading-anchor" href="#key-findings" aria-label="Link to key-findings">#</a></h2>
+<p><strong>Q3 — 结果 (results).</strong> >4.29× average end-to-end speedup (range 1.12×–26.18×) over A-Mem/MemGPT/LlamaIndex/LangMem; memory-op share cut to avg 3.2% (memory-op-only speedup >6.81×). Mixed two-agent degradation ≤9.8% (baselines: 29.9%–55.9%); near-linear scaling to 20 agents (≤10.2% degradation). vs vector-DB baselines: 1.9×–4.2×, +2.2× with GPU (>3.9× total). Hybrid graph: >20× coarse-search cost reduction. GPU: up to 1.92× with only 5–15 GB cache.</p>
 
-<ul>
-<li><strong>高维 shell 效应导致 in-place insert 散布</strong>：insert 100 个请求的记忆项会散落到最多 175 个 cluster 里，38%–100% 的这些 cluster 访问频率 <5%（§3.1, Fig 4a）。</li>
-<li><strong>Agent 记忆有两层 locality</strong>：intra-agent（同一 agent 的 memory 语义一致）和 inter-request step-wise（不同 request 的同一 reasoning step 访问同一 memory 区）——单独一个 dedicated cluster per agent 能处理前者但抓不住后者（§3.1, Fig 5）。</li>
-<li><strong>多 agent coarse search 成本随 agent 数线性上涨</strong>：独立索引 20 个 agent 时 coarse search 占总 latency 80%+（§3.2, Fig 7a）。</li>
-<li><strong>GPU vs CPU 的 cluster size 交叉点约 256–512</strong>：cluster <256 时 CPU 快（kernel launch overhead 主导），≥512 时 GPU 有 3× 以上 speedup（§3.3, Fig 8a）。</li>
-<li><strong>CPU-side insertion buffer 大小 = 128</strong>：这是"CPU 搜 128 条的时间 ≈ GPU 搜单个 cluster 的时间"的临界点，保证并行执行不增加端到端延迟。</li>
-<li><strong>静态 index 跑 search-update 混合时 recall 显著掉</strong>：IVF 在 search-update 模式下要扫 128 个 cluster 才能 recall>0.9，因为 insert 散布破坏 locality。</li>
-</ul>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<h2 id="key-figures">Key Figures <a class="heading-anchor" href="#key-figures" aria-label="Link to key-figures">#</a></h2>
+<p><strong>Overall workflow — where memory cost comes from.</strong></p>
 
-<h3 id="figure-1-memory-based-workflow-of-agentic-llms-motivation">Figure 1: Memory-based workflow of agentic LLMs (Motivation) <a class="heading-anchor" href="#figure-1-memory-based-workflow-of-agentic-llms-motivation" aria-label="Link to figure-1-memory-based-workflow-of-agentic-llms-motivation">#</a></h3>
-<p><img src="/assets/2602.21477/fig1-workflow.png" alt="Figure 1: workflow"></p>
-<p><strong>What it shows</strong>: agent 一轮生成里 LLM Generation / Memory Search / Memory Update 三种操作交错，随 memory 规模 memory-op 时间从不到 20% 涨到 82% 以上。</p>
-<p><strong>Why it matters</strong>: 这是整个论文的"痛点一图"——论证 agent 场景下 memory 操作已经成为新瓶颈，传统 RAG 静态 vector DB 跟不上。</p>
-<p><strong>Detailed description</strong>: 左侧是 agent 三种 op 的时序；右侧的 bar chart 横轴是 memory size，三段 stacked bar 分别表示 generation / search / update 时间，随 memory 变大 search+update 部分主导整个 latency。</p>
+<p><img src="/assets/2602.21477/fig1-workflow.png" alt="Figure 1: memory-based agentic LLM workflow"></p>
 
-<h3 id="figure-4-scattered-cluster-problem-of-in-place-insertion">Figure 4: Scattered cluster problem of in-place insertion <a class="heading-anchor" href="#figure-4-scattered-cluster-problem-of-in-place-insertion" aria-label="Link to figure-4-scattered-cluster-problem-of-in-place-insertion">#</a></h3>
-<p><img src="/assets/2602.21477/fig4-scattered-clusters.png" alt="Figure 4: scattered clusters"></p>
-<p><strong>What it shows</strong>: (a) 直接 in-place 插入后语义相关的 memory 被打散到很多 cluster；(b) 利用 intra-agent locality 给每个 agent 专门维护一个 cluster 的 naive 解法。</p>
-<p><strong>Why it matters</strong>: 从第一性原理（高维 shell 效应）说明为什么 SPFresh/Quake 等 streaming-insert + local-rebalance 在 agent 场景退化——这是 Pancake 多级 cache 设计的出发点。</p>
-<p><strong>Detailed description</strong>: 左半展示 static pre-clustered index 被新插入点污染后 cluster 语义混乱；右半展示改为"per-agent dedicated cluster"之后相关 memory 聚在一起，但仍不能处理下一段讨论的 step-wise 跨 cluster 转移。</p>
+<p><em>Paper's Figure 1, verbatim (caption: "Memory-based workflow of agentic LLMs").</em> The figure motivates the whole system: each agent step issues a search + update against the memory store, and the operational cost of these ANN operations grows with memory size until it exceeds 82% of total execution time for MemGPT/A-Mem-style workflows. The reader should notice that memory is not a side channel — it is on the critical path of every generation step.</p>
 
-<h3 id="figure-9-three-level-memory-index-cache-with-fsm-modeling">Figure 9: Three-level memory index cache with FSM modeling <a class="heading-anchor" href="#figure-9-three-level-memory-index-cache-with-fsm-modeling" aria-label="Link to figure-9-three-level-memory-index-cache-with-fsm-modeling">#</a></h3>
-<p><img src="/assets/2602.21477/fig9-three-level-cache.png" alt="Figure 9: three-level cache"></p>
-<p><strong>What it shows</strong>: L0（小而热的最近访问）→ L1（broader neighborhood cache）→ L2（coarse stable clusters）三级结构，每层上方有个 FSM table 记录 agent 的 access pattern（state-transition 图）。</p>
-<p><strong>Why it matters</strong>: 这是 Pancake 单 agent 侧的核心架构——把"传统 IVF 的 coarse/fine 两级"扩展成"workload-aware 的缓存层级"，配合 FSM 做 reordering / prefetching / early termination。</p>
-<p><strong>Detailed description</strong>: 图中用 3 组同心 cluster 表示 L0/L1/L2；箭头展示搜索从 L0 向下穿透、以及 L0 溢出时向 L1 eviction、L1 达到阈值向 L2 merge 的数据流；上面 FSM 表里每个 entry 是一个 (state set S, transition set T)，每次 request 完成后更新。</p>
+<p><strong>The scattered-cluster problem (Tier-1 motivation).</strong></p>
 
-<h3 id="figure-10-multi-agent-hybrid-graph-indexing">Figure 10: Multi-agent hybrid graph indexing <a class="heading-anchor" href="#figure-10-multi-agent-hybrid-graph-indexing" aria-label="Link to figure-10-multi-agent-hybrid-graph-indexing">#</a></h3>
-<p><img src="/assets/2602.21477/fig10-hybrid-graph.png" alt="Figure 10: hybrid graph"></p>
-<p><strong>What it shows</strong>: 静态 memory + 多个 agent 的 coarse index 通过 <strong>inter-connection portal node</strong>（带概率 $1/ef_{connect}$ 的跨图连边）合并成一张 hybrid graph；静态 cluster 上挂每个 agent 的 profile（recently accessed vector ID list）。</p>
-<p><strong>Why it matters</strong>: 解决"N 个 agent → N 个独立 HNSW → coarse search O(N)"的线性放大问题；一次 BFS 跨 scope 遍历。</p>
-<p><strong>Detailed description</strong>: 中间是 static coarse graph，四周是 agent-local coarse graph，绿色虚线表示 cross-graph portal；BFS 遇到 portal 节点就把对方 graph 加入 frontier；右下角演示 static cluster 的 agent profile 表 —— 每个 agent 一列，记录这个 cluster 内被该 agent 频繁访问的 vector 本地 ID，访问时优先计算这些 ID。</p>
+<p><img src="/assets/2602.21477/fig4-scattered-clusters.png" alt="Figure 4: in-place inserts scatter vectors across clusters"></p>
 
-<h3 id="figure-11-gpu-cpu-coordinated-dynamic-index-management">Figure 11: GPU-CPU coordinated dynamic index management <a class="heading-anchor" href="#figure-11-gpu-cpu-coordinated-dynamic-index-management" aria-label="Link to figure-11-gpu-cpu-coordinated-dynamic-index-management">#</a></h3>
-<p><img src="/assets/2602.21477/fig11-gpu-cpu-coord.png" alt="Figure 11: GPU-CPU coordination"></p>
-<p><strong>What it shows</strong>: CPU 侧维护 full index + per-cluster insertion buffer；GPU 侧缓存 hotspot cluster；search 时 GPU 和 CPU buffer 并行算最后 merge；buffer 满时 async 把 cluster 搬到新 GPU 区再释放旧区。</p>
-<p><strong>Why it matters</strong>: 解决"GPU 不擅长动态 list 扩展 + agent memory 高频更新"的矛盾——Pancake 把"动态增长"留给 CPU，"高吞吐计算"留给 GPU，两者通过 async transfer 解耦。</p>
-<p><strong>Detailed description</strong>: 上半展示 GPU 内的 hotspot cache、CPU 的 insertion buffer；下半画三阶段 timeline：① search 时 GPU 算 cached portion、CPU 算 buffer portion 并行；② buffer 满触发 async allocate new GPU cluster；③ 老 GPU cluster GPU-GPU copy + CPU buffer CPU-GPU copy 合并完成后释放旧区。</p>
+<p><em>Paper's Figure 4, verbatim (caption: "Direct in-place updates scatter the new vectors into a large number of existing clusters ... A naive solution is to leverage intra-agent locality and maintain dedicated clusters for an agent").</em> Panel (a) shows inserted vectors dispersed into up to 175 clusters despite semantic coherence; panel (b) shows intra-agent centroid distance is far smaller than distance to existing global clusters. This is why a locality-aware cache (not in-place insertion) is required — the naive per-agent dedicated cluster is the starting point that §4 refines with step-wise structure.</p>
 
-<h3 id="figure-12-end-to-end-throughput-comparison-main-result">Figure 12: End-to-end throughput comparison (main result) <a class="heading-anchor" href="#figure-12-end-to-end-throughput-comparison-main-result" aria-label="Link to figure-12-end-to-end-throughput-comparison-main-result">#</a></h3>
-<p><img src="/assets/2602.21477/fig12-e2e-throughput.png" alt="Figure 12: e2e throughput"></p>
-<p><strong>What it shows</strong>: 四种 agent workload（One-Search-One-Insert / Step-Search-Then-Insert / Search-Then-Step-Insert / Search-Only）× 多个 model（Llama3.1-8B/70B, GPT-5）下，Pancake vs A-Mem / Mem-GPT / LlamaIndex / LangMem 的 end-to-end throughput bar chart。</p>
-<p><strong>Why it matters</strong>: 论证 Pancake 在"所有 agent access pattern 上都稳定 win"，不是只在特定 pattern 上有效。Search-heavy pattern 加速最明显（26×）。</p>
-<p><strong>Detailed description</strong>: 每组 bar 按 workload 分组，Pancake（蓝色）普遍比其他 baseline 的 1–4× 高；Search-Only 和 One-Search-One-Insert 上差距最大，印证"baseline 方案 insert 快但 search 烂"的结论。</p>
+<p><strong>Tier-1 mechanism — three-level index cache with FSM.</strong></p>
 
-<h2 id="key-tables">Key Tables <a class="heading-anchor" href="#key-tables" aria-label="Link to key-tables">#</a></h2>
+<p><img src="/assets/2602.21477/fig9-three-level-cache.png" alt="Figure 9: three-level memory index cache with FSM modeling"></p>
 
-<h3 id="table-implicit-before-after-for-each-optimization">Table (implicit): Before-After for each optimization <a class="heading-anchor" href="#table-implicit-before-after-for-each-optimization" aria-label="Link to table-implicit-before-after-for-each-optimization">#</a></h3>
+<p><em>Paper's Figure 9, verbatim (caption: "Three-level memory index cache to optimize search efficiency, with FSM-based modeling for access patterns").</em> Each upper level is a subset of the level below and tracks progressively hotter/finer structure: L0 holds $N_p$ tiny clusters of the most recently accessed vectors (temporal locality), L1 caches top-$k'$ neighborhoods, L2 is the stable coarse index. Search always starts at L0 and descends only when early termination fails.</p>
+
+<p><strong>Tier-2 mechanism — hybrid graph across agents.</strong></p>
+
+<p><img src="/assets/2602.21477/fig10-hybrid-graph.png" alt="Figure 10: hybrid graph unifying multi-agent coarse indexes"></p>
+
+<p><em>Paper's Figure 10, verbatim (caption: "Multi-agent index management with hybrid graph and agent-specific pattern profiling on shared clusters").</em> Static memory and each agent's local memory share one graph; inter-graph portal nodes (probability $1/ef_{connect}$) let a cross-scope query start in the static index and hop into the relevant agent graph in a single greedy/BFS traversal, avoiding per-agent index scans. Agent profiles annotate shared clusters with each agent's own access order.</p>
+
+<p><strong>Tier-3 mechanism — GPU-CPU coordination.</strong></p>
+
+<p><img src="/assets/2602.21477/fig11-gpu-cpu-coord.png" alt="Figure 11: GPU-CPU coordinated index management"></p>
+
+<p><em>Paper's Figure 11, verbatim (caption: "GPU-CPU coordinated index management to enable hotspot cluster computation acceleration").</em> The CPU-side insertion buffer absorbs frequent small inserts (keeping the GPU-cached hotspot cluster immutable during serving), while the GPU-side manager handles hotspot caching and asynchronous cluster expansion. Searches on a buffered cluster merge the GPU-cached portion with the CPU buffer in parallel, so latency matches single-GPU execution.</p>
+
+<p><strong>The agent turn as a memory-access state machine.</strong> Pancake's control flow per turn is best drawn as a state machine, since the FSM and early-termination logic gate level descent:</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Observe
+    Observe --> MatchFSM: embed request seq v_1..v_t
+    MatchFSM --> SearchL0: predict target L0/L1 cluster, reorder
+    SearchL0 --> EarlyReturn: top-k all < alpha_et * d_agent
+    SearchL0 --> SearchL1: else descend
+    SearchL1 --> EarlyReturn: threshold met
+    SearchL1 --> SearchL2: else descend
+    SearchL2 --> EarlyReturn
+    EarlyReturn --> Generate: return top-k to LLM
+    Generate --> Update: insert new memory item(s)
+    Update --> Prefetch: predict next clusters, background load
+    Prefetch --> UpdateFSM: on request completion, merge/create FSM
+    UpdateFSM --> [*]
+</div>
+
+<p>The recovery path is soft: if early termination returned a low-recall set, an optional background <em>verification mode</em> completes the full search after return and adjusts $\alpha_{et}$ — there is no hard rollback of an action, only threshold self-tuning.</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证.</strong> Pancake has no convergence, recall, or success-rate guarantee; all claims are empirical. What <em>could</em> have been bounded but was not: (a) worst-case coarse-graph traversal cost as a function of agent count and portal density; (b) recall loss induced by early termination as a function of $\alpha_{et}$; (c) staleness bound on the CPU insertion buffer before merge. The paper offers three <em>heuristic</em> formulas rather than proofs; the checks below verify their internal consistency and physical sense.</p>
+
+<p><strong>Notation table.</strong></p>
 
 <table>
-<tr><th>Optimization</th><th>Metric</th><th>Baseline</th><th>Pancake</th><th>Improvement</th><th>Conditions</th></tr>
-<tr><td>Multi-level cache + FSM</td><td>Scan vectors for top-5 recall</td><td>~? (IVF-Static far higher)</td><td>stabilizes earliest</td><td>up to <strong>2.23×</strong> latency reduction</td><td>long-serving, insert:search = 1:1</td></tr>
-<tr><td>Hybrid graph (20 agents)</td><td>Coarse search cost</td><td>linear in N</td><td>single traversal</td><td><strong>>20×</strong> reduction</td><td>multi-agent scale-up</td></tr>
-<tr><td>+ Agent profile</td><td>Fine search vector ops</td><td>—</td><td>—</td><td><strong>-21.8%</strong></td><td>on top of hybrid graph</td></tr>
-<tr><td>Hybrid graph alone</td><td>Total similarity computations</td><td>baseline</td><td>—</td><td><strong>-11.6%</strong></td><td>vs independent indexes</td></tr>
-<tr><td>GPU cache (10GB, AgentGym)</td><td>Search latency</td><td>CPU only</td><td>hot cluster onloaded</td><td><strong>up to 1.92×</strong></td><td>plateau at 5–15 GB</td></tr>
-<tr><td>Full system vs 4 baselines</td><td>End-to-end throughput</td><td>1×</td><td>—</td><td><strong>1.12×–26.18× (avg 4.29×)</strong></td><td>6 datasets × 3 models</td></tr>
-<tr><td>Memory-op time share</td><td>% of end-to-end</td><td>>82%</td><td><strong>3.2%</strong> (avg)</td><td>~25× reduction</td><td>large-scale DB</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$P=(S,T)$</td><td>per-agent FSM: cluster-state set $S$, directed transition set $T$</td></tr>
+<tr><td>$(c,\delta)\in S$</td><td>cluster state: centroid $c$, avg intra-cluster deviation $\delta$</td></tr>
+<tr><td>$v_{1:t}$</td><td>embedding sequence of the current request's memory accesses</td></tr>
+<tr><td>$\mathrm{sim}(P_i,v_{1:t})$</td><td>match score of request to pattern $i$</td></tr>
+<tr><td>$\alpha_{et}$</td><td>early-termination threshold coefficient (0.6–0.8)</td></tr>
+<tr><td>$d_{agent}$</td><td>avg top-$k$ distance over recent queries of the same agent</td></tr>
+<tr><td>$ef_{connect}$</td><td>inter-graph portal connection probability</td></tr>
+<tr><td>$\alpha_{ic}$</td><td>inter-connection scaling coefficient (4–8)</td></tr>
+<tr><td>$d_{static},d_{agent}$</td><td>avg centroid spacing in static / agent index</td></tr>
+<tr><td>$B_{insert}$</td><td>CPU insertion-buffer size (128 on their platform)</td></tr>
+<tr><td>$N_p, N_S, d_{merge}$</td><td>max cached patterns, max FSM states, min merge distance</td></tr>
 </table>
 
-<h2 id="limitations">Limitations <a class="heading-anchor" href="#limitations" aria-label="Link to limitations">#</a></h2>
-
+<p><strong>Equation physical meaning.</strong></p>
 <ul>
-<li><strong>Embedding 模型固定</strong>：所有实验用 E5-1024，未验证不同 embedding 维度 / 模型下 αet、αic、Binsert 这些 magic number 是否需要重新调。</li>
-<li><strong>8M 条静态知识库是中等规模</strong>：文中提到"often over 100 GB"但实验只做到 MS MARCO 8M；>100GB + 20 agent 的真实 scale 没有实测。</li>
-<li><strong>FSM 构造启发式</strong>：state merge 用 <code>d_merge</code> 门限、新 FSM 创建走"逐 access 一个 state + merge"，没做理论保证；pattern 急剧漂移的 agent 上可能退化成每个 request 一个 FSM。</li>
-<li><strong>GPU-CPU async 路径的一致性窗口</strong>：cluster 在搬迁过程中的 search 会分别打到新 / 旧区域，论文给出"merge 结果"描述但没量化短窗口内 recall 漂移；也没讨论多 agent 同时触发 migration 时的 GPU memory 碎片。</li>
-<li><strong>工作负载 trace 是合成</strong>：4 种 access pattern 是手工枚举 + 现有数据集映射的；没有来自真实 production agent（e.g. ChatGPT Memory / Claude Projects / Copilot）的 trace。</li>
-<li><strong>没有和 RAG-style cache（RAGCache / HedraRAG）头对头比</strong>：虽然 cite 了，但 Fig 15 里主要和 vector DB 本身比，agent-serving 综合栈的对比缺。</li>
-<li><strong>多层 cache 的空间开销没有明确给</strong>：L0/L1/L2 三份（部分）数据在 CPU 上占多少额外内存，没有 table。</li>
+<li>FSM: $P=(S,T),\ (c_i \rightarrow c_j)\in T$ — an agent's memory behavior is a finite automaton over semantic clusters; $\delta$ per state captures how tight the cluster is.</li>
+<li>Similarity: $\mathrm{sim}(P_i,v_{1:t}) = \sum_{k=1}^{t} I\big[(c_{k-1}\rightarrow c_k)\in T_i\big]\cdot \frac{\delta_k}{1+|c_k-v_k|}$ — rewards requests whose step transitions follow known FSM edges (indicator) <em>and</em> land close to the expected centroid (distance-weighted deviation). High score ⇒ confident cluster prediction ⇒ aggressive reorder/prefetch.</li>
+<li>Portal density: $ef_{connect}=\min\!\big(\alpha_{ic}\cdot \frac{d_{static}}{d_{agent}},\,1\big)$ — sparse portals suffice when the static space is much broader than the agent's; denser portals avoid cross-graph local minima when densities match; cap at 1.</li>
 </ul>
 
-<h2 id="infrastructure-impact">Infrastructure Impact <a class="heading-anchor" href="#infrastructure-impact" aria-label="Link to infrastructure-impact">#</a></h2>
-
-<ul>
-<li><strong>Algorithm</strong>: 把"FSM 状态机建模 agent 访问"提出来作为一个可学习对象——未来可以把 FSM 替换成学出来的 transformer/markov 模型；也给 online RL memory 提供了"低开销状态摘要"的 baseline。</li>
-<li><strong>Kernel</strong>: 需要一个 GPU K-means kernel（on-GPU cluster split）、一个 multi-stream async GPU-CPU copy path、以及一个 CPU-GPU merge kernel（batch 合并 top-k 结果）。整体 kernel 工程量不大，但 async migration 的 stream 排布是关键。</li>
-<li><strong>Framework</strong>: 直接对 LLM serving 框架（vLLM / SGLang）提出一个新插槽——"agent memory manager"，与 KV cache manager 并列。Pancake 已经给出了 LangChain / LlamaIndex / Mem-GPT 的接入接口，未来 vLLM 的 agent-mode 扩展可以把这个层吸纳进去。</li>
-<li><strong>LLM</strong>: 对 LLM 本身无改动；但对"memory-augmented generation"类 agent（Mem-GPT, A-Mem, GMemory, Mem0）有直接替换价值。</li>
-<li><strong>Agent</strong>: 为 multi-agent 框架（AutoGen / CAMEL / AI Town / LangGraph）提供了真正可 scale 的 shared-memory 后端；之前这些框架的 memory 是玩具级实现。</li>
-<li><strong>Code</strong>: 论文未公布代码，但实现上需要：FSM table with lock-free update、HNSW 改造支持 cross-graph portal、CPU 侧 lock-free insertion buffer、GPU 侧 ring allocator + dirty-bit tracking。</li>
-</ul>
-
-<hr>
-
-<h2 id="deep-analysis-framework">Deep Analysis (framework) <a class="heading-anchor" href="#deep-analysis-framework" aria-label="Link to deep-analysis-framework">#</a></h2>
-
-<h3 id="1-system-scope">1. System Scope <a class="heading-anchor" href="#1-system-scope" aria-label="Link to 1-system-scope">#</a></h3>
-
-<ul>
-<li><strong>Primary goal</strong>: online <strong>serving</strong> of memory-augmented LLM agents（非 training，也不是 offline batch）。是一个介于"vector DB library"和"LLM serving framework"之间的中间件。</li>
-<li><strong>Scale target</strong>: 单节点 CPU-GPU（AMD EPYC 64c + 8×H100 80GB），可扩展到多 agent（论文到 20 个），但没有多节点。</li>
-<li><strong>Online, latency-critical</strong>：每步 LLM generation 之间插入 ANN 查询，memory op 直接影响 end-to-end latency。</li>
-<li><strong>Workload</strong>: memory-based agent inference。包括 multi-turn dialog、long-CoT、tool-calling、persona-driven generation。LLM 本身不是本论文关注点，跑 vLLM + Llama / GPT-5 API 就行。</li>
-</ul>
-
-<h3 id="2-architecture-data-flow">2. Architecture & Data Flow <a class="heading-anchor" href="#2-architecture-data-flow" aria-label="Link to 2-architecture-data-flow">#</a></h3>
-
-<h4 id="2a-end-to-end-data-flow">2a. End-to-End Data Flow <a class="heading-anchor" href="#2a-end-to-end-data-flow" aria-label="Link to 2a-end-to-end-data-flow">#</a></h4>
-
-<pre><code>
-[User request]
-  → [Agent controller]
-      → [LLM inference on vLLM/H100]
-          → generate step output
-      → [Pancake memory op]
-          → Search: L0 → L1 → L2 + FSM reorder + GPU cache hit?
-                  ↓
-          → merge top-k from GPU cached part + CPU buffer
-                  ↓
-          → early termination if dist &lt; αet · d_agent
-          → Insert: append to L0 (overflow → L1 → L2 merge)
-                    + append to per-cluster CPU insertion buffer
-                    + (async) cluster migrate to GPU if hot + buffer full
-  → [Agent controller consumes memory items]
-  → [Next LLM step or return to user]
-</code></pre>
-
-<table>
-<tr><th>Stage</th><th>Input → Output</th><th>Location</th><th>Latency</th><th>Data</th></tr>
-<tr><td>Agent request dispatch</td><td>user text → agent FSM state</td><td>CPU</td><td>sub-ms</td><td>—</td></tr>
-<tr><td>LLM generate step</td><td>context tokens → output tokens + embedding</td><td>GPU (vLLM)</td><td>TPOT ms</td><td>KV cache + 1024-d embedding</td></tr>
-<tr><td>Memory search</td><td>query embedding → top-k memory ids</td><td>CPU + GPU cache</td><td>数 ms 级</td><td>1024-d vector × 8 batch</td></tr>
-<tr><td>L0 hit</td><td>—</td><td>CPU (small table)</td><td>µs</td><td><= Np tiny clusters</td></tr>
-<tr><td>L1 broader neighborhood</td><td>—</td><td>CPU</td><td>~ms</td><td>~k' top vectors</td></tr>
-<tr><td>L2 coarse</td><td>HNSW-like graph</td><td>CPU</td><td>ms</td><td>bounded-degree graph</td></tr>
-<tr><td>GPU cache hit (hot cluster)</td><td>—</td><td>GPU HBM</td><td>kernel-launch bound</td><td>1024-d × hundreds</td></tr>
-<tr><td>CPU insertion buffer search</td><td>—</td><td>CPU</td><td>≤128 vecs</td><td>parallel with GPU</td></tr>
-<tr><td>Memory insert</td><td>new embedding → cluster buffer</td><td>CPU</td><td>µs (buffer append)</td><td>1024-d</td></tr>
-<tr><td>Async cluster migration</td><td>CPU buffer → new GPU cluster</td><td>PCIe</td><td>hidden</td><td>GB/s order</td></tr>
-</table>
-
-<h4 id="2b-data-movement-hotspots">2b. Data Movement Hotspots <a class="heading-anchor" href="#2b-data-movement-hotspots" aria-label="Link to 2b-data-movement-hotspots">#</a></h4>
-
+<p><strong>6 minimum checks.</strong></p>
 <ol>
-<li><strong>CPU-GPU cluster migration</strong>（on buffer full）：每 128 条 insert 触发一次 async copy，整个 cluster（几百-几千条 × 1024-d × 4B ≈ MB 量级）过 PCIe。通过 async allocate + overlap with serving 隐藏。</li>
-<li><strong>每次 search 的 query embedding 传 GPU</strong>（1024 × 4B = 4KB）：量小但频次高，kernel launch 开销主导（这也是为什么 cluster <256 时不如 CPU）。</li>
-<li><strong>Cluster split on GPU</strong>：K-means 时需要把 cluster 所有向量留在 GPU（假设已在），避免 CPU → GPU 再搬；论文指出 "split 的 cluster 通常正好是 hotspot 已经缓存在 GPU 上的" —— 这是 locality 赋予的隐性收益。</li>
+<li><em>Dimensional sanity of sim</em>: $|c_k-v_k|$ is a distance, $\delta_k$ a distance; ratio $\frac{\delta_k}{1+|c_k-v_k|}$ is dimensionless-scaled and bounded in $(0,\delta_k]$ — well-defined, never divides by zero (the $+1$). ✓</li>
+<li><em>Monotonicity of sim</em>: closer prediction ($|c_k-v_k|\to 0$) raises each term toward $\delta_k$; off-path transitions ($I=0$) zero their term. Directionally correct. ✓</li>
+<li><em>ef_connect bounds</em>: it is a probability, and $\min(\cdot,1)$ enforces $\le 1$; positive since $\alpha_{ic},d>0$. Valid probability. ✓</li>
+<li><em>ef_connect limit</em>: as $d_{static}\gg d_{agent}$, argument $>1$ ⇒ clipped to 1 (dense portals into a huge static index) — matches "similar density needs denser connections" only when ratio small; consistent with stated intent. ✓</li>
+<li><em>Buffer crossover</em>: $B_{insert}=128 \le$ the ~256–512 GPU-advantage crossover from Fig 8, so CPU search on the buffer is genuinely cheaper than a GPU launch — parameter choice is internally justified. ✓</li>
+<li><em>Early-term self-consistency</em>: skipping the next level when all top-$k < \alpha_{et}\cdot d_{agent}$ with $\alpha_{et}<1$ means it only stops when candidates are <em>better than the agent's recent average</em> — a defensible stopping rule; verification mode catches misses. ✓</li>
 </ul>
 
-<h3 id="3-design-space-constraint-analysis">3. Design Space & Constraint Analysis <a class="heading-anchor" href="#3-design-space-constraint-analysis" aria-label="Link to 3-design-space-constraint-analysis">#</a></h3>
+<p><strong>Success-rate / sweep note.</strong> No task-success metric (this is a serving-system paper, not a task-agent paper); the "sweep" is over (workload pattern × dataset × backbone × agent count), monotone in the expected direction (more agents / broader datasets ⇒ larger but still-bounded degradation). <strong>Latency budget</strong>: the design explicitly overlaps prefetch and CPU-buffer search with LLM generation so per-turn memory latency hides under inference — this is verified indirectly via end-to-end throughput, not a per-turn breakdown. <strong>Failure classes</strong>: three are identified (scattered clusters, multi-agent coarse blow-up, dynamic GPU-cache infeasibility) and each tier targets exactly one; the dominant one at scale is coarse-search blow-up (>80% latency at 20 agents), addressed by the hybrid graph.</p>
 
-<h4 id="3a-alternative-approaches">3a. Alternative Approaches <a class="heading-anchor" href="#3a-alternative-approaches" aria-label="Link to 3a-alternative-approaches">#</a></h4>
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>Single-agent end-to-end throughput (primary case study).</strong></p>
+
+<p><img src="/assets/2602.21477/fig12-e2e-throughput.png" alt="Figure 12: end-to-end throughput vs agentic frameworks"></p>
+
+<p><em>Paper's Figure 12, verbatim (caption: "End-to-end throughput comparison between Pancake and other agentic frameworks, in a single agent scenario across four different access patterns ... vLLM for Llama models and API calls for GPT-5").</em> This is the load-bearing result: across four workload patterns (One-Search-One-Insert, Step-Search-Then-Insert, Search-Then-Step-Insert, Search-Only) and six datasets, Pancake sustains stable throughput while baselines degrade with memory size. Speedups span 1.12×–26.18× (avg >4.29×); notice the biggest wins are on <em>search-dominant</em> patterns where baseline suboptimal indexes hurt most, and the near-tie (1.12×) on some Search-Only configs where there is little to optimize.</p>
+
+<p><strong>GPU-CPU crossover (Tier-3 motivation and $B_{insert}$ justification).</strong></p>
+
+<p><img src="/assets/2602.21477/fig8-gpu-cpu-cost.png" alt="Figure 8: GPU vs CPU operation cost"></p>
+
+<p><em>Paper's Figure 8, verbatim (caption: "Comparison of operation costs on GPU and CPU, including (a) search time and (b) data transfer and allocation ... on the MS MARCO dataset").</em> Panel (a) shows the ~256–512 vectors/cluster crossover where GPU search becomes >3× faster (GPU latency is flat because kernel-launch dominates, not compute); panel (b) shows on-demand transfer cost far exceeding compute — the reason static caching plus retransfer is prohibitive and why the CPU insertion buffer ($B_{insert}=128$, below the crossover) exists.</p>
+
+<p>Additional quantitative results (figures not embedded here but load-bearing): Fig 13 mixed two-agent workload (baseline degradation 29.9%–55.9% vs Pancake ≤9.8%); Fig 14 scaling to 20 agents (≤10.2% degradation); Fig 15 vs vector-DB baselines (1.9×–4.2×, +2.2× GPU); Fig 16 recall–latency tradeoff (IVF must scan up to 128 clusters for recall >0.9; Pancake keeps recall high at lower latency); Fig 17 ablation — multi-level cache stabilizes scan cost early for up to 2.23× latency reduction; Fig 18 — hybrid graph >20× coarse-search reduction, +11.6% then +21.8% compute reduction with agent profiles; Fig 19 — GPU up to 1.92× with 5–15 GB cache plateau.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>#</th><th>Alternative</th><th>Feasible?</th><th>Reason</th></tr>
-<tr><td>A</td><td>Static IVF + periodic rebuild</td><td>❌</td><td>每次 rebuild 停服务，不 fit online serving</td></tr>
-<tr><td>B</td><td>SPFresh streaming in-place insert</td><td>❌</td><td>高维 shell 效应导致 scattered cluster，recall & latency 退化</td></tr>
-<tr><td>C</td><td>Quake hierarchical cluster split</td><td>△</td><td>适合 batch update，agent 小批 insert 下触发延迟 + pre-convergence 长</td></tr>
-<tr><td>D</td><td>Per-agent independent HNSW</td><td>❌</td><td>coarse search cost O(N agents) 线性增长</td></tr>
-<tr><td>E</td><td>Full-GPU resident Faiss-GPU</td><td>❌</td><td>100GB vector DB 不可能装进 GPU；LLM KV 还要占几十 GB</td></tr>
-<tr><td>F</td><td>GPU cache + static cluster</td><td>△</td><td>只适合 read-only，agent 频繁 insert 打破 cache</td></tr>
-<tr><td>G</td><td>CPU-only（MemGPT 现状）</td><td>❌</td><td>慢 3×+，无法利用 GPU idle 时间</td></tr>
-<tr><td>H</td><td><strong>Pancake 的 L0/L1/L2 + hybrid graph + async GPU-CPU</strong></td><td>✅</td><td><strong>survives all constraints</strong></td></tr>
+<tr><th>#</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Agent memory is a <em>dynamic</em> ANN problem, not static RAG</td><td>§2.1 three-operation model; §1/§2.1 memory cost reaches >82% / >99% of runtime as index grows</td></tr>
+<tr><td>2</td><td>In-place small-batch insertion scatters semantically-close vectors</td><td>§3.1 Fig 4: up to 175 clusters, 38%–100% accessed <5%; high-dimensional shell effect</td></tr>
+<tr><td>3</td><td>Agent accesses have exploitable intra-agent + step-wise locality</td><td>§3.1 Fig 5: PCA shows step-wise clusters; intra-agent centroid distance ≪ global</td></tr>
+<tr><td>4</td><td>⇒ a locality-aware multi-level FSM cache beats in-place/split</td><td>§4.2 design; §6.4 Fig 17 stabilizes early, up to 2.23× latency reduction</td></tr>
+<tr><td>5</td><td>Independent per-agent indexes make coarse search blow up</td><td>§3.2 Fig 7(a): >80% latency at 20 agents</td></tr>
+<tr><td>6</td><td>⇒ hybrid graph gives single-traversal coarse search</td><td>§4.3 design; §6.4 Fig 18(a) >20× coarse-search cost reduction</td></tr>
+<tr><td>7</td><td>Static GPU caching fails under frequent updates</td><td>§3.3 Fig 8(b): transfer ≫ compute; CUDA list expansion costly</td></tr>
+<tr><td>8</td><td>⇒ CPU insertion buffer + async expansion enables dynamic GPU caching</td><td>§4.4 design; §6.4 Fig 19 up to 1.92× with 5–15 GB</td></tr>
+<tr><td>9</td><td>All three tiers together ⇒ headline end-to-end win</td><td>§6.2 Fig 12: >4.29× avg, memory share to 3.2%</td></tr>
 </table>
 
-<h4 id="3b-constraint-derivation（extends-phase-2）">3b. Constraint Derivation（extends Phase 2） <a class="heading-anchor" href="#3b-constraint-derivation（extends-phase-2）" aria-label="Link to 3b-constraint-derivation（extends-phase-2）">#</a></h4>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p><strong>为何不可单 IVF + in-place insert？</strong></p>
-<ul>
-<li>高维欧氏空间的 <strong>shell 效应</strong>（Beyer 1999）：大量点集中在 hypersphere 表面附近，点到 centroid 的距离分布方差很小，细微语义差别转成大距离差。所以即使两个向量 cosine 相似度 0.9，插入时它们计算出的 nearest centroid 可能不同，分散到几十个 cluster。</li>
-<li>后果：search 时要 scan 几十倍的 cluster 才能找回相关向量，recall 还掉。论文观测：100 请求散到 up to 175 cluster，38%-100% cluster 访问率 <5%。</li>
-</ul>
+<p><strong>[实现未公开]</strong> — the paper describes a Python interface (<code>search</code>, <code>insert</code>, <code>update</code>, <code>delete</code> with explicit memory-scope arguments; init loads from existing Faiss/IVF indexes) and a multithreaded runtime (shared-read/exclusive-write cluster locks; dedicated search / update / cache-management / GPU-management thread pools; asynchronous invocation for overlap with LLM calls and compatibility with HedraRAG/RAGCache/PipeRAG), but no code repository or file:line references are provided in L1.</p>
 
-<p><strong>为何不可 per-agent dedicated cluster（intra-agent locality naive 解法）？</strong></p>
-<ul>
-<li>Step-wise locality 的存在：tool-calling agent 的 planning / tool-call / reflection 三步会访问 memory 空间的三个不同区域。单一 dedicated cluster 的 centroid 变成"三个区的加权平均"，对所有步都不代表；PCA 可视化（Fig 5b）出现 3 个明显 sub-cluster。</li>
-<li>所以至少要 3 级层级——L0 抓 step-wise 热点，L1 抓 intra-agent 扩展邻域，L2 抓全局 coarse。</li>
-</ul>
+<p><strong>核心技术壁垒 (deep dive).</strong> The moat is the <em>online, lightweight</em> FSM construction over semantic cluster states. Classical sequence models (PCA, HMM) are too expensive for high-dimensional online streams, so Pancake uses a heuristic: on request completion, match against existing FSMs; if none matches, create one FSM where each access is an independent state, then merge states by max-state-count $N_S$ and min-merge-distance $d_{merge}$; if FSM entries exceed $N_p$, merge the two most similar FSMs. This turns an unbounded dynamic-index problem into a bounded, self-organizing cache-prediction problem — replicating it requires the <em>insight</em> that agent trajectories are step-wise-clusterable, plus the engineering to keep FSM upkeep off the critical path (it runs at request completion, overlapped with generation).</p>
 
-<p><strong>为何不可独立 HNSW per-agent（多 agent）？</strong></p>
-<ul>
-<li>HNSW greedy descent 单图 O(log N)，N 图就 O(N log N)。但 N 只有 20 这个常数因子就已经让 coarse search 占到 80%+ 总 latency（Fig 7a）。更关键：跨 agent 的 top-k 要 N 个图各自算 top-k 再合 merge，无法做 early termination 跨图传播。</li>
-<li>所以需要把多图缝成一张图——hybrid graph。</li>
-</ul>
-
-<p><strong>为何不可把 index 全放 GPU？</strong></p>
-<ul>
-<li>Vector DB 100GB 量级（论文 cite Wikipedia dump），H100 只有 80GB；LLM Llama-70B 权重 + KV cache 再吃掉 70GB+。剩余 GPU memory 不够装全量 index。</li>
-<li>所以 GPU 只能当 hotspot cache。</li>
-</ul>
-
-<p><strong>为何不可 GPU 上直接动态 list 扩展？</strong></p>
-<ul>
-<li>CUDA malloc 是 per-stream 的同步原语，无 lock-free 动态 list primitive；hotspot cluster 一天插入几万次，每次 GPU malloc+copy 代价巨大。</li>
-<li>所以 insert 必须 stage 在 CPU（insertion buffer），async 批量迁移。</li>
-</ul>
-
-<p><strong>为何 Binsert = 128？</strong></p>
-<ul>
-<li>Fig 8a 给出 cluster <256 时 CPU 比 GPU 快。Binsert 设置为"CPU 搜 Binsert 条的时间 = GPU 搜一个 cluster 的时间"——保证 search 时 CPU buffer 部分的计算被 GPU 的 cluster 计算完全 cover，不拖慢端到端。</li>
-<li>若 Binsert>128：CPU 部分成为瓶颈；<128：async migration 频次过高，transfer 成本回升。</li>
-</ul>
-
-<h4 id="3c-assumption-audit">3c. Assumption Audit <a class="heading-anchor" href="#3c-assumption-audit" aria-label="Link to 3c-assumption-audit">#</a></h4>
-
-<table>
-<tr><th>假设</th><th>依据</th><th>何时可能失效</th></tr>
-<tr><td>Agent 访问存在 intra-agent + step-wise locality</td><td>Fig 4b, Fig 5a 的 similarity 分布</td><td>随机探索 agent（纯 search, 无 step structure）；topic 频繁漂移的 dialog</td></tr>
-<tr><td>FSM 有 Np=小常数个即可覆盖所有 pattern</td><td>经验值，论文未给 ablation</td><td>多模态 agent、workflow 分支极多时 FSM 表爆炸或频繁 merge 抖动</td></tr>
-<tr><td>Hot cluster 重合于要 split 的 cluster</td><td>基于"split 总是发生在高频插入 cluster"的假设</td><td>如果 insert 是均匀的而 search 集中在少数 cluster，split 可能发生在 cold cluster</td></tr>
-<tr><td>αet = 0.6~0.8 给出好 trade-off</td><td>经验值</td><td>recall 要求 >0.95 时可能需要 αet 更高，失去 early termination 收益</td></tr>
-<tr><td>GPU cache 可以静态识别 hotspot</td><td>论文用"预定义 GPU budget + access frequency"</td><td>workload 冷启动 / 剧烈漂移时 cache miss 率飙升</td></tr>
-</table>
-
-<p>笔者<strong>对 FSM 能"online 识别 step-wise pattern"这一点持谨慎态度</strong>——论文的 sim 公式只是"prefix alignment × δ/(1+|c-v|)" 的加权求和，不是真正的序列学习，面对长 chain-of-thought 或嵌套 sub-task 可能退化成不如简单 LRU cache。</p>
-
-<h4 id="3d-core-technical-barrier">3d. Core Technical Barrier <a class="heading-anchor" href="#3d-core-technical-barrier" aria-label="Link to 3d-core-technical-barrier">#</a></h4>
-
-<blockquote>
-<strong>最核心的壁垒是：per-cluster CPU insertion buffer + async GPU cluster migration 的实现正确性 + overlap 技术。</strong>
-</blockquote>
-
-<p>这不是高层 idea（高层 idea 是"CPU 负责 dynamic，GPU 负责 hot static"），而是下面这个工程细节链条：</p>
-
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
 <ol>
-<li>buffer 要 lock-free（insert 和 search 并发）</li>
-<li>async migration 期间要维持"search 看到的 buffer + cached 数据"的逻辑一致（新 vector 不能被跳过也不能被重复）</li>
-<li>CPU 搜 buffer + GPU 搜 cluster 的结果 merge 要 deterministic（避免 top-k 在"已迁移一半"的 window 里漂移）</li>
-<li>旧 GPU cluster 释放的时刻要所有 in-flight search 都完成——需要一个 reference counting 或 epoch-based reclamation</li>
-</ul>
-
-<p>这一整套是 systems-engineering 级别的工程壁垒，做"idea 级别复现"容易，做到"真正不掉 recall 不掉 throughput"要几个月。类似 vLLM PagedAttention 的 copy-on-write 也是这一类壁垒。</p>
-
-<h4 id="3e-design-binding-critique">3e. Design Binding Critique <a class="heading-anchor" href="#3e-design-binding-critique" aria-label="Link to 3e-design-binding-critique">#</a></h4>
-
-<p>Pancake 强制绑定了几件事：</p>
-<ul>
-<li><strong>GPU-CPU 异构平台</strong>：纯 CPU 或纯 GPU 服务器用不上 §4.4。</li>
-<li><strong>IVF / 可划分 cluster 的索引</strong>：HNSW + 纯 graph 的 vector DB（不分 cluster）不兼容这套 cache 层级。</li>
-<li><strong>Embedding 已由外部 model 产出</strong>：内嵌编码不在本系统范围——embedding drift 不归它管。</li>
-<li><strong>Agent 访问有 locality</strong>：无 locality 的 workload（e.g. 纯随机 knowledge probing）收益退化到 baseline。</li>
-<li><strong>LLM 和 memory 共享同一 GPU</strong>：跨节点 disaggregation（like Mooncake 那种分离式）下 GPU-CPU 协同的拓扑要重做。</li>
-</ul>
-
-<p>若 "LLM serving" 本身改成 P-D disaggregation（prefill 和 decode 不同 GPU），Pancake 要决定：memory GPU cache 放 prefill 节点还是 decode 节点，或者再搞一个专用 memory GPU，不平凡。</p>
-
-<h3 id="4-key-innovations">4. Key Innovations <a class="heading-anchor" href="#4-key-innovations" aria-label="Link to 4-key-innovations">#</a></h3>
-
-<table>
-<tr><th>Innovation</th><th>Mechanism</th><th>Benefit</th><th>Cost/Tradeoff</th></tr>
-<tr><td>3-level L0/L1/L2 cluster cache</td><td>L0 小 hot / L1 k' neighborhood / L1→L2 merge</td><td>2.23× latency reduction</td><td>额外 metadata + 三份部分数据内存</td></tr>
-<tr><td>FSM-based pattern table</td><td>state=cluster, transition=step</td><td>reorder + prefetch + early termination</td><td>FSM 构造启发式，不稳定</td></tr>
-<tr><td>Hybrid graph inter-connection</td><td>portal edges w.p. 1/efconnect</td><td>>20× coarse search cost ↓</td><td>efconnect 调参敏感</td></tr>
-<tr><td>Agent profile per static cluster</td><td>per-agent accessed vector ID list</td><td>-21.8% fine search ops</td><td>每 cluster 挂 N_agents 个 list</td></tr>
-<tr><td>CPU insertion buffer + async GPU migration</td><td>buffer Binsert=128, GPU-GPU + CPU-GPU copy</td><td>GPU cache 支持动态更新</td><td>一致性管理复杂</td></tr>
-<tr><td>On-GPU cluster K-means splitting</td><td>lightweight GPU kernel</td><td>avoid CPU split bottleneck</td><td>要求 cluster 已在 GPU</td></tr>
-</table>
-
-<h3 id="5-scheduling-resource-management">5. Scheduling & Resource Management <a class="heading-anchor" href="#5-scheduling-resource-management" aria-label="Link to 5-scheduling-resource-management">#</a></h3>
-
-<ul>
-<li><strong>Batch formation</strong>: 相邻同类型 op（search / insert）在 API 层 group 成 batch，提升 GPU 利用率。</li>
-<li><strong>Memory management</strong>: 三级 index cache 是 CPU-side 缓存；GPU 是 hotspot cluster cache + LLM KV cache 共存；async migration 用 ring allocator 避免 fragmentation。</li>
-<li><strong>GPU utilization</strong>: search 时 GPU 算 cached cluster, CPU 算 buffer，两者并行——避免 GPU idle。</li>
-<li><strong>Multi-tenancy</strong>: 通过 agent profile 做 per-agent 隔离；shared read / exclusive write 锁保证并发正确性。</li>
-<li><strong>Priority / SLO</strong>: 论文未明确讨论 SLO-aware scheduling，也没有 priority queue。这是 framework 层留给下游的口子。</li>
-</ul>
-
-<h3 id="6-target-scenarios">6. Target Scenarios <a class="heading-anchor" href="#6-target-scenarios" aria-label="Link to 6-target-scenarios">#</a></h3>
-
-<table>
-<tr><th>Scenario</th><th>Pattern</th><th>Primary bottleneck</th><th>Pancake 改善点</th></tr>
-<tr><td>Multi-turn dialog (Mem-GPT)</td><td>One-Search-One-Insert</td><td>search + insert 交错</td><td>multi-level cache + insert buffer</td></tr>
-<tr><td>Summarization agent</td><td>Step-Search-Then-Insert</td><td>many searches</td><td>FSM reordering + early termination</td></tr>
-<tr><td>Persona agent</td><td>Search-Then-Step-Insert</td><td>many inserts</td><td>insertion buffer + async migration</td></tr>
-<tr><td>RAG-style agent</td><td>Search-Only</td><td>pure search</td><td>GPU hotspot cache + agent profile</td></tr>
-<tr><td>Multi-agent AI Town</td><td>cross-scope search</td><td>coarse search cost</td><td>hybrid graph</td></tr>
-</table>
-
-<p>主要瓶颈从 memory-bound（KV cache + vector DB 抢 HBM）+ compute-bound（ANN 向量算力）复合 → 经 Pancake 后 memory-op 下降到 3.2%，<strong>瓶颈重新转回 LLM 本身（TTFT/TPOT 主导）</strong>。</p>
-
-<h3 id="7-performance-evaluation">7. Performance Evaluation <a class="heading-anchor" href="#7-performance-evaluation" aria-label="Link to 7-performance-evaluation">#</a></h3>
-
-<h4 id="7a-before-after">7a. Before-After <a class="heading-anchor" href="#7a-before-after" aria-label="Link to 7a-before-after">#</a></h4>
-
-<p>（见上面 "Key Tables"）</p>
-
-<h4 id="7b-bottleneck-shift">7b. Bottleneck Shift <a class="heading-anchor" href="#7b-bottleneck-shift" aria-label="Link to 7b-bottleneck-shift">#</a></h4>
-
-<pre><code>
-Before: memory-op 占 &gt;82% E2E → Pancake cache → GPU cache + hybrid graph → after: LLM compute 主导, memory-op 3.2%
-</code></pre>
-
-<p>优化栈：</p>
-<ol>
-<li>multi-level cache fixes locality → search 次数减少</li>
-<li>hybrid graph fixes multi-agent coarse cost</li>
-<li>GPU onload fixes compute</li>
-<li>insertion buffer fixes dynamic-update 的 GPU friendliness</li>
-</ul>
-
-<p>剩余瓶颈：<strong>LLM inference 本身</strong>（TTFT/TPOT）——Pancake 已经把 memory-op 打到 3.2%，再压空间小；可以 attack 的方向是把 memory search 和 LLM decode overlap（speculative memory retrieval）。</p>
-
-<h4 id="7c-baselines-fairness">7c. Baselines & Fairness <a class="heading-anchor" href="#7c-baselines-fairness" aria-label="Link to 7c-baselines-fairness">#</a></h4>
-
-<ul>
-<li>Agent-side baselines（A-Mem / Mem-GPT / LangChain / LlamaIndex）都是现成 Python lib，和 Pancake 共享 vLLM backend，<strong>公平</strong>。</li>
-<li>Vector DB baselines（Quake / SPFresh / DiskANN）用 Pancake 生成的 trace feed，<strong>公平</strong>但给 Pancake "主场"——trace 本身就是 agent access pattern，对 Pancake 的 FSM 更友好。</li>
-<li>输入 lengths: 没有在表里明确给，是否所有 workload 同一 request rate 没说。</li>
-<li>硬件: 8 × H100 80GB + EPYC 64c，充足；但 Pancake 单节点设计，多节点实验完全缺。</li>
-<li>baseline 什么时候 win？论文没给——应给一个"什么 workload 上 Pancake 不赢 / 甚至输"的反例。</li>
-</ul>
-
-<h3 id="8-api-usability">8. API & Usability <a class="heading-anchor" href="#8-api-usability" aria-label="Link to 8-api-usability">#</a></h3>
-
-<ul>
-<li>Python 接口：search / insert / update / delete + memory scope specifier。兼容 Faiss 初始化。</li>
-<li>无 OpenAI-compatible HTTP server（Pancake 是 library，不是 serving server）。</li>
-<li>LangChain / LlamaIndex / Mem-GPT 接入：现成 adapter。</li>
-<li>配置旋钮：Np (pattern num), NS (FSM states), dmerge, αet, αic, efconnect, efsearch, Binsert, GPU cache budget——大约 8 个需要调，不轻量。</li>
-</ul>
-
-<h3 id="9-infrastructure-impact">9. Infrastructure Impact <a class="heading-anchor" href="#9-infrastructure-impact" aria-label="Link to 9-infrastructure-impact">#</a></h3>
-
-<table>
-<tr><th>Layer</th><th>Impact</th></tr>
-<tr><td>Algorithm</td><td>为 memory-based RL / online learning 提供稳态 KB 读写后端</td></tr>
-<tr><td>Kernel</td><td>需要 GPU-K-means、async stream、CPU-GPU merge kernel</td></tr>
-<tr><td>LLM</td><td>不 touch LLM，但为所有 memory-augmented LLM 提供通用后端</td></tr>
-<tr><td>Agent</td><td>是 agent 框架（AutoGen/CAMEL/LangGraph）的 drop-in shared memory</td></tr>
-<tr><td>Ops</td><td>需要监控 GPU cache hit rate、FSM table drift、insertion buffer overflow</td></tr>
-</table>
-
-<h3 id="10-comparison-matrix">10. Comparison Matrix <a class="heading-anchor" href="#10-comparison-matrix" aria-label="Link to 10-comparison-matrix">#</a></h3>
-
-<table>
-<tr><th>Feature</th><th>Pancake</th><th>Faiss (static)</th><th>SPFresh</th><th>Quake</th><th>Mem-GPT</th><th>LangChain vector-store</th></tr>
-<tr><td>Dynamic update</td><td>✅ (L0 buffer)</td><td>❌</td><td>✅ (in-place)</td><td>✅ (cluster split)</td><td>✅ (list)</td><td>✅</td></tr>
-<tr><td>High recall w/ insert</td><td>✅</td><td>—</td><td>△ (shell 效应)</td><td>△</td><td>❌</td><td>❌</td></tr>
-<tr><td>Multi-agent coordination</td><td>✅ (hybrid graph)</td><td>❌</td><td>❌</td><td>❌</td><td>partial</td><td>❌</td></tr>
-<tr><td>GPU-CPU hybrid</td><td>✅</td><td>only full-GPU Faiss-GPU</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>Agent-aware locality</td><td>✅ (FSM)</td><td>❌</td><td>❌</td><td>△ (hot region)</td><td>❌</td><td>❌</td></tr>
-<tr><td>Integration with LLM serving</td><td>✅</td><td>via wrapper</td><td>via wrapper</td><td>via wrapper</td><td>self-contained</td><td>via wrapper</td></tr>
-<tr><td>Multi-node</td><td>❌</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-</table>
-
-<h3 id="11-adoption-maturity-ecosystem-influence">11. Adoption, Maturity & Ecosystem Influence <a class="heading-anchor" href="#11-adoption-maturity-ecosystem-influence" aria-label="Link to 11-adoption-maturity-ecosystem-influence">#</a></h3>
-
-<ul>
-<li><strong>开源 / license</strong>: 论文未标明开源。UCSD + ucmerced 作者历史上会挂在 Yufei Ding 的 group GitHub，但目前（2026-04-18）搜索不到公开代码。</li>
-<li><strong>前置工作</strong>: HedraRAG（同一作者 hu2025hedrarag）、RAGCache（jin2025ragcache）是这篇的"前身"，都是 RAG 场景。</li>
-<li><strong>竞品 / 同期工作</strong>: Sutradhara (2601.12967, 同 arXiv 2026-01) 是另一个 agent-serving framework，但 focus 是 KV cache + orchestrator，和 Pancake 正交。两者结合有可能形成一个完整 agent serving stack。</li>
-<li><strong>下游影响预测</strong>：若 Mem-GPT 生态接入，会立即获得 4.29× 加速；若 LangChain / LlamaIndex 改 default vector-store backend 要 6-12 个月；vLLM agent mode 吸纳概率中等（vLLM 现在 focus inference，对"memory subsystem"不 native）。</li>
-</ul>
-
-<h2 id="key-figures-continued-—-deep-analysis-references">Key Figures (continued — deep analysis references) <a class="heading-anchor" href="#key-figures-continued-—-deep-analysis-references" aria-label="Link to key-figures-continued-—-deep-analysis-references">#</a></h2>
-
-<p>已在 Summary 部分引用所有 6 张图。</p>
-
-<h2 id="open-questions">Open Questions <a class="heading-anchor" href="#open-questions" aria-label="Link to open-questions">#</a></h2>
-
-<ol>
-<li>FSM 对"长 chain-of-thought / 嵌套 sub-task" agent 是否退化？</li>
-<li>100GB+ vector DB × 50 agent 的 scale 下 hybrid graph 的 portal 节点是否爆炸？</li>
-<li>P-D 分离式 LLM serving 下 Pancake 的 GPU cache 放哪？</li>
-<li>αet 的"verification mode"实际能否 online 调到最优？</li>
-<li>代码什么时候开源？</li>
+<li><strong>Verification mode</strong> — early termination can return before full search, but a background full search runs afterward to <em>auto-tune</em> $\alpha_{et}$; this recovers recall without adding foreground latency, and is what makes an aggressive 0.6–0.8 threshold safe.</li>
+<li><strong>Buffer sizing below the hardware crossover</strong> — $B_{insert}=128$ is deliberately set below the ~256–512 GPU-advantage point (Fig 8) so that CPU-side search over the buffer is <em>always</em> cheaper than a GPU kernel launch, and the CPU search overlaps GPU compute so merged-result latency matches single-GPU execution. Splitting is onloaded to a GPU K-means kernel and, thanks to access locality, the cluster needing a split is usually already GPU-resident — eliminating most split overhead.</li>
 </ul>
 
 </div>

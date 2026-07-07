@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>PrefillShare: Shared-Prefill Disaggregated Serving for Multi-Model Agent Workloads — Feiyue KB</title>
+<title>PrefillShare: A Shared Prefill Module for KV Reuse in Multi-LLM Disaggregated Serving — Feiyue KB</title>
 <link rel="icon" type="image/png" href="/assets/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
@@ -195,182 +195,228 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </nav>
 
 <div class="w">
-<h1 id="page-title">PrefillShare: Shared-Prefill Disaggregated Serving for Multi-Model Agent Workloads</h1>
-<div class="card-meta"><span class="badge badge-agent">agent</span> 2602.12029</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-sharing</span><span class="tag">disaggregated-serving</span><span class="tag">multi-model</span><span class="tag">prefill-optimization</span><span class="tag">agent-serving</span></div>
+<h1 id="page-title">PrefillShare: A Shared Prefill Module for KV Reuse in Multi-LLM Disaggregated Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2602.12029</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">disaggregated-serving</span><span class="tag">kv-cache-reuse</span><span class="tag">multi-agent</span><span class="tag">prefix-caching</span><span class="tag">cache-conditioned-finetuning</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2602.12029.html">← Synthesis</a>
-<a href="/overview/agent.html">← agent Survey</a>
+<a href="/overview/framework.html">← framework Survey</a>
 <a href="https://arxiv.org/abs/2602.12029" target="_blank">Source ↗</a>
 </div>
 <div class="detail-content">
 
-<h1 id="prefillshare-shared-prefill-disaggregated-serving-for-multi-model-agent-workloads-—-l2">PrefillShare: Shared-Prefill Disaggregated Serving for Multi-Model Agent Workloads — L2 <a class="heading-anchor" href="#prefillshare-shared-prefill-disaggregated-serving-for-multi-model-agent-workloads-—-l2" aria-label="Link to prefillshare-shared-prefill-disaggregated-serving-for-multi-model-agent-workloads-—-l2">#</a></h1>
+<h1 id="prefillshare-a-shared-prefill-module-for-kv-reuse-in-multi-llm-disaggregated-serving-—-l2">PrefillShare: A Shared Prefill Module for KV Reuse in Multi-LLM Disaggregated Serving — L2 <a class="heading-anchor" href="#prefillshare-a-shared-prefill-module-for-kv-reuse-in-multi-llm-disaggregated-serving-—-l2" aria-label="Link to prefillshare-a-shared-prefill-module-for-kv-reuse-in-multi-llm-disaggregated-serving-—-l2">#</a></h1>
 
-<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>PrefillShare freezes a shared base-model prefill module and cache-conditioned fine-tunes task-specific decode modules, letting all models in a multi-agent workflow reuse one KV cache per prompt — yielding 4.5× lower p95 latency and 3.9× higher throughput on vLLM disaggregated serving.</p>
+<p>在多模型 agent 工作流里，同一段共享上下文被每个专用模型各跑一遍 prefill 并各存一份 KV。PrefillShare 把模型拆成「冻结的共享 prefill 模块 + 各任务专用 decode 模块」，只用 cache-conditioned 微调训 decode 去读 base 的 KV，从而一次 prefill、一份 KV 跨模型复用。精度追平全量微调，p95 延迟降 4.5×、吞吐升 3.9×。</p>
 
-<h2 id="§2-痛点-方法-结果">§2 痛点 / 方法 / 结果 <a class="heading-anchor" href="#§2-痛点-方法-结果" aria-label="Link to §2-痛点-方法-结果">#</a></h2>
+<hr>
 
-<h3 id="q1-—-痛点：多模型-agent-工作流中的-kv-冗余">Q1 — 痛点：多模型 Agent 工作流中的 KV 冗余 <a class="heading-anchor" href="#q1-—-痛点：多模型-agent-工作流中的-kv-冗余" aria-label="Link to q1-—-痛点：多模型-agent-工作流中的-kv-冗余">#</a></h3>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p>Multi-model agent systems (e.g. ReAct-style pipelines with 4 specialized models) invoke multiple fine-tuned LLMs over a shared prompt context. Because KV caches are tightly coupled to each model's parameters ($\theta_i \neq \theta_j \Rightarrow C_i \neq C_j$), every model must independently prefill the same prompt and maintain its own cache. This causes:</p>
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+
+<p>多智能体工作流常让多个专用模型（如 Planner → Coder → Reviewer）在<strong>同一份共享上下文</strong>上依次工作。但自回归推理里 KV cache 与模型参数强耦合：即便 prompt 完全相同，参数不同的两个模型 $M_i, M_j$（$\theta_i \neq \theta_j$）在每一层产生的 key/value 表示都不同，缓存互不兼容。后果有二：</p>
 
 <ol>
-<li><strong>Latency blow-up</strong> — repeated prefill raises TTFT and intensifies prefill–decode contention.</li>
-<li><strong>Memory explosion</strong> — duplicated KV caches saturate GPU memory, forcing evictions that kill prefix-cache hit rates and further degrade throughput.</li>
+<li><strong>重复 prefill → 延迟恶化</strong>：每次切换模型都要重算 prefill，抬高 TTFT，并且在共享 serving stack 里 prefill 抢占正在 decode 的请求，制造 ITL 尖峰、恶化尾延迟。</li>
+<li><strong>KV 重复存储 → 并发受限</strong>：每个模型各存一份整段 KV，内存随模型数 $N$ 线性膨胀，触发频繁 eviction 与 recompute。</li>
 </ul>
 
-<p>Disaggregated serving (DistServe, Splitwise) separates prefill and decode onto different GPUs to reduce contention, but does not eliminate the cross-model redundancy: $N$ models still run $N$ prefills for one prompt.</p>
+<p>Disaggregated serving（把 prefill/decode 放到不同 GPU）能缓解 prefill-decode 干扰，但<strong>不能消除跨模型冗余</strong>——相同 prompt 在不同微调模型间仍然各算各存。作者自己的前作 ICaRus 虽然能做同 prompt KV 复用，但其 logical encoder 必须与 decode 同时运行，带来额外算力开销、高并发下扩展性差。</p>
 
-<h3 id="q2-—-方法：shared-prefill-cache-conditioned-fine-tuning">Q2 — 方法：Shared Prefill + Cache-Conditioned Fine-Tuning <a class="heading-anchor" href="#q2-—-方法：shared-prefill-cache-conditioned-fine-tuning" aria-label="Link to q2-—-方法：shared-prefill-cache-conditioned-fine-tuning">#</a></h3>
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
 
-<p>PrefillShare introduces a two-role factorization:</p>
+<p>将一个模型「分解」为两种推理角色：一个<strong>冻结的 base prefill 模块</strong> $M_{\text{base}}$，只负责把共享上下文处理一次生成共享 KV cache $C_{\text{base}}$；以及<strong>多个任务专用 decode 模块</strong> $M_{\text{dec}}$，各自消费同一份 $C_{\text{base}}$ 生成任务输出。关键的算法贡献是 <strong>cache-conditioned fine-tuning</strong>：冻结 prefill 模块，把 $C_{\text{base}}$ 当作常量条件信号，只微调 decode 模块去在这份「别人产生的 KV」上做 next-token 预测。系统侧再配一套 <strong>prefix-aware routing + cache handoff</strong> 管线，把请求按 User ID 钉在固定 prefill worker 上以保 prefix 局部性，跨模型切换时只做 partial prefill 增量扩展缓存。</p>
 
-<ul>
-<li><strong>Base Prefill Module</strong> ($M_\text{base}$, frozen): processes prompt $X$ once → shared KV cache $C_\text{base}$.</li>
-<li><strong>Specialized Decode Modules</strong> ($M_\text{dec}^{(i)}$, trainable per task): generate output tokens conditioned on $C_\text{base}$.</li>
-</ul>
-
-<p>The key training procedure is <strong>cache-conditioned fine-tuning</strong>: freeze $\theta_\text{base}$, compute $C_\text{base}$ for each training example, detach gradients through the cache, and minimize</p>
-
-<p>$$\mathcal{L}(\theta_\text{dec}) = -\sum_{t=1}^{T} \log P(y_t \mid y_{<t}, C_\text{base};\; \theta_\text{dec})$$</p>
-
-<p>This aligns training with inference: decode modules learn to generate from an "alien" base-model cache rather than their own, eliminating the feature mismatch that causes accuracy collapse under naive sharing.</p>
-
-<p><img src="/assets/2602.12029/fig2.png" alt="Figure 2: Accuracy vs KV cache sharing ratio"></p>
-
-<p><em>Paper's Figure 2, verbatim. Naive sharing (blue) collapses as the KV cache sharing ratio increases, while PrefillShare (orange) maintains near full-FT accuracy even at 100% sharing.</em> Cache-conditioned fine-tuning is the critical enabler: without it, increasing the fraction of base-model KV cache used during decode leads to progressive accuracy degradation. With it, the decode module adapts to consume the foreign cache representation without loss.</p>
-
-<p><strong>核心技术壁垒</strong>: The insight that a frozen base-model KV cache can serve as a universal prompt representation across heterogeneous fine-tuned models — provided the decode modules are explicitly trained against that cache — is non-obvious. Prior work (ICaRus) required running the encoder alongside decoding; PrefillShare eliminates this by recognizing that the decode module alone has sufficient capacity to bridge the feature gap when the training loss correctly conditions on the shared cache.</p>
-
-<p>A routing and cache-handoff mechanism built on vLLM disaggregated serving completes the system: after the shared prefill instance produces $C_\text{base}$, it is handed off to whichever task-specific decode instance the router selects, avoiding redundant transfer or recomputation.</p>
+<p><strong>核心技术壁垒</strong>：让一个 decode 模块可靠地从<strong>另一套参数</strong>产生的 KV 表示上解码。朴素直接共享会在高共享比例下精度崩塌（Fig. 2）。PrefillShare 用「训练时就喂冻结 base 的 $C_{\text{base}}$」把训练分布与推理分布对齐，使 decode 学会对齐 base 的 KV 分布——这一 train-inference 一致性正是它能在 100% 共享下仍逼近全量微调精度的关键，且<strong>无需 base 与微调模型间的参数同步</strong>。</p>
 
 <h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
 
-<table>
-<tr><th>Metric</th><th>Baseline (disaggregated)</th><th>PrefillShare</th><th>Improvement</th></tr>
-<tr><td>p95 end-to-end latency</td><td>1×</td><td>—</td><td><strong>4.5× lower</strong></td></tr>
-<tr><td>Throughput (tok/s)</td><td>1×</td><td>—</td><td><strong>3.9× higher</strong></td></tr>
-<tr><td>Peak throughput under high load</td><td>1×</td><td>—</td><td><strong>~4× higher</strong></td></tr>
-<tr><td>Accuracy (math / code / tool-calling)</td><td>Full-FT</td><td>Comparable</td><td>No degradation</td></tr>
-</table>
+<ul>
+<li>精度：在 math / coding / tool-calling 上，PrefillShare 与全量微调（Full-FT）<strong>差距在 1% 以内，且多处反超</strong>（如 Qwen3-8B HumanEval 83.5→86.6，HumanEval+ 74.3→80.5）。跨 1.7B/8B/14B 模型规模均稳定。</li>
+<li>服务：ReAct 上 p95 延迟降至 1/3.9、吞吐升 3.6×；Reflexion 上 p95 降至 1/4.5、吞吐升 3.9×。</li>
+<li>缓存命中：随并发上升，baseline 的 prefix cache hit ratio 峰值仅约 60% 后骤降（>40 并发），PrefillShare 稳定在近 89%。</li>
+</ul>
 
-<p>Evaluated on HotpotQA with ReAct-style 4-agent workflow (LLaMA 3.1-8B) and replicated with Qwen3-14B. Results hold across both ReAct and Reflexion agentic patterns.</p>
+<hr>
 
-<h2 id="§3-架构-方法図">§3 架构 / 方法図 <a class="heading-anchor" href="#§3-架构-方法図" aria-label="Link to §3-架构-方法図">#</a></h2>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p><img src="/assets/2602.12029/fig1.png" alt="Figure 1: PrefillShare architecture and serving comparison"></p>
+<h3 id="3-1-系统范围（framework-scope）">3.1 系统范围（framework scope） <a class="heading-anchor" href="#3-1-系统范围（framework-scope）" aria-label="Link to 3-1-系统范围（framework-scope）">#</a></h3>
 
-<p><em>Paper's Figure 1, verbatim (caption: "Comparison of a typical multi-model system and PrefillShare").</em> Left panels contrast training and inference for the two paradigms. In the baseline, each task-specific model is fine-tuned and served independently with its own KV cache. PrefillShare decouples the frozen base prefill module from task-specific decode modules, sharing one KV cache across all decoders. The right panel shows the throughput-vs-inverse-latency Pareto curve: the baseline saturates early (~40 concurrent sessions) as prefix-cache evictions cascade, while PrefillShare sustains high throughput with ~4× peak improvement.</p>
+<ul>
+<li><strong>阶段覆盖</strong>：prefill 与 decode 都覆盖，并且<strong>显式拆分</strong>二者——这正是方法的立足点。</li>
+<li><strong>服务 vs 训练</strong>：既有一个训练侧的 cache-conditioned fine-tuning 过程，又有一个推理侧的 disaggregated serving 管线；serving 侧建立在 vLLM 之上，采用 continuous batching。</li>
+<li><strong>并行维度</strong>：论文关心的是「模型间共享」而非张量/流水并行；实验里每模型独占 prefill/decode GPU（baseline 8 GPU = 4 对；PrefillShare 同预算 4 prefill + 4 decode）。</li>
+<li><strong>部署模式</strong>：多节点/单节点均可，但<strong>核心是 disaggregated prefill-decode</strong>——prefill pool 托管单一冻结 base，decode pool 托管多个专用模型。</li>
+</ul>
+
+<h3 id="3-2-顶层对比（fig-1）">3.2 顶层对比（Fig. 1） <a class="heading-anchor" href="#3-2-顶层对比（fig-1）" aria-label="Link to 3-2-顶层对比（fig-1）">#</a></h3>
+
+<p><img src="/assets/2602.12029/fig1.png" alt="Figure 1: typical multi-model serving vs PrefillShare, fine-tuning and inference side by side"></p>
+
+<p><em>Paper's Figure 1, verbatim（caption: "Comparison of a typical multi-model system and PrefillShare. ... PrefillShare decouples prefill and decoding into a shared prefill module and task-specific decode modules, fine-tuning only the decode modules ... achieving up to 4× higher throughput under high load."）</em></p>
+
+<p>这张图一次讲清两件事。左侧「Fine-Tuning」对比：典型系统里每个任务模型各自从 base 全量微调、各存 KV；PrefillShare 只把 base 当作冻结 prefill 模块（标注 "Frozen"），仅 "Update" 各 decode 模块，从而 N 个 decoder 共用一份 prompt KV。右侧「Inference」对比：baseline 因相同 prompt 上的重复 prefill + KV 爆炸式增长导致频繁 eviction 与重算；PrefillShare 用共享 KV 实现有效 prefix caching、避免早期缓存饱和。读者应注意：省的不是单次算力，而是<strong>随模型数放大的冗余</strong>。</p>
+
+<h3 id="3-3-请求生命周期-调度路径">3.3 请求生命周期 / 调度路径 <a class="heading-anchor" href="#3-3-请求生命周期-调度路径" aria-label="Link to 3-3-请求生命周期-调度路径">#</a></h3>
+
+<p>以下 sequence 图补足论文文字描述的 proxy 编排（Appendix B.1）——原文无对应示意图，故用 Mermaid 呈现结构：</p>
 
 <div class="mermaid">
 sequenceDiagram
-    participant Client
-    participant Router
-    participant Prefill as Prefill Instance (M_base)
-    participant KVStore as Shared KV Pool
-    participant Dec1 as Decode Instance #1
-    participant Dec2 as Decode Instance #N
-
-    Client->>Router: request(prompt X, task_id)
-    Router->>Prefill: prefill(X)
-    Prefill->>KVStore: store C_base
-    Prefill-->>Router: ready(cache_ref)
-    Router->>Dec1: decode(cache_ref, task_id=1)
-    KVStore-->>Dec1: C_base (handoff)
-    Dec1-->>Client: stream tokens
-
-    Note over Router,KVStore: Same C_base reused if another task arrives for prompt X
-    Client->>Router: request(prompt X, task_id=N)
-    Router->>Dec2: decode(cache_ref, task_id=N)
-    KVStore-->>Dec2: C_base (reuse, no re-prefill)
-    Dec2-->>Client: stream tokens
+    participant U as Client (User ID)
+    participant P as Proxy (routing table)
+    participant PW as Prefill worker (frozen base)
+    participant DA as Decode worker A
+    participant DB as Decode worker B
+    U->>P: session request (Model A)
+    P->>PW: route by User ID (pin for prefix locality)
+    PW->>PW: full prefill -> C_base
+    PW->>DA: handoff C_base
+    DA-->>U: Y_A (decode from shared cache)
+    U->>P: next agent same turn (Model B)
+    P->>PW: route back to SAME prefill worker
+    PW->>PW: cache hit -> partial prefill on new tokens only
+    PW->>DB: handoff extended C_base
+    DB-->>U: Y_B
 </div>
 
-<p>The sequence diagram clarifies the runtime data path: a single prefill populates the shared KV pool, and subsequent requests for the same prompt skip prefill entirely, going directly to task-specific decode instances via the router's cache-handoff mechanism.</p>
+<p>要点：<strong>scheduler = proxy</strong>，队列纪律是按 User ID 钉住 prefill worker（prefix-locality-aware routing），保证跨模型切换命中缓存而非从头重算；<strong>KV/memory manager 与 scheduler 分离</strong>——KV 由 vLLM 的 PagedAttention 分块管理，跨节点/跨 worker 的 cache handoff 走 GPU→GPU 传输，高并发时退化为 CPU staging（见 §7）。分配单元是 vLLM 的 KV block（page）。</p>
 
-<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+<hr>
 
-<p><strong>无形式化作者证明 — 仅实证</strong></p>
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p>No formal convergence or approximation-error bound is provided. The paper's argument is entirely empirical. Below are the 6 minimum checks:</p>
+<p>论文无独立「性能建模」章节，但给出了自回归/KV 的形式化（Eqs. 1-4）、方法定义（Eqs. 5-7）与内存复杂度模型（Eqs. 8-9）。下面按 framework 要求复现记号表、物理意义与检查。</p>
+
+<h3 id="记号表">记号表 <a class="heading-anchor" href="#记号表" aria-label="Link to 记号表">#</a></h3>
 
 <table>
-<tr><th>#</th><th>Check</th><th>Verdict</th></tr>
-<tr><td>1</td><td><strong>Assumptions stated?</strong></td><td>Implicit: all task-specific models share the same base architecture and tokenizer. The prefill module must produce compatible KV representations for all decoders.</td></tr>
-<tr><td>2</td><td><strong>Variables defined?</strong></td><td>Yes. $\theta_\text{base}$ (frozen), $\theta_\text{dec}$ (trainable), $C_\text{base}$ (shared cache), loss $\mathcal{L}(\theta_\text{dec})$ all formally defined in §3.</td></tr>
-<tr><td>3</td><td><strong>Steps logically follow?</strong></td><td>Yes. The factorization → cache-conditioned training → shared inference pipeline is internally consistent. Freezing prefill enables sharing; conditioning training on the frozen cache aligns train/inference regimes.</td></tr>
-<tr><td>4</td><td><strong>Edge cases addressed?</strong></td><td>Partially. Table 2 shows robustness across model sizes (1.7B–14B). No discussion of what happens when task-specific adaptations require prompt-level feature differences that the shared prefill cannot capture.</td></tr>
-<tr><td>5</td><td><strong>Bounds / guarantees?</strong></td><td>None. Accuracy parity is demonstrated empirically but not bounded. A useful bound would be the approximation gap $\</td><td>\hat{C}_\text{dec} - C_\text{full-FT}\</td><td>$ as a function of the number of frozen layers.</td></tr>
-<tr><td>6</td><td><strong>Counter-examples?</strong></td><td>Not shown. The paper does not present a task where PrefillShare underperforms Full-FT. All reported numbers are comparable or better.</td></tr>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$X, Y$</td><td>输入 prompt（长 $n$）/ 生成序列（长 $T$）</td></tr>
+<tr><td>$\theta$</td><td>LLM 参数；$\theta_{\text{base}}$ 冻结 prefill，$\theta_{\text{dec}}$ 可训 decode</td></tr>
+<tr><td>$F_\theta(x, C_{\text{past}})$</td><td>Transformer 前向：输入当前 token 与过去 cache，返回下一 token 与增量 cache</td></tr>
+<tr><td>$C_t$</td><td>第 $t$ 步 KV cache 状态；$C_{\text{base}}$ 为共享 prefill cache</td></tr>
+<tr><td>$k_t, v_t$</td><td>第 $t$ 步跨全层聚合的 key/value 张量</td></tr>
+<tr><td>$N$</td><td>模型数</td></tr>
+<tr><td>$L_{\text{shared}}, L_{\text{unique}}$</td><td>共享前缀长度 / 模型专属段长度</td></tr>
 </table>
 
-<p><strong>Agent-specific checks</strong>:</p>
+<h3 id="关键方程与物理意义">关键方程与物理意义 <a class="heading-anchor" href="#关键方程与物理意义" aria-label="Link to 关键方程与物理意义">#</a></h3>
+
 <ul>
-<li><strong>Success-rate model</strong>: Empirical only — no sweep over (task difficulty, planning depth, tool set, backbone). Accuracy reported per-task but not as a function of agent pipeline complexity.</li>
-<li><strong>Latency budget per turn</strong>: Not decomposed. The paper reports aggregate p95 and TTFT but does not break down per-turn tool-call vs LLM-inference vs memory-read latency.</li>
-<li><strong>Failure mode classification</strong>: Not addressed. The paper does not classify failure modes of the multi-agent pipeline under PrefillShare.</li>
+<li>自回归似然与 KV 递推：$P(Y \mid X) = \prod_{t=1}^{T} P(y_t \mid X, y_{<t}; \theta)$，$C_t = [C_{t-1}; (k_t, v_t)]$——cache 沿序列维拼接，随长度线性增长。</li>
+<li>两相执行：prefill $(y_1, C_n) = F_\theta(X, \varnothing)$（compute-bound）；decode $(y_t, \Delta C_t) = F_\theta(y_{t-1}, C_{n+t-2})$（memory-bound）。这一 compute/memory 二分正是 disaggregation 的物理依据。</li>
+<li>Base prefill 只产 cache 不解码：$(\cdot, C_{\text{base}}) = F_{\theta_{\text{base}}}(X, \varnothing)$；decode 初始化 $C \leftarrow C_{\text{base}}$ 后 $(y_t, \Delta C_t) = F_{\theta_{\text{dec}}}(y_{t-1}, C)$。</li>
+<li>训练目标：$\mathcal{L}(\theta_{\text{dec}}) = -\sum_t \log P(y_t \mid y_{<t}, C_{\text{base}}; \theta_{\text{dec}})$——标准 NLL，但<strong>条件信号换成冻结 base 的 cache</strong>，梯度不流入 $\theta_{\text{base}}$。</li>
 </ul>
 
-<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+<h3 id="6-项最小检查">6 项最小检查 <a class="heading-anchor" href="#6-项最小检查" aria-label="Link to 6-项最小检查">#</a></h3>
 
-<h3 id="5-1-accuracy-prefillshare-matches-full-ft">5.1 Accuracy: PrefillShare matches Full-FT <a class="heading-anchor" href="#5-1-accuracy-prefillshare-matches-full-ft" aria-label="Link to 5-1-accuracy-prefillshare-matches-full-ft">#</a></h3>
+<ol>
+<li><strong>量纲/一致性</strong>：Eqs. 8-9 两端都是内存量（$O(\cdot)$，单位 token·layer·bytes 同阶），仅系数结构不同，可比。</li>
+<li><strong>为何 base cache 当常量</strong>：若梯度流入 $\theta_{\text{base}}$，则 $C_{\text{base}}$ 不再跨模型稳定共享；停梯度保证了「一份 base、多个 decoder」的解耦——与「无需参数同步」的主张自洽。</li>
+<li><strong>min vs sum / 分母排除</strong>：Eq. 9 的关键是共享前缀 $L_{\text{shared}}$ <strong>不乘 $N$</strong>（只存一次），只有专属段 $N\cdot L_{\text{unique}}$ 随模型数增长；baseline（Eq. 8）则整段 $N\cdot(L_{\text{shared}}+L_{\text{unique}})$ 都乘 $N$。</li>
+<li><strong>单调性/边界</strong>：当 $L_{\text{shared}} \gg L_{\text{unique}}$，PrefillShare 内存主导项从 $N\cdot L_{\text{unique}}$ 变为 $L_{\text{shared}}$，<strong>对 $N$ 近似不敏感</strong>（内点最优在 $N$ 方向被抹平）；baseline 对 $N$ 严格单调增。这是「共享上下文越长、模型越多，收益越大」的形式化来源。</li>
+<li><strong>一阶映射（把案例代入模型）</strong>：四智能体、共享上下文远大于单模型输出段（$L_{\text{shared}}\gg L_{\text{unique}}$，$N=4$）的场景下，Eq. 9 预测总 KV 内存约为「一份共享前缀 + 4 份小专属段」，而 baseline 约「4 份完整前缀」。这与 Fig. 4 中 baseline 命中率随并发骤降、PrefillShare 维持 ~89% 的定性表现一致：de-dup 存储直接转化为更高命中与更多可容并发。</li>
+<li><strong>反例/失效边界</strong>：模型显式承认 Eq. 9 是「理想去重」上界——高并发下 decode 侧 KV 压力触发 vLLM 的 CPU staging，实际吞吐在 ~110 并发处见顶回落（§7），此为实现层瓶颈而非模型缺陷。</li>
+</ul>
 
-<p><img src="/assets/2602.12029/tab1.png" alt="Table 1: Accuracy across math, coding, and tool-calling benchmarks"></p>
+<blockquote>
+精度侧<strong>无形式化证明——仅实证</strong>：作者用「只更新 decode 相当于一种严格正则化」定性解释 PrefillShare 偶尔反超 Full-FT，未给理论。一个形式化模型本可澄清：正则化收益 vs KV-mismatch 损失的权衡在何种任务/共享比例下净为正。
+</blockquote>
 
-<p><em>Paper's Table 1, verbatim.</em> Accuracy on math (GSM8K/GSM+), coding (HumanEval/HumanEval+), and tool calling (BFCL Simple Python/Multiple) for LLaMA 3.1-8B and Qwen3-8B-Base. Models fine-tuned on MetaMathQA-40K, EvolInstruct-Code-80K, and xLAM-function-calling-60K respectively. PrefillShare achieves accuracy comparable to Full-FT across all six benchmarks on both backbones, with KV sharing fully enabled. Notable: PrefillShare sometimes slightly exceeds Full-FT (e.g. HumanEval 48.8 vs 48.2 on LLaMA, HumanEval 86.6 vs 83.5 on Qwen3-8B).</p>
+<hr>
 
-<p><img src="/assets/2602.12029/tab2.png" alt="Table 2: Accuracy robustness across model scales"></p>
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p><em>Paper's Table 2, verbatim.</em> GSM8K and GSM+ accuracy across Qwen3-1.7B/8B/14B. PrefillShare maintains comparable accuracy to Full-FT at all three scales, demonstrating that the cache-conditioned fine-tuning approach is robust to model size. The gap is consistently within ~1 point.</p>
+<h3 id="5-1-共享比例与精度崩塌（fig-2）">5.1 共享比例与精度崩塌（Fig. 2） <a class="heading-anchor" href="#5-1-共享比例与精度崩塌（fig-2）" aria-label="Link to 5-1-共享比例与精度崩塌（fig-2）">#</a></h3>
 
-<h3 id="5-2-serving-performance-under-multi-model-agent-workloads">5.2 Serving performance under multi-model agent workloads <a class="heading-anchor" href="#5-2-serving-performance-under-multi-model-agent-workloads" aria-label="Link to 5-2-serving-performance-under-multi-model-agent-workloads">#</a></h3>
+<p><img src="/assets/2602.12029/fig2.png" alt="Figure 2: GSM8K accuracy vs KV cache sharing ratio"></p>
 
-<p><img src="/assets/2602.12029/fig3.png" alt="Figure 3: Serving performance (LLaMA 3.1-8B)"></p>
+<p><em>Paper's Figure 2, verbatim（caption: "GSM8K accuracy as a function of KV cache sharing ratio between the base and fine-tuned models. Naive sharing without cache-adaptive fine-tuning collapses at high sharing ratios, while PrefillShare preserves near Full-FT accuracy even at 100% sharing."）</em></p>
 
-<p><em>Paper's Figure 3, verbatim (caption: "Serving performance under multi-model agent workloads").</em> Six panels compare p95 latency, throughput, and TTFT for ReAct (top) and Reflexion (bottom) patterns as session arrival rate increases from 1 to 4 sessions/s. PrefillShare's advantage widens dramatically at higher arrival rates: at 4 sessions/s under ReAct, throughput reaches ~1050 tok/s vs ~280 for baseline (3.75×), while p95 latency is ~25s vs ~185s (7.4× improvement). The divergence is driven by the baseline's prefix-cache miss rate rising under load, triggering redundant re-prefill.</p>
+<p>这是方法必要性的核心证据：x 轴共享比例 0→100%，朴素共享（"Feature Mismatch (Accuracy Collapse)"）随比例升高精度崩塌，而 PrefillShare 在 100% 共享下仍贴近 Full-FT baseline。读者应注意——若无 cache-conditioned 微调，共享本身是无法直接工作的。</p>
 
-<h3 id="5-3-prefix-cache-hit-ratio-and-scalability">5.3 Prefix cache hit ratio and scalability <a class="heading-anchor" href="#5-3-prefix-cache-hit-ratio-and-scalability" aria-label="Link to 5-3-prefix-cache-hit-ratio-and-scalability">#</a></h3>
+<h3 id="5-2-精度对照（table-1-table-2）">5.2 精度对照（Table 1 / Table 2） <a class="heading-anchor" href="#5-2-精度对照（table-1-table-2）" aria-label="Link to 5-2-精度对照（table-1-table-2）">#</a></h3>
 
-<p><img src="/assets/2602.12029/fig4.png" alt="Figure 4: Cache hit ratio and throughput vs concurrent sessions"></p>
+<p><img src="/assets/2602.12029/tab1.png" alt="Table 1: accuracy on math/coding/tool-calling for LLaMA3.1-8B and Qwen3-8B-Base"></p>
 
-<p><em>Paper's Figure 4, verbatim (caption: "Prefix cache hit ratio and throughput under varying max concurrent sessions").</em> Top: the baseline's prefix cache hit ratio drops from ~60% at 20 sessions to near 0% at 80+ sessions, while PrefillShare sustains ~90% across the entire range. Bottom: throughput tracks the hit ratio — baseline plateaus at ~200 tok/s and never recovers, while PrefillShare peaks at ~1100 tok/s around 110 sessions before declining due to handoff overhead at extreme concurrency. The ~40-session cliff in the baseline is where KV cache evictions begin cascading.</p>
+<p><em>Paper's Table 1, verbatim（caption: "Accuracy on math, coding, and tool-calling benchmarks ... PrefillShare achieves accuracy comparable to full fine-tuned models across all evaluated benchmarks."）</em></p>
 
-<h3 id="5-4-generalization-to-larger-backbone-qwen3-14b">5.4 Generalization to larger backbone (Qwen3-14B) <a class="heading-anchor" href="#5-4-generalization-to-larger-backbone-qwen3-14b" aria-label="Link to 5-4-generalization-to-larger-backbone-qwen3-14b">#</a></h3>
+<p>关键数字（Full-FT → PrefillShare）：LLaMA3.1-8B GSM8K 71.3→71.4、HumanEval 48.2→48.8；Qwen3-8B HumanEval 83.5→86.6、HumanEval+ 74.3→80.5（显著反超）。诚实之处：仍有若干格 PrefillShare 略输，见下 §6 workload 表脚注。</p>
 
-<p><img src="/assets/2602.12029/fig5.png" alt="Figure 5: Serving performance (Qwen3-14B)"></p>
+<p><img src="/assets/2602.12029/tab2.png" alt="Table 2: accuracy across model sizes Q3-1.7B/8B/14B on GSM8K/GSM+"></p>
 
-<p><em>Paper's Figure 5, verbatim.</em> Replicates the Fig 3 experiment with Qwen3-14B. The pattern holds: PrefillShare achieves substantially lower p95 latency and higher throughput under both ReAct and Reflexion. At 3 sessions/s under ReAct, PrefillShare reaches ~380 tok/s vs ~100 for baseline, and p95 latency drops from ~500s to ~30s. The larger model amplifies the benefit because per-model KV caches are proportionally larger, making redundancy elimination more impactful.</p>
+<p><em>Paper's Table 2, verbatim（caption: "Accuracy of Full-FT and PrefillShare on GSM8K and GSM+ across model sizes ... indicating robustness to model scale."）</em></p>
 
-<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+<p>Table 2 说明方法对规模不敏感：1.7B/8B/14B 三档 GSM8K/GSM+ 上 PrefillShare 与 Full-FT 基本持平（如 Q3-1.7B 75.0→75.4、Q3-14B GSM+ 66.7→67.5）。注意 L1 标注 Table 2 存在 OCR 对齐不确定性。</p>
+
+<h3 id="5-3-端到端服务性能（fig-3）">5.3 端到端服务性能（Fig. 3） <a class="heading-anchor" href="#5-3-端到端服务性能（fig-3）" aria-label="Link to 5-3-端到端服务性能（fig-3）">#</a></h3>
+
+<p><img src="/assets/2602.12029/fig3.png" alt="Figure 3: serving performance under multi-model agent workloads, ReAct and Reflexion"></p>
+
+<p><em>Paper's Figure 3, verbatim（caption: "Serving performance under multi-model agent workloads. ... PrefillShare outperforms the baseline in both patterns, with the gap widening as the session arrival rate increases, primarily due to rising prefix-cache miss rates in the baseline."）</em></p>
+
+<p>3 列指标（p95 延迟 / 吞吐 / TTFT）× 2 行模式（ReAct / Reflexion）。低负载两者相当；随到达率上升，baseline 尾延迟迅速膨胀、吞吐下滑，PrefillShare 因摊薄共享前缀而维持高吞吐、低尾延迟。这就是 4.5×/3.9× 头条数字的来源，且<strong>差距随负载扩大</strong>。</p>
+
+<h3 id="5-4-并发扫描与命中率（fig-4）">5.4 并发扫描与命中率（Fig. 4） <a class="heading-anchor" href="#5-4-并发扫描与命中率（fig-4）" aria-label="Link to 5-4-并发扫描与命中率（fig-4）">#</a></h3>
+
+<p><img src="/assets/2602.12029/fig4.png" alt="Figure 4: prefix cache hit ratio and throughput vs max concurrent sessions"></p>
+
+<p><em>Paper's Figure 4, verbatim（caption: "Prefix cache hit ratio and throughput under varying max concurrent sessions. ... The baseline degrades beyond ≈40 sessions ... whereas PrefillShare sustains higher throughput over a wider range, with high-concurrency saturation driven by handoff overheads."）</em></p>
+
+<p>上图命中率、下图吞吐随 max concurrent sessions 变化。baseline 在约 40 并发后命中率峰值 ~60% 骤降、吞吐随之掉；PrefillShare 命中率稳定近 89%，吞吐持续上升，直到约 110 并发因 handoff 压力（而非命中率下降）见顶。这张图把「收益来自去重存储」与「饱和来自实现层 staging」清楚分离——是全文最具诊断价值的一张。</p>
+
+<h3 id="5-5-换-backbone-复现（fig-5-fig-6，appendix-b-3）">5.5 换 backbone 复现（Fig. 5 / Fig. 6，Appendix B.3） <a class="heading-anchor" href="#5-5-换-backbone-复现（fig-5-fig-6，appendix-b-3）" aria-label="Link to 5-5-换-backbone-复现（fig-5-fig-6，appendix-b-3）">#</a></h3>
+
+<p>Qwen3-14B 复现 Fig. 3/4：吞吐、尾延迟、命中率的定性趋势一致，但<strong>TTFT 方向不同</strong>——因 PrefillShare 峰值吞吐操作点位于更高并发，prefill worker 负载更重，故 TTFT 可能上升，即使吞吐/尾延迟改善。方向非单调、依赖操作点。</p>
+
+<hr>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>Step</th><th>Claim</th><th>Evidence</th><th>Depends on</th></tr>
-<tr><td>1</td><td>Multi-model agent workloads redundantly prefill the same prompt $N$ times, one per model, because KV caches are parameter-coupled ($\theta_i \neq \theta_j \Rightarrow C_i \neq C_j$).</td><td>§1 problem statement; §2 formalization of KV cache dependency on $\theta$.</td><td>—</td></tr>
-<tr><td>2</td><td>Disaggregated serving reduces prefill–decode contention but does not eliminate cross-model prefill redundancy.</td><td>§2.3 analysis; DistServe/Splitwise limitations.</td><td>Step 1</td></tr>
-<tr><td>3</td><td>Factorizing into a frozen shared prefill module + task-specific decode modules enables one-prefill-for-all-models, eliminating $N-1$ redundant prefills.</td><td>§3.1 prefill/decode factorization design; Fig 1 architecture.</td><td>Steps 1–2</td></tr>
-<tr><td>4</td><td>Naive KV cache sharing (without training alignment) causes accuracy collapse due to feature mismatch between base cache and fine-tuned decoder.</td><td>Fig 2: accuracy drops monotonically with sharing ratio under naive reuse.</td><td>Step 3</td></tr>
-<tr><td>5</td><td>Cache-conditioned fine-tuning — training $\theta_\text{dec}$ against frozen $C_\text{base}$ — bridges the feature gap, recovering full-FT accuracy at 100% sharing.</td><td>Fig 2 (PrefillShare curve); Table 1 (accuracy parity across 6 benchmarks); Table 2 (robustness across 3 model sizes).</td><td>Step 4</td></tr>
-<tr><td>6</td><td>In production-like agent workloads, shared prefill sustains high prefix-cache hit rates (~90%) where baseline collapses (→0% beyond ~40 sessions), translating to 4.5× lower p95 latency and 3.9× higher throughput.</td><td>Fig 3 (latency/throughput curves); Fig 4 (cache hit ratio vs concurrency); Fig 5 (Qwen3-14B replication).</td><td>Steps 3, 5</td></tr>
+<tr><th>步骤</th><th>论断（paper-internal）</th><th>依据</th></tr>
+<tr><td>1</td><td>KV 与参数强耦合：同 prompt 下 $\theta_i\neq\theta_j$ 产生互不兼容的 KV</td><td>§2.2 formal argument</td></tr>
+<tr><td>2</td><td>故多模型工作流必须各自重算 prefill 且各存 KV → 延迟+内存冗余；disaggregation 只解 prefill-decode 干扰、不解跨模型冗余</td><td>§1 para 4-5</td></tr>
+<tr><td>3</td><td>若把 base cache 当常量、只微调 decode 去消费它（Eq. 7），decode 可对齐 base KV 分布 → 100% 共享仍近 Full-FT（Fig. 2 反证朴素共享崩塌）</td><td>§3.2 + Fig. 2</td></tr>
+<tr><td>4</td><td>共享一次 prefill 后，内存主导项从 $N\cdot(L_{\text{shared}}{+}L_{\text{unique}})$ 变为 $L_{\text{shared}}{+}N\cdot L_{\text{unique}}$（Eqs. 8-9），$L_{\text{shared}}\gg L_{\text{unique}}$ 时近似独立于 $N$</td><td>§3.3 Eqs. 8-9</td></tr>
+<tr><td>5</td><td>去重存储 → 高并发下 prefix 命中率稳定（~89% vs baseline ~60% 骤降）→ 高吞吐、低尾延迟（4.5×/3.9×）</td><td>§4.3 Fig. 3-4</td></tr>
+<tr><td>6</td><td>剩余饱和（~110 并发吞吐回落）由 vLLM CPU-GPU KV staging 引起，非算法内在限制</td><td>§4.3 + Appendix B.2</td></tr>
 </table>
 
-<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+<h3 id="6-1-workload-表-—-何时赢、何时不赢">6.1 Workload 表 — 何时赢、何时不赢 <a class="heading-anchor" href="#6-1-workload-表-—-何时赢、何时不赢" aria-label="Link to 6-1-workload-表-—-何时赢、何时不赢">#</a></h3>
 
-<p>[实现未公开]</p>
+<table>
+<tr><th>Workload regime</th><th>PrefillShare</th><th>Baseline (per-model disaggregated)</th><th>Why</th></tr>
+<tr><td>短 prompt、低并发</td><td>与 baseline 相当</td><td>相当</td><td>共享前缀短、冗余少，摊薄收益不显著（§4.3 low-load）</td></tr>
+<tr><td>长共享上下文、高并发</td><td>命中率 ~89%、吞吐/尾延迟大幅领先</td><td>>40 并发后命中率崩、尾延迟膨胀</td><td>$L_{\text{shared}}\gg L_{\text{unique}}$，去重把内存主导项从 $N\cdot L$ 降到 $L$（Eqs. 8-9）</td></tr>
+<tr><td>混合 prefill-decode / 极高并发</td><td>~110 并发后吞吐回落</td><td>更早饱和</td><td>decode 侧 KV 压力触发 vLLM CPU staging（实现层，非算法）</td></tr>
+<tr><td>部分精度格点</td><td>略输 Full-FT</td><td>—</td><td>LLaMA GSM+ 49.3<49.8、HumanEval+ 45.1<45.7；Qwen GSM8K 84.8<85.8、GSM+ 64.5<65.7、Multiple 91.0<92.0</td></tr>
+</table>
 
-<p>The paper describes a vLLM-based disaggregated serving system with custom routing and cache-handoff, but no public code repository is referenced.</p>
+<hr>
 
-<p><strong>关键实现细节</strong>:</p>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<ol>
-<li><strong>Cache-handoff zero-copy path</strong>: The shared $C_\text{base}$ is produced by the prefill instance and must be transferred to decode instances. In a vLLM disaggregated setup, this likely leverages NCCL or shared-memory IPC between prefill and decode GPU workers. The efficiency of this handoff is critical — Fig 4 shows PrefillShare's throughput drops at extreme concurrency (~120+ sessions), suggesting handoff becomes the bottleneck when prefill-to-decode transfer saturates the interconnect.</li>
+<p>论文提供实现描述但未公开代码仓库，原型建立在 vLLM disaggregated serving pipeline 之上：<strong>[实现未公开]</strong>（无 file:line 可引）。以下为可复现的关键实现细节（源自正文与 Appendix B）：</p>
+
+<ul>
+<li><strong>调度/资源管理</strong>：粒度为 request/session 级；proxy 维护 User ID → prefill worker 的 routing table 以保 prefix 局部性；跨 agent 切换命中缓存后只做 partial prefill（仅新增 token）。KV 分配单元沿用 vLLM PagedAttention 的 block。准入控制方面，论文用 <code>max concurrent sessions</code> 作为并发上限旋钮，直接控制系统级 KV footprint（§4.3）。</li>
+<li><strong>API / 集成方式（framework §8-§10）</strong>：面向 vLLM 生态，通过在 vLLM disaggregated engine 之上加一层 <strong>proxy-based orchestration</strong>（client-facing proxy + prefill pool + decode pool）实现；不是 fork 内核，而是外挂编排层 + 路由/handoff 逻辑。迁移路径：已跑 vLLM disaggregated 的部署，需引入「单一冻结 base 占据 prefill pool、decode pool 托管多个专用模型」的拓扑，并为每个专用模型做一次 cache-conditioned 微调。</li>
+<li><strong>核心技术壁垒（§7 dedicated）</strong>：最难复制的不是系统管线，而是<strong>让 decode 在冻结 base 的 KV 上可靠解码</strong>。这要求训练分布严格匹配推理时的 cache 使用——即用 $M_{\text{base}}$ 现算 $C_{\text{base}}$、停梯度、只训 $\theta_{\text{dec}}$（Eq. 7）。若训练时仍用自生成 cache，则 Fig. 2 的崩塌不可避免。这一 train-inference 对齐是 100% 共享仍保精度、且跨异构 decoder 免参数同步的根本原因。</li>
+<li><strong>关键实现细节（易漏的两处 trick）</strong>：</li>
+<li><strong>同 worker 回钉 + partial prefill</strong>：同一 turn 内切到下一个 agent 时，proxy 把请求<strong>路由回同一个 prefill worker</strong>，命中已有前缀 KV，仅计算新增 token 的 KV 后再 handoff（Appendix B.1）——这是「TTFT 对 $L_{\text{shared}}$ 近似不敏感」得以成立的工程前提。</li>
+<li><strong>高并发 staging 是 vLLM 层现象</strong>：吞吐在极高并发回落源于 vLLM 把部分 KV stage 到 CPU 再 reload（Appendix B.2），并非 shared-prefill 的固有限制；可用更严格准入控制 / decode-to-prefill 反压 / 每会话 GPU KV 预留缓解。</li>
 </ul>
 
-<ol>
-<li><strong>Frozen prefill module = base model checkpoint</strong>: The prefill module is simply the unmodified base model (LLaMA 3.1-8B or Qwen3-base). No architectural modification is needed for prefill — only the decode modules require task-specific weights. This means a single prefill instance can be shared across an arbitrary number of task-specialized decoders without any model surgery.</li>
-</ul>
+<blockquote>
+§12 软件→硬件反推：<strong>不触发</strong>。PrefillShare 属纯软件框架（跨模型 KV 去重 + prefix-aware 路由 + cache handoff），未涉及持久 megakernel、cache-scope 控制或互连感知调度，故不产生对未来 ISA / cache 策略的硬件诉求。
+</blockquote>
 
 </div>
 </div>

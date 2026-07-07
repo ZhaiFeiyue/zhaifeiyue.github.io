@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">HexAGenT: Efficient Agentic LLM Serving via Workflow- and Heterogeneity-Aware Scheduling</h1>
 <div class="card-meta"><span class="badge badge-agent">agent</span> 2605.16637</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-serving</span><span class="tag">workflow-scheduling</span><span class="tag">online-dag</span><span class="tag">heterogeneous-cluster</span><span class="tag">pd-disaggregation</span><span class="tag">workflow-slo</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-serving</span><span class="tag">scheduling</span><span class="tag">prefill-decode-disaggregation</span><span class="tag">heterogeneous-gpu</span><span class="tag">slo-attainment</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2605.16637.html">← Synthesis</a>
 <a href="/overview/agent.html">← agent Survey</a>
@@ -205,380 +205,194 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
-<h1 id="hexagent-efficient-agentic-llm-serving-via-workflow-and-heterogeneity-aware-scheduling">HexAGenT: Efficient Agentic LLM Serving via Workflow- and Heterogeneity-Aware Scheduling <a class="heading-anchor" href="#hexagent-efficient-agentic-llm-serving-via-workflow-and-heterogeneity-aware-scheduling" aria-label="Link to hexagent-efficient-agentic-llm-serving-via-workflow-and-heterogeneity-aware-scheduling">#</a></h1>
+<h1 id="hexagent-—-workflow-heterogeneity-aware-agentic-llm-serving">HexAGenT — Workflow- & Heterogeneity-Aware Agentic LLM Serving <a class="heading-anchor" href="#hexagent-—-workflow-heterogeneity-aware-agentic-llm-serving" aria-label="Link to hexagent-—-workflow-heterogeneity-aware-agentic-llm-serving">#</a></h1>
 
-<blockquote>
-You Peng, Youhe Jiang, Wenshuang Li, Xu Xu, Ke Zhou, Jiawei Jiang, Chen Wang, Binhang Yuan | 2026-05 | <a href="https://arxiv.org/abs/2605.16637">arXiv 2605.16637</a>
-Category: agent | Tags: agentic-serving, workflow-scheduling, online-dag, heterogeneous-cluster, pd-disaggregation, workflow-slo
-Read: 2026-05-25
-</blockquote>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<hr>
+<p>Agentic requests are multi-call DAGs revealed online; users feel end-to-end workflow latency, not per-call latency. HexAGenT maintains a per-workflow standalone horizon $H_w(t)$, ranks ready calls by projected scaled-SLO risk, and jointly picks prefill/decode placement + queue priority on heterogeneous A100/H100/H200 P-D clusters. It cuts the SLO scale for timely completion by 13–24% on average.</p>
 
-<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p>HexAGenT 把 agentic workflow 建模为 online-revealed DAG，用 projected scaled-SLO risk 排序 + 联合异构 P-D placement，在 A100/H100/H200 集群上平均降低 Req95 20.1%、Req99 33.0%，最大 45.0%/80.5%。</p>
+<h3 id="q1-—-痛点-pain-point">Q1 — 痛点 (Pain point) <a class="heading-anchor" href="#q1-—-痛点-pain-point" aria-label="Link to q1-—-痛点-pain-point">#</a></h3>
 
-<h3 id="agent-scope">Agent Scope <a class="heading-anchor" href="#agent-scope" aria-label="Link to agent-scope">#</a></h3>
-
-<ul>
-<li><strong>Task class</strong>: 本文不是 agent 本身，而是 agent workflow 的 <strong>serving-side scheduler</strong>。服务对象覆盖 open-ended（ReAct 链式推理、LATS 树搜索）和 closed（BFCL-v3 function calling）两类 agentic workload。</li>
-<li><strong>Interaction pattern</strong>: multi-turn workflow，每个用户请求触发一条由多个 LLM 调用组成的 DAG；DAG 结构在运行时 online revealed（父节点完成后子节点才可见）。</li>
-<li><strong>Autonomy</strong>: scheduler 本身是全自动的——event-driven 无人干预；它所服务的 agent 可以是 fully autonomous（LATS）或 human-in-the-loop（conversational chains）。</li>
-<li><strong>Scope boundary</strong>: HexAGenT 不涉及 agent 的 planning/reasoning/tool-selection 策略，只关心「给定 agent 产出的 LLM call 序列，如何在异构 P-D 集群上调度以最小化 workflow 端到端 SLO violation」。</li>
-</ul>
-
-<hr>
-
-<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
-
-<h3 id="q1-痛点">Q1 痛点 <a class="heading-anchor" href="#q1-痛点" aria-label="Link to q1-痛点">#</a></h3>
-
-<p>Agentic LLM 应用的基本单元已从单请求变为多步 workflow（planning → tool-use → branching → synthesis），用户感知的是 <strong>workflow 端到端延迟</strong>而非单次 LLM 调用延迟。但现有 serving 系统（vLLM、SGLang）和 P-D 分离架构（DistServe、Splitwise）仍以 per-call 粒度调度，忽视三个交叉挑战：</p>
+<p>The scheduling unit for LLM serving has shifted. A single user request now expands into a workflow of many dependent LLM calls (planning → tool use → branching → refinement → synthesis), and the user experiences the <strong>end-to-end workflow completion time</strong>, not any single call's latency. Three coupled difficulties make this hard on a prefill-decode (P-D) disaggregated, heterogeneous cluster:</p>
 
 <ol>
-<li><strong>在线不确定性</strong>——workflow DAG 在运行时逐步揭示，到达时只有源节点可见</li>
-<li><strong>资源异构性</strong>——同一 LLM 调用在不同 GPU 类型上 prefill/decode 延迟差异显著，KV 传输带宽也不同</li>
-<li><strong>workflow 结构冲突</strong>——per-call FCFS / load-balancing 优化的是局部目标，可能阻塞 workflow 关键路径</li>
+<li><strong>Online-revealed structure.</strong> The workflow is a DAG in which only source nodes are visible at arrival; a child becomes schedulable only after all parents complete or tools return. The scheduler must act under partial information.</li>
+<li><strong>Heterogeneity coupled to structure.</strong> Calls in the same workflow differ in prompt length, output length, and KV demand; prefill and decode instances differ in compute speed, memory capacity, and cross-hardware transfer cost.</li>
+<li><strong>Local objectives conflict with global structure.</strong> Per-call policies (FCFS, queue-length balancing) reduce local waiting yet delay a workflow's critical path, hurting end-to-end SLO attainment.</li>
 </ul>
 
-<p><img src="/assets/2605.16637/fig1.png" alt="Figure 1: Agentic workflow DAG patterns — online chain, bounded self-refinement, parallel fan-out"></p>
+<p>Existing execution substrates (vLLM, SGLang), disaggregation systems (DistServe, Splitwise), and program-aware schedulers (Parrot, Autellix, Continuum) each supply building blocks, but none jointly handle online-revealed DAGs, heterogeneous P-D placement, decode-capacity constraints, stage coupling, and non-blocking runtime overhead.</p>
 
-<p><em>Paper Figure 1：三种 agentic workflow 模式——链式 agent-tool-agent、bounded self-refinement、parallel fan-out。只有源节点在 workflow 到达时可见，后续节点在父节点完成后才揭示。这一 online-revealed 特性使得经典 DAG 调度不可直接套用，也让 attained-service 等公平性指标（如 Autellix-ATLAS）与 SLO 风险脱钩。</em></p>
+<h3 id="q2-—-方法-method">Q2 — 方法 (Method) <a class="heading-anchor" href="#q2-—-方法-method" aria-label="Link to q2-—-方法-method">#</a></h3>
 
-<p>Program-aware serving 系统（Parrot、Hermes、Autellix、Continuum）开始向 application-level 调度靠拢，但没有任何现有系统同时处理 (i) online-revealed workflow DAG, (ii) 异构 P-D instance 的 joint placement, (iii) decode KV 容量约束, (iv) 异步 runtime overhead。</p>
+<p>HexAGenT abstracts each request as an online-revealed DAG $G_w(t)$ and maintains a running <strong>standalone completion horizon</strong> $H_w(t)$: the makespan of the revealed subgraph if it were run alone on the same cluster. This horizon is the workflow's live SLO target. For each ready call it computes a <strong>projected ratio</strong> $R_s(c,t)$ (§5) that normalizes projected completion pressure by $H_w(t)$, ranks calls by that risk, greedily picks the most urgent, and jointly chooses (i) the prefill/decode instance pair and (ii) stage-local queue priority — while respecting decode KV capacity and KV-transfer latency. Planning is <strong>asynchronous</strong>: at most one plan is in flight, serving never blocks, and late plans apply only to calls still waiting.</p>
 
-<h3 id="q2-方法">Q2 方法 <a class="heading-anchor" href="#q2-方法" aria-label="Link to q2-方法">#</a></h3>
+<p><strong>核心技术壁垒 (hardest-to-replicate insight):</strong> the joint, decode-anchored prefill placement. HexAGenT does not just rank <em>which</em> call is urgent — for the urgent call it selects the prefill/decode <em>pair</em> that minimizes the projected normalized decode-finish time, pre-committing the downstream decode instance before prefill even completes so the KV transfer target is fixed. This couples urgency signal, heterogeneous per-instance service times, and cross-hardware transfer bandwidth into one greedy decision that self-corrects via recomputation after each assignment. Reproducing it requires a faithful roofline estimator plus the exact "plan-then-lock" runtime semantics; a naive urgency-only scheduler misses most of the tail gain.</p>
 
-<p><strong>核心机制</strong>：projected scaled-SLO risk prioritization + joint heterogeneous P-D placement。</p>
-
-<p>三层设计：</p>
-
-<ol>
-<li><strong>Online workflow horizon</strong> $H_w(t)$：为每个 workflow 维护 standalone 完成时间估计（若独占集群），随新节点揭示和真实运行时间逐步修正。$H_w(t)$ 是非递减的——新揭示的 call 只能延长 critical path。</li>
-<li><strong>Projected ratio</strong> $R_s(c,t) = \frac{(t - a_w) + \Delta_s(c,t)}{H_w(t)}$：将每个 ready call 的排序指标统一为归一化的 SLO 风险值。$R_s > 1$ 意味着 workflow 已超出 standalone horizon——极度紧急。</li>
-<li><strong>Greedy joint planner</strong>：贪心地选择 projected risk 最高的 call，枚举所有可行 prefill-decode pair，选择使 projected decode finish 最早的组合，更新模拟状态后继续选下一个 call。</li>
-</ul>
-
-<p><strong>核心技术壁垒</strong>：projected-ratio surrogate 将异构 workflow 的紧迫度归一化到同一量纲。不同 workflow 有完全不同的 DAG 结构和 standalone 完成时间，直接比较 absolute slack 或 remaining time 不公平；除以各自的 $H_w(t)$ 后，scheduler 可以在混合 workload 中正确识别哪个 workflow 真正「快超时了」。这个归一化 + 在线修正的组合是 baseline（FCFS、LLF、ATLAS）都没有的——FCFS 无紧迫度信号，LLF 的 slack 没有 horizon 归一化，ATLAS 的 attained-service 是公平性指标而非 SLO 风险指标。</p>
-
-<table>
-<tr><th>Before (per-call / workflow-unaware)</th><th>After (HexAGenT)</th></tr>
-<tr><td>按 call 到达顺序排队（FCFS）或按 attained service 排队（ATLAS）</td><td>按 workflow 级 projected ratio $R_s(c,t)$ 排队</td></tr>
-<tr><td>Prefill/decode placement 按 load-balance 分配</td><td>联合枚举 P-D pair，选 projected decode finish 最早的</td></tr>
-<tr><td>Workflow 结构对 scheduler 不可见</td><td>维护 online DAG + progressive horizon refinement</td></tr>
-<tr><td>SLO 定义在单 call 上</td><td>SLO 定义在整个 workflow 上：$C_w \leq \alpha H_w$</td></tr>
-</table>
-
-<h3 id="q3-结果">Q3 结果 <a class="heading-anchor" href="#q3-结果" aria-label="Link to q3-结果">#</a></h3>
+<h3 id="q3-—-结果-results">Q3 — 结果 (Results) <a class="heading-anchor" href="#q3-—-结果-results" aria-label="Link to q3-—-结果-results">#</a></h3>
 
 <ul>
-<li><strong>异构集群</strong>（A100/H100/H200 8P+8D / 10P+10D）：avg Req95 减少 13.0%，avg Req99 减少 24.5%；最强单点 Qwen-Mixed Req99 从 8.96 降至 3.94（56.0%）</li>
-<li><strong>同构集群</strong>（H200 4P+4D / A100 4P+4D）：avg Req95 减少 24.0%，avg Req99 减少 35.4%——证明 workflow-aware 排序本身是主要收益来源，异构 placement 是额外收益</li>
-<li><strong>Characterization ablation</strong>：Workflow-FCFS 相比 per-call FCFS avg 减少 Req95 31.4%、Req99 23.3%；HexAGenT 在此基础上再减 Req95 26.9%、Req99 42.6%</li>
-<li><strong>鲁棒性</strong>：30% 估计误差下 Req99 退化 ≤1.5%（Llama）/ ≤9.5%（Qwen），非单调</li>
-<li><strong>开销</strong>：per-invocation ≤23.7 ms，异步 apply 不阻塞在飞 call</li>
+<li><strong>Characterization (§3, Table 1):</strong> workflow-FCFS beats per-call FCFS by 31.4% Req95 / 23.3% Req99 avg; HexAGenT beats workflow-FCFS by a further 26.9% Req95 / 42.6% Req99.</li>
+<li><strong>Heterogeneous main (Table 2):</strong> avg reduction 13.0% Req95 / 24.5% Req99 vs the strongest per-trace baseline; even weakest case (Llama Hetero-2) still 6.1% / 13.9%.</li>
+<li><strong>Largest tail win:</strong> Qwen Hetero-1 Mixed, Req99 8.96 → 3.94 (56.0%).</li>
+<li><strong>Homogeneous (Table 4):</strong> Llama H200 24.8% / 36.8%; Qwen A100 23.1% / 33.9% — gains do not depend on hardware heterogeneity.</li>
+<li><strong>Robustness (Table 5):</strong> ≤1.5% Req99 degradation for Llama even at 30% estimate error.</li>
+<li><strong>Overhead (Table 6):</strong> 7.1–14.7 ms/invocation avg, worst per-invocation average 23.7 ms, fully hidden by async planning.</li>
 </ul>
 
-<hr>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+<h3 id="the-online-revealed-workflow">The online-revealed workflow <a class="heading-anchor" href="#the-online-revealed-workflow" aria-label="Link to the-online-revealed-workflow">#</a></h3>
 
-<p><img src="/assets/2605.16637/fig2.png" alt="Figure 2: HexAGenT system architecture — workflow front-end, global scheduler, P-D serving cluster"></p>
+<p>Only source calls are known at arrival; the DAG grows as parents and tools complete.</p>
 
-<p><em>Paper Figure 2：HexAGenT 四组件架构。Workflow front-end 接收请求并维护 online DAG 状态；Global Scheduler 包含 State Collector → Estimator → Joint Planner → Plan Dispatcher 四模块；P-D Serving Cluster 由异构 prefill pool 和 decode pool 通过 KV Transfer Network 连接；External Services 提供 tool API。事件驱动的反馈环路使 scheduler 在每次 prefill/decode/transfer 完成时重新评估 plan。注意 scheduler 不干预 agent 的 planning/tool-selection——它只决定 LLM call 的 placement 和 priority。</em></p>
+<p><img src="/assets/2605.16637/fig1.png" alt="Figure 1: agentic workflow as an online-revealed DAG"></p>
 
-<h3 id="scheduling-loop（agent-runtime-视角）">Scheduling Loop（Agent Runtime 视角） <a class="heading-anchor" href="#scheduling-loop（agent-runtime-视角）" aria-label="Link to scheduling-loop（agent-runtime-视角）">#</a></h3>
+<p><em>Paper's Figure 1 (caption: "Example of an agentic LLM application workflow. Only source calls are known at arrival. As parent calls and tool calls complete, new LLM calls are revealed, and the workflow DAG grows online.").</em> The figure shows how nested agent-tool-agent chains, bounded self-refinement, and parallel sibling branches all map to one DAG whose <em>runnable frontier</em> is the scheduler's true decision surface — every scheduling invocation acts only over currently revealed, dependency-satisfied calls.</p>
 
-<p>HexAGenT 的调度循环是 agentic serving 的核心 runtime。从 agent 的角度看，每个 LLM call 经历：workflow reveal → 进入 global 等待集 → scheduler 评估 → prefill assignment → KV transfer → decode assignment → 完成 → 触发下一批 call 揭示。</p>
+<h3 id="system-architecture-and-scheduler-placement">System architecture and scheduler placement <a class="heading-anchor" href="#system-architecture-and-scheduler-placement" aria-label="Link to system-architecture-and-scheduler-placement">#</a></h3>
+
+<p><img src="/assets/2605.16637/fig2.png" alt="Figure 2: HexAGenT system architecture and scheduler placement"></p>
+
+<p><em>Paper's Figure 2 (caption: "System architecture and scheduler placement of HexAGenT. The workflow front-end releases ready calls from online agent workflows, while the global scheduler collects cross-stage state, estimates prefill, KV-transfer, and decode latencies, and jointly decides instance placement and queue priority. The P-D disaggregated cluster executes calls across prefill and decode stages, with runtime metrics fed back for event-driven re-scheduling.").</em> Note the four scheduler modules: <strong>State Collector</strong> (snapshots prefill/decode queues, KV usage, transfer state, workflow progress), <strong>Estimator</strong> (roofline-style prefill/decode/transfer time + KV demand), <strong>Joint Planner</strong> (picks P-D pair + local priority), <strong>Plan Dispatcher</strong> (pushes placement/priority updates to workers). The feedback loop makes re-scheduling event-driven rather than periodic.</p>
+
+<h3 id="the-agent-turn-loop">The agent turn loop <a class="heading-anchor" href="#the-agent-turn-loop" aria-label="Link to the-agent-turn-loop">#</a></h3>
+
+<p>Each call travels one full lifecycle; runtime events (arrival, prefill-done, transfer-done, decode-done) drive re-scheduling. Once a call starts prefill or decode, its placement is locked.</p>
 
 <div class="mermaid">
 stateDiagram-v2
-    [*] --> WorkflowArrival: user request
-    WorkflowArrival --> RevealSourceCalls: parse DAG, reveal source nodes
-    RevealSourceCalls --> GlobalWaitSet: insert ready calls
-
-    state GlobalWaitSet {
-        [*] --> PrefillScheduler: event trigger
-        PrefillScheduler --> ComputeRisk: R_P(c,t) for each call
-        ComputeRisk --> GreedyAssign: argmax R, select P-D pair
-        GreedyAssign --> UpdateSimState: update simulated availability
-        UpdateSimState --> ComputeRisk: next call
-        GreedyAssign --> AsyncApply: queue empty
-    }
-
-    AsyncApply --> PrefillExec: dispatch to prefill instance
-    PrefillExec --> KVTransfer: prefill complete
-    KVTransfer --> DecodeQueue: transfer complete
-
-    state DecodeQueue {
-        [*] --> DecodeScheduler: event trigger
-        DecodeScheduler --> CapacityCheck: m(c) ≤ Cap(d)?
-        CapacityCheck --> DecodeAssign: feasible
-        CapacityCheck --> Wait: infeasible, wait for capacity
-        Wait --> CapacityCheck: capacity freed
-    }
-
-    DecodeAssign --> DecodeExec: start decode
-    DecodeExec --> CallComplete: generation done
-    CallComplete --> RevealChildren: update workflow DAG
-    RevealChildren --> GlobalWaitSet: new calls revealed
-    CallComplete --> WorkflowComplete: all calls done
-    WorkflowComplete --> [*]
+    [*] --> Revealed: workflow arrival / parent completes
+    Revealed --> WaitPrefill: enter global waiting set
+    WaitPrefill --> Prefill: scheduler assigns P-D pair + priority
+    Prefill --> Transfer: prefill done (placement locked)
+    Transfer --> WaitDecode: KV moved to planned decode instance
+    WaitDecode --> Decode: capacity-feasible admission
+    Decode --> Complete: decode done -> update workflow state
+    Complete --> Revealed: reveal newly unblocked children
+    Complete --> [*]: workflow fully complete
+    WaitPrefill --> Fallback: plan in flight -> safe fallback policy
+    Fallback --> WaitPrefill: async plan applied if still waiting
 </div>
 
-<h3 id="planning-reasoning（scheduler-的决策逻辑）">Planning & Reasoning（Scheduler 的决策逻辑） <a class="heading-anchor" href="#planning-reasoning（scheduler-的决策逻辑）" aria-label="Link to planning-reasoning（scheduler-的决策逻辑）">#</a></h3>
+<p>The fallback edge is the error-recovery path: if a solve is in flight when a new call arrives, the call temporarily follows a safe policy; the late plan is applied only if service has not yet started, otherwise runtime state is authoritative and the plan is ignored for that stage.</p>
 
-<ul>
-<li><strong>Planning style</strong>: greedy online——每次事件触发时对当前所有 waiting calls 做一次完整排序和 assignment。不做 tree search、不做 lookahead（没有显式的 future DAG 预测）。</li>
-<li><strong>Decomposition</strong>: bottom-up——从单个 ready call 的 projected risk 出发，贪心地逐个 assign，每次 assignment 后更新模拟状态再选下一个。</li>
-<li><strong>Budget</strong>: 无显式的 max steps/tokens/tool calls 限制。Scheduler 每次处理当前 waiting set 中的所有 call，复杂度随 queue depth 线性增长。对大 queue 有 one-pass fallback（不做 recomputation）。</li>
-<li><strong>Backtracking</strong>: 无。一旦 call 开始 prefill 或 decode，placement 固定不可撤销——收益全部来自初始决策质量。这是一个强设计约束：没有 preemption/migration 使系统简单但限制了纠错能力。</li>
-</ul>
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<h3 id="关键设计决策">关键设计决策 <a class="heading-anchor" href="#关键设计决策" aria-label="Link to 关键设计决策">#</a></h3>
+<p><strong>无形式化作者证明 — 仅实证.</strong> The paper frames an online workflow scheduling problem but gives no convergence, competitive-ratio, or optimality guarantee for the greedy algorithm; all support is empirical. What <em>could</em> have been bounded: the competitive ratio of greedy projected-risk ordering against the offline optimal makespan, or a regret bound on horizon mis-estimation. Neither is attempted.</p>
 
-<ul>
-<li><strong>No preemption/migration</strong>：一旦 call 开始执行，placement 固定。这简化了 KV-cache 管理（无需跨 instance 搬迁 KV state），但意味着 scheduler 的初始决策必须足够好。</li>
-<li><strong>Joint P-D planning at prefill time</strong>：prefill scheduler 同时选定 decode instance，建立 KV 传输路由。在异构集群中这避免了跨硬件类型高延迟传输（除非 service-time 收益 justify）。</li>
-<li><strong>Asynchronous plan application</strong>：scheduler 在后台计算，serving 不停；plan 只 apply 到仍在等待的 call。引入 plan 过时风险但避免 head-of-line blocking。</li>
-<li><strong>Progressive horizon refinement</strong>：$H_w(t)$ 单调非递减，新揭示的 call 只能延长 critical path。SLO 目标只会放松不会变紧——这是 scheduler 稳定性的隐含保证。</li>
-</ul>
-
-<hr>
-
-<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
-
-<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+<p>The formal content is definitional. Notation table:</p>
 
 <table>
-<tr><th>符号</th><th>含义</th><th>量纲</th></tr>
-<tr><td>$\mathcal{W} = \{w_1, w_2, \dots\}$</td><td>在线到达的 workflow 流</td><td>—</td></tr>
-<tr><td>$G_w(t)$</td><td>时刻 $t$ 已揭示的 workflow 子 DAG</td><td>—</td></tr>
-<tr><td>$H_w(t)$</td><td>workflow $w$ 当前 standalone 完成时间估计</td><td>秒</td></tr>
-<tr><td>$C_w^\pi$</td><td>在策略 $\pi$ 下 workflow $w$ 的端到端完成时间</td><td>秒</td></tr>
-<tr><td>$\alpha$</td><td>SLO scale factor（越小 = 越紧的 SLO）</td><td>无量纲</td></tr>
-<tr><td>$\tau$</td><td>目标 attainment 水平（0.95 或 0.99）</td><td>—</td></tr>
-<tr><td>$a_w$</td><td>workflow $w$ 的到达时刻</td><td>秒</td></tr>
-<tr><td>$\Delta_s(c,t)$</td><td>call $c$ 在 stage $s$ 的 projected 完成耗时</td><td>秒</td></tr>
-<tr><td>$R_s(c,t)$</td><td>call $c$ 的 projected ratio（归一化紧迫度）</td><td>无量纲</td></tr>
-<tr><td>$L_\text{in}(c), \widehat{L}_\text{out}(c)$</td><td>输入 prompt / 预测输出长度</td><td>tokens</td></tr>
-<tr><td>$m(c)$</td><td>call $c$ 的 decode KV 容量需求</td><td>tokens</td></tr>
-<tr><td>$\text{Cap}(d)$</td><td>decode instance $d$ 的可用 KV 容量</td><td>tokens</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$\pi$</td><td>scheduling policy</td></tr>
+<tr><td>$\alpha$</td><td>SLO scale factor (minimized)</td></tr>
+<tr><td>$\mathcal{W},\,</td><td>\mathcal{W}</td><td>$</td><td>set of workflows and its cardinality</td></tr>
+<tr><td>$C_w^{\pi}$</td><td>end-to-end completion time of $w$ under $\pi$</td></tr>
+<tr><td>$H_w(t),\,H_w$</td><td>online / final standalone horizon of $w$</td></tr>
+<tr><td>$\tau$</td><td>target attainment level (0.95 or 0.99)</td></tr>
+<tr><td>$a_w$</td><td>workflow arrival time</td></tr>
+<tr><td>$R_s(c,t)$</td><td>projected ratio for call $c$ at stage $s$, time $t$</td></tr>
+<tr><td>$\Delta_s(c,t)$</td><td>projected elapsed time to finish $c$ at stage $s\in\{\text{Prefill},\text{Decode}\}$</td></tr>
+<tr><td>$m(c)$</td><td>decode KV demand of call $c$ (tokens)</td></tr>
+<tr><td>$L_{\mathrm{in}}(c),\,\widehat{L}_{\mathrm{out}}(c)$</td><td>input length, predicted output length</td></tr>
+<tr><td>$\mathrm{Cap}(d)$</td><td>decode KV capacity of instance $d$</td></tr>
 </table>
 
-<h3 id="方程与物理意义">方程与物理意义 <a class="heading-anchor" href="#方程与物理意义" aria-label="Link to 方程与物理意义">#</a></h3>
+<p><strong>Objective (Eq. 1):</strong></p>
 
-<p><strong>Eq 1 — Scaled-SLO 目标</strong>：</p>
+<p>$$\min_{\pi}\;\alpha\quad\text{s.t.}\quad\frac{1}{|\mathcal{W}|}\sum_{w\in\mathcal{W}}\mathbbm{1}\!\left[C_{w}^{\pi}\leq\alpha H_{w}\right]\geq\tau.$$</p>
 
-<p>$$\min_{\pi}\;\alpha \quad \text{s.t.} \quad \frac{1}{|\mathcal{W}|}\sum_{w \in \mathcal{W}} \mathbb{1}[C_w^\pi \leq \alpha H_w] \geq \tau$$</p>
+<p><em>Physical meaning:</em> minimize the multiplicative SLO slack $\alpha$ such that at least a $\tau$-fraction of workflows finish within $\alpha H_w$. This targets tail attainment (Req95/Req99), deliberately not average latency.</p>
 
-<p>物理意义：在目标 attainment $\tau$ 下找到最小的 SLO 放大系数 $\alpha$。$H_w$ 是 workflow $w$ 独占集群时的 makespan，$\alpha H_w$ 是实际 SLO deadline。$\alpha = 1$ 意味着共享集群也能在独占时间内完成——不现实；$\alpha$ 越小说明调度越好。与固定 SLO 不同，此 metric 自动归一化了不同 workflow 的内在复杂度差异。</p>
+<p><strong>Projected ratio (Eq. 2):</strong></p>
 
-<p><strong>Eq 2 — Projected ratio</strong>：</p>
+<p>$$R_{s}(c,t)=\frac{(t-a_{w})+\Delta_{s}(c,t)}{H_{w}(t)}.$$</p>
 
-<p>$$R_s(c,t) = \frac{(t - a_w) + \Delta_s(c,t)}{H_w(t)}$$</p>
+<p><em>Physical meaning:</em> normalized completion pressure — (elapsed + projected-remaining) over the current horizon. Larger $R_s$ ⇒ the workflow is projected closer to (or past) its target ⇒ more urgent. Dividing by $H_w(t)$ makes urgency comparable across workflows of different sizes.</p>
 
-<p>物理意义：分子 $(t - a_w) + \Delta_s(c,t)$ 是 workflow 已消耗时间加上当前 call 的预计剩余耗时，分母 $H_w(t)$ 是当前 standalone horizon。$R_s > 1$ → workflow 已超出目标——极度紧急。这个 ratio 在不同 DAG 深度、不同 standalone makespan 的 workflow 间提供了可比较的紧迫度量纲。</p>
+<p><strong>Decode demand and feasibility (Eqs. 3–4):</strong></p>
 
-<p><strong>Eq 3-4 — Decode 容量约束</strong>：</p>
+<p>$$m(c)=L_{\mathrm{in}}(c)+\widehat{L}_{\mathrm{out}}(c),\qquad m(c)\leq\mathrm{Cap}(d).$$</p>
 
-<p>$$m(c) = L_\text{in}(c) + \widehat{L}_\text{out}(c)$$</p>
+<p><em>Physical meaning:</em> KV footprint is approximated as prompt + proxy-predicted generation length; a call is admissible on decode instance $d$ only if that footprint fits $d$'s KV capacity. This makes decode memory a first-class capacity constraint, not an afterthought.</p>
 
-<p>$$m(c) \leq \text{Cap}(d)$$</p>
-
-<p>物理意义：admission control——call 的总 KV-cache 需求（输入 + 预测输出）不能超过 decode instance 的剩余容量。防止 OOM 并引导 scheduler 将长输出 call 分配到 HBM 更大的 instance。</p>
-
-<h3 id="基础检查（6-项）">基础检查（6 项） <a class="heading-anchor" href="#基础检查（6-项）" aria-label="Link to 基础检查（6-项）">#</a></h3>
+<p><strong>6 minimum checks:</strong></p>
 
 <ol>
-<li><strong>目标函数完备性</strong>：Eq 1 直接优化 workflow-level tail attainment，不是 average latency 或 per-call metric ✓</li>
-<li><strong>变量可控性</strong>：$\pi$ 控制 call 排序和 P-D placement，这是 scheduler 实际可操控的决策变量 ✓</li>
-<li><strong>假设合理性</strong>：$H_w(t)$ 假设 standalone execution 可用 roofline 模型近似——合理但有精度限制（Table 5 量化了误差影响）✓</li>
-<li><strong>Surrogate 一致性</strong>：$R_s(c,t)$ 作为 Eq 1 的 surrogate——贪心 argmax 不保证全局最优，但经验上有效 ⚠️ 无最优性证明</li>
-<li><strong>约束完整性</strong>：Eq 3-4 的 decode capacity 约束在 greedy placement 内强制执行 ✓</li>
-<li><strong>Progressive refinement 收敛性</strong>：$H_w(t)$ 单调增（新揭示的 call 只能延长 makespan）且最终收敛到真实 $H_w$——论文未明确证明但逻辑成立 ✓</li>
+<li><strong>Eq. 1 well-posed?</strong> Yes — for finite $C_w^{\pi}$ and $H_w>0$ there always exists a large enough $\alpha$ satisfying any $\tau\le 1$, so the min is attained.</li>
+<li><strong>Eq. 2 dimensionless?</strong> Yes — numerator and denominator are both times, so $R_s$ is unitless, consistent with cross-workflow comparison.</li>
+<li><strong>Monotonicity of urgency:</strong> $R_s$ increases with elapsed time $(t-a_w)$ and with $\Delta_s$, decreases with a larger horizon $H_w(t)$ — matches the stated "closer to target ⇒ more urgent."</li>
+<li><strong>Eq. 3 unit consistency:</strong> $m(c)$ in tokens = tokens + tokens; Eq. 4 compares tokens to capacity in tokens. Consistent.</li>
+<li><strong>Horizon growth direction:</strong> revealing a call can only add work to $G_w(t)$, so $H_w(t)$ is non-decreasing until true service times correct it — consistent with "SLO target grows accordingly."</li>
+<li><strong>Greedy self-consistency (Alg. 1 lines 13–21):</strong> recomputing $R_s$ after each assignment (updating simulated state $\hat S$) is necessary because the best pair for the next call depends on prior assignments in the same solve — the loop reflects this dependency.</li>
 </ul>
 
-<h3 id="agent-specific-检查">Agent-specific 检查 <a class="heading-anchor" href="#agent-specific-检查" aria-label="Link to agent-specific-检查">#</a></h3>
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<ul>
-<li><strong>Success-rate model</strong>：本文用 SLO attainment rate 代替 agent success rate，在 $(model, workload, cluster, baseline)$ 四维上做全面 sweep。attainment 沿 $\alpha$ 单调递增（更宽松的 SLO → 更高 attainment），符合预期。但没有 sweep backbone model size 或 planning depth——因为 scheduler 对这些维度透明。</li>
-<li><strong>Latency budget per turn</strong>：scheduler 每次 invocation 10–15 ms（Table 6），远小于 LLM call 的 prefill（10–200 ms）+ decode（秒级）延迟。异步 apply 确保 scheduling overhead 不在 serving 关键路径上。可以认为 scheduler 本身满足「interactive latency」约束。</li>
-<li><strong>Failure mode classification</strong>：论文未显式分类 workflow SLO violation 的 failure modes。隐含的 failure modes 包括：(a) critical-path 阻塞（长 call 占用快 instance，短 call 被排到慢 instance）；(b) decode KV 容量耗尽导致等待；(c) 估计误差导致 risk misjudgment。HexAGenT 通过 projected-ratio 针对 (a)，通过 capacity check 针对 (b)，对 (c) 则依赖 workflow-level 归一化的平滑效应。</li>
-<li><strong>无形式化作者证明 — 仅实证</strong>。论文没有给出关于 projected-ratio greedy 的竞争比、近似比或收敛性定理。理想情况下应提供：(a) 在 workflow DAG 为 chain 的特殊情况下 greedy vs offline optimal 的 competitive ratio bound；(b) $H_w(t)$ 估计误差对最终 $\alpha$ 的 sensitivity bound；(c) greedy joint P-D assignment 的近似比（类似于 makespan minimization on unrelated machines 的已知 2-approximation）。可能可以 bound 的 metric：在 chain workflow + 同构集群的简化设定下，projected-ratio greedy 应可证明为 SRPT 的推广，继承其已知 competitive ratio。</li>
-</ul>
+<h3 id="characterization-two-axes-are-both-necessary">Characterization: two axes are both necessary <a class="heading-anchor" href="#characterization-two-axes-are-both-necessary" aria-label="Link to characterization-two-axes-are-both-necessary">#</a></h3>
 
-<hr>
+<p><img src="/assets/2605.16637/tab1.png" alt="Table 1: characterization ablation on heterogeneous P-D clusters"></p>
 
-<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+<p><em>Paper's Table 1 (Req95/Req99, lower is better).</em> The two-step ladder is the load-bearing motivation: per-call FCFS → workflow-FCFS isolates <strong>Insight 1</strong> (workflow ordering matters: e.g. Qwen-BFCL Req95 21.11 → 9.64), and workflow-FCFS → HexAGenT isolates <strong>Insight 2</strong> (heterogeneous placement on top: Qwen-Mixed Req95 10.30 → 3.48). Each cell moving strictly down-and-right confirms the axes are complementary, not redundant.</p>
 
-<h3 id="实验设置">实验设置 <a class="heading-anchor" href="#实验设置" aria-label="Link to 实验设置">#</a></h3>
-
-<ul>
-<li><strong>模型</strong>：Llama3.1-70B（TP4）、Qwen3-235B-A22B（TP8 for A100/H100，TP4 for H200）</li>
-<li><strong>异构集群</strong>：Hetero-1（8P+8D，各含 2×A100 + 3×H100 + 3×H200）、Hetero-2（10P+10D，3×A100 + 4×H100 + 3×H200）</li>
-<li><strong>同构集群</strong>：Llama 4×H200 TP4，Qwen 4×A100 TP8</li>
-<li><strong>Workloads</strong>：ShareGPT（100 wf @ 10/s）、BFCL-v3（400 wf @ 40/s）、LATS（100 wf @ 40/s）、Mixed（100 wf @ 10/s）</li>
-<li><strong>Baselines</strong>：SGLang-FCFS、Workflow-LLF、Autellix-ATLAS</li>
-</ul>
-
-<h3 id="characterization-ablation（table-1）">Characterization Ablation（Table 1） <a class="heading-anchor" href="#characterization-ablation（table-1）" aria-label="Link to characterization-ablation（table-1）">#</a></h3>
-
-<table>
-<tr><th>Model</th><th>Trace</th><th>Per-call FCFS</th><th>Workflow-FCFS</th><th>HexAGenT</th></tr>
-<tr><td>Llama</td><td>ShareGPT</td><td>5.85 / 7.43</td><td>4.50 / 6.22</td><td>2.50 / 2.60</td></tr>
-<tr><td>Llama</td><td>BFCL-v3</td><td>13.81 / 17.23</td><td>7.23 / 9.80</td><td>6.21 / 6.34</td></tr>
-<tr><td>Llama</td><td>LATS</td><td>3.21 / 3.29</td><td>2.37 / 3.03</td><td>2.19 / 2.24</td></tr>
-<tr><td>Qwen</td><td>BFCL-v3</td><td>21.11 / 26.89</td><td>9.64 / 11.67</td><td>8.39 / 8.57</td></tr>
-<tr><td>Qwen</td><td>LATS</td><td>4.55 / 4.78</td><td>3.21 / 4.27</td><td>2.71 / 2.74</td></tr>
-<tr><td>Qwen</td><td>Mixed</td><td>11.15 / 15.84</td><td>10.30 / 15.01</td><td>3.48 / 3.94</td></tr>
-</table>
-
-<p>Workflow-FCFS 相比 per-call FCFS avg 减少 Req95 31.4%、Req99 23.3%——仅靠保持 workflow 执行连续性就有巨大收益。HexAGenT 在此基础上再减 Req95 26.9%、Req99 42.6%——异构 placement 是第二维收益。</p>
-
-<h3 id="异构集群主实验（tables-2-3）">异构集群主实验（Tables 2 & 3） <a class="heading-anchor" href="#异构集群主实验（tables-2-3）" aria-label="Link to 异构集群主实验（tables-2-3）">#</a></h3>
+<h3 id="end-to-end-heterogeneous-slo-curves">End-to-end heterogeneous SLO curves <a class="heading-anchor" href="#end-to-end-heterogeneous-slo-curves" aria-label="Link to end-to-end-heterogeneous-slo-curves">#</a></h3>
 
 <p><img src="/assets/2605.16637/fig3.png" alt="Figure 3: SLO-attainment curves on heterogeneous A100/H100/H200 clusters"></p>
 
-<p><em>Paper Figure 3：16 个 subplot（4 model/cluster × 4 trace）展示 SLO-attainment 曲线。HexAGenT（绿线）在几乎所有 subplot 中最先达到 95% 和 99% attainment——曲线最靠左上。在 Qwen-Mixed 上优势最大：baseline 需要 $\alpha > 8$ 才达 99%，HexAGenT 在 $\alpha \approx 4$ 即可。BFCL-v3 上差距最小但 tail（Req99）仍有 23% 改善。</em></p>
+<p><em>Paper's Figure 3 (x = SLO scale $\alpha$, y = fraction of workflows with $C_w\le\alpha H_w$; higher-left is better).</em> HexAGenT's curve sits left of all baselines, most dramatically on Qwen and Mixed/LATS traces — meaning it reaches high attainment at a tighter SLO than the strongest baseline can.</p>
 
-<p><strong>End-to-end results（Table 2, 异构 avg across 4 traces）</strong>：</p>
+<h3 id="averaged-and-detailed-heterogeneous-results">Averaged and detailed heterogeneous results <a class="heading-anchor" href="#averaged-and-detailed-heterogeneous-results" aria-label="Link to averaged-and-detailed-heterogeneous-results">#</a></h3>
 
-<table>
-<tr><th>Model</th><th>Cluster</th><th>HexAGenT</th><th>Best baseline</th><th>Reduction</th></tr>
-<tr><td>Llama</td><td>Hetero-1</td><td>3.54 / 3.71</td><td>4.00 / 4.75</td><td>11.2% / 18.2%</td></tr>
-<tr><td>Llama</td><td>Hetero-2</td><td>2.95 / 3.11</td><td>3.12 / 3.65</td><td>6.1% / 13.9%</td></tr>
-<tr><td>Qwen</td><td>Hetero-1</td><td>4.48 / 4.69</td><td>5.60 / 7.22</td><td>21.1% / 33.1%</td></tr>
-<tr><td>Qwen</td><td>Hetero-2</td><td>3.87 / 3.98</td><td>4.42 / 6.11</td><td>13.5% / 32.7%</td></tr>
-</table>
+<p><img src="/assets/2605.16637/tab2.png" alt="Table 2: end-to-end heterogeneous results averaged across four traces"></p>
 
-<p><strong>Per-trace breakdown, Qwen Hetero-1（Table 3）</strong>：</p>
+<p><em>Paper's Table 2.</em> Averaged over ShareGPT/BFCL-v3/LATS/Mixed against the per-trace strongest baseline; reductions grow with model cost (Qwen Hetero-1: 21.1% / 33.1%), showing the benefit is largest when workflow pressure meets expensive execution.</p>
 
-<table>
-<tr><th>Trace</th><th>HexAGenT</th><th>Best baseline</th><th>Reduction</th></tr>
-<tr><td>ShareGPT</td><td>3.36 / 3.50</td><td>4.58 / 5.45 (LLF)</td><td>26.7% / 35.9%</td></tr>
-<tr><td>BFCL-v3</td><td>8.39 / 8.57</td><td>8.90 / 11.13 (LLF)</td><td>5.7% / 23.0%</td></tr>
-<tr><td>LATS</td><td>2.71 / 2.74</td><td>3.06 / 3.33 (LLF)</td><td>11.3% / 17.7%</td></tr>
-<tr><td>Mixed</td><td>3.48 / 3.94</td><td>5.85 / 8.96 (LLF)</td><td>40.6% / 56.0%</td></tr>
-</table>
+<p><img src="/assets/2605.16637/tab3.png" alt="Table 3: detailed Qwen Hetero-1 results per trace"></p>
 
-<p>Mixed 上的 56.0% Req99 reduction 是全文最 striking 的数字——混合 workload 制造非均匀排队压力，baseline 无法区分 chain/fanout/function-calling workflow 的不同紧迫度。Workflow-LLF 是所有 Qwen Hetero-1 trace 上的最强 baseline；Autellix-ATLAS 从未胜出，说明 attained-service fairness 是错误的优化目标。</p>
+<p><em>Paper's Table 3.</em> The per-trace breakdown localizes the gain: Mixed drives the headline (Req99 56.0%), while BFCL-v3 Req95 is only 5.7% because Workflow-LLF already captures most urgency for short tasks — yet HexAGenT still wins the tail (Req99 23.0%) via better P-D placement.</p>
 
-<h3 id="同构集群实验（table-4）">同构集群实验（Table 4） <a class="heading-anchor" href="#同构集群实验（table-4）" aria-label="Link to 同构集群实验（table-4）">#</a></h3>
+<p>The gain source is explicit: Workflow-LLF captures urgency but does not evaluate which P-D pair minimizes projected normalized completion after accounting for heterogeneous service and transfer-induced decode-ready times; Autellix-ATLAS tracks attained service, which is not the same as risk of exceeding a workflow-specific horizon.</p>
 
-<p><img src="/assets/2605.16637/fig4.png" alt="Figure 4: SLO-attainment curves on homogeneous 4P+4D clusters"></p>
+<h3 id="homogeneous-check-no-heterogeneity-to-exploit">Homogeneous check (no heterogeneity to exploit) <a class="heading-anchor" href="#homogeneous-check-no-heterogeneity-to-exploit" aria-label="Link to homogeneous-check-no-heterogeneity-to-exploit">#</a></h3>
 
-<p><em>Paper Figure 4：即使没有异构 placement 选择，HexAGenT 通过 workflow-aware 排序仍然大幅改善 tail attainment。Llama H200 Req99 从 8.37 降至 5.19（36.8%），Qwen A100 Req99 从 8.33 降至 5.62（33.9%）。这证明 projected-ratio 排序本身是主要收益来源——异构 placement 是 bonus 而非 requirement。</em></p>
+<p><img src="/assets/2605.16637/tab4.png" alt="Table 4: homogeneous 4P+4D results"></p>
+
+<p><em>Paper's Table 4.</em> Even with identical instances (Llama H200, Qwen A100), workflow-aware ordering alone yields 23–37% reductions — the method is not purely a heterogeneity trick.</p>
+
+<h3 id="robustness-to-estimation-error">Robustness to estimation error <a class="heading-anchor" href="#robustness-to-estimation-error" aria-label="Link to robustness-to-estimation-error">#</a></h3>
+
+<p><img src="/assets/2605.16637/tab5.png" alt="Table 5: robustness to multiplicative estimate error on Hetero-1"></p>
+
+<p><em>Paper's Table 5 (% degradation vs 0% error).</em> Llama stays within 1.5% Req99 even at 30% error. Two surprises: Qwen Req99 degradation is <strong>non-monotonic</strong> (largest 9.5% at only 10% error, dropping to 5.4% at 30%), and several Qwen Req95 entries are <strong>negative</strong> (noisy estimate → slightly better greedy order); the authors treat these as near-ties, evidence that the scheduler is driven by workflow priorities rather than exact per-call durations.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>Model</th><th>Cluster</th><th>HexAGenT</th><th>Best baseline</th><th>Reduction</th></tr>
-<tr><td>Llama</td><td>H200 4P+4D</td><td>4.99 / 5.19</td><td>6.52 / 8.37</td><td>24.8% / 36.8%</td></tr>
-<tr><td>Qwen</td><td>A100 4P+4D</td><td>5.48 / 5.62</td><td>6.89 / 8.33</td><td>23.1% / 33.9%</td></tr>
+<tr><th>#</th><th>Step</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Users experience end-to-end workflow latency, so the scheduling unit must be the workflow, not the call.</td><td>§1 framing; §2 request-centric limitation</td></tr>
+<tr><td>2</td><td>Per-call FCFS therefore leaves large SLO scales on tail workflows; switching to workflow-level ordering already cuts Req95/Req99 substantially.</td><td>§3 Insight 1, Table 1 (Qwen-BFCL 21.11→9.64)</td></tr>
+<tr><td>3</td><td>Workflow ordering alone is insufficient because calls and hardware are heterogeneous; adding heterogeneity-aware P-D placement cuts the scale again.</td><td>§3 Insight 2, Table 1 (Qwen-Mixed 10.30→3.48)</td></tr>
+<tr><td>4</td><td>To do both jointly, formalize a per-workflow horizon $H_w(t)$ and rank ready calls by the normalized projected ratio $R_s(c,t)$ (Eq. 2).</td><td>§5.1 Eqs. 1–2</td></tr>
+<tr><td>5</td><td>Greedily pick argmax $R_s$, assign the P-D pair with earliest projected decode finish, recompute after each assignment, respect decode KV capacity (Eqs. 3–4), and apply the plan asynchronously.</td><td>§5.2 Alg. 1; §5.3–§5.4</td></tr>
+<tr><td>6</td><td>The resulting system lowers tail SLO scales across heterogeneous and homogeneous clusters, is robust to estimate error, and its planning cost is hidden by async application.</td><td>§7.4–§7.7, Tables 2–6</td></tr>
 </table>
 
-<h3 id="鲁棒性分析（table-5）">鲁棒性分析（Table 5） <a class="heading-anchor" href="#鲁棒性分析（table-5）" aria-label="Link to 鲁棒性分析（table-5）">#</a></h3>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p>向 scheduler 的 prefill/decode 时间估计注入 10–30% 乘性误差：Llama 的 Req99 退化始终 ≤1.5%；Qwen 最大退化 9.5%（10% 误差时）但 30% 误差时反而只有 5.4%——非单调。原因：workflow-level 归一化对噪声有天然平滑效应，单个 call 的估计偏差被 $H_w(t)$ 分母吸收。非单调性源于噪声估计偶尔打破 near-tie call 的排序而碰巧改善了贪心决策。</p>
+<p>Built on <strong>SGLang v0.5.9</strong> using its P-D disaggregated serving feature; scheduling policy is kept outside GPU kernels and the hot decode loop, integrated into the gateway/worker path (§6). Router-side changes: workflow metadata parsing, stage-state construction, async plan application, revision checks for safe queue mutation, bootstrap metadata injection, completion feedback accounting. Worker-side: expose P-D snapshots, accept priority/reassignment updates for still-waiting requests, report completion telemetry. A standalone Python event-driven <strong>simulator (~4.6K LoC</strong> across runtime, scheduler, runners) acts as the resource estimator, modeling the full call lifecycle and computing $H_w$ and the projected ratios via a roofline-style latency model.</p>
 
-<h3 id="scheduler-开销（table-6）">Scheduler 开销（Table 6） <a class="heading-anchor" href="#scheduler-开销（table-6）" aria-label="Link to scheduler-开销（table-6）">#</a></h3>
+<p><strong>[实现未公开]</strong> — no code repository URL is exposed in the source; the above is the paper's own implementation description.</p>
 
-<table>
-<tr><th>Model</th><th>Cluster</th><th>ms/invocation</th><th>Total (s)</th></tr>
-<tr><td>Llama</td><td>Hetero-1</td><td>10.2</td><td>25.7</td></tr>
-<tr><td>Llama</td><td>Hetero-2</td><td>7.1</td><td>19.4</td></tr>
-<tr><td>Qwen</td><td>Hetero-1</td><td>14.7</td><td>28.8</td></tr>
-<tr><td>Qwen</td><td>Hetero-2</td><td>11.5</td><td>23.2</td></tr>
-</table>
+<p><strong>核心技术壁垒 (elaboration):</strong> the joint plan-then-lock semantics. HexAGenT commits a <em>planned</em> decode instance during prefill scheduling so the KV-transfer target is known before prefill completes (§5.3), and once prefill or decode starts, placement is immovable (§5.2). Getting this right requires the async solver to reconcile a "plan in flight" against runtime authority (Alg. 1 lines 5–8, 23) — the hardest engineering surface to replicate, and the one that converts an offline greedy ranking into a non-blocking online scheduler.</p>
 
-<p>Per-invocation 10–15 ms，异步 apply 不阻塞 decode 热路径。Qwen 因 MoE 结构导致更多 instance 类型组合（TP8 vs TP4），枚举 P-D pair 数量更大，因此 overhead 更高。</p>
-
-<h3 id="tool-environment-interface（agent-视角）">Tool & Environment Interface（Agent 视角） <a class="heading-anchor" href="#tool-environment-interface（agent-视角）" aria-label="Link to tool-environment-interface（agent-视角）">#</a></h3>
-
-<p>HexAGenT 的 scheduler 与 agent workflow 之间的接口契约：</p>
-
-<ul>
-<li><strong>Tool catalog</strong>：scheduler 不直接管理 tool——tool 调用在 LLM call 之间的间隙由 workflow front-end 执行。Scheduler 只看到 tool 返回后新揭示的 LLM call。</li>
-<li><strong>Side effects</strong>：scheduler 的所有操作都是对 serving 集群内部状态的修改（queue priority、instance assignment），不产生对 agent 可见的 side effect。</li>
-<li><strong>Error surface</strong>：当 decode instance 的 KV 容量不足时，call 被阻塞等待容量释放（不报错给 agent）。Scheduler 的 capacity check $m(c) \leq \text{Cap}(d)$ 是硬约束。</li>
-<li><strong>Environment contract</strong>：P-D 集群状态在 scheduling invocation 之间是确定性更新的（每次事件都精确更新 queue/running/capacity 状态）。但异步 plan application 意味着 scheduler 看到的 snapshot 和 plan apply 时的真实状态可能不同步——论文通过「只 apply 到仍在等待的 call」来处理这个一致性问题。</li>
-</ul>
-
-<hr>
-
-<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
-
-<table>
-<tr><th>Step</th><th>主张</th><th>证据</th><th>反向依赖</th></tr>
-<tr><td>1</td><td>Per-call scheduling 对 agentic workflow 表现差</td><td>Table 1: per-call FCFS Req95 range 3.21–21.11，Req99 range 3.29–26.89</td><td>—</td></tr>
-<tr><td>2</td><td>Workflow-level ordering 大幅改善 tail SLO</td><td>Table 1: Workflow-FCFS avg 降 31.4% Req95, 23.3% Req99</td><td>Step 1</td></tr>
-<tr><td>3</td><td>Workflow ordering alone 不够——需要 heterogeneity-aware placement</td><td>Table 1: HexAGenT 在 Workflow-FCFS 基础上再降 26.9% Req95, 42.6% Req99</td><td>Step 2</td></tr>
-<tr><td>4</td><td>Projected ratio $R_s(c,t)$ 是正确的 priority surrogate</td><td>Table 2-3 & Fig 3: 在所有 model/cluster/trace 组合上 HexAGenT 一致胜出最强 baseline</td><td>Step 3</td></tr>
-<tr><td>5</td><td>收益不依赖于硬件异构——同构集群也有效</td><td>Table 4 & Fig 4: H200 同构 Req99 减少 36.8%（Llama）、33.9%（Qwen）</td><td>Step 4</td></tr>
-<tr><td>6</td><td>算法对估计误差 robust</td><td>Table 5: 30% 误差下 Req99 退化 ≤1.5%（Llama）/ ≤9.5%（Qwen）</td><td>Step 4</td></tr>
-<tr><td>7</td><td>开销可接受，不影响 serving 热路径</td><td>Table 6: 10–15 ms/invocation, 异步不阻塞</td><td>Step 4</td></tr>
-</table>
-
-<p>论证结构清晰：Step 1-3 是 ablation 递进分解（per-call → workflow-aware → heterogeneous），Step 4 汇总主实验，Step 5-7 验证 generalization / robustness / practicality。每一步的证据来自 paper-internal 实验，不依赖外部引用。</p>
-
-<hr>
-
-<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
-
-<h3 id="实现基础">实现基础 <a class="heading-anchor" href="#实现基础" aria-label="Link to 实现基础">#</a></h3>
-
-<ul>
-<li>基于 <strong>SGLang v0.5.9</strong> 的 P-D disaggregated serving feature，scheduling 逻辑在 gateway/worker 路径上集成</li>
-<li>Router 侧修改：workflow 元数据解析、stage-state 构建、异步 plan apply、revision check for safe queue mutation、bootstrap metadata injection、completion feedback accounting</li>
-<li>Worker 侧修改：暴露 P-D snapshots、接受 priority/reassignment update for still-waiting requests、completion telemetry</li>
-<li>Event-driven simulator：~4.6K 行 Python，覆盖完整 call lifecycle（waiting prefill → prefill → KV transfer → waiting decode → decode → completion），用 roofline-style 延迟模型</li>
-</ul>
-
-<h3 id="代码状态">代码状态 <a class="heading-anchor" href="#代码状态" aria-label="Link to 代码状态">#</a></h3>
-
-<p>[实现未公开]——论文未提供公开代码仓库链接。最接近的可参考实现：</p>
-
-<ul>
-<li>SGLang P-D disaggregation（<code>sglang/srt/</code>）提供 substrate</li>
-<li>Autellix/ATLAS 提供 program-aware baseline 的开源参考</li>
-<li>Proxy model-based output length prediction 用于 $\widehat{L}_\text{out}(c)$</li>
-</ul>
-
-<h3 id="关键实现细节">关键实现细节 <a class="heading-anchor" href="#关键实现细节" aria-label="Link to 关键实现细节">#</a></h3>
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
 
 <ol>
-<li><strong>Asynchronous plan application</strong>：scheduler 和 serving 解耦——plan 计算中 serving 继续执行，plan 完成后只 apply 到仍在等待的 call（已开始 prefill/decode 的不受影响）。这避免了 lock contention 和 head-of-line blocking，但引入了 plan 过时的风险（部分 call 在 plan 计算期间已被 dispatched）。</li>
-</ul>
-
-<ol>
-<li><strong>Roofline-style latency estimator</strong>：prefill/decode 时间估计不基于 profiling lookup 而是 roofline 模型——给定 prompt 长度、model config、GPU spec 计算理论 prefill FLOP 和 decode memory bandwidth bound。KV transfer latency 从 KV size × measured effective bandwidth 计算。在异构集群中，cross-hardware transfer 的较低带宽被显式建模。</li>
-</ul>
-
-<h3 id="llm-backbone-requirements">LLM Backbone Requirements <a class="heading-anchor" href="#llm-backbone-requirements" aria-label="Link to llm-backbone-requirements">#</a></h3>
-
-<ul>
-<li><strong>Minimum model size</strong>：论文验证了 Llama3.1-70B（dense）和 Qwen3-235B-A22B（MoE），未测试更小模型。由于 HexAGenT 是 serving-side scheduler，与 backbone 解耦——原则上适用于任何 size 的模型。</li>
-<li><strong>Required capabilities</strong>：HexAGenT 对 backbone 无特殊要求（不需要 tool-call format、structured output、CoT）。它只需要 serving engine 暴露 P-D disaggregation 接口。</li>
-<li><strong>Sensitivity to backbone</strong>：Qwen（MoE）比 Llama（dense）获得更大的异构 placement 收益——因为 MoE 的 TP 策略在不同 GPU 上差异更大（TP8 vs TP4），placement 决策的 impact 更强。</li>
-<li><strong>Serving cost</strong>：论文未报告 tokens/workflow 或 cost-per-million-tokens。Scheduler 本身的 overhead 可忽略（ms 级 vs 秒级 LLM inference）。主要成本节省来自更少的 GPU 资源即可达成相同 SLO——降低 $\alpha$ 意味着在相同 hardware 预算下可以接受更紧的 deadline 或服务更多 workflow。</li>
-</ul>
-
-<h3 id="evaluation（agent-视角）">Evaluation（Agent 视角） <a class="heading-anchor" href="#evaluation（agent-视角）" aria-label="Link to evaluation（agent-视角）">#</a></h3>
-
-<ul>
-<li><strong>Benchmarks</strong>：ShareGPT（conversational chains, from Vicuna dataset）、BFCL-v3（function calling, Berkeley benchmark）、LATS（tree search on HotpotQA）、Mixed（三者交替）。这些覆盖了 agent workflow 的三大类型：sequential chain、parallel fan-out、tree search。</li>
-<li><strong>Task difficulty distribution</strong>：未显式分为 easy/medium/hard。Workflow 复杂度由 DAG 深度和 fan-out 隐含分层：ShareGPT 最简单（纯 chain），LATS 次之（bounded tree），BFCL-v3 最复杂（高 call count with tool dependencies）。</li>
-<li><strong>Metric</strong>：scaled-SLO attainment（Req95/Req99）——比 average latency 或 pass@k 更适合 serving 场景，直接反映 tail 用户体验。</li>
-<li><strong>Baselines</strong>：SGLang-FCFS（per-call）、Workflow-LLF（least-laxity-first, workflow-aware）、Autellix-ATLAS（attained-service fairness, program-aware）。缺失的 baseline：Hermes（multi-turn scheduling）和 Parrot（semantic variable scheduling）——可能因为它们不支持 P-D disaggregation。</li>
-</ul>
-
-<h3 id="production-readiness">Production Readiness <a class="heading-anchor" href="#production-readiness" aria-label="Link to production-readiness">#</a></h3>
-
-<ul>
-<li><strong>Sandboxing</strong>：论文未讨论 tool 执行隔离——HexAGenT 不管理 tool，tool 在 workflow front-end 侧执行。Scheduler 本身运行在 gateway 进程内，无独立沙箱。</li>
-<li><strong>Secrets & auth</strong>：未讨论。Scheduler 需要访问所有 P-D instance 的 queue/capacity 状态，相当于 cluster-admin 权限。</li>
-<li><strong>Observability</strong>：event-driven 架构天然产生事件日志（每次 scheduling invocation 的输入状态 + 输出 plan）。论文的 simulator 提供完整 lifecycle trace 但实际部署中的 observability 未讨论。</li>
-<li><strong>Cost / rate limit / concurrency controls</strong>：scheduler 不限制并发 workflow 数量。Admission control 仅通过 decode KV capacity 隐式实现——当所有 decode instance 满时新 call 排队等待。缺乏显式的 backpressure 或 admission control 机制来防止 overload 下的 cascading SLO violation。</li>
+<li><strong>Adaptive greedy vs one-pass fallback:</strong> for small stage queues HexAGenT does recomputing greedy (re-rank after each assignment); for large queues it degrades to a single-pass ordering by the same risk score to keep per-invocation overhead bounded (§5.3–§5.4). This queue-size switch is what keeps the 7–15 ms/invocation cost stable under load.</li>
+<li><strong>Decode instance locks vs free calls:</strong> a call locked to a decode instance during prefill can be <em>reordered</em> within that instance but cannot migrate across decode instances; only unlocked calls are freely placeable (§5.4). Missing this distinction breaks the KV-transfer contract.</li>
 </ul>
 
 </div>

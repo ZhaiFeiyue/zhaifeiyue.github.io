@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Synthesis: ForkKV: Scaling Multi-LoRA Agent Serving via Copy-on-Write Disaggregated KV Cache — Feiyue KB</title>
+<title>Synthesis: 2604.06370 — Feiyue KB</title>
 <link rel="icon" type="image/png" href="/assets/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
@@ -195,93 +195,233 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </nav>
 
 <div class="w">
-<h1 id="page-title">ForkKV: Scaling Multi-LoRA Agent Serving via Copy-on-Write Disaggregated KV Cache</h1>
-<div class="card-meta"><span class="badge badge-framework">framework</span> 2604.06370 — Cross-paper Synthesis</div>
+<h1 id="page-title">2604.06370</h1>
+<div class="card-meta"> 2604.06370 — Cross-paper Synthesis</div>
 <div class="link-area" style="border-top:none;margin-top:8px">
 <a href="/papers/2604.06370/detail.html">→ Detail (L2)</a>
-<a href="/overview/framework.html">← framework Survey</a>
 <a href="/overview/">← All Syntheses</a>
 </div>
 <div class="detail-content">
 
-<h1 id="forkkv-2604-06370-—-l3-cross-paper-synthesis">ForkKV (2604.06370) — L3 Cross-Paper Synthesis <a class="heading-anchor" href="#forkkv-2604-06370-—-l3-cross-paper-synthesis" aria-label="Link to forkkv-2604-06370-—-l3-cross-paper-synthesis">#</a></h1>
+<h1 id="forkkv-vs-agent-serving-cluster-—-l3-synthesis">ForkKV vs Agent-Serving Cluster — L3 Synthesis <a class="heading-anchor" href="#forkkv-vs-agent-serving-cluster-—-l3-synthesis" aria-label="Link to forkkv-vs-agent-serving-cluster-—-l3-synthesis">#</a></h1>
 
-<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+<blockquote>
+Target: <strong>ForkKV</strong> (2604.06370) — multi-LoRA agent serving via CoW-disaggregated KV cache.
+Peers: 8 <code>category: agent</code> entities spanning KV-cache reuse, agent scheduling, workload
+characterization, protocols, and model routing.
+</blockquote>
 
-<table>
-<tr><th>ID</th><th>名称</th><th>关联理由</th></tr>
-<tr><td>2511.11729</td><td>Harli</td><td>Co-locates inference + PEFT finetuning on same GPU via SM partitioning；ForkKV co-locates multi-LoRA agents on same base model via KV disaggregation</td></tr>
-<tr><td>2603.13281</td><td>ICaRus</td><td>Freezes logical encoder for cross-model KV sharing；ForkKV shares bCache (base projection) but allows per-agent rCache residuals</td></tr>
-<tr><td>2602.12029</td><td>PrefillShare</td><td>Shared-prefill disaggregated serving with cache-conditioned decode modules；related freeze-base approach</td></tr>
-<tr><td>2309.06180</td><td>vLLM</td><td>ForkKV's direct baseline; PagedAttention + prefix caching fails under multi-LoRA KV divergence</td></tr>
-</table>
+<hr>
 
-<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+<h2 id="1-相关论文-which-peers-are-related-and-why">1. 相关论文 (which peers are related and why) <a class="heading-anchor" href="#1-相关论文-which-peers-are-related-and-why" aria-label="Link to 1-相关论文-which-peers-are-related-and-why">#</a></h2>
 
-<p><strong>ForkKV vs ICaRus <a href="/papers/2603.13281/detail.html#core-contribution" class="ref-link" title="2603.13281#core-contribution">[2603.13281]</a></strong>：ICaRus 将 Transformer 分解为 frozen logical encoder ($E_{\text{base}}$) 和 task-specific logical decoder ($D_{\text{task}}$)，所有 models 共享一份 KV cache。ForkKV 的核心区别：ICaRus 需要 retraining (fine-tune only decoder)，而 ForkKV 是 inference-time system optimization 无需模型修改——它利用 LoRA 的代数结构 ($Y = xW + xA_iB_i$) 在 serving 层面分离 cache。ICaRus 实现 "lossless" sharing (decoder 被训练适应 base encoder cache)，ForkKV 是 "near-lossless" (0.71% quality drop from sharing bCache without retraining) <a href="/papers/2604.06370/detail.html#实验与数据" class="ref-link" title="2604.06370#实验与数据">[2604.06370]</a>。</p>
+<p>ForkKV attacks <strong>redundant KV-cache memory across specialized agents that share a static prefix</strong></p>
+<p><a href="/papers/2604.06370/detail.html#1-tl-dr" class="ref-link" title="2604.06370#1-tl-dr">[2604.06370]</a>. The 8 peers relate along three concentric rings:</p>
 
-<p>两者面对的 trade-off 不同：ICaRus 要求 training investment 但获得 exact sharing；ForkKV 即时部署但接受微小 accuracy cost。在实际部署中，如果模型已按 ICaRus 方式训练，则不再需要 ForkKV——两者解决同一问题的不同层面。</p>
-
-<p><strong>ForkKV vs PrefillShare <a href="/papers/2602.12029/detail.html#core-contribution" class="ref-link" title="2602.12029#core-contribution">[2602.12029]</a></strong>：PrefillShare 也 freezes base model prefill 并训练 cache-conditioned decode modules。核心差异：PrefillShare 需要 cache-conditioned fine-tuning ($\mathcal{L}(\theta_\text{dec})$ trained to decode from "alien" cache)，而 ForkKV 不修改任何模型参数。PrefillShare 适用于 multi-model (不同 architecture 的 specialized models) 场景；ForkKV 限于 same-base-model + different-LoRA 场景。</p>
-
-<p><strong>矛盾点</strong>: PrefillShare 报告 4.5× lower p95 latency / 3.9× throughput，ForkKV 报告 up to 3.04× throughput <a href="/papers/2604.06370/detail.html#实验与数据" class="ref-link" title="2604.06370#实验与数据">[2604.06370]</a>。但 PrefillShare 的 gain 部分来自 disaggregated P/D 架构 (DistServe-style) + eliminated redundant prefill，不纯是 cache sharing。ForkKV 的 gain 纯来自 memory efficiency → larger batch size。两者不直接可比。</p>
-
-<p><strong>ForkKV vs Harli <a href="/papers/2511.11729/detail.html#core-contribution" class="ref-link" title="2511.11729#core-contribution">[2511.11729]</a></strong>：Harli 在 decode GPU 上 co-locate PEFT finetuning，利用 decode 的 ~60% idle SM capacity。与 ForkKV 的联系：两者都在 LoRA/PEFT 场景下优化 GPU utilization，但不同维度——Harli 优化 compute (SM) utilization，ForkKV 优化 memory (KV cache) utilization。组合使用时，ForkKV 释放的内存可以给 Harli 更多空间 co-locate finetuning workloads。</p>
-
-<p><strong>ForkKV vs vLLM <a href="/papers/2604.06370/detail.html#实验与数据" class="ref-link" title="2604.06370#实验与数据">[2604.06370]</a></strong>：vLLM 的 PagedAttention + prefix caching 在 multi-LoRA 下效果为零——identical prefix 因 LoRA 不同产生不同 KV cache，throughput drops 90.8% scaling 1→8 workflows。ForkKV 的 DualRadixTree 在同一场景下实现 2.33× throughput by sharing bCache。这证明 monolithic KV cache assumption 是 multi-LoRA serving 的根本瓶颈。</p>
-
-<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
-
-<ol>
-<li><strong>99.4% similarity 缺乏理论保证</strong>：cosine similarity >99.4% 是经验观察 <a href="/papers/2604.06370/detail.html#实验与数据" class="ref-link" title="2604.06370#实验与数据">[2604.06370]</a>，无 worst-case bound。更高 rank ($r \geq 64$) 或更多样化的 adapters 可能打破此假设——论文仅测 rank ≤ 32。</li>
+<p><strong>Ring 1 — direct competitors: cross-context / cross-agent KV reuse (strongest overlap).</strong></p>
+<ul>
+<li><strong>KVCOMM (2510.12872)</strong> — the closest technical sibling. Both target the fact that agents sharing</li>
+<p>context cannot naively reuse each other's KV because activations diverge;   KVCOMM approximates</p>
+<p><em>cross-prefix KV offset</em> online via RoPE de/re-rotation + an anchor pool <a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a>,</p>
+<p>where ForkKV instead <em>physically decouples</em> the cache into shared <code>bCache</code> + per-agent <code>rCache</code></p>
+<p><a href="/papers/2604.06370/detail.html#2-q1-q2-q3" class="ref-link" title="2604.06370#2-q1-q2-q3">[2604.06370]</a>. Both hit the RoPE-position problem and both are <em>lossy-but-bounded</em>.</p>
+<li><strong>TokenCake (2510.18586)</strong> and <strong>Continuum (2511.02230)</strong> — KV-cache-centric agent serving, but they</li>
+<p>keep the cache <em>monolithic</em> and   optimize its <em>lifecycle in time</em> (offload/upload, TTL pinning)</p>
+<p><a href="/papers/2510.18586/detail.html#1-tl-dr" class="ref-link" title="2510.18586#1-tl-dr">[2510.18586]</a> <a href="/papers/2511.02230/detail.html#1-tl-dr" class="ref-link" title="2511.02230#1-tl-dr">[2511.02230]</a> rather than <em>decomposing its structure</em>.</p>
 </ul>
 
-<ol>
-<li><strong>低并发下性能退化</strong>：4 ReAct workflows 时 ForkKV 反而不如 baseline <a href="/papers/2604.06370/detail.html#实验与数据" class="ref-link" title="2604.06370#实验与数据">[2604.06370]</a>——disaggregated KV 的计算开销 (deferred RoPE, SRAM reconstruction) 在内存不紧张时成为纯开销。论文提到 adaptive scheduling 但未实现。</li>
+<p><strong>Ring 2 — agent-serving scheduling & workload systems (shared setting, orthogonal lever).</strong></p>
+<ul>
+<li><strong>Autellix (2502.13965)</strong> — program-level LAS scheduling for agentic DAGs (ReAct/MapReduce/MCTS)</li>
+<p><a href="/papers/2502.13965/detail.html#1-tl-dr" class="ref-link" title="2502.13965#1-tl-dr">[2502.13965]</a>. Shares ForkKV's ReAct+MapReduce evaluation vocabulary and the</p>
+<p>"agent as a multi-call program" framing, but its lever is <em>scheduling order</em>, not <em>memory layout</em>.</p>
+<li><strong>Speculative Tool Calls (2512.15834)</strong> — hides tool latency by speculatively pre-executing tools</li>
+<p><a href="/papers/2512.15834/detail.html#1-tl-dr" class="ref-link" title="2512.15834#1-tl-dr">[2512.15834]</a>; orthogonal (compute overlap vs memory footprint) but co-located in the</p>
+<p>same agent-turn critical path.</p>
+<li><strong>CPU-Centric characterization (2511.00739)</strong> — profiles where agent E2E latency actually goes</li>
+<p>(tool execution on CPU up to 88%) <a href="/papers/2511.00739/detail.html#tl-dr" class="ref-link" title="2511.00739#tl-dr">[2511.00739]</a>. This is a <em>scope-boundary</em> peer: it</p>
+<p>argues the bottleneck ForkKV optimizes (GPU KV memory) may not dominate E2E for many workloads.</p>
 </ul>
 
-<ol>
-<li><strong>Deferred RoPE 的系统约束</strong>：$rCache = xA_i$ 维度为 $r$ (不兼容 RoPE $n$-dimensional rotation matrix)，迫使 RoPE 推迟到 attention time <a href="/papers/2604.06370/detail.html#实验与数据" class="ref-link" title="2604.06370#实验与数据">[2604.06370]</a>。这意味着 (a) 每次 attention 必须携带 sin-cos table 到 SRAM，(b) 未来的 speculative decoding / paged KV offloading 需要额外处理 RoPE state，增加集成复杂度。</li>
+<p><strong>Ring 3 — adjacent framing (weak technical overlap).</strong></p>
+<ul>
+<li><strong>RouteLLM (2406.18665)</strong> — routes queries between strong/weak models to save cost</li>
+<p><a href="/papers/2406.18665/detail.html#1-tl-dr" class="ref-link" title="2406.18665#1-tl-dr">[2406.18665]</a>; a different multiplexing axis (model choice vs adapter co-hosting).</p>
+<li><strong>Agent Interoperability Protocols survey (2505.02279)</strong> — MCP/ACP/A2A/ANP; the <em>protocol</em> layer</li>
+<p>above the serving layer <a href="/papers/2505.02279/detail.html#1-tl-dr" class="ref-link" title="2505.02279#1-tl-dr">[2505.02279]</a>. Provides the "what is an agent workflow"</p>
+<p>context but no KV/serving mechanism.</p>
 </ul>
 
-<ol>
-<li><strong>Concurrent work LRAgent 的独立验证</strong>：Jeon et al. (2026) 独立提出相同 bCache/rCache 分解 <a href="/papers/2604.06370/detail.html#实验与数据" class="ref-link" title="2604.06370#实验与数据">[2604.06370]</a>——convergent discovery 证明 idea 的自然性，但也意味着 ForkKV 的 novelty 在方法层面有限，差异化在 DualRadixTree + ResidualAttention kernel 工程。</li>
+<p>Most-cited peers below: KVCOMM, TokenCake, Continuum, Autellix (Rings 1–2).</p>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta-what-s-new-incremental-contradictory">2. 本篇 vs 相关论文的 delta (what's new, incremental, contradictory) <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta-what-s-new-incremental-contradictory" aria-label="Link to 2-本篇-vs-相关论文的-delta-what-s-new-incremental-contradictory">#</a></h2>
+
+<p><strong>New relative to the entire cluster.</strong> ForkKV is the only entity here that treats the KV cache as</p>
+<p><strong>structurally divisible along the LoRA algebra</strong> rather than as an indivisible blob. Every other</p>
+<p>KV-cache peer manipulates the <em>whole</em> cache: KVCOMM shifts it (offset approximation)</p>
+<p><a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a>, TokenCake moves it in space (offload) <a href="/papers/2510.18586/detail.html#2-q1-q2-q3" class="ref-link" title="2510.18586#2-q1-q2-q3">[2510.18586]</a>,</p>
+<p>Continuum holds it in time (TTL pin) <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>. ForkKV's <code>bCache</code>/<code>rCache</code></p>
+<p>split with a <strong>DualRadixTree</strong> (base tree keyed by token ids; residual tree keyed by token ids +</p>
+<p>agent id) is genuinely a new abstraction <a href="/papers/2604.06370/detail.html#3-架构-方法图" class="ref-link" title="2604.06370#3-架构-方法图">[2604.06370]</a>.</p>
+
+<p><strong>Incremental / convergent with KVCOMM.</strong> The <em>goal</em> — share context KV across agents whose adapters</p>
+<p>make it diverge, at bounded accuracy loss — is essentially identical to KVCOMM's, and ForkKV's own L1</p>
+<p>flags the near-simultaneous LRAgent (Jeon et al. 2026) as doing "essentially the same thing"</p>
+<p>(decompose KV into shared + adapter-dependent). So the decomposition <em>idea</em> is convergent; ForkKV's</p>
+<p>defensible delta is the <strong>CoW/DualRadixTree management + deferred-RoPE fused kernel</strong>, not the split</p>
+<p>itself <a href="/papers/2604.06370/detail.html#2-q1-q2-q3" class="ref-link" title="2604.06370#2-q1-q2-q3">[2604.06370]</a>.</p>
+
+<p><strong>Contradictory / tension on where the bottleneck lives.</strong> ForkKV's entire premise is that per-agent</p>
+<p>KV memory saturates the GPU and collapses throughput ~90% <a href="/papers/2604.06370/detail.html#2-q1-q2-q3" class="ref-link" title="2604.06370#2-q1-q2-q3">[2604.06370]</a>. The</p>
+<p>CPU-Centric paper measures that <strong>tool execution on CPU can be up to 88% of agent E2E latency</strong></p>
+<p><a href="/papers/2511.00739/detail.html#q1-这篇论文试图解决什么核心痛点" class="ref-link" title="2511.00739#q1-这篇论文试图解决什么核心痛点">[2511.00739]</a> — implying that in tool-heavy agent</p>
+<p>workloads, shrinking GPU KV memory yields at best marginal E2E wins.</p>
+
+<p><strong>矛盾根源</strong>: The two papers measure <em>different denominators under different workloads</em>. ForkKV</p>
+<p>synthesizes inputs as "massive static context + tiny dynamic instruction" (avg dynamic instr 12–24</p>
+<p>tokens) with <em>mock</em> tool responses of 100 random tokens and 0.1s injected latency</p>
+<p><a href="/papers/2604.06370/detail.html#5-实验与数据" class="ref-link" title="2604.06370#5-实验与数据">[2604.06370]</a>, i.e. tool time is deliberately negligible and the regime is</p>
+<p>memory-bound. The CPU-Centric study uses <em>real</em> tools (FAISS over 115GB, RDKit, Bash) where tool</p>
+<p>time dominates <a href="/papers/2511.00739/detail.html#3-tool-environment-interface-cpu-侧瓶颈深度刻画" class="ref-link" title="2511.00739#3-tool-environment-interface-cpu-侧瓶颈深度刻画">[2511.00739]</a>. Both are correct</p>
+<p>in their own regime; ForkKV's throughput headline is specific to the memory-contended, cheap-tool</p>
+<p>corner of the space.</p>
+
+<p><strong>Contradictory on "when specialization helps."</strong> ForkKV concedes it is *slower than baselines under</p>
+<p>light load* (4 ReAct workflows), winning only under memory contention <a href="/papers/2604.06370/detail.html#5-实验与数据" class="ref-link" title="2604.06370#5-实验与数据">[2604.06370]</a>.</p>
+<p>This mirrors TokenCake's honest "no-free-lunch" finding that always-offload hurts</p>
+<p><a href="/papers/2510.18586/detail.html#4-作者证明" class="ref-link" title="2510.18586#4-作者证明">[2510.18586]</a> and Continuum's finding that pinning must be <em>bounded</em> by TTL because</p>
+<p>unbounded pin blocks others <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a>. The cluster consensus: aggressive</p>
+<p>KV specialization is contention-gated, and every system needs a fallback (ForkKV: proposed adaptive</p>
+<p>scheduling; Continuum: TTL expiry; TokenCake: opportunistic gate).</p>
+
+<hr>
+
+<h2 id="3-可攻击面-adversarial-rebuttal-against-specific-claims">3. 可攻击面 (adversarial rebuttal against specific claims) <a class="heading-anchor" href="#3-可攻击面-adversarial-rebuttal-against-specific-claims" aria-label="Link to 3-可攻击面-adversarial-rebuttal-against-specific-claims">#</a></h2>
+
+<p><strong>A1 — "up to 3.0× throughput" is a best-corner number, not a representative one.</strong> ForkKV's own</p>
+<p>range is 1.25–3.04× (ReAct) and the 3.04× occurs only on the largest model (Qwen2.5-14B) under the</p>
+<p>worst memory pressure; the small-model figure is 1.25× <a href="/papers/2604.06370/detail.html#2-q1-q2-q3" class="ref-link" title="2604.06370#2-q1-q2-q3">[2604.06370]</a>. Under the</p>
+<p>disclosed light-load regression, the <em>floor</em> is below 1×. Compare Autellix's 4–15× and Continuum's</p>
+<p>8.18× — but those are measured on <em>scheduling</em>/<em>queueing</em> pathologies that ForkKV does not touch,</p>
+<p>so the systems are not throughput-comparable head-to-head.</p>
+
+<p><strong>A2 — the accuracy claim rests on an empirical bound with no theorem.</strong> ForkKV shares <code>bCache</code></p>
+<p>across layers even though this is "mathematically lossy," defending it only with >99.4% cosine</p>
+<p>similarity and 0.71% avg F1 drop <a href="/papers/2604.06370/detail.html#4-作者证明" class="ref-link" title="2604.06370#4-作者证明">[2604.06370]</a>. There is no per-layer drift bound as</p>
+<p>a function of adapter magnitude — exactly the gap the L2 self-flags. KVCOMM faces the identical</p>
+<p>critique but is arguably <em>more</em> exposed: its offset approximation is data-driven (anchor pool), and</p>
+<p>its own L2 shows fixed-recompute baselines (CacheBlend) degrade on GSM8K/HumanEval</p>
+<p><a href="/papers/2510.12872/detail.html#5-实验与数据" class="ref-link" title="2510.12872#5-实验与数据">[2510.12872]</a>, suggesting "high reuse ≠ preserved quality." ForkKV's F1-only</p>
+<p>metric (word overlap) may also mask failures that a semantic/exact-match metric on structured API</p>
+<p>calls would expose.</p>
+
+<p><strong>A3 — the tool workload is a strawman.</strong> By injecting 0.1s tool latency and 100-token mock</p>
+<p>responses <a href="/papers/2604.06370/detail.html#5-实验与数据" class="ref-link" title="2604.06370#5-实验与数据">[2604.06370]</a>, ForkKV assumes tools are cheap and their outputs tiny.</p>
+<p>The CPU-Centric evidence <a href="/papers/2511.00739/detail.html#key-findings" class="ref-link" title="2511.00739#key-findings">[2511.00739]</a> directly attacks this: real tools are the</p>
+<p>E2E bottleneck, and Speculative Tool Calls exists precisely because tool latency is <em>seconds</em>, not</p>
+<p>0.1s <a href="/papers/2512.15834/detail.html#2-q1-q2-q3" class="ref-link" title="2512.15834#2-q1-q2-q3">[2512.15834]</a>. If tool time dominates, ForkKV's memory win is amortized away.</p>
+
+<p><strong>A4 — reproducibility wall.</strong> ForkKV's kernel (deferred RoPE + matrix-associativity <code>B_v</code> fusion +</p>
+<p>online-softmax residual accumulator) is self-described as the single hardest-to-replicate insight,</p>
+<p>and the artifact is not linked <a href="/papers/2604.06370/detail.html#7-实现-cross-reference" class="ref-link" title="2604.06370#7-实现-cross-reference">[2604.06370]</a>. Among the KV peers only</p>
+<p>Continuum ships code (github.com/Hanchenli/vllm-continuum) <a href="/papers/2511.02230/detail.html#7-实现-cross-reference" class="ref-link" title="2511.02230#7-实现-cross-reference">[2511.02230]</a></p>
+<p>and RouteLLM ships code <a href="/papers/2406.18665/detail.html#7-实现-cross-reference" class="ref-link" title="2406.18665#7-实现-cross-reference">[2406.18665]</a>; ForkKV, KVCOMM, TokenCake, and</p>
+<p>Autellix are all closed. ForkKV's replication risk is the highest in the cluster because its gain</p>
+<p>depends on a numerically-delicate fused kernel, not a schedulable policy.</p>
+
+<p><strong>A5 — the OS-fork framing is presentation, not mechanism.</strong> "fork + copy-on-write" is an analogy;</p>
+<p>the actual novelty is the two-keyed radix trees and decoupled LRU eviction. An adversary can argue</p>
+<p>the CoW branding oversells what is, mechanically, prefix-sharing of <code>bCache</code> plus per-agent <code>rCache</code></p>
+<p>allocation <a href="/papers/2604.06370/detail.html#3-架构-方法图" class="ref-link" title="2604.06370#3-架构-方法图">[2604.06370]</a>.</p>
+
+<hr>
+
+<h2 id="4-生态位-paradigm-shift-positioning-adoption-evidence">4. 生态位 (paradigm-shift positioning, adoption evidence) <a class="heading-anchor" href="#4-生态位-paradigm-shift-positioning-adoption-evidence" aria-label="Link to 4-生态位-paradigm-shift-positioning-adoption-evidence">#</a></h2>
+
+<p>ForkKV sits at the intersection of two established lines and stakes a <strong>structural-decomposition</strong></p>
+<p>position that the rest of the cluster leaves open:</p>
+
+<ul>
+<li>The <strong>KV-reuse-for-multi-agent</strong> line (KVCOMM, TokenCake, Continuum) had converged on "keep the</li>
+<p>cache whole; be smarter about <em>when/where</em> to reuse or hold it." ForkKV is the paradigm move to</p>
+<p>"<strong>change the storage layout itself</strong>," exploiting the LoRA low-rank structure that none of the</p>
+<p>reuse peers assume <a href="/papers/2604.06370/detail.html#2-q1-q2-q3" class="ref-link" title="2604.06370#2-q1-q2-q3">[2604.06370]</a>. This is only possible in the <em>multi-LoRA</em> setting</p>
+<p>— a narrower niche than KVCOMM (which needs no adapters) but a deeper win where it applies.</p>
+<li>The <strong>agent-serving-scheduling</strong> line (Autellix, Continuum) optimizes the <em>time axis</em> (order,</li>
+<p>residency). ForkKV optimizes the <em>space axis</em> (footprint). They are compositional, not competitive</p>
+<p>— ForkKV explicitly proposes adaptive fallback scheduling it does not implement</p>
+<p><a href="/papers/2604.06370/detail.html#5-实验与数据" class="ref-link" title="2604.06370#5-实验与数据">[2604.06370]</a>, which is exactly Autellix/Continuum territory.</p>
 </ul>
 
-<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+<p><strong>Era positioning.</strong> ForkKV rides the 2025–2026 shift the cluster documents: agentic workflows as</p>
+<p>the dominant serving pattern (Autellix's DAG framing <a href="/papers/2502.13965/detail.html#agent-scope" class="ref-link" title="2502.13965#agent-scope">[2502.13965]</a>; the protocol</p>
+<p>survey's "agents as first-class" <a href="/papers/2505.02279/detail.html#2-痛点-方法-结果" class="ref-link" title="2505.02279#2-痛点-方法-结果">[2505.02279]</a>) and multi-LoRA co-hosting as</p>
+<p>the cheap-specialization substrate. Its bet is that LoRA-per-agent will be common enough to justify</p>
+<p>a layout co-designed for it.</p>
 
-<p>ForkKV 占据 <strong>multi-LoRA agent serving</strong> 的精确 niche：当多个 LoRA-specialized agents 共享一个 base model 并处理 long shared context 时，它是唯一不需要模型修改即可获得 memory sharing 的系统方案。</p>
+<p><strong>Adoption evidence.</strong> Weak. ForkKV is built on SGLang v0.5.6 (production framework) with ~3K LoC</p>
+<p><a href="/papers/2604.06370/detail.html#3-架构-方法图" class="ref-link" title="2604.06370#3-架构-方法图">[2604.06370]</a>, which lowers integration friction, but the artifact is unreleased</p>
+<p>and a near-simultaneous competitor (LRAgent) exists. Contrast Continuum, which is a merged-style</p>
+<p>vLLM plugin with public code and real distributed SWE-agent validation</p>
+<p><a href="/papers/2511.02230/detail.html#7-实现-cross-reference" class="ref-link" title="2511.02230#7-实现-cross-reference">[2511.02230]</a>, and RouteLLM, which reports competitiveness vs commercial</p>
+<p>routers <a href="/papers/2406.18665/detail.html#5-实验与数据" class="ref-link" title="2406.18665#5-实验与数据">[2406.18665]</a>. On the adoption axis ForkKV is currently a strong idea with</p>
+<p>thin external validation.</p>
 
-<p><strong>vs ICaRus/PrefillShare</strong>：需要 retraining/fine-tuning → higher accuracy guarantee, lower deployment flexibility。<strong>vs ForkKV</strong>：zero training cost → lower accuracy guarantee (0.71% drop), immediate deployment。</p>
+<hr>
 
-<p><strong>采纳信号</strong>：Built on SGLang (3K lines)，OpenAI-compatible API 不变。来自 SJTU。未开源（截至论文时间）。</p>
+<h2 id="5-未探索方向-hybrid-adaptive-directions-from-the-cluster">5. 未探索方向 (hybrid / adaptive directions from the cluster) <a class="heading-anchor" href="#5-未探索方向-hybrid-adaptive-directions-from-the-cluster" aria-label="Link to 5-未探索方向-hybrid-adaptive-directions-from-the-cluster">#</a></h2>
 
-<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+<p><strong>D1 — Disaggregation × time-axis management (ForkKV × Continuum/TokenCake).</strong> ForkKV's <code>bCache</code> and</p>
+<p><code>rCache</code> have "fundamentally different memory footprints and access frequencies," which is why it</p>
+<p>uses decoupled LRU <a href="/papers/2604.06370/detail.html#3-架构-方法图" class="ref-link" title="2604.06370#3-架构-方法图">[2604.06370]</a>. That is precisely the signal Continuum's TTL</p>
+<p>utility model <a href="/papers/2511.02230/detail.html#2-q1-q2-q3" class="ref-link" title="2511.02230#2-q1-q2-q3">[2511.02230]</a> and TokenCake's temporal offload gate</p>
+<p><a href="/papers/2510.18586/detail.html#q2-what-is-the-core-method" class="ref-link" title="2510.18586#q2-what-is-the-core-method">[2510.18586]</a> operate on. A per-pool TTL/offload policy — pin the</p>
+<p>massive shared <code>bCache</code>, aggressively evict/offload tiny <code>rCache</code> — is an unexplored hybrid the L2s</p>
+<p>jointly motivate.</p>
 
-<ol>
-<li><strong>ForkKV + ICaRus 两阶段方案</strong>：先用 ForkKV 即时部署获得 near-lossless sharing；后台异步做 ICaRus-style decoder fine-tuning；完成后热切换到 lossless mode。渐进式从 inference-time approximate 升级到 training-time exact。</li>
+<p><strong>D2 — Structural decomposition × offset approximation (ForkKV × KVCOMM).</strong> ForkKV's cross-layer</p>
+<p><code>bCache</code> sharing is lossy because inputs <code>x</code> drift across agents. KVCOMM's anchor-based *offset</p>
+<p>correction* <a href="/papers/2510.12872/detail.html#4-作者证明" class="ref-link" title="2510.12872#4-作者证明">[2510.12872]</a> could be applied to the shared <code>bCache</code> to bound that</p>
+<p>drift analytically — turning ForkKV's "empirically bounded" claim into an actively corrected one,</p>
+<p>recovering the residual 0.71–1.6% quality gap.</p>
+
+<p><strong>D3 — Contention-adaptive layout switching (ForkKV × Autellix/CPU-Centric).</strong> ForkKV is slower</p>
+<p>under light load; Autellix shows program-level scheduling can read GPU-memory pressure signals</p>
+<p><a href="/papers/2502.13965/detail.html#q2-方法" class="ref-link" title="2502.13965#q2-方法">[2502.13965]</a>. A scheduler that dynamically switches between unified prefix caching</p>
+<p>(light load) and disaggregated <code>bCache</code>/<code>rCache</code> (contended) — the "adaptive fallback" ForkKV names</p>
+<p>but never builds — is the obvious missing piece, and CPU-Centric's admission-control framing</p>
+<p><a href="/papers/2511.00739/detail.html#q2-作者提出了什么新的方法" class="ref-link" title="2511.00739#q2-作者提出了什么新的方法">[2511.00739]</a> provides the request-type-aware machinery.</p>
+
+<p><strong>D4 — Compute-overlap × footprint-reduction (ForkKV × Speculative Tool Calls).</strong> ForkKV frees GPU</p>
+<p>memory → larger decode batch (12.0×) <a href="/papers/2604.06370/detail.html#2-q1-q2-q3" class="ref-link" title="2604.06370#2-q1-q2-q3">[2604.06370]</a>; Speculative Tool Calls needs</p>
+<p>spare capacity to run speculative models concurrently <a href="/papers/2512.15834/detail.html#q2-方法" class="ref-link" title="2512.15834#q2-方法">[2512.15834]</a>. The freed memory</p>
+<p>from disaggregation could fund the speculative draft models, coupling a memory win to a latency win</p>
+<p>in the same agent turn.</p>
+
+<p><strong>D5 — Right-sizing the specialization axis (ForkKV × RouteLLM).</strong> ForkKV assumes every agent gets</p>
+<p>its own LoRA. RouteLLM's insight that many queries do not need the strong path</p>
+<p><a href="/papers/2406.18665/detail.html#q2-方法" class="ref-link" title="2406.18665#q2-方法">[2406.18665]</a> suggests an unexplored router that decides *whether an agent even needs a</p>
+<p>distinct adapter* — collapsing <code>rCache</code> to zero for routable-to-base requests and reclaiming even the</p>
+<p>tiny residual footprint.</p>
+
+<hr>
+
+<h2 id="参考-cited-peers">参考 (cited peers) <a class="heading-anchor" href="#参考-cited-peers" aria-label="Link to 参考-cited-peers">#</a></h2>
+
+<ul>
+<li><strong>2604.06370</strong> ForkKV (target) — <a href="../../L2/paper/2604.06370.md">L2</a> · <a href="../../L1/paper/2604.06370.md">L1</a></li>
+<li><strong>2510.12872</strong> KVCOMM — <a href="../../L2/paper/2510.12872.md">L2</a> (Ring 1, closest sibling)</li>
+<li><strong>2510.18586</strong> TokenCake — <a href="../../L2/paper/2510.18586.md">L2</a> (Ring 1)</li>
+<li><strong>2511.02230</strong> Continuum — <a href="../../L2/paper/2511.02230.md">L2</a> (Ring 1, code open)</li>
+<li><strong>2502.13965</strong> Autellix — <a href="../../L2/paper/2502.13965.md">L2</a> (Ring 2, scheduling)</li>
+<li><strong>2512.15834</strong> Speculative Tool Calls — <a href="../../L2/paper/2512.15834.md">L2</a> (Ring 2, compute overlap)</li>
+<li><strong>2511.00739</strong> CPU-Centric characterization — <a href="../../L2/paper/2511.00739.md">L2</a> (Ring 2, bottleneck challenge)</li>
+<li><strong>2406.18665</strong> RouteLLM — <a href="../../L2/paper/2406.18665.md">L2</a> (Ring 3, model routing)</li>
+<li><strong>2505.02279</strong> Agent Interop Protocols survey — <a href="../../L2/paper/2505.02279.md">L2</a> (Ring 3, protocol layer)</li>
 </ul>
 
-<ol>
-<li><strong>Adaptive disaggregation granularity</strong>：当前全层分解 bCache/rCache。观察到某些 layer 的 $x$ similarity 可能低于 99.4%（特别是后层）——选择性地对 high-divergence layers 回退到 per-agent full KV，在 memory 和 quality 间动态平衡。</li>
-</ul>
-
-<ol>
-<li><strong>ForkKV for MLA (Multi-Latent Attention)</strong>：DeepSeek-V3 式 MLA 的 latent KV ($d_{kv} = 192$) 远小于标准 attention，LoRA 在 MLA 上的分解结构可能不同。验证 ForkKV 在 MLA 架构下的适用性是重要扩展。</li>
-</ul>
-
-<ol>
-<li><strong>Cross-node ForkKV with disaggregated serving</strong>：将 bCache 放在 decode nodes (read-only shared)，rCache 本地生成——结合 P/D disaggregation 可以进一步减少 prefill redundancy。</li>
-</ul>
-
-</div>
-<div class="link-area">
-<strong>Related:</strong> 
-<a href="/papers/vllm.html">vllm</a> (baseline) 
-<a href="/papers/sglang.html">sglang</a> (baseline) 
-<a href="/papers/s-lora.html">s-lora</a> (baseline) 
-<a href="/papers/droidspeak.html">droidspeak</a> (predecessor) 
-<a href="/papers/lragent.html">lragent</a> (related) 
 </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>

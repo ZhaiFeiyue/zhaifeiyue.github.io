@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">IntentKV: Cross-Turn Intent-Aware KV Cache Pruning for Agent Inference</h1>
 <div class="card-meta"><span class="badge badge-agent">agent</span> 2606.09916</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-pruning</span><span class="tag">multi-turn-agent</span><span class="tag">prefix-cache-reuse</span><span class="tag">query-memory</span><span class="tag">tool-use-serving</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">agent-serving</span><span class="tag">multi-turn</span><span class="tag">prefix-cache</span><span class="tag">learned-pruning</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2606.09916.html">← Synthesis</a>
 <a href="/overview/agent.html">← agent Survey</a>
@@ -205,149 +205,174 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
-<h2 id="1-tl-dr">1) TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+<h1 id="intentkv-cross-turn-intent-aware-kv-cache-pruning-for-agent-inference-—-l2">IntentKV: Cross-Turn Intent-Aware KV Cache Pruning for Agent Inference — L2 <a class="heading-anchor" href="#intentkv-cross-turn-intent-aware-kv-cache-pruning-for-agent-inference-—-l2" aria-label="Link to intentkv-cross-turn-intent-aware-kv-cache-pruning-for-agent-inference-—-l2">#</a></h1>
 
-<p>IntentKV addresses agent inference under long multi-turn trajectories by making KV pruning intent-aware across turns and layout-safe for prefix reuse. The key gain is not only better token retention but also a slot-map eviction design that preserves radix/prefix cache identity; this lets an 8k budget remain close to full-cache accuracy while strongly reducing worst-case KV memory/read pressure.</p>
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<h2 id="2-q1-q2-q3">2) Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+<p>Multi-turn agents blow up KV memory/bandwidth far more than compute. IntentKV keeps the base LLM frozen and prunes KV by (a) scoring history against a session-level QueryMemory of accumulated intent + a zero-init residual head, and (b) evicting via slot-map redirection to a dead slot instead of compaction — so pruning stays compatible with radix prefix reuse.</p>
 
-<h3 id="q1-痛点是什么？">Q1: 痛点是什么？ <a class="heading-anchor" href="#q1-痛点是什么？" aria-label="Link to q1-痛点是什么？">#</a></h3>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p>现有 KV 压缩大多是单提示词（single-prompt）视角：用当前 query 的局部注意力给历史 token 打分，然后把保留 token 做 compaction。论文指出这在 agent 场景有两个核心失配：</p>
+<p><strong>Q1 — 痛点 (why).</strong> In browsing / deep-research / tool-use agents, a short user query fans into a long trajectory of retrieved docs, tool outputs, and intermediate reasoning. KV memory capacity and KV read bandwidth — not parameter compute — become the serving bottleneck. Existing single-prompt pruners (StreamingLLM, SnapKV, H2O) break two agent assumptions: (i) token importance drifts across turns, so a ranking from one prompt goes stale and discards future-use evidence; (ii) standard compaction relocates surviving KV rows, destroying the prefix identity that radix/prefix caches (SGLang, vLLM) reuse across turns. Agents are thus forced to choose <em>either</em> pruning <em>or</em> prefix reuse.</p>
 
-<ol>
-<li><strong>跨 turn 意图漂移</strong>：后续查询、工具结果、中间决策会让“早期 token”重新变重要，单次打分会过时。</li>
-<li><strong>可复用性破坏</strong>：compaction 会改变 surviving token 的 slot/位置身份，破坏后续 turn 对共享前缀的 radix/prefix cache 命中。</li>
-</ul>
-
-<p><img src="/assets/2606.09916/fig1.png" alt="Figure 1: single-prompt pruning fails in multi-turn agents"></p>
-
-<p>Figure 1 给出上述两种失配：一是“prompt-local score stale”，二是“layout relocation breaks reuse”。这不是单纯算法精度问题，而是 retention 与 serving substrate 的耦合问题。</p>
-
-<h3 id="q2-方法核心是什么？">Q2: 方法核心是什么？ <a class="heading-anchor" href="#q2-方法核心是什么？" aria-label="Link to q2-方法核心是什么？">#</a></h3>
-
-<p>IntentKV 把问题拆成两条正交轴：<strong>保留策略（what to keep）</strong> 与 <strong>布局策略（how to evict without breaking reuse）</strong>。</p>
-
+<p><strong>Q2 — 方法 (how).</strong> IntentKV separates <strong>what to keep</strong> from <strong>how the pruned state is laid out</strong>:</p>
 <ul>
-<li><strong>保留策略</strong>：维护跨 turn 的 QueryMemory，按会话累计 query 信号；再用一个零初始化 residual head 在冻结 backbone 上做校正。</li>
-<li><strong>布局策略</strong>：不做 compaction，把被淘汰位置重定向到 dead slot（sentinel），保留 surviving KV 行、RoPE phase 与 slot identity 不变，从而继续可被 prefix/radix cache 复用。</li>
+<li><em>Retention:</em> a per-session <code>QueryMemory</code> $\mathbf{M}_t$ accumulates query-like signals across turns via a geometric (EMA) recurrence and scores each history token by memory-attention. A small zero-initialized residual head (215k params) adds a learned correction on top, grounded on which positions get re-attended by <em>future</em> tool calls.</li>
+<li><em>Layout:</em> eviction is a <strong>slot-map redirection</strong> — dropped logical positions point to a single sentinel "dead slot" (K set to $-10^4$, V set to $0$), while surviving K/V rows, RoPE phases, and slot identities stay put. Numerically a hard mask, but at slot-map level so flashinfer/FA3 kernels run unmodified and the radix tree still matches the prefix.</li>
 </ul>
 
-<p>核心技术壁垒：<strong>在不改 attention kernel 的前提下，同时满足“动态跨-turn相关性建模”与“前缀身份稳定性”</strong>。这要求 scorer、slot-map、allocator、prefix cache 协同设计；单独改任何一层都无法复现论文中的准确率/效率共赢。</p>
+<p><strong>核心技术壁垒 (the single hardest-to-replicate insight):</strong> making per-request KV pruning <em>composable with radix-prefix reuse</em> by never relocating survivors. Both the paged slot map and the sentinel-mask idiom are borrowed; the non-obvious, hard-won contribution is the <strong>alias-aware deallocation</strong> discipline (§7) that lets a dropped slot be freed only when it is not the sentinel, not radix-protected, and not aliased by a sibling request or a prior redirect — without this exact condition, freeing slots corrupts sibling KV reads, which is precisely why prior compaction pruners had to disable prefix caching.</p>
 
-<p><img src="/assets/2606.09916/fig2.png" alt="Figure 2: IntentKV architecture and scorer composition"></p>
+<p><strong>Q3 — 结果 (so what).</strong> On BrowseComp-Plus (830 queries) at an 8k budget, IntentKV-Phase-2 lands within 0.96 True-Acc points of the no-pruning ceiling on Qwen3-8B and beats the strongest heuristic by 10.36 points on Qwen2.5-14B, while holding a 20.7% prefix-hit rate where compaction baselines collapse to 0–3%. On the 100 longest queries it cuts worst-case peak request tokens by 77.8–81.7% and worst-case raw KV reads by up to 92.6%.</p>
 
-<p>Figure 2 展示了规则分数、残差分支和最终 top-k 选择的组合路径，并把 dead-slot eviction 放在同一方法图里，强调“打分 + 布局”是联合设计而不是独立技巧叠加。</p>
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<h3 id="q3-结果如何？">Q3: 结果如何？ <a class="heading-anchor" href="#q3-结果如何？" aria-label="Link to q3-结果如何？">#</a></h3>
+<p><img src="/assets/2606.09916/fig2.png" alt="Figure 2: IntentKV method overview — agent context → QueryMemory update → rule score + residual correction → final score → dead-slot eviction"></p>
 
-<p>在 BCP 上，IntentKV 在 8k 预算（高压区）表现出“接近 full-cache 的准确率 + 明显更低系统成本”的组合：</p>
+<p><em>Paper's Figure 2 (caption: "IntentKV method overview").</em> The figure traces one compression event: ① the agent context (system prefix + history + current query span) feeds ② a QueryMemory update, then ③ scoring combines (a) the rule score, (b) the residual correction, and (c) their sum; low-scoring positions are redirected to the dead slot while kept tokens and their slots are untouched. This is the load-bearing diagram — it shows the retention/layout factorization that is the paper's whole thesis.</p>
 
-<ul>
-<li>Qwen3-8B：True Acc 接近 full-cache（在 16k 下差距仅 0.12；8k 下明显优于启发式基线）。</li>
-<li>Qwen2.5-14B：8k 下相对最强启发式有 10.36 点 True Acc 优势。</li>
-<li>最坏样本上，峰值请求 token 与 Raw KV Reads 出现 1-2 个数量级缓解（Table 3）。</li>
-</ul>
+<p><strong>Motivation figure — why cross-turn matters.</strong> The stale-ranking failure mode:</p>
 
-<h2 id="3-架构-方法图">3) 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+<p><img src="/assets/2606.09916/fig1.png" alt="Figure 1: Prompt-local KV pruning becomes stale in multi-turn agents"></p>
 
-<h3 id="agent-loop（带压缩插桩）">Agent loop（带压缩插桩） <a class="heading-anchor" href="#agent-loop（带压缩插桩）" aria-label="Link to agent-loop（带压缩插桩）">#</a></h3>
+<p><em>Paper's Figure 1 (caption: "Prompt-local KV pruning becomes stale in multi-turn agents").</em> Panel (a) shows the fan-out from single-shot to multi-turn; panel (b) contrasts signal-mismatch (a one-shot scorer drops "future-use evidence") with IntentKV's session-aware retention. The reader should notice that the <em>oldest</em> tokens (initial request, first retrieval) are exactly the ones a recency/time-decay prior would evict but agents later need.</p>
+
+<h3 id="the-agent-loop-and-where-intentkv-intervenes">The agent loop and where IntentKV intervenes <a class="heading-anchor" href="#the-agent-loop-and-where-intentkv-intervenes" aria-label="Link to the-agent-loop-and-where-intentkv-intervenes">#</a></h3>
+
+<p>IntentKV is <strong>not</strong> an agent policy — it intervenes once per request, after prefill, when sequence length $N$ exceeds budget $C$. The surrounding agent loop is a standard ReAct think-act-observe cycle with the KV compressor bolted into the serving layer:</p>
 
 <div class="mermaid">
 stateDiagram-v2
     [*] --> Observe
-    Observe --> Plan
-    Plan --> Act
-    Act --> Verify
-    Verify --> Reflect
-    Reflect --> Observe
-
-    state Act {
-      [*] --> Prefill
-      Prefill --> Compress
-      Compress --> Decode
-      Decode --> ToolCall
-      ToolCall --> [*]
-    }
+    Observe --> Plan: tool results / user msg appended
+    Plan --> Act: emit tool call (JSON function call)
+    Act --> Prefill: request re-submitted with full history
+    Prefill --> Compress: N > C ?
+    Compress --> Compress: update M_t, score history, top-k, redirect dropped→dead slot
+    Compress --> Decode: kept KV + radix prefix reuse
+    Decode --> Observe: append tool output
+    Decode --> [*]: final answer / turn cap (≤32)
 </div>
 
-<p>该循环对应论文的 agent inference 位置：IntentKV 在每次请求 prefill 后、decode 前触发压缩；当序列长度超过预算 $C$ 时执行 top-k 保留与 dead-slot 重定向。</p>
-
-<h3 id="关键机制分解">关键机制分解 <a class="heading-anchor" href="#关键机制分解" aria-label="Link to 关键机制分解">#</a></h3>
-
-<ol>
-<li><strong>跨 turn 记忆更新</strong>：$\mathbf{M}_t=e^{-\lambda}\mathbf{M}_{t-1}+\mathrm{Enc}(\mathbf{q}_t)$，并做单位范数约束，避免记忆范数增长导致 softmax 塌缩。</li>
-<li><strong>规则打分 + 残差修正</strong>：$s_j=\mathrm{rule}_j+\alpha\cdot\mathrm{MLP}(\phi_j\oplus c_j)$，残差分支 zero-init，确保初始等价于规则打分下界。</li>
-<li><strong>布局保持</strong>：只改 slot map，不搬移 surviving KV 行；淘汰位置映射到 sentinel，使被淘汰 token 在注意力上近似硬掩码。</li>
-<li><strong>别名安全释放</strong>：回收物理 slot 前检查 prefix 保护、sentinel 与 alias 共享，避免兄弟请求或已重定向位置被误释放。</li>
+<ul>
+<li><strong>Memory model:</strong> short-term = the (pruned) context window; the <em>session-level</em> <code>QueryMemory</code> $\mathbf{M}_t$ is a compact per-session intent state (one query-row shape), stored in an LRU of 1,024 memories per compressor. No vector DB / episodic log — this is intra-cache memory that composes with orchestration-layer memories (MemGPT / A-MEM) rather than replacing them.</li>
+<li><strong>Tool invocation:</strong> native OpenAI Chat-Completions function calling with JSON arguments (two tools: snippet retrieval + full-document fetch); structured JSON is robust to mid-string truncation.</li>
+<li><strong>Error recovery:</strong> the rule scorer is a <em>strict floor</em> under the learned head (§4), so if the residual is unhelpful the system degrades to the heuristic rather than failing; on single-turn inputs IntentKV falls back to its heuristic scorer.</li>
 </ul>
 
-<p><img src="/assets/2606.09916/fig3.png" alt="Figure 3: cross-turn attention drift evidence"></p>
+<h3 id="planning-reasoning">Planning & reasoning <a class="heading-anchor" href="#planning-reasoning" aria-label="Link to planning-reasoning">#</a></h3>
 
-<p>Figure 3 证明“跨 turn 注意力漂移”是现实现象而非假设：不同 query turn 激活前缀中的不同区域，支撑 QueryMemory 的必要性。</p>
-
-<h2 id="4-作者证明">4) 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
-
-<p>无形式化作者证明 — 仅实证。</p>
-
-<table>
-<tr><th>检查项</th><th>论文中的证据</th><th>结论</th></tr>
-<tr><td>1. 问题-方法闭环</td><td>§1 明确两类失配；§3 分别给 retention/layout 方案</td><td>闭环完整</td></tr>
-<tr><td>2. 指标与目标一致</td><td>True Acc + Completion + KV reads + wall + prefix-hit</td><td>同时覆盖质量与系统成本</td></tr>
-<tr><td>3. 对照组充分性</td><td>Full-cache + StreamingLLM/SnapKV/H2O/TrimKV</td><td>主要基线充分</td></tr>
-<tr><td>4. 预算敏感性</td><td>$C\in\{8k,16k\}$，8k 为压力测试</td><td>展示 tight/loose 两区间</td></tr>
-<tr><td>5. 组件归因</td><td>去 memory / 去 x-attn / 去 residual 的消融</td><td>证明 memory 是主增益源</td></tr>
-<tr><td>6. 布局归因</td><td>compact vs dead-slot substrate 对照（Appendix E）</td><td>证明 prefix-reuse 贡献可分离</td></tr>
-</table>
-
-<p>可被约束但未被形式化的量：给定 turn 分布与预算 $C$ 下的 completion 下界，以及 score 漂移对 retained evidence 的风险上界。论文尚未给出理论界，但实证通过多指标和分解消融提供了较强可信度。</p>
-
-<h2 id="5-实验与数据">5) 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
-
-<h3 id="主结果（准确率与效率）">主结果（准确率与效率） <a class="heading-anchor" href="#主结果（准确率与效率）" aria-label="Link to 主结果（准确率与效率）">#</a></h3>
-
-<p><img src="/assets/2606.09916/fig4.png" alt="Figure 4: accuracy vs KV cost under fixed budgets"></p>
-
-<p>Figure 4 显示在 PT（内存上界）和 Eff. Live KV（有效注意力负载）两个坐标下，IntentKV 在 8k 预算下形成更优帕累托前沿。即使预算紧张，准确率下降也显著小于启发式压缩器。</p>
-
-<p><img src="/assets/2606.09916/tab1.png" alt="Table 1: BCP full split accuracy comparison"></p>
-
-<p>Table 1 的关键信号是 8k 压力区：IntentKV completion 明显高于 compaction 基线，因此 True Acc 优势主要来自“完成率守住”，而非仅提升已完成样本的 Raw 精度。</p>
-
-<p><img src="/assets/2606.09916/tab2.png" alt="Table 2: system cost comparison"></p>
-
-<p>Table 2 显示 IntentKV 在 wall time 与 Raw/Eff KV reads 上普遍更低，且 prefix-hit 不再像 compaction 方法那样接近归零，说明布局兼容性是系统侧收益的关键来源。</p>
-
-<p><img src="/assets/2606.09916/tab3.png" alt="Table 3: worst-case tail pressure"></p>
-
-<p>Table 3 聚焦最坏 100 条长轨迹：IntentKV-8k 把最坏 Raw KV Reads 从 411M 降到 31M（Qwen2.5-14B），同时保持接近 full-cache 的 True Acc，说明其价值主要在 tail 风险控制而非平均 case 的小修小补。</p>
-
-<h2 id="6-论证链">6) 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
-
-<table>
-<tr><th>步骤</th><th>论点</th><th>证据</th><th>推导结果</th></tr>
-<tr><td>1</td><td>agent 场景中，单次 query 打分会随 turn 漂移失效</td><td>Figure 1, Figure 3</td><td>需要跨 turn 记忆化打分，而不是 prompt-local 静态打分</td></tr>
-<tr><td>2</td><td>仅改 scorer 不够，compaction 仍会破坏 prefix 重用</td><td>§3.4 + Appendix E</td><td>必须把 eviction 设计成不改变 surviving slot identity</td></tr>
-<tr><td>3</td><td>QueryMemory + residual 可在 tight budget 保持质量</td><td>Table 1 + Table 4</td><td>8k 压力区 accuracy/completion 显著优于启发式基线</td></tr>
-<tr><td>4</td><td>dead-slot 布局可独立贡献系统收益</td><td>Table 2 + Table 7</td><td>prefix-hit 恢复并带来 wall/raw-read 降低</td></tr>
-<tr><td>5</td><td>两条轴联合后形成质量-成本共赢</td><td>Figure 4 + Table 3</td><td>在最坏长轨迹上显著降压，同时保持接近 full-cache 准确率</td></tr>
-</table>
-
-<h2 id="7-实现-cross-reference">7) 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
-
-<p>[实现未公开]</p>
-
-<h3 id="核心技术壁垒（实现视角）">核心技术壁垒（实现视角） <a class="heading-anchor" href="#核心技术壁垒（实现视角）" aria-label="Link to 核心技术壁垒（实现视角）">#</a></h3>
-
-<p>最难复现点不是单个公式，而是<strong>服务栈集成的一致性</strong>：要在 paged KV + radix prefix cache 的真实推理路径中引入 dead-slot 重定向、alias-aware free、query-memory 更新与 residual 打分，并确保它们在多并发会话下不破坏 correctness。任何一个环节与 serving runtime 的现有内存管理约定冲突，都会导致 prefix 复用失效或 KV 读错位。</p>
-
-<h3 id="关键实现细节（易漏点）">关键实现细节（易漏点） <a class="heading-anchor" href="#关键实现细节（易漏点）" aria-label="Link to 关键实现细节（易漏点）">#</a></h3>
-
-<ol>
-<li><strong>sentinel 数值构造</strong>：$K[s^\dagger]=-10^4\mathbf{1}, V[s^\dagger]=0$ 的目标是“在现有内核里等价硬掩码”，不是一般意义的空 token；数值尺度不足会在低精度下泄漏注意力。</li>
-<li><strong>zero-init residual with gradient path</strong>：输出层零初始化但 $\alpha$ 初始为 1，使 day-0 精确回退到 rule scorer，同时梯度可通过 fc2 学到修正；若把 $\alpha=0$ 与零输出同时使用会形成训练停滞。</li>
-<li><strong>训练标签构造</strong>：用未来 5 次工具调用参数做 substring 匹配作为正例，且无匹配样本直接丢弃，优先保证标签精度；这是 residual head 能学到“未来可用证据”而非 recency 偏置的关键。</li>
+<ul>
+<li><strong>Planning style:</strong> predetermined ReAct loop (think → act → observe); IntentKV adds no new planning — it only changes the KV state the loop runs against.</li>
+<li><strong>Budget:</strong> at most 32 tool-use turns per query; deterministic decoding ($T{=}0$). The KV budget $C \in \{8192, 16384\}$ caps <em>compressible history</em>, not total prompt+generation tokens.</li>
+<li><strong>Backtracking:</strong> none at the agent level; at the cache level eviction is one-way per compression event (a dropped position is redirected to the dead slot and cannot be revived).</li>
 </ul>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证.</strong> IntentKV has no convergence or success-rate guarantee. The one <em>formal</em> claim is an <strong>initialization/lower-bound argument</strong> for the residual head, plus a <strong>numerical-masking equivalence</strong> for the sentinel. What <em>could</em> have been bounded but is not: worst-case accuracy loss vs. budget $C$, or a retention-recall guarantee against future-attended positions.</p>
+
+<p><strong>Notation table.</strong></p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$N$, $C$, $C^\star$</td><td>seq length; KV budget; residual budget $\max(0,C-\lvert\mathcal{F}\rvert)$</td></tr>
+<tr><td>$\mathcal{F}$</td><td>forced set $[0,\pi)\cup[q_s,q_e)$ = protected prefix + actionable query span</td></tr>
+<tr><td>$\mathcal{H}$</td><td>candidate history $[0,N)\setminus\mathcal{F}$</td></tr>
+<tr><td>$\mathbf{M}_t$</td><td>per-session QueryMemory, shape $\mathbb{R}^{L\times H_q\times D}$</td></tr>
+<tr><td>$\lambda$</td><td>session-fixed EMA decay ($\lambda{=}0.5$)</td></tr>
+<tr><td>$s_j$</td><td>final per-token score; $\mathrm{rule}_j$ = rule-only score</td></tr>
+<tr><td>$\alpha$</td><td>learned residual gate, clipped to $[-5,5]$</td></tr>
+<tr><td>$\mathbf{S}_r$, $s^\dagger$</td><td>slot map of request $r$; sentinel "dead" slot</td></tr>
+</table>
+
+<p><strong>方程物理意义 (load-bearing equations).</strong></p>
+<ul>
+<li>Top-$k$ selection: $\mathcal{K}^\star=\mathcal{F}\cup\operatorname*{arg\,top}_{|\mathcal{K}|=C^\star}\sum_{j\in\mathcal{K}} s_j$ — greedily fill the residual budget with highest-scoring history, always keeping the forced set.</li>
+<li>Memory recurrence: $\mathbf{M}_t = e^{-\lambda}\mathbf{M}_{t-1} + \mathrm{Enc}(\mathbf{q}_t)$, then renormalized to unit norm along the head dim — accumulates evolving intent; without renorm the norm grows ~linearly with turns and the score softmax collapses to one coordinate.</li>
+<li>Rule score: $\mathrm{rule}_j=\sum_{l,h} a_{l,h,j}$ with $a_{l,h,j}=\mathrm{softmax}_{\mathcal{H}}(\mathbf{M}_t[l,h]\cdot\mathbf{K}[l,h,j]/\sqrt{D})$ — scores each token by how strongly accumulated intent attends to it; replaces SnapKV's $W$ tail-Q rows with one state, cutting cost from $\mathcal{O}(WLH_qN)$ to $\mathcal{O}(LH_qN)$.</li>
+<li>Residual: $s_j=\mathrm{rule}_j+\alpha\cdot\mathrm{MLP}(\bm{\phi}_j\oplus\mathbf{c}_j)$ — rule is primary; residual is an additive correction.</li>
+<li>Redirect: $\mathbf{S}_r[j]\leftarrow s^\dagger$ for all dropped $j$ — eviction without compaction.</li>
+</ul>
+
+<p><strong>6 minimum checks.</strong></p>
+<ol>
+<li><strong>Dimensional/shape check:</strong> $\mathbf{M}_t$ has the shape of one post-RoPE query row ($L\times H_q\times D$); scoring against $\mathbf{K}[l,h,j]$ requires GQA KV-heads expanded to $H_q$ — stated explicitly. ✔ consistent.</li>
+<li><strong>Initialization floor:</strong> with $(\alpha{=}1,\ \mathrm{fc}_2{=}0)$ the residual output is 0, so $s_j=\mathrm{rule}_j$ <em>exactly</em> on day zero; gradients still flow through $\mathrm{fc}_2$ (whereas $\alpha{=}0,\mathrm{fc}_2{=}0$ is a dead $(0,0)$ saddle). ✔ the argument is internally sound — this is why "rule scorer is a strict floor."</li>
+<li><strong>Numerical masking equivalence:</strong> sentinel pre-softmax logit $=-10^4\sqrt{D}$, so softmax weight $=\exp(-10^4\sqrt{D})$, far below smallest bf16/fp16 value; $V{=}0$ nulls any residual contribution. ✔ numerically a hard mask.</li>
+<li><strong>Budget semantics:</strong> $C$ caps compressible history $\mathcal{H}$, not total tokens; forced set is always retained. Verified against the 14B result — at 16k budget, ~17k-token trajectories "rarely trigger eviction," matching the observed narrowing of IntentKV's advantage. ✔ self-consistent.</li>
+<li><strong>Parameter count:</strong> $\bm{\phi}_j\in\mathbb{R}^{3D+1}$, MLP hidden 256, cross-attn $H_c{=}4$/$d_c{=}128$; for $D{=}128$ the head is 214,274 params. ✔ plausible for a 2-layer GELU + small cross-attn.</li>
+<li><strong>Alias-safety:</strong> a dropped slot $u$ is freed only if $j$ is outside the radix-protected prefix, $u\neq s^\dagger$, and $u\notin\{\mathbf{S}_r[i]:i\in\mathcal{K}^\star\}$ — condition (c) catches prior-redirect aliases and sibling-shared slots. ✔ this is the correctness lynchpin for combining pruning + prefix reuse.</li>
+</ul>
+
+<p><strong>Agent-specific asks.</strong></p>
+<ul>
+<li><em>Success-rate model (empirical sweep):</em> the effective sweep axes are (backbone × budget × scorer variant). Monotonicity holds along <strong>budget</strong> (16k ≥ 8k True Acc for IntentKV) and along <strong>scorer richness at 16k</strong> (memory > query-only). Notably <em>non-monotone</em> at 8k: the learned residual <em>hurts</em> by 0.60 points because the rule prior already "saturates the dead-slot ceiling" (see §5 ablation).</li>
+<li><em>Latency budget per turn:</em> dominated by prefill + decode over the (pruned) KV; the compression event itself is $\mathcal{O}(LH_qN)$ scoring + a tensor-parallel all-reduce of the score vector. The paper reports wall-clock (Table 2) rather than per-turn latency; it does not claim "interactive latency" but shows up to 43% wall-time reduction vs. compaction baselines.</li>
+<li><em>Failure-mode taxonomy:</em> the paper's own retention has no explicit failure taxonomy, but the <strong>cross-architecture</strong> study identifies <strong>four</strong> failure classes (F1 refusal-to-use-tools, F2 single-shot tool bias, F3 hardware/quant mismatch, F4 parser incompatibility); the dominant one is <strong>F1</strong> (models never emit a tool call), and it is <em>not</em> a KV-compression failure — it sits at the agentic-behavior layer.</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>Headline accuracy (BCP, 830 queries).</strong></p>
+
+<p><img src="/assets/2606.09916/tab1.png" alt="Table 1: BCP accuracy — Raw / Compl / True Acc at C=8k and C=16k on Qwen3-8B and Qwen2.5-14B"></p>
+
+<p><em>Paper's Table 1.</em> At 8k, compaction baselines collapse on <strong>completion</strong> (StreamingLLM 65.4%, SnapKV/H2O ~45.7%), dragging True Acc down, while IntentKV holds 84.6% completion → 14.10 True Acc on Qwen3-8B and 18.55 vs. StreamingLLM's 8.19 on the 14B. The key reader takeaway: the win is a <em>completion</em> win — baselines run out of KV / hit turn caps before answering.</p>
+
+<p><strong>Efficiency and prefix reuse.</strong></p>
+
+<p><img src="/assets/2606.09916/tab2.png" alt="Table 2: System efficiency — PT, wall time, raw KV reads, effective KV reads"></p>
+
+<p><em>Paper's Table 2.</em> IntentKV's Raw KV Reads match Full-cache (32.0M vs 32.2M on Qwen3-8B/16k) and are ~2× lower than every compaction baseline on the 14B, with wall time up to 43% lower than H2O. Notice IntentKV is often <em>cheaper than baselines at equal or better accuracy</em> — the tighter live working set plus preserved prefix reuse compound.</p>
+
+<p><strong>Pareto frontier under two cost metrics.</strong></p>
+
+<p><img src="/assets/2606.09916/fig4.png" alt="Figure 4: BCP accuracy vs. peak request tokens (top) and effective live KV (bottom), across backbones and budgets"></p>
+
+<p><em>Paper's Figure 4.</em> Eight panels: True Acc vs. peak request tokens (top row) and vs. effective live KV (bottom row). IntentKV (★) sits up-and-left of every heuristic in the 8k panels, i.e. higher accuracy at lower memory — the frontier the headline single-number metric obscures.</p>
+
+<p><strong>Worst-case stress test.</strong></p>
+
+<p><img src="/assets/2606.09916/tab3.png" alt="Table 3: Worst-case KV pressure on the 100 longest BCP queries vs. uncompressed ceiling"></p>
+
+<p><em>Paper's Table 3.</em> On the heaviest 100 queries, IntentKV-8k cuts worst-case peak request tokens from 92.3k→20.5k and raw KV reads from 411M→31M (↓92.6%) on the 14B, while True Acc stays within ~2 points. This is the strongest argument that IntentKV absorbs tail trajectories at a 1–2 order-of-magnitude smaller footprint.</p>
+
+<p><strong>Layout ablation (isolating the substrate).</strong></p>
+
+<p><img src="/assets/2606.09916/tab7.png" alt="Table 7: Compact vs. dead-slot eviction — dead-slot transfers 44–46% wall-time and 39–47% raw-KV-read savings to SnapKV/H2O"></p>
+
+<p><em>Paper's Table 7.</em> Re-running SnapKV/H2O on IntentKV's dead-slot substrate (same scorer, same budget) cuts their wall-time 44–46% and Raw KV Reads 39–47%, and raises their True Acc 2.4–5.5 points — proving the layout gain is separable from the QueryMemory scoring gain. Under the matched substrate IntentKV still retains a 1.5× Raw-KV-read reduction over SnapKV at statistically indistinguishable accuracy ($\Delta{=}0.35\sigma$).</p>
+
+<p><strong>Evaluation details.</strong> Benchmark: BrowseComp-Plus (830-query deep-research over ~100K docs) + cross-benchmark FRAMES (824 multi-hop QA, adapted into a multi-turn stress profile). Metric: True Acc = Correct/Total (non-completion counted wrong), judged by a Qwen3-32B LLM. Baselines: Full-cache ceiling, StreamingLLM, SnapKV, H2O, TrimKV.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Evidence (paper-internal)</th></tr>
+<tr><td>1</td><td>Agent trajectories make KV memory/bandwidth the bottleneck, not compute.</td><td>§1 asymmetric profile; worst-case 92–115k peak tokens in Table 3.</td></tr>
+<tr><td>2</td><td>Single-prompt pruners fail on agents for two reasons: stale rankings and lost prefix identity.</td><td>Figure 1 dual failure mode; Figure 3 attention drift across $q_0\ldots q_4$.</td></tr>
+<tr><td>3</td><td>Therefore separate retention (what to keep) from layout (how to store), so each can be fixed independently.</td><td>§3 factorization; Table 7 shows the two axes are independently attributable.</td></tr>
+<tr><td>4</td><td>Cross-turn QueryMemory + zero-init residual retains future-use tokens better than one-shot scorers.</td><td>Table 1 completion/True-Acc wins; §5 ablation: removing memory costs up to 3.13 True-Acc points.</td></tr>
+<tr><td>5</td><td>Slot-map redirection preserves prefix identity, so pruning composes with radix reuse.</td><td>20.7% prefix-hit at 8k vs. 0–3% for compaction; Table 2 matched Raw KV Reads vs. Full-cache.</td></tr>
+<tr><td>6</td><td>Net effect: near-ceiling accuracy at 1–2 orders-of-magnitude smaller worst-case footprint.</td><td>Table 3: ↓77.8–81.7% peak tokens, ↓ up to 92.6% raw KV reads, True Acc within ~2 points.</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>核心技术壁垒 detail — alias-aware deallocation.</strong> The subtlety that makes pruning composable with prefix reuse: a dropped physical slot $u=\mathbf{S}_r[j]$ is returned to the allocator <em>only if</em> (a) $j$ is outside the radix-protected prefix, (b) $u\neq s^\dagger$, and (c) $u\notin\{\mathbf{S}_r[i]:i\in\mathcal{K}^\star\}$. Condition (c) is the hard part — it catches both positions already redirected to the sentinel in a prior compression round and slots shared with sibling requests on the same radix branch. Getting this wrong silently corrupts sibling KV reads, which is exactly why earlier compaction pruners disabled prefix caching. The slot indirection is from PagedAttention and the sentinel-as-mask is a standard idiom; the contribution is the <em>integration discipline</em>, not either primitive alone.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+<ol>
+<li><strong>QueryMemory unit-norm projection.</strong> After each EMA update $\mathbf{M}_t$ must be renormalized to unit norm along the head dim. Skip it and the memory norm grows ~linearly with turn count, collapsing the rule-score softmax onto a single coordinate — a silent failure that only manifests deep into long sessions. It is also <em>softly</em> enforced during training via the $\eta(\lVert\mathbf{M}_t\rVert_2-1)^2$ loss term.</li>
+<li><strong>Zero-init residual with $\alpha{=}1$ (not $\alpha{=}0$).</strong> Initializing the MLP output at 0 <em>and</em> $\alpha{=}1$ recovers the rule score exactly on day zero while keeping gradients flowing; the tempting $(\alpha{=}0,\mathrm{fc}_2{=}0)$ pairing freezes training at a saddle. Also: future-action labels come from literal substring matching against the next 5 tool-call arguments — rows with no matched evidence are <em>dropped</em>, not back-filled with a recency proxy, trading recall for label precision.</li>
+</ul>
+
+<p><strong>Session-id derivation (multi-tenant safety).</strong> Session key resolved in priority: explicit <code>session_id</code> → token tuple of a designated session span → hash of first $P{=}256$ input tokens → per-request key that never matches. Concurrent requests update disjoint keys, so multi-tenant serving never cross-contaminates intent (LRU of 1,024 memories per compressor).</p>
+
+<p><strong>Serving / sandboxing.</strong> All runs on SGLang with radix prefix caching; compaction baselines run with radix reuse <em>disabled</em> after eviction (to avoid wrong RoPE positions). IntentKV uses the same flashinfer/FA3 attention kernels — only the slot map differs; the dead-slot sentinel currently requires fp16/bf16 KV pools.</p>
+
+<p><strong>[实现未公开 — 部分]</strong> Code and the 214,274-parameter residual-head checkpoints are stated to be released under MIT (no base-LLM weights, ToolBench, or BCP content redistributed), but the L1 source carries no file:line citations to a public repository, so concrete call sites are not yet available.</p>
 
 </div>
 </div>
