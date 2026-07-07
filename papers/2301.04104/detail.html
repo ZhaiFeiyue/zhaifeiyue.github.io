@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Mastering Diverse Domains through World Models — Feiyue KB</title>
+<title>Mastering Diverse Domains through World Models (DreamerV3) — Feiyue KB</title>
 <link rel="icon" type="image/png" href="/assets/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
@@ -195,9 +195,9 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </nav>
 
 <div class="w">
-<h1 id="page-title">Mastering Diverse Domains through World Models</h1>
+<h1 id="page-title">Mastering Diverse Domains through World Models (DreamerV3)</h1>
 <div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2301.04104</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">world-model-rl</span><span class="tag">rssm</span><span class="tag">robustness</span><span class="tag">scale-normalization</span><span class="tag">minecraft</span><span class="tag">cross-domain-generalization</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">reinforcement-learning</span><span class="tag">world-model</span><span class="tag">model-based-rl</span><span class="tag">robustness</span><span class="tag">minecraft</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2301.04104.html">← Synthesis</a>
 <a href="/overview/algorithm.html">← algorithm Survey</a>
@@ -205,120 +205,147 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
+<h1 id="mastering-diverse-domains-through-world-models-dreamerv3-—-l2">Mastering Diverse Domains through World Models (DreamerV3) — L2 <a class="heading-anchor" href="#mastering-diverse-domains-through-world-models-dreamerv3-—-l2" aria-label="Link to mastering-diverse-domains-through-world-models-dreamerv3-—-l2">#</a></h1>
+
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>DreamerV3提出了一套“默认超参数跨域可用”的世界模型强化学习配方：通过损失项平衡、回报尺度归一化、symlog/symexp-twohot回归和分类分布稳健化（unimix）组合，减少不同任务奖励尺度与观测分布差异带来的训练脆弱性；其实证显示在150+任务与Minecraft钻石任务上具备较强通用性。</p>
+<p>一套固定超参数的 model-based RL 智能体，通过 RSSM 世界模型 + 想象空间 actor-critic，在 8 大类 150+ 任务上击败各自领域专用算法，并首次无人类数据、无课程从零采到 Minecraft 钻石。核心是一组量纲无关的鲁棒性技巧（symlog、symexp twohot、KL free bits、百分位回报归一化）。</p>
 
 <h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-痛点是什么？">Q1. 痛点是什么？ <a class="heading-anchor" href="#q1-痛点是什么？" aria-label="Link to q1-痛点是什么？">#</a></h3>
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
+
+<p>RL 算法能在其设计的任务族内工作，但迁移到新领域（如从视频游戏到机器人）需要大量专家调参。这种脆弱性是把 RL 用到新问题的瓶颈，也让计算昂贵、无法反复调参的场景望而却步（§1 para 1）。世界模型直觉上有吸引力，但"鲁棒地学习并利用世界模型达到强性能"一直是未解问题——不同领域中奖励、回报、观测的<strong>数量级差异巨大</strong>，一套固定的损失权重/熵系数无法同时适配稀疏与稠密奖励、静态背景与复杂 3D 场景（§2 intro, §2.1, §2.3）。</p>
+
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
+
+<p>三网络协同：世界模型（RSSM）预测潜在表示、奖励与终止；critic 预测回报<strong>分布</strong>；actor 在世界模型想象出的抽象潜在轨迹上学习，无需在线搜索。全部三者用固定超参并发训练。真正让"固定超参跨域"成立的不是网络结构，而是四项量纲无关的鲁棒性变换：</p>
 
 <ul>
-<li>跨域RL常见失败模式不是“算法主干不够强”，而是训练信号的尺度与分布在不同环境间严重失配。</li>
-<li>一组超参数在某些域有效，迁移到稀疏奖励、长时程或高随机性的域时，常出现价值发散、策略熵塌缩或学习停滞。</li>
-<li>这使得“一个算法打多域”在实践上被调参成本卡住。</li>
+<li><strong>symlog / symexp</strong>：在对称对数空间回归，解耦梯度尺度与目标量级（§2.4）。</li>
+<li><strong>symexp twohot</strong>：奖励头与 critic 输出指数间隔 bin 上的 softmax，两点软标签的交叉熵，使梯度大小与目标大小无关（§2.4）。</li>
+<li><strong>KL free bits</strong>：把 dynamics/representation 两个 KL 损失在低于 1 nat 时截断，避免退化并让固定的小 $\beta_{\mathrm{rep}}=0.1$ 跨域可用（§2.1）。</li>
+<li><strong>百分位回报归一化</strong>：用第 5–95 百分位区间（EMA 平滑）而非标准差归一，且分母加下限 $\max(1,S)$，使固定熵系数 $\eta=3\times10^{-4}$ 在稀疏/稠密奖励下都能正确调节探索（§2.3）。</li>
 </ul>
 
-<h3 id="q2-方法核心是什么？">Q2. 方法核心是什么？ <a class="heading-anchor" href="#q2-方法核心是什么？" aria-label="Link to q2-方法核心是什么？">#</a></h3>
+<p><strong>核心技术壁垒</strong>：不是任何单一 trick，而是把"数量级不变性"作为贯穿世界模型/critic/actor 三个目标的统一设计约束，并用一组彼此配合、共享 <code>max(1,·)=1</code> 常数的变换（free-bits 的 <code>max(1,KL)</code> 与回报归一化的 <code>max(1,S)</code>）同时驯服所有目标的尺度问题——从而消除了历来必须的逐域调参。复现难点在于任何一项减弱都会在某个任务子集上退化（§3 ablations），必须整套齐备且相互兼容。</p>
 
-<p>DreamerV3把稳健性做成了可组合的算法机制，而不是单点技巧：</p>
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
 
-<p>1) <strong>世界模型目标平衡</strong>：使用预测项、动力学KL项、表征KL项的固定加权与free-bits下界，抑制不同损失分量主导训练。</p>
-<p>2) <strong>价值/回报尺度解耦</strong>：通过symlog/symexp变换与twohot分布回归，让梯度尺度不直接被目标幅值牵引。</p>
-<p>3) <strong>策略梯度归一化</strong>：用分位数范围的EMA尺度 $S$ 归一化优势，保持固定熵系数也能跨任务稳定。</p>
-<p>4) <strong>分类分布防塌缩</strong>：对离散分布预测使用unimix，降低早期过度确定性。</p>
-
-<p>核心技术壁垒：<strong>把“跨域训练稳定性”拆成互相耦合但可固定超参数的尺度控制回路（损失平衡 + 目标变换 + 归一化 + 分布平滑），并在同一默认配置下同时覆盖稠密/稀疏、短程/长程、视觉/向量任务。</strong></p>
-
-<h3 id="q3-结果如何？">Q3. 结果如何？ <a class="heading-anchor" href="#q3-结果如何？" aria-label="Link to q3-结果如何？">#</a></h3>
-
-<ul>
-<li>在8类基准（150+任务）中，论文报告固定配置DreamerV3达到或超过多类专用方法。</li>
-<li>在Minecraft钻石任务中，论文报告无需专家演示与课程学习即可达成钻石采集。</li>
-<li>消融显示收益来自机制组合而非单一模块，且不同任务对组件敏感性不同。</li>
-</ul>
+<p>固定超参下：Atari 57 上 Gamer mean 3381% > MuZero 3054%（且算力只用一小部分）；ProcGen 匹配调优过的 PPG（66.01 vs 64.89）；DMLab 100M 步超过 IMPALA/R2D2+ 的 1B 步（>1000% 数据效率）；Proprio/Visual Control 均刷新 SOTA；<strong>首次</strong>从零采到 Minecraft 钻石（return 9.1 vs IMPALA 7.1，且 100% 的 agent 在训练中拿到钻石，baseline 0%）。模型 12M→400M 单调提升且更省数据，单卡 A100 可复现。</p>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p><img src="/assets/2301.04104/fig3" alt="Figure 3: DreamerV3训练结构"></p>
+<p><img src="/assets/2301.04104/fig1.png" alt="Figure: Training process of Dreamer (world model + actor-critic)"></p>
 
-<p>图中对应“世界模型 + 想象轨迹上的actor-critic”双阶段闭环：先学习潜变量动力学与奖励/继续预测，再在潜空间rollout上优化策略与价值。该结构将环境交互成本转移到模型内想象，提升样本利用率。</p>
+<p><em>Paper's model figure（caption: "Training process of Dreamer. The world model encodes sensory inputs into discrete representations $z_t$ that are predicted by a sequence model with recurrent state $h_t$ given actions $a_t$ … The actor and critic … learn from trajectories of abstract representations predicted by the world model."）。</em></p>
 
-<p><img src="/assets/2301.04104/fig1" alt="Figure 1: 跨基准总览与Minecraft主结果"></p>
+<p>该图是整篇的骨架：左半 (a) 世界模型学习——编码器把观测 $x_t$ 压成离散随机表示 $z_t$，GRU 序列模型据过去动作预测 $h_t$，再由重构/奖励/终止头塑形表示；右半 (b) actor-critic 完全在世界模型<strong>想象</strong>出的潜在轨迹上训练，不再触碰真实环境。读者应注意 actor/critic 只在模型状态 $s_t=\{h_t,z_t\}$ 上操作，因而受益于 RSSM 的马尔可夫表示。</p>
 
-<p>该总览图把“跨域表现”和“钻石任务突破”放在同一叙事里，支撑论文的中心主张：同一配置可跨多分布任务工作，而非仅在单一benchmark上调参最优。</p>
+<p>RSSM 的六个组件（序列模型 / 编码器 / dynamics 预测 / 奖励 / 终止 / 解码器）可写作：</p>
+
+<p>$$h_t = f_\phi(h_{t-1},z_{t-1},a_{t-1}),\quad z_t \sim q_\phi(z_t\mid h_t,x_t),\quad \hat{z}_t \sim p_\phi(\hat{z}_t\mid h_t),\quad \hat{r}_t \sim p_\phi(\hat{r}_t\mid h_t,z_t),\quad \hat{c}_t \sim p_\phi(\hat{c}_t\mid h_t,z_t),\quad \hat{x}_t \sim p_\phi(\hat{x}_t\mid h_t,z_t)$$</p>
+
+<p>分离确定性 $h_t$ 与随机 $z_t$ 使 dynamics 预测器能在无观测时想象；表示从 softmax 向量采样并用直通梯度。</p>
+
+<p><img src="/assets/2301.04104/fig2.png" alt="Figure: Multi-step video predictions (DMLab maze + quadruped)"></p>
+
+<p><em>Paper's open-loop prediction figure（caption: 给 5 帧上下文和完整动作序列，模型无中间图像地预测未来 45 帧）。</em></p>
+
+<p>此图佐证世界模型真正学到了环境结构——长程开环预测保持一致，是"在想象中训练 actor-critic 可信"的前提。</p>
+
+<p><strong>方法核心（一句话 + before/after）</strong>：把 RL 各目标的<strong>回归/预测目标做量纲无关变换</strong>，从而单套超参跨域。</p>
+
+<table>
+<tr><th>before（前代/常规做法）</th><th>after（DreamerV3）</th></tr>
+<tr><td>逐域调 representation loss 权重</td><td>固定 $\beta_{\mathrm{rep}}=0.1$ + KL free bits</td></tr>
+<tr><td>平方损失（大目标发散）或 Huber（停滞）</td><td>symlog 平方损失 / symexp twohot 分类损失</td></tr>
+<tr><td>按标准差归一 advantage（稀疏奖励下爆炸）</td><td>5–95 百分位回报归一化 + 分母下限 $\max(1,S)$</td></tr>
+<tr><td>critic 输出标量高斯</td><td>critic 输出指数 bin 上的分类分布</td></tr>
+</table>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p><strong>无形式化作者证明 — 仅实证。</strong></p>
+<p><strong>无形式化作者证明 — 仅实证。</strong> 该论文没有收敛定理、方差界或样本复杂度命题；所有"鲁棒性"主张都由 §3 消融与跨域基准实证支撑。理想情况下，对"固定超参下 return normalization 的稳定性"给出一个界（例如证明 $\max(1,S)$ 分母下的策略梯度方差不随奖励尺度发散）会更有说服力，但作者选择用 14 任务消融替代。</p>
 
-<p>论文给出的是机制化目标函数与大量消融/跨域实验，而非收敛定理或样本复杂度上界。关键公式的作用可概括为：</p>
+<p>尽管无定理，仍对 7 个核心方程做最少检查（notation 见下表）：</p>
 
-<ul>
-<li>世界模型损失</li>
-<p>$$</p>
-<p>\mathcal{L}(\phi)=\mathbb{E}\sum_t\left(\beta_{\mathrm{pred}}\mathcal{L}_{\mathrm{pred}}+\beta_{\mathrm{dyn}}\mathcal{L}_{\mathrm{dyn}}+\beta_{\mathrm{rep}}\mathcal{L}_{\mathrm{rep}}\right)</p>
-<p>$$</p>
-<p>物理意义：在重建/奖励预测与潜变量一致性之间做稳态权衡，避免表征仅记忆像素或仅迎合先验。</p>
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$x_t, z_t, h_t, s_t$</td><td>观测 / 随机表示 / 确定性递归状态 / 模型状态 $\{h_t,z_t\}$</td></tr>
+<tr><td>$\phi,\theta,\psi$</td><td>世界模型 / actor / critic 参数</td></tr>
+<tr><td>$\beta_{\mathrm{pred}},\beta_{\mathrm{dyn}},\beta_{\mathrm{rep}}$</td><td>1, 1, 0.1 世界模型损失权重</td></tr>
+<tr><td>$R^\lambda_t, v_t, S, \eta$</td><td>λ-回报 / critic 期望值 / 回报范围 / 熵系数 $3\times10^{-4}$</td></tr>
+<tr><td>$\operatorname{sg}, \operatorname{KL}, \operatorname{Per}$</td><td>停梯度 / KL 散度 / 百分位</td></tr>
+</table>
+
+<p><strong>6 项检查</strong>：</p>
+
+<ol>
+<li><strong>量纲/单位一致</strong>：symlog 与 twohot 损失都是无量纲量（对数空间平方误差、交叉熵），显式地把梯度大小与目标物理量纲脱钩——正是设计目标，自洽。</li>
+<li><strong>极限行为</strong>：$\operatorname{symlog}(x)=\operatorname{sign}(x)\ln(|x|+1)$ 在 $x\to 0$ 时 $\approx x$（近原点为恒等），$|x|\to\infty$ 时压成对数增长；$\operatorname{symexp}$ 为其精确逆。检查通过。</li>
+<li><strong>边界/退化情形</strong>：free bits $\max(1,\operatorname{KL})$ 在 KL<1 nat 时梯度为常数（关闭该项）；回报归一化 $\max(1,S)$ 在稀疏奖励 $S\to 0$ 时分母不塌缩到 0，避免放大噪声。两处 <code>max(1,·)</code> 均为防退化下限。</li>
+<li><strong>符号/守恒</strong>：$\operatorname{twohot}(x)$ 两个非零权重之和恒为 1（线性插值），保证是合法软标签；回报 $R^\lambda_t$ 递归 $r_t+\gamma c_t((1-\lambda)v_t+\lambda R^\lambda_{t+1})$ 在 $c_t=0$（终止）时正确截断 bootstrap。</li>
+<li><strong>停梯度方向</strong>：dynamics loss 对后验 $q_\phi$ 停梯度（把先验拉向后验），representation loss 对先验 $p_\phi$ 停梯度（把后验拉向先验），方向相反且互补——KL balancing 的核心，自洽。</li>
+<li><strong>归一化不变性</strong>：actor 损失中减 baseline 不改变梯度期望，故只需除以范围 $S$；这正是作者"只缩放大回报、不平移"的论据（§2.3）。检查通过。</li>
 </ul>
 
-<ul>
-<li>Actor优势归一化</li>
-<p>$$</p>
-<p>S=\mathrm{EMA}\!\left(\mathrm{Per}(R^\lambda,95)-\mathrm{Per}(R^\lambda,5),0.99\right)</p>
-<p>$$</p>
-<p>物理意义：用稳健尺度估计替代方差型尺度，降低长尾与离群回报对策略梯度幅值的冲击。</p>
-</ul>
-
-<ul>
-<li>symlog/symexp + twohot</li>
-<p>物理意义：在大动态范围上保持可学习梯度，减少“目标值越大、回归越不稳”的幅值耦合问题。</p>
-</ul>
-
-<p>若要补齐理论闭环，最有价值的是：在非平稳潜模型误差下，给出归一化优势策略梯度的方差界与偏差项分解。</p>
+<p><strong>损失分解</strong>：世界模型损失 $\mathcal{L}(\phi)=\mathbb{E}_{q_\phi}[\sum_t(\beta_{\mathrm{pred}}\mathcal{L}_{\mathrm{pred}}+\beta_{\mathrm{dyn}}\mathcal{L}_{\mathrm{dyn}}+\beta_{\mathrm{rep}}\mathcal{L}_{\mathrm{rep}})]$——$\mathcal{L}_{\mathrm{pred}}$ 强制表示含信息（重构+奖励+终止负对数似然），$\mathcal{L}_{\mathrm{dyn}}$ 让先验能预测后验，$\mathcal{L}_{\mathrm{rep}}$ 让表示可预测以支持快速想象采样。</p>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p><img src="/assets/2301.04104/fig6" alt="Figure 6: 关键组件消融与缩放趋势"></p>
+<p>单卡 A100、5 seeds（部分基准 1/10 seeds）、8 大类基准。以下为承重实验图表。</p>
 
-<p>该图直接承载论文最重要证据：去掉KL目标设计、回报归一化或symexp-twohot后，平均表现显著下降；同时随模型规模与replay ratio变化，性能曲线呈可预测提升。</p>
+<p><img src="/assets/2301.04104/tab1.png" alt="Table: Atari 57 scores"></p>
 
-<p><img src="/assets/2301.04104/fig5" alt="Figure 5: Minecraft高阶物品发现率"></p>
+<p><em>Paper's Atari score table。</em> Dreamer 的 Gamer mean 3381% 超 MuZero 3054%、Record mean 74% 超 66%，但读者应注意<strong>单任务并非全胜</strong>：Breakout（384 vs MuZero 799）、Ms Pacman（24079 vs 51310）等仍落后——聚合优势掩盖了逐任务的互有胜负。</p>
 
-<p>该图将“是否能到达钻石链路”转化为分阶段物品发现率，体现方法在超长依赖探索中的可达性差异，不只是最终分数比较。</p>
+<p><img src="/assets/2301.04104/tab3.png" alt="Table: ProcGen scores (fixed-hparam PPO matches tuned official PPO)"></p>
 
-<p><img src="/assets/2301.04104/tab2" alt="Table 2: 基准协议与预算概览"></p>
+<p><em>Paper's ProcGen table。</em> 关键对照点：作者固定超参 PPO（norm mean 42.80）≥ 官方高度调优 PPO（41.16），确立了 PPO baseline 的公信力；Dreamer 66.01 略胜调优 PPG 64.89，但在 Bigfish/Fruitbot 上明显落后 PPG。</p>
 
-<p>该表说明各基准的步数预算、并行环境与模型规模设定，是解释跨域结果可比性的前提。结论依赖于“单配置跨协议”而非逐域重调。</p>
+<p><img src="/assets/2301.04104/tab5.png" alt="Table: DMLab scores at 100M vs baselines at 1B/10B steps"></p>
 
-<p><img src="/assets/2301.04104/tab3" alt="Table 3: 模型规模配置"></p>
+<p><em>Paper's DMLab table。</em> 承载 ">1000% 数据效率" 主张：Dreamer 100M 步 Human-mean-capped 71.4 逼近 R2D2+ 10B 步的 85.4、超过 IMPALA 1B 步的 66.3。注意 Psychlab Visual Search（40.1 vs PPO 76.6）等少数任务仍落后。</p>
 
-<p>该表给出12M到400M的结构参数变化，支撑“同超参跨模型尺寸缩放”的声明，也解释了为何论文能同时报告数据效率与最终性能提升。</p>
+<p><img src="/assets/2301.04104/fig3.png" alt="Figure: Ablations and robust scaling"></p>
+
+<p><em>Paper's ablation/scaling figure（(a) 鲁棒性技巧消融 (b) 学习信号消融 (c) 12M–400M 模型 (d) replay ratio）。</em> 三点关键：(a) 每项鲁棒技巧都贡献，KL 目标影响最大，其次回报归一化与 symexp twohot；(b) 性能<strong>主要</strong>来自世界模型的无监督重构信号而非奖励/价值梯度——对 RL 而言反直觉；(c) 更大模型既涨分又更省数据。</p>
+
+<p><img src="/assets/2301.04104/fig5.png" alt="Figure: Fraction of agents discovering latest Minecraft items"></p>
+
+<p><em>Paper's Minecraft item-discovery figure（caption: 之前算法止步铁镐，Dreamer 是唯一稳定采到钻石的算法）。</em> 承载头条主张。需要辨析：此处"100% 的 agent 训练中拿到钻石"与补充材料里"每回合仅 0.4% 采到钻石"是两个不同度量——前者按训练全程、后者按单回合。</p>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>步骤</th><th>论文内主张</th><th>证据载体</th><th>推导到下一步</th></tr>
-<tr><td>1</td><td>跨域失败核心在训练信号尺度失配</td><td>§2中的目标设计（KL平衡、symlog/twohot、分位数归一化）</td><td>若机制有效，应在多分布任务上减少不稳定训练</td></tr>
-<tr><td>2</td><td>稳健机制可在固定超参数下泛化</td><td>图6消融与多基准主结果（图1）</td><td>若泛化成立，应不仅在单基准领先，还应覆盖不同观测/动作/奖励形态</td></tr>
-<tr><td>3</td><td>方法具备长时程稀疏奖励探索能力</td><td>Minecraft结果（图5及主文叙述）</td><td>若探索能力真实，应体现在高阶物品链路逐步解锁而非偶然终点命中</td></tr>
-<tr><td>4</td><td>同一算法具备可缩放性</td><td>模型尺寸与replay ratio趋势（图6、表3）</td><td>支撑“默认配置可扩展”的工程可用性结论</td></tr>
+<tr><th>步骤</th><th>主张</th><th>论文内部支撑</th></tr>
+<tr><td>1</td><td>跨域的核心障碍是奖励/回报/观测的数量级差异，导致固定超参失效</td><td>§1 para 1、§2 intro、§2.1/§2.3 对稀疏 vs 稠密、静态 vs 复杂场景的分析</td></tr>
+<tr><td>2</td><td>因此引入量纲无关变换（symlog、symexp twohot、free bits、百分位回报归一化）使目标尺度不变</td><td>§2.1–§2.4 方程 (eq:wm, eq:logpred, eq:symlog, eq:twohotloss) 及其物理解释</td></tr>
+<tr><td>3</td><td>这些变换使一套固定超参在 8 类基准上匹配或超过逐域调优的专用算法</td><td>§3 各基准段 + Table atari/procgen/dmlab/dmc_proprio/dmc_vision/bsuite</td></tr>
+<tr><td>4</td><td>消融显示每项技巧都必要（在某任务子集上承重），移除任一即在该子集退化</td><td>§3 Ablations + Fig ablations (a)，robustness/signal 曲线</td></tr>
+<tr><td>5</td><td>同一固定配置直接 out-of-the-box 用于最难的 Minecraft，首次从零采到钻石</td><td>§3 Minecraft + Fig minecraft + Table minecraft（return 9.1 vs 7.1）</td></tr>
+<tr><td>6</td><td>且性能随模型规模/replay ratio 单调、可预测地提升，给出扩容路径</td><td>§3 Scaling + Fig ablations (c)(d)，Table modelsizes（12M–400M）</td></tr>
 </table>
 
 <h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
+<p>[实现未公开的源码行号无法在本 L1 内引用]，但论文给出了足以复现的实现级细节（§Methods A.2）：</p>
+
 <ul>
-<li>[实现未公开]</li>
+<li><strong>优化器</strong>：AGC（按对应权重矩阵 L2 范数的 30% 截断，$\epsilon=10^{-3}$）+ LaProp（$\epsilon=10^{-20}$, $\beta_1=0.9,\beta_2=0.99$）。作者明确指出 LaProp 先 RMSProp 归一再动量，允许更小 epsilon 并避开 Adam 下偶发不稳定（§A.2 Optimizer）。</li>
+<li><strong>网络</strong>：序列模型是 8 块块对角权重 GRU（避免记忆单元数的二次增长）；图像用 stride-2 卷积编码到 $6\times6$ 或 $4\times4$；向量输入 symlog 变换后过 3 层 MLP（§A.2 Networks）。</li>
+<li><strong>twohot 求和顺序</strong>：跨多个数量级的 bin 求期望时，正负 bin 需分别从小到大累加再相加——否则浮点误差破坏读出（§A.2 Distributions，作者点名"refer to the source code"）。</li>
 </ul>
 
-<p>核心技术壁垒（实现视角）在于：必须同时实现并联合调通四个“尺度控制器”——世界模型多目标平衡、价值目标变换、优势归一化、分类分布平滑。单独复现其中任一项并不难，难点是它们在跨任务分布变化下仍保持稳定耦合。</p>
-
-<p>关键实现细节（易遗漏）：</p>
+<p><strong>关键实现细节（易漏 trick）</strong>：</p>
 
 <ol>
-<li><strong>输出头零初始化（reward/value）</strong>：降低训练初期高幅值幻觉预测，避免actor被错误高值牵引。</li>
-<li><strong>categorical unimix（约1%均匀分量）</strong>：防止离散预测在早期迅速塌缩到近确定分布，提升长程训练稳定性。</li>
+<li><strong>零初始化输出权重</strong>：奖励预测头与 critic 的输出权重矩阵初始化为零，防止随机初始化时"幻觉"出大奖励而延迟学习起步（§2.2、§A.2）。这是被明确标注为实质影响学习起步的小改动。</li>
+<li><strong>1% unimix</strong>：编码器与 dynamics 预测器的类别分布参数化为 99% 网络输出 + 1% 均匀分布，使其永不确定化，从而保证 KL 损失行为良好、消除 earlier 实验中观测到的 KL 尖峰（§2.1、§A.2）。</li>
 </ul>
+
+<p><strong>生态</strong>：官方开源实现（项目主页）可复现全部结果；训练代码开放，对照 TRL/OpenRLHF 这类偏 LLM-RL 的框架，本工作属独立 model-based RL 代码库谱系（DreamerV1→V2→V3）。</p>
 
 </div>
 </div>

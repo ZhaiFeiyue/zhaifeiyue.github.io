@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">Kairos: A Native World Model Stack for Physical AI</h1>
 <div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2606.16533</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">world-model</span><span class="tag">diffusion-transformer</span><span class="tag">hybrid-attention</span><span class="tag">embodied-learning</span><span class="tag">curriculum-learning</span><span class="tag">action-conditioning</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">world-model</span><span class="tag">flow-matching</span><span class="tag">linear-attention</span><span class="tag">world-action-model</span><span class="tag">cross-embodiment-curriculum</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2606.16533.html">← Synthesis</a>
 <a href="/overview/algorithm.html">← algorithm Survey</a>
@@ -205,183 +205,152 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
+<h1 id="kairos-a-native-world-model-stack-for-physical-ai-—-l2">Kairos: A Native World Model Stack for Physical AI — L2 <a class="heading-anchor" href="#kairos-a-native-world-model-stack-for-physical-ai-—-l2" aria-label="Link to kairos-a-native-world-model-stack-for-physical-ai-—-l2">#</a></h1>
+
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>Kairos将物理世界模型定义为可部署的“learn-maintain-run”一体化算法栈：用跨具身课程学习（CEDC）把开放视频、人类行为、机器人轨迹分阶段统一到同一扩散Transformer中，再以混合时域记忆（SWA/DSWA/GLA）维持长时一致性，并通过蒸馏与系统协同把推理成本压到闭环控制可用范围。</p>
+<p>Kairos is a 4B native world-action model that trains a video-diffusion backbone from scratch on a passive→human→robot data curriculum, replaces quadratic attention with a hybrid SWA+DSWA+GLA design (proven to bound long-horizon error via a contractive gated-delta memory), and co-designs distillation + FP8 inference for real-time edge rollout.</p>
 
 <h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<h3 id="q1-痛点是什么？">Q1: 痛点是什么？ <a class="heading-anchor" href="#q1-痛点是什么？" aria-label="Link to q1-痛点是什么？">#</a></h3>
+<p><strong>Q1 — 痛点.</strong> A useful world model for Physical AI must simultaneously (a) <em>learn</em> unified world knowledge from heterogeneous sources (open-world video is abundant but action-free; robot data is grounded but scarce), (b) <em>maintain</em> persistent state across long horizons despite dense temporal attention being prohibitively expensive and autoregressive rollout accumulating drift, and (c) <em>run</em> inside real observation–action–feedback loops under latency/memory budgets. Prior work optimizes one axis: pixel generators (Cosmos), latent predictors (V-JEPA), or interactive sims (Genie 3). Crucially, Kairos argues (and proves) that a bounded recent-attention window incurs an <em>irreducible</em> excess risk once causally-relevant events fall outside it — a structural limitation, not a capacity one.</p>
 
-<ul>
-<li>传统视频生成式世界模型偏“短时续写”，在长时滚动时容易状态漂移，难以支撑物理任务需要的持续记忆与控制一致性。</li>
-<li>训练数据存在“规模-具身密度”冲突：通用视频覆盖广但动作语义弱，机器人数据动作强但规模小。</li>
-<li>世界理解、生成与动作策略常被拆成多个子系统，导致训练目标不一致、部署链路长、闭环时延高。</li>
-</ul>
+<p><strong>Q2 — 方法.</strong> A native pre-training stack organized around learn/maintain/run: (1) a <strong>Cross-Embodiment Data Curriculum (CEDC)</strong> — a data pyramid Observation→Imitation→Embodiment; (2) a <strong>unified Understanding-Generation-Prediction</strong> Mixture-of-Transformers where a <strong>Video DiT</strong> and a ~5×-smaller <strong>Action DiT</strong> share a world-state, built on a <strong>hybrid linear-attention</strong> backbone (SWA local + DSWA mid-range + GLA global memory); (3) <strong>deployment-aware co-design</strong> (4-step distillation + FP8/INT4 attention quantization + tiled GatedDeltaNet). Trained with flow matching. <strong>核心技术壁垒</strong>: the GLA global-memory branch instantiated via a <em>gated delta update</em> (GatedDeltaNet) whose contractivity ($\rho<1$) is what makes the theoretical long-horizon error bound hold <em>and</em> what enables constant-memory recurrent rollout — the theory, the architecture, and the inference kernel are all the same object. Replicating Kairos means reproducing this one mechanism as a stable, hardware-efficient, contractive memory, not merely stacking linear-attention layers.</p>
 
-<h3 id="q2-方法核心是什么？">Q2: 方法核心是什么？ <a class="heading-anchor" href="#q2-方法核心是什么？" aria-label="Link to q2-方法核心是什么？">#</a></h3>
-
-<p><strong>一个原生统一算法栈</strong>：在同一模型族中联合世界理解、视频生成和动作预测，并用多尺度时域记忆解决“局部窗口不足以覆盖长时依赖”的问题。</p>
-
-<p>算法对象与一步更新语义可写为：</p>
-<ul>
-<li>输入：历史视频token、条件语义token、候选未来动作token。</li>
-<li>输出：未来世界状态分布与动作条件下的轨迹演化。</li>
-<li>训练目标：以流匹配主损失驱动跨阶段优化，核心项为</li>
-<p>$ \mathcal{L}_{\mathrm{FM}}(\theta)=\mathbb{E}[\|\mathcal{V}_{\theta}(z_{\sigma},\sigma,c)-(\epsilon-z_0)\|_2^2] $。</p>
-</ul>
-
-<p>关键假设：</p>
-<ul>
-<li>场景动力学可由“局部高频 + 中程重排 + 全局缓变记忆”分解近似；</li>
-<li>跨具身数据课程可逐步把表观统计迁移到可执行动作语义；</li>
-<li>混合记忆分支误差可被分项上界控制（论文给出必要性与近似充分性论证）。</li>
-</ul>
-
-<p><strong>核心技术壁垒</strong>：不是单个注意力模块，而是“课程数据分布 + 混合记忆结构 + 动作条件联合训练”三者耦合后的稳定可扩展性。仅复刻任一部件（例如只加GLA或只做机器人微调）通常无法同时复现其长时一致性与效率曲线。</p>
-
-<h3 id="q3-结果如何？">Q3: 结果如何？ <a class="heading-anchor" href="#q3-结果如何？" aria-label="Link to q3-结果如何？">#</a></h3>
-
-<ul>
-<li>在WorldModelBench、PAI-Bench、RoboTwin 2.0、LIBERO-plus等任务上报告了强竞争或领先结果，并给出人评与长时场景可视化。</li>
-<li>通过蒸馏与部署协同，报告了较优吞吐/时延/显存组合，支持更接近闭环控制的推理预算。</li>
-<li>消融显示：人类行为课程与联合世界-动作训练均带来显著增益，且长时段（如15秒）退化更慢。</li>
-</ul>
+<p><strong>Q3 — 结果.</strong> With only 4B params and 2.3 PFLOPs/inference, Kairos tops WorldModelBench-robot (9.30), DreamGen (AVG_Score 0.618), PAI-Bench-robot (82.57), VideoPhy (45.55, beating Cosmos-14B), and is SOTA/near-SOTA on LIBERO-Plus (90.8) and RoboTwin 2.0 (96.1, 2nd). It is 28×–85× faster than Cosmos-14B and scales <em>linearly</em> with duration where baselines grow exponentially; 480P generation is real-time on an A800.</p>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p>Kairos的结构主线是“统一建模 + 多尺度时间记忆 + 动作条件推演”：理解模块生成语义条件，统一DiT在同一token空间里建模未来视频与动作关联，SWA/DSWA/GLA分别负责局部细节、中程重组、全局持久状态。</p>
+<p><img src="/assets/2606.16533/fig2.png" alt="Figure 2: Kairos framework overview"></p>
 
-<p><img src="/assets/2606.16533/fig2.png" alt="Figure 2: Kairos overall framework"></p>
+<p><em>Paper's Figure 2 ("Framework of Kairos").</em> The top-level stack couples three pillars — learn (CEDC), maintain (unified U-G-P + hybrid memory), run (deployment co-design). Note that these are not stacked stages but a single endogenous backbone whose shared world-state threads through understanding, generation, and prediction.</p>
 
-<p><em>Paper's Figure 2, verbatim (caption: "Framework of Kairos.").</em></p>
+<p><img src="/assets/2606.16533/fig4.png" alt="Figure 4: Model architecture of Kairos"></p>
 
-<p>这张图对应论文的系统级分解：learn（预训练）-maintain（长时状态）-run（部署推理）不是三套系统，而是同一算法栈在不同阶段的运行形态。</p>
+<p><em>Paper's Figure 4 ("Model Architecture of Kairos").</em> The generation path is a conditional diffusion: high-compression video VAE → multimodal conditioning encoder → temporally-scalable DiT, with T2V/I2V/TI2V injected via cross-attention. The prediction path formulates a World-Action Model as a MoT: a Video DiT (initialized from the pretrained generator) plus an Action DiT (~1/5 scale). The masking is asymmetric — history video tokens attend only to history; future video tokens use sparse spatiotemporal attention; future action tokens use <em>full</em> attention and, critically, do <strong>not</strong> depend on future video tokens, enabling action-only inference.</p>
 
-<p><img src="/assets/2606.16533/fig5.png" alt="Figure 5: Hybrid attention DiT block"></p>
+<p><img src="/assets/2606.16533/fig5.png" alt="Figure 5: DiT block with hybrid linear attention"></p>
 
-<p><em>Paper's Figure 5, verbatim (caption: "DiT block architecture of the proposed hybrid linear attention.").</em></p>
+<p><em>Paper's Figure 5 ("DiT block architecture of the proposed hybrid linear attention").</em> The backbone is organized into $M$ groups; each interleaves SWA ($d{=}1$, local), DSWA ($d\in\{6,12\}$, mid-range), and GLA (the single global pathway). RoPE handles local positional reasoning; global positional reasoning is delegated to the linear-attention path. This is the load-bearing structural diff from a standard full-softmax DiT.</p>
 
-<p>图中可见其“before/after”差异：传统单一时域注意力被替换为混合分支。对比可概括为：</p>
+<p><img src="/assets/2606.16533/fig6.png" alt="Figure 6: Gated linear attention module (GDN)"></p>
+
+<p><em>Paper's Figure 6 ("Architecture of the gated linear attention module GDN").</em> GDN maintains an associative memory matrix $\mathbf{S}_t$ updated by a delta rule that removes stale key-value associations and writes new ones, with an added decay gate $\alpha_t$ for global forgetting. This is the mechanism the §4 theory proves contractive.</p>
+
+<p><strong>Method core — the one novel mechanism (before/after diff):</strong></p>
 
 <table>
-<tr><th>维度</th><th>传统窗口式时域建模</th><th>Kairos混合时域记忆</th></tr>
-<tr><td>长时依赖</td><td>依赖增大窗口，成本高</td><td>GLA持久状态递推，成本随序列更平滑</td></tr>
-<tr><td>中程关系</td><td>易受固定窗口边界影响</td><td>DSWA重排后补齐跨块关联</td></tr>
-<tr><td>局部细节</td><td>可建模但与长时冲突</td><td>SWA保持局部纹理并与全局分支并行</td></tr>
+<tr><th></th><th>Before (standard DiT / linear attn)</th><th>After (Kairos hybrid)</th></tr>
+<tr><td>Global temporal mixing</td><td>full softmax, $\mathcal{O}(N^2)$</td><td>GLA (GatedDeltaNet), $\mathcal{O}(N)$</td></tr>
+<tr><td>Memory across horizon</td><td>KV grows with length (OOM)</td><td>fixed-size contractive state $\mathbf{S}_t$</td></tr>
+<tr><td>Key collisions</td><td>vanilla linear attn overwrites</td><td>delta-rule remove-then-write</td></tr>
+<tr><td>Forgetting</td><td>none / uniform</td><td>learned decay gate $\alpha_t$</td></tr>
+<tr><td>Positional reasoning</td><td>one scheme</td><td>RoPE local + linear-path global</td></tr>
 </table>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<h3 id="4-1-记号表与对象">4.1 记号表与对象 <a class="heading-anchor" href="#4-1-记号表与对象" aria-label="Link to 4-1-记号表与对象">#</a></h3>
+<p>Kairos includes formal necessity + sufficiency theorems for its hybrid memory (main §2.3, full proofs App-2).</p>
+
+<p><strong>Notation table:</strong></p>
 
 <table>
-<tr><th>记号</th><th>含义</th></tr>
-<tr><td>$R_{\mathrm{full}}^\star$</td><td>使用完整历史可达到的最优风险</td></tr>
-<tr><td>$R_w^\star$</td><td>使用窗口长度 $w$ 时的最优风险</td></tr>
-<tr><td>$m_t$</td><td>目标的充分统计或潜在记忆状态</td></tr>
-<tr><td>$\mathcal{W}_t^{(w)}$</td><td>时刻 $t$ 的窗口可观测信息</td></tr>
-<tr><td>$\mathcal{S}_t$</td><td>全局记忆分支递推状态</td></tr>
-<tr><td>$\alpha_t,\beta_t$</td><td>记忆衰减与门控更新系数</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$Y$</td><td>square-integrable long-horizon target ($Y_t^{(\tau)}\in L^2$)</td></tr>
+<tr><td>$\mathcal{H}_t$</td><td>full-history σ-algebra; $\mathcal{W}_t^{(w)}$ recent $w$-window</td></tr>
+<tr><td>$m_t,\,m_t^{(w)}$</td><td>$\mathbb{E}[Y\mid\mathcal{H}_t]$, $\mathbb{E}[Y\mid\mathcal{W}_t^{(w)}]$</td></tr>
+<tr><td>$R_{\mathrm{full}}^\star,\,R_w^\star$</td><td>optimal full-history / recent-window risk</td></tr>
+<tr><td>$\rho<1$</td><td>contraction factor of the gated delta update</td></tr>
+<tr><td>$\bar\xi$</td><td>max one-step perturbation error</td></tr>
+<tr><td>$L,L_G$</td><td>Lipschitz constants of the decoder</td></tr>
+<tr><td>$\varepsilon$</td><td>max per-branch approximation error</td></tr>
 </table>
 
-<h3 id="4-2-定理级结论（论文主线）">4.2 定理级结论（论文主线） <a class="heading-anchor" href="#4-2-定理级结论（论文主线）" aria-label="Link to 4-2-定理级结论（论文主线）">#</a></h3>
+<p><strong>方程物理意义.</strong> The learning objective is flow matching: interpolate $\bm{z}_\sigma=(1-\sigma)\bm{z}_0+\sigma\bm{\epsilon}$ with constant target velocity $\bm{u}_\sigma=\bm{\epsilon}-\bm{z}_0$, minimizing $\mathcal{L}_{\mathrm{FM}}=\mathbb{E}\|\mathcal{V}_\theta(\bm{z}_\sigma,\sigma,\bm{c})-\bm{u}_\sigma\|_2^2$. The memory recursion $\mathbf{S}_t=\alpha_t\mathbf{S}_{t-1}+\beta_t(\mathbf{v}_t-\mathbf{v}_t^{\text{old}})\mathbf{k}_t^\top$ is one SGD step on the online regression loss $\|\mathbf{v}_t-\mathbf{S}\mathbf{k}_t\|^2$ with $\alpha_t$ as a global forget gate — associative correction plus adaptive long-term control.</p>
 
-<ul>
-<li><strong>必要性方向</strong>：论文给出</li>
-<p>$R_w^\star - R_{\mathrm{full}}^\star = \mathbb{E}[(m_t - m_t^{(w)})^2] = \mathbb{E}[\mathrm{Var}(m_t\mid\mathcal{W}_t^{(w)})]$，</p>
-<p>说明若 $m_t$ 不能由窗口信息测度化，则仅窗口建模会出现不可消去误差。</p>
-<li><strong>近似充分性方向</strong>：混合记忆误差可分解为多分支项，并由带几何衰减的全局记忆扰动项控制，解释了“局部+中程+全局”组合可逼近完整历史建模。</li>
-</ul>
+<p><strong>Necessity — Theorem 1 + Corollary 1.</strong> The excess-risk identity</p>
 
-<h3 id="4-3-方程的物理-算法意义">4.3 方程的物理/算法意义 <a class="heading-anchor" href="#4-3-方程的物理-算法意义" aria-label="Link to 4-3-方程的物理-算法意义">#</a></h3>
+<p>$$R_{w}^{\star}-R_{\mathrm{full}}^{\star}=\mathbb{E}\bigl[(m_{t}-m_{t}^{(w)})^{2}\bigr]=\mathbb{E}\bigl[\mathrm{Var}(m_{t}\mid\mathcal{W}_{t}^{(w)})\bigr]$$</p>
 
-<ul>
-<li>$R_w^\star - R_{\mathrm{full}}^\star$ 量化了“截断历史”带来的任务损失下界。</li>
-<li>GLA递推式</li>
-<p>$S_t=\alpha_t S_{t-1}+\beta_t (v_t-v_t^{\text{old}})k_t^\top$</p>
-<p>等价于“受门控的低秩记忆写入”，在不保存全部历史token的情况下持续更新世界状态摘要。</p>
-<li>SWA/DSWA分别保障短时细节与跨块时间重排，降低只靠全局递推造成的局部失真。</li>
-</ul>
+<p>is strictly positive iff $m_t$ is not $\mathcal{W}_t^{(w)}$-measurable, and Corollary 1 gives an explicit floor $R_{w}^{\star}-R_{\mathrm{full}}^{\star}\geq\mathbb{P}(E)\alpha(1-\alpha)(\mu_1-\mu_2)^2$. <em>Assumption</em>: the target genuinely depends on supra-window history (breaks for purely Markov/local dynamics, where a window suffices). The bound is information-theoretic, so scaling params/compute cannot close it.</p>
 
-<h3 id="4-4-六项最小检查">4.4 六项最小检查 <a class="heading-anchor" href="#4-4-六项最小检查" aria-label="Link to 4-4-六项最小检查">#</a></h3>
+<p><strong>Sufficiency — Theorem 2 + Remark 3.</strong> If the Bayes predictor factorizes into shared/local/dilated/global components and each branch is learned to error $\varepsilon$ with the global branch contractive ($\rho<1$):</p>
 
+<p>$$\mathcal{R}_{t}(\hat{\mu}_{t})-\mathcal{R}_{t}^{\star}\leq\left(L\varepsilon+\frac{L_{G}\bar{\xi}}{1-\rho}\right)^{2}\quad\text{as }t\to\infty.$$</p>
+
+<p><em>Proof sketch (expert-fillable):</em> (1) Lemma 1 — conditional expectation is the $L^2$-optimal predictor; (2) decompose excess risk into per-branch approximation + global-memory propagation; (3) show the gated-delta recursion satisfies $e_t\leq\rho^t e_0+\frac{1-\rho^t}{1-\rho}\sup_i\xi_i$, so $e_t\leq\bar\xi/(1-\rho)$ (geometric damping); (4) combine via Lipschitz decoder. Corollary 2: with $\varepsilon=0,\bar\xi=0$ the predictor is exactly optimal.</p>
+
+<p><strong>6 minimum checks:</strong></p>
 <ol>
-<li><strong>命题是否可检验</strong>：是，风险差公式给出明确可估计量。</li>
-<li><strong>假设是否明确</strong>：部分明确（可观测窗口、可测性、分支误差项）；分布漂移与强非平稳条件下仍较弱。</li>
-<li><strong>结论方向与实验是否一致</strong>：一致，长时生成与动作任务上窗口替代方案退化更明显。</li>
-<li><strong>关键中间量是否可实现</strong>：可实现，$S_t,\alpha_t,\beta_t$ 均对应网络可学习模块。</li>
-<li><strong>边界条件是否讨论</strong>：有限讨论；极端长时、强反事实动作扰动下上界紧致性未充分展开。</li>
-<li><strong>是否存在不可忽略隐含常数</strong>：存在，混合分支耦合常数和数据分布相关项可能影响实际收敛速度与稳定区间。</li>
+<li><strong>Statement fidelity</strong> — theorems reproduced as stated (Eq. 9–12); ✓.</li>
+<li><strong>Assumptions</strong> — supra-window dependence (necessity); component factorization + contractivity (sufficiency). Fails for Markov dynamics / non-contractive updates.</li>
+<li><strong>Bound dependence</strong> — sufficiency bound scales as $(L\varepsilon+L_G\bar\xi/(1-\rho))^2$; blows up as $\rho\to1$. Necessity floor scales with event probability × future-mean gap.</li>
+<li><strong>Loss decomposition</strong> — total loss $\mathcal{L}=\mathcal{L}_{video}+\lambda\mathcal{L}_{action}$; video term enforces environment dynamics, action term enforces executable control.</li>
+<li><strong>Tightness</strong> — Corollary 2 shows the sufficiency bound is achievable (0 in the realizable case); Corollary 1 gives an explicit non-vacuous lower bound.</li>
+<li><strong>Empirical corroboration</strong> — contractivity claim ↔ minimal 15s degradation (Table 18, §5).</li>
 </ul>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<h3 id="5-1-训练配方（cedc-联合建模）">5.1 训练配方（CEDC + 联合建模） <a class="heading-anchor" href="#5-1-训练配方（cedc-联合建模）" aria-label="Link to 5-1-训练配方（cedc-联合建模）">#</a></h3>
+<p><img src="/assets/2606.16533/fig3.png" alt="Figure 3: SOTA + linear-scaling efficiency"></p>
+
+<p><em>Paper's Figure 3.</em> (a) world-action benchmarks, (b) embodied world-model benchmarks, (c) per-step DiT inference time. The load-bearing panel is (c): the zoom window shows Kairos's per-step time is flat vs sequence length, so total latency scales <em>linearly</em> while baselines grow super-linearly — the efficiency claim rests on this, not just absolute FLOPs.</p>
+
+<p>The main efficiency table (Table 5, TI2V 720P/5s, A800) makes the parameter-efficiency case concrete:</p>
 
 <table>
-<tr><th>Stage</th><th>Purpose</th><th>Data</th><th>Steps</th><th>LR</th><th>Batch</th><th>Special technique</th></tr>
-<tr><td>I</td><td>物理世界先验学习</td><td>开放世界视频</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>分辨率/帧长渐进扩展、流匹配、后续SFT/合并/RL</td></tr>
-<tr><td>II</td><td>人类行为语义对齐</td><td>人类中心行为视频</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>分层caption抽象与行为语义增强</td></tr>
-<tr><td>III</td><td>动作可执行性注入</td><td>机器人交互轨迹 + 视频</td><td>[论文未披露]</td><td>[论文未披露]</td><td>[论文未披露]</td><td>世界-动作联合训练（非动作头孤立训练）</td></tr>
+<tr><th>Model</th><th>Mem (GB)</th><th>Complexity (PFLOPs)</th><th>1-GPU (s)</th><th>4-GPU (s)</th></tr>
+<tr><td>Lingbot-28B</td><td>46.1</td><td>347.4</td><td>5525</td><td>1436</td></tr>
+<tr><td>Cosmos-Predict2.5-14B</td><td>70.2</td><td>156.5</td><td>2526</td><td>687</td></tr>
+<tr><td>Wan2.2-5B</td><td>23.4</td><td>16.6</td><td>201</td><td>85</td></tr>
+<tr><td><strong>Kairos-4B</strong></td><td><strong>23.5</strong></td><td><strong>2.3</strong></td><td><strong>43</strong></td><td><strong>9</strong></td></tr>
 </table>
 
-<p>关键信号是“先世界后动作、先广覆盖后高具身密度”的课程顺序，而不是单次混合训练。</p>
+<p>Kairos has the lowest complexity (2.3 PFLOPs, ~68× below Cosmos-14B) and fastest latency (43s/9s), which is what backs the 28×–85× speedup headline.</p>
 
-<p><img src="/assets/2606.16533/fig7.png" alt="Figure 7: Cross-Embodiment Data Curriculum"></p>
+<p><img src="/assets/2606.16533/fig19.png" alt="Figure 19: Human evaluation win rates"></p>
 
-<p><em>Paper's Figure 7, verbatim (caption: "Cross-Embodiment Data Curriculum for Native Pretraining.").</em></p>
+<p><em>Paper's Figure 19 ("Human evaluation results").</em> Blind ranking by 10 volunteers. Kairos-4B wins 74.1% vs Wan2.2-5B and 60.2% vs Cosmos-14B on PAI-Bench-robot, and 86.7%/65.0% on WorldModelBench — the subjective results track the automatic scores, mitigating single-metric concern.</p>
 
-<p>该图直接支撑其课程学习命题：不同数据族在阶段间承担不同目标，降低了“用少量机器人数据硬对齐全局世界动态”的训练不稳定性。</p>
+<p><img src="/assets/2606.16533/fig24.png" alt="Figure 24: Long-horizon 15s samples"></p>
 
-<p><img src="/assets/2606.16533/fig15.png" alt="Figure 15: Distilled model performance on PAI-Bench"></p>
+<p><em>Paper's Figure 24 ("Kairos samples on the PAI-Bench-15s dataset").</em> This is the empirical counterpart of the §4 contractivity theory: over 15s, object appearance and scene structure stay consistent (dog + floating bubbles; forest mist evolving smoothly). Quantitatively (Table 18) Kairos scores best overall (79.9) while Cosmos-2B/14B drop to 77.2/76.2 and Wan2.2 to 77.8 — baselines degrade on autonomous-driving/robot domains at 15s where Kairos holds.</p>
 
-<p><em>Paper's Figure 15, verbatim (caption: "Performance of Distilled Kairos Robot Model on PAI-Bench Dataset").</em></p>
+<p><strong>Ablations (load-bearing):</strong></p>
 
-<p>这张图说明部署端并非简单降采样，而是把蒸馏纳入算法闭环；其目标是保持动作可执行性的同时减少推理步数与时延。</p>
+<table>
+<tr><th>Ablation</th><th>Metric</th><th>w/o → w/</th></tr>
+<tr><td>Human-centric data (Table 9)</td><td>WMBench total</td><td>9.08 → 9.25</td></tr>
+<tr><td>Stronger VLM encoder (Table 9)</td><td>WMBench total</td><td>9.25 → 9.30</td></tr>
+<tr><td>Human-centric pretrain (Table 13)</td><td>LIBERO-Plus avg</td><td>83.0 → 89.0 (+6.0)</td></tr>
+<tr><td>Joint gen+action training (Table 14)</td><td>LIBERO-Plus avg</td><td>65.8 → 89.0 (+23.2)</td></tr>
+<tr><td>Joint denoising (Kairos-joint)</td><td>LIBERO-Plus avg</td><td>89.0 → 90.8</td></tr>
+</table>
 
-<p><img src="/assets/2606.16533/tab18.png" alt="Table 18: Long-horizon benchmark comparison"></p>
-
-<p><em>Paper's Table 18, verbatim (caption: long-horizon generation comparison on 15s setting).</em></p>
-
-<p>长时段表格是检验理论主张的关键证据：若仅依赖局部窗口，指标通常随时长快速衰减；论文报告的衰减斜率更缓，和其混合记忆论证一致。</p>
-
-<h3 id="5-2-收敛与稳定性观察">5.2 收敛与稳定性观察 <a class="heading-anchor" href="#5-2-收敛与稳定性观察" aria-label="Link to 5-2-收敛与稳定性观察">#</a></h3>
-
-<ul>
-<li>学习曲线层面，论文主张课程分段与联合训练减少后期震荡，但未完整公开全量曲线与方差带。</li>
-<li>超参敏感性（如门控、时序窗口、蒸馏步数）有消融结论但缺统一网格搜索细节。</li>
-<li>潜在风险信号：当理解模块评分偏置累积时，闭环自演化可能引入奖励错配；论文通过多维评估器缓解，但未给出最坏情形保证。</li>
-</ul>
+<p>The +23.2 from adding the video-generation objective to action prediction is the strongest single ablation: it directly evidences the "video supervision grounds action" claim.</p>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>Step</th><th>论断</th><th>证据</th><th>结论状态</th></tr>
-<tr><td>1</td><td>物理AI世界模型需要超越短时视频续写</td><td>任务定义与瓶颈分解（引言与框架图）</td><td>成立（问题定义清晰）</td></tr>
-<tr><td>2</td><td>纯窗口注意力不足以支撑长时一致性</td><td>风险差定理与可测性条件（主文+附录理论）</td><td>成立（理论方向自洽）</td></tr>
-<tr><td>3</td><td>混合记忆（SWA/DSWA/GLA）可在效率约束下逼近全历史建模</td><td>模块设计、误差分解思路、长时实验结果</td><td>基本成立（常数项与极端条件待补）</td></tr>
-<tr><td>4</td><td>CEDC能把通用世界知识迁移到具身动作能力</td><td>分阶段课程设计 + 人类/机器人任务消融（tab9/tab13/tab14）</td><td>成立（经验支持较强）</td></tr>
-<tr><td>5</td><td>蒸馏与系统协同可把模型推进到闭环可部署区间</td><td>推理效率对比（tab4/tab5）与蒸馏结果图（fig15）</td><td>成立（依赖具体硬件配置）</td></tr>
+<tr><th>Step</th><th>Claim</th><th>Paper-internal support</th></tr>
+<tr><td>1</td><td>A bounded attention window cannot solve long-horizon prediction</td><td>Theorem 1 + Corollary 1: strictly positive, information-theoretic excess risk (Eq. 9–11)</td></tr>
+<tr><td>2</td><td>Therefore a persistent global memory is required</td><td>Definitions 3–4 (persistent/sufficient state); Remark 2</td></tr>
+<tr><td>3</td><td>A hybrid SWA+DSWA+GLA factorization can recover near-optimal risk</td><td>Theorem 2 sufficiency bound (Eq. 12), contingent on contractivity</td></tr>
+<tr><td>4</td><td>The GLA gated-delta update is contractive, so error does not accumulate</td><td>Remark 3 geometric-damping bound $e_t\leq\bar\xi/(1-\rho)$</td></tr>
+<tr><td>5</td><td>This memory also enables constant-memory recurrent rollout + action-only inference</td><td>§2.2 expandability; asymmetric masking (action branch independent of future video)</td></tr>
+<tr><td>6</td><td>Empirically this yields SOTA quality at 4B with linear scaling</td><td>Tables 5–8, 11–18; Figures 3, 19, 24</td></tr>
 </table>
 
 <h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<ul>
-<li>[实现未公开]：论文未提供可逐行核验的完整训练/推理仓库与配置，因此无法给出 <code>file:line</code> 级实现映射。</li>
-</ul>
+<p>Code is stated as open at <code>https://github.com/kairos-agi/kairos-sensenova</code> (weights on HuggingFace/ModelScope), but the L1 source does not include file:line-level pointers, so specific module locations are <code>[实现未公开]</code> at the L1 granularity available here.</p>
 
-<p><strong>核心技术壁垒（实现视角）</strong></p>
-<p>最难复现的不是某个算子，而是三层联动：</p>
-<p>1) 课程数据调度在阶段切换点的分布控制；</p>
-<p>2) 混合时域记忆在长序列下的数值稳定训练；</p>
-<p>3) 蒸馏后仍保持动作可执行性的部署约束协同。</p>
-<p>这要求同时具备数据工程、训练系统、算法调参和在线评测闭环，单点复现通常会失配。</p>
+<p><strong>核心技术壁垒 (dedicated).</strong> The single hardest-to-replicate insight is the <strong>contractive gated-delta global memory (GatedDeltaNet-based GLA)</strong> used simultaneously as (a) the theoretical device that makes the sufficiency bound finite (the $1/(1-\rho)$ term), (b) the architectural sole-global-pathway that keeps the backbone linear, and (c) the inference kernel ("Tiled Gated DeltaNet with Streaming Access") that hides DRAM latency and avoids OOM for arbitrary-length rollout. A reimplementation that stacks generic linear attention but does not preserve the delta-rule remove-then-write with a learned decay gate — and does not keep the update contractive ($\rho<1$) — will lose the long-horizon consistency that the entire results section rests on. The action branch's independence from future video tokens (asymmetric masking) is the second non-obvious lever, since it is what makes deployment-time action-only inference cheap.</p>
 
-<p><strong>关键实现细节（易忽略）</strong></p>
-<ul>
-<li>细节1：动作token并非训练后再外挂，而是在统一建模中与未来世界状态共同条件化，影响了表示空间形状。</li>
-<li>细节2：时间步调度采用形状感知指数平移，实质是在不同阶段重分配噪声学习难度，而非固定噪声日程复用。</li>
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
+<ol>
+<li><strong>Shape-aware exponential timestep shifting</strong> — the flow-matching scheduler is remapped per latent shape, $s=\exp(f(L))\sqrt{F}$ (Eq. 16–19), so larger/longer latents get a stronger upward shift; without this the fixed scheduler's effective timestep distribution drifts as resolution/length scale during progressive training.</li>
+<li><strong>Dilation interleaving pattern</strong> — SWA ($d{=}1$) and DSWA ($d\in\{6,12\}$) share the <em>same</em> window size; only the rearrange stride differs (Eq. 7–8), and the ActionDiT uses a <em>fixed</em> timestep shift (unlike VideoDiT's dynamic shift) because it optimizes stably without the dynamic schedule.</li>
 </ul>
 
 </div>

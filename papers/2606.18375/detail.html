@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">PAIWorld: A 3D-Consistent World Foundation Model for Robotic Manipulation</h1>
 <div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2606.18375</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">world-foundation-model</span><span class="tag">multi-view-consistency</span><span class="tag">robot-manipulation</span><span class="tag">geometric-attention</span><span class="tag">representation-alignment</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">world-model</span><span class="tag">multi-view-consistency</span><span class="tag">flow-matching</span><span class="tag">representation-alignment</span><span class="tag">robotic-manipulation</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/2606.18375.html">← Synthesis</a>
 <a href="/overview/algorithm.html">← algorithm Survey</a>
@@ -205,154 +205,198 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
+<h1 id="paiworld-a-3d-consistent-world-foundation-model-for-robotic-manipulation-—-l2">PAIWorld: A 3D-Consistent World Foundation Model for Robotic Manipulation — L2 <a class="heading-anchor" href="#paiworld-a-3d-consistent-world-foundation-model-for-robotic-manipulation-—-l2" aria-label="Link to paiworld-a-3d-consistent-world-foundation-model-for-robotic-manipulation-—-l2">#</a></h1>
+
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>PAIWorld claims that multi-view robotic world modeling fails unless both components exist together: an explicit cross-view communication path and a geometric supervision signal. It implements this with Geometry-Aware Cross-View Attention + Geo-RoPE + Latent 3D-REPA, then reports strong gains on WorldArena and AgiBot benchmarks.</p>
+<p>多视角机器人操作世界模型缺乏跨视角 3D 一致性。作者诊断出两个缺陷：无显式跨视角通信路径、无 3D 几何先验，并主张二者必须共存。方案 = 通信路径（Geo-RoPE + 跨视角注意力）+ 几何目标（Latent 3D-REPA）。WorldArena 第 1、AgiBot-Challenge2026 第 2；消融显示超可加耦合。</p>
 
-<h2 id="2-q1-q2-q3（痛点-方法-结果）">2. Q1 / Q2 / Q3（痛点 / 方法 / 结果） <a class="heading-anchor" href="#2-q1-q2-q3（痛点-方法-结果）" aria-label="Link to 2-q1-q2-q3（痛点-方法-结果）">#</a></h2>
+<hr>
 
-<h3 id="q1-痛点是什么？">Q1: 痛点是什么？ <a class="heading-anchor" href="#q1-痛点是什么？" aria-label="Link to q1-痛点是什么？">#</a></h3>
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p>现有 world foundation model 在机器人操作里经常把多视角 token 直接拼接，让网络自己“猜”跨视角对应关系。结果是在宽基线、遮挡和动态场景下出现物体漂移、深度不一致、纹理错配，视频看起来连贯但 3D 几何不闭合。</p>
+<h3 id="q1-—-痛点">Q1 — 痛点 <a class="heading-anchor" href="#q1-—-痛点" aria-label="Link to q1-—-痛点">#</a></h3>
 
-<h3 id="q2-方法做了什么？">Q2: 方法做了什么？ <a class="heading-anchor" href="#q2-方法做了什么？" aria-label="Link to q2-方法做了什么？">#</a></h3>
+<p>世界基础模型（WFM）已成为物理环境的强模拟器，但绝大多数在<strong>单视角</strong>设定下工作，缺乏机器人操作所需的多视角 3D 一致性。机器人操作本质是多视角的（egocentric、eye-to-hand、wrist），模拟器必须在每个时间步维持严格的跨视角几何一致。现有多视角世界模型只是把各视角 token <strong>拼接（concatenate）</strong>，逼迫模型隐式发现对应关系，产生三类失效：跨视角物体漂移、深度不一致、纹理错位。作者把这些失效根因追溯到两个基础性缺陷：(1) 没有专门的<strong>视角间通信机制</strong>；(2) 没有 <strong>3D 几何先验</strong>。</p>
 
-<p>作者把问题拆成两个必须同时满足的条件：</p>
-<p>1) 需要跨视角信息通路，保证每个视角在同一时刻共享状态；</p>
-<p>2) 需要几何先验监督，防止模型学到仅凭纹理的捷径。</p>
+<h3 id="q2-—-方法">Q2 — 方法 <a class="heading-anchor" href="#q2-—-方法" aria-label="Link to q2-—-方法">#</a></h3>
 
-<p>对应实现为三件事：</p>
-<ul>
-<li>Geometry-Aware Cross-View Attention（CVA）：在注意力层显式聚合各视角特征；</li>
-<li>Geometric RoPE（Geo-RoPE）：把射线方向和相机位姿写入位置编码；</li>
-<li>Latent 3D-REPA：用冻结几何教师对 token 关系做对齐监督。</li>
+<p>在 DiT + flow matching 骨干上叠加两根技术支柱、三个组件：</p>
+
+<ol>
+<li><strong>Geometry-Aware Cross-View Attention（CVA）</strong> — 一个专门的、在每个时间步跨所有视角做注意力的块，提供显式通信路径（Eq. 7）。</li>
+<li><strong>Geometric RoPE（Geo-RoPE）</strong> — 把射线方向（逐像素变化）和相机位姿（视角内共享）分别注入注意力的位置编码，将几何偏置写入通信路径（Eq. 4–6）。</li>
+<li><strong>Latent 3D-REPA</strong> — 用冻结的 Depth Anything 3 抽取几何特征，通过<strong>关系（token 相似度）蒸馏</strong>而非绝对向量对齐，为生成过程提供几何监督目标（Eq. 8–11）。</li>
 </ul>
 
-<p><strong>核心技术壁垒</strong>：在大规模 DiT 视频生成里，把“跨视角通信”和“几何一致性监督”耦合成一个稳定可训练系统，而不是两个互相打架的附加模块。单独做其中任意一个都较常见，难点是让二者在优化中形成增益闭环。</p>
+<p>必要且充分性论证：通信但无几何 → 塌缩为纹理捷径；几何但无通路 → 约束无法传播。因此两者互补且缺一不可。</p>
 
-<h3 id="q3-结果如何？">Q3: 结果如何？ <a class="heading-anchor" href="#q3-结果如何？" aria-label="Link to q3-结果如何？">#</a></h3>
+<p><strong>核心技术壁垒</strong>：不是任何单个模块，而是 CVA 通信路径与 Latent 3D-REPA 几何目标之间的<strong>耦合</strong>——把 relational（相似度矩阵）而非绝对特征的几何监督，专门施加在一个具备几何位置编码的跨视角注意力通道上，使得几何约束能够沿显式通路传播。消融中 2.64 的联合增益超过 0.93+0.72=1.65 的可加期望，正是这一耦合的实证印记（见 §7）。</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
 
 <ul>
-<li>WorldArena: EWMScore 70.67，文中报告排名第 1。</li>
-<li>AgiBot-Challenge2026: 综合排名第 2，Scene Consistency 指标领先。</li>
-<li>文本条件多视角生成: SSIM/LPIPS/FID/FVD/几何指标多项领先。</li>
-<li>消融显示 CVA-only 和 REPA-only 都有提升，但组合后提升幅度更大，支持“二者缺一不可”的主张。</li>
+<li><strong>WorldArena（动作条件）</strong>：EWMScore 70.67，排名第 1，领先第二名 +2.41；Motion Quality 79.66 为全场最高。</li>
+<li><strong>AgiBot-Challenge2026</strong>：总排名第 2，Scene Consistency 0.9041 为最佳。</li>
+<li><strong>文本条件多视角生成（AgiBot-World）</strong>：7 项指标中 6 项最优；MEt3R 14.20（最低，几何一致性最佳）。</li>
+<li><strong>消融</strong>：CVA 与 REPA 联合使用增益超可加，支撑"两支柱耦合"论点。</li>
 </ul>
+
+<hr>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p>PAIWorld 的主干是 DiT + flow matching，关键改动在“信息通路 + 几何监督”两条线并行推进：</p>
+<p><img src="/assets/2606.18375/fig2.png" alt="Figure 2: PAIWorld 方法总览——DiT flow matching 骨干 + 两支柱三组件"></p>
 
-<p><img src="/assets/2606.18375/fig1.png" alt="Figure 1: PAIWorld overview"></p>
+<p><em>Paper's Figure 2, verbatim (caption: "Overview of the PAIWorld framework...").</em> 该图展示核心架构：在 DiT flow matching 骨干上，CVA 与 Geo-RoPE 构成"通信路径"支柱，Latent 3D-REPA（以冻结 DA3 为几何教师）构成"几何目标"支柱。读者应注意三个组件如何插入既有 DiT 块，以及 REPA 分支只在训练期激活。</p>
 
-<p><em>Paper's Figure 1, verbatim (caption: "PAIWorld is a 3D-consistent multi-view world foundation model for robotic manipulation...").</em></p>
+<p><img src="/assets/2606.18375/fig1.png" alt="Figure 1: PAIWorld 作为多视角 3D 一致的世界模型骨干"></p>
 
-<p>这张图强调了目标不是单纯生成视频，而是生成可用于 action generation、planning、post-training 的几何一致世界状态。换句话说，输出要能被控制任务消费，而不是只满足视觉观感。</p>
+<p><em>Paper's Figure 1, verbatim (caption: "PAIWorld is a 3D-consistent multi-view world foundation model for robotic manipulation...").</em> 概念总览图说明模型如何在生成/动作/规划/后训练下游任务中维持跨视角一致，使想象出的 rollout 物理合理。</p>
 
-<p><img src="/assets/2606.18375/fig2.png" alt="Figure 2: Two pillars and three components"></p>
+<p><strong>通信路径的机制视图</strong>（原文未提供独立流程图，此处补一张序列图以厘清一次前向中几何信息的注入顺序）：</p>
 
-<p><em>Paper's Figure 2, verbatim (caption: "Overview of the PAIWorld framework...").</em></p>
+<div class="mermaid">
+sequenceDiagram
+    participant Z as 各视角 latent Z_t^v
+    participant G as Geo-RoPE (ray+pose)
+    participant C as Cross-View Attention
+    participant D as DA3 (frozen)
+    Z->>G: W_Q/W_K 投影后加几何位置编码
+    G->>C: 带几何偏置的 Q̃/K̃
+    C->>C: 跨所有视角 softmax + gate 残差
+    C->>Z: 更新后 Ẑ_t^v
+    Z-->>D: 训练期抽取几何特征做关系蒸馏
+</div>
 
-<p>图中把方法明确拆成两条互补路径：CVA/Geo-RoPE 负责跨视角特征流动和几何坐标对齐，Latent 3D-REPA 负责把 DiT 中间特征拉向几何一致关系结构。这个设计直接对应作者在引言提出的两类根因。</p>
-
-<p>方法核心公式可概括为：</p>
-
-<ul>
-<li>多视角条件生成目标</li>
-<p>$p_{\theta}(\{I_{t_0+1:T}^{v}\}_{v=1}^{V}\mid\{I_{1:t_0}^{v}\}_{v=1}^{V},\{\mathbf{K}^{v},\mathbf{R}^{v},\mathbf{t}^{v}\}_{v=1}^{V},c)$</p>
-<li>联合训练目标</li>
-<p>$\mathcal{L}_{total}=\mathcal{L}_{diff}+\lambda\mathcal{L}_{REPA}$，文中使用 $\lambda=0.5$</p>
-</ul>
+<hr>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p><strong>无形式化作者证明 — 仅实证。</strong></p>
-<p>本文提供了清晰的目标函数和模块化机制，但没有给出收敛定理或误差上界证明，主要通过多基准实验与消融来建立可信度。</p>
+<p>本文 <strong>无形式化作者证明 — 仅实证</strong>。没有收敛定理、方差界或样本复杂度界；"必要且充分"是概念论证（通信无几何塌缩为捷径、几何无通路无法传播）加消融实证，而非形式化命题。以下对载重方程做物理意义梳理与最小检查。</p>
 
-<h3 id="记号与物理意义（核心）">记号与物理意义（核心） <a class="heading-anchor" href="#记号与物理意义（核心）" aria-label="Link to 记号与物理意义（核心）">#</a></h3>
+<h3 id="notation-表">Notation 表 <a class="heading-anchor" href="#notation-表" aria-label="Link to notation-表">#</a></h3>
 
 <table>
-<tr><th>记号</th><th>含义</th><th>物理/算法作用</th></tr>
-<tr><td>$I_t^v$</td><td>第 $v$ 个视角在时刻 $t$ 的图像</td><td>多相机观测序列</td></tr>
-<tr><td>$\mathbf{K}^v,\mathbf{R}^v,\mathbf{t}^v$</td><td>相机内外参</td><td>将像素与 3D 射线/位姿联系起来</td></tr>
-<tr><td>$\mathbf{d}^v(h,w)$</td><td>像素对应世界射线方向</td><td>为空间位置编码提供几何基准</td></tr>
-<tr><td>$\mathbf{e}^v$</td><td>12 维位姿编码</td><td>提供视角身份与朝向信息</td></tr>
-<tr><td>$\hat{\mathbf{Z}}_t^v$</td><td>跨视角注意力更新后特征</td><td>显式跨视角信息交换结果</td></tr>
-<tr><td>$\mathcal{L}_{REPA}$</td><td>关系对齐损失</td><td>约束特征关系符合几何教师</td></tr>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$I_t^v$</td><td>视角 $v$ 在时刻 $t$ 的图像</td></tr>
+<tr><td>$\mathbf{K}^v,\mathbf{R}^v,\mathbf{t}^v$</td><td>视角 $v$ 的内参 / 旋转 / 平移</td></tr>
+<tr><td>$\mathbf{z}_0,\mathbf{z}_s$</td><td>数据 latent / flow 时刻 $s$ 的插值 latent</td></tr>
+<tr><td>$u_\theta$</td><td>速度场预测器</td></tr>
+<tr><td>$\mathbf{d}^v(h,w)$</td><td>像素 $(h,w)$ 的世界系射线方向</td></tr>
+<tr><td>$\mathbf{e}^v$</td><td>12 维位姿描述子</td></tr>
+<tr><td>$\mathbf{Z}_t^v$</td><td>视角 $v$ 时刻 $t$ 的 token 特征</td></tr>
+<tr><td>$\mathbf{S}(\mathbf{F})_{i,a}$</td><td>token $i$ 对锚点 $a$ 的余弦相似度</td></tr>
+<tr><td>$\lambda$</td><td>REPA 权重（=0.5）</td></tr>
 </table>
 
-<h3 id="最低-6-项检查">最低 6 项检查 <a class="heading-anchor" href="#最低-6-项检查" aria-label="Link to 最低-6-项检查">#</a></h3>
+<h3 id="载重方程与物理意义">载重方程与物理意义 <a class="heading-anchor" href="#载重方程与物理意义" aria-label="Link to 载重方程与物理意义">#</a></h3>
+
+<ul>
+<li>条件生成目标：$p_\theta(\{I_{t_0+1:T}^v\} \mid \{I_{1:t_0}^v\}, \{\mathbf{K}^v,\mathbf{R}^v,\mathbf{t}^v\}, c)$ —— 学习在历史、相机几何与条件下的多视角未来生成。</li>
+<li>Flow 插值路径：$\mathbf{z}_s = (1-s)\mathbf{z}_0 + s\boldsymbol{\epsilon},\ \boldsymbol{\epsilon}\sim\mathcal{N}(\mathbf{0},\mathbf{I})$ —— 从数据 latent 到高斯噪声的线性传输。</li>
+<li>Flow matching 损失：$\mathcal{L}_{\text{diff}} = \mathbb{E}_{s,\boldsymbol{\epsilon}}[\|u_\theta(\mathbf{z}_s,s) - (\boldsymbol{\epsilon} - \mathbf{z}_0)\|_2^2]$ —— 训练向量场沿 flow 轨迹指向数据分布。</li>
+<li>世界系射线：$\mathbf{d}^v(h,w) = \text{normalize}((\mathbf{R}^v)^\top (\mathbf{K}^v)^{-1}(h+0.5, w+0.5, 1)^\top)$ —— 反投影像素并旋转到世界系。</li>
+<li>12 维位姿：$\mathbf{e}^v = [\text{yaw},\text{pitch},\text{roll},\ \mathbf{t}^v,\ -(\mathbf{R}^v)^\top\mathbf{t}^v,\ (\mathbf{R}^v)^\top\mathbf{e}_z]$ —— 欧拉角+平移+相机位置+光轴，编码视角身份与朝向。</li>
+<li>关系相似度算子：$\mathbf{S}(\mathbf{F})_{i,a} = \frac{\mathbf{f}_i^\top \mathbf{f}_a}{\|\mathbf{f}_i\|\,\|\mathbf{f}_a\|},\ a\in\mathcal{A}$ —— 用采样锚点近似 token 关系图，成本降至 $O(MK)$。</li>
+</ul>
+
+<h3 id="loss-分解">Loss 分解 <a class="heading-anchor" href="#loss-分解" aria-label="Link to loss-分解">#</a></h3>
+
+<p>总目标 $\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{diff}} + \lambda\cdot\mathcal{L}_{\text{REPA}}$，其中 $\mathcal{L}_{\text{REPA}} = \mathcal{L}_{\text{spatial}} + \mathcal{L}_{\text{temporal}}$：</p>
+
+<ul>
+<li>$\mathcal{L}_{\text{diff}}$ 强制生成保真（flow matching 回归）。</li>
+<li>$\mathcal{L}_{\text{spatial}} = \text{SmoothL1}(\mathbf{S}_{\text{intra}}^{\text{DiT}}, \mathbf{S}_{\text{intra}}^{\text{DA3}})$ 对齐<strong>视角内</strong>帧的 token 关系结构。</li>
+<li>$\mathcal{L}_{\text{temporal}} = \text{SmoothL1}(\mathbf{S}_{\text{inter}}^{\text{DiT}}, \mathbf{S}_{\text{inter}}^{\text{DA3}})$ 对齐<strong>跨帧/跨视角</strong>的关系结构。</li>
+<li>蒸馏对象是<strong>相似度矩阵</strong>（相对结构）而非绝对特征向量，避免强行匹配 DA3 的特征坐标系。</li>
+</ul>
+
+<h3 id="6-项最小检查">6 项最小检查 <a class="heading-anchor" href="#6-项最小检查" aria-label="Link to 6-项最小检查">#</a></h3>
 
 <ol>
-<li><strong>目标函数是否闭合</strong>：$\mathcal{L}_{diff}$ 与 $\mathcal{L}_{REPA}$ 可直接联合优化，定义完整。</li>
-<li><strong>变量定义是否充分</strong>：多视角索引、时间索引、相机参数、特征映射均给出。</li>
-<li><strong>机制是否可映射到实现模块</strong>：Geo-RoPE、CVA、REPA 在方法图和公式中一一对应。</li>
-<li><strong>复杂度处理是否交代</strong>：REPA 用 anchor 采样把关系监督成本降为近似 $O(MK)$。</li>
-<li><strong>必要性是否被验证</strong>：消融里 CVA-only 与 REPA-only 都不及联合模型。</li>
-<li><strong>泛化主张是否有跨设定证据</strong>：动作条件与文本条件两类生成都给出结果。</li>
+<li><strong>量纲一致性</strong>：$\mathcal{L}_{\text{diff}}$ 为 L2 平方（latent 单位²），REPA 为无量纲相似度上的 SmoothL1；$\lambda=0.5$ 起量级平衡作用 —— 合理。</li>
+<li><strong>退化情形</strong>：$\lambda\to0$ 时退回纯 flow matching WFM（即消融表 CVA-only / 全无 行），符合消融基线。</li>
+<li><strong>对称性</strong>：Geo-RoPE 把 ray（逐像素）与 pose（视角内共享）解耦到两个子空间 $d_r=d_p=d/2$，位姿变换对同视角所有 token 一致 —— 与"视角内共享"直觉相符。</li>
+<li><strong>初始化一致</strong>：CVA 用 AdaLN-Zero 使 gate=0，前向初始等价于无 CVA 的骨干 → 训练起点不破坏预训练权重。</li>
+<li><strong>成本可控</strong>：锚点采样把关系监督从全对全 $O(M^2)$ 降到 $O(MK)$，$K=|\mathcal{A}|\ll M$ —— 可扩展。</li>
+<li><strong>边界情形</strong>：单视角 $V=1$ 时跨视角注意力退化为自注意力，Geo-RoPE 仍提供射线编码 —— 框架不崩溃但收益消失，与"多视角才需要"的动机自洽。</li>
 </ul>
+
+<p><em>期望但缺失的保证</em>：若能给出"关系蒸馏收敛到与 DA3 几何一致的表征"或跨视角一致性的可证明上界，会大幅增强"充分性"主张；本文仅以消融的超可加间隙作为经验替代。</p>
+
+<hr>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p>训练侧关键信息（文中披露）：</p>
+<h3 id="worldarena-动作条件基准（table-1）">WorldArena 动作条件基准（Table 1） <a class="heading-anchor" href="#worldarena-动作条件基准（table-1）" aria-label="Link to worldarena-动作条件基准（table-1）">#</a></h3>
 
-<table>
-<tr><th>Stage</th><th>Purpose</th><th>Data</th><th>Steps</th><th>LR</th><th>Batch</th><th>Special technique</th></tr>
-<tr><td>Pretraining/Fine-tuning (combined report)</td><td>学习多视角世界动态与控制条件</td><td>2.5M clips（AgiBot-World/RoboMIND/Galaxea/RoboTwin/RoboCOIN）</td><td>30k iterations</td><td>peak $3\times10^{-5}$ (warmup 3k + cosine)</td><td>[论文未披露]</td><td>200x H200, DA3 frozen, $\lambda=0.5$</td></tr>
-</table>
+<p><img src="/assets/2606.18375/tab1.png" alt="Table 1: WorldArena 动作条件基准"></p>
 
-<p><img src="/assets/2606.18375/tab1.png" alt="Table 1: WorldArena leaderboard"></p>
+<p><em>Paper's Table 1, verbatim.</em> PAIWorld EWMScore 70.67 居首，领先第二名 GenieEnvisioner-Sim2.0-2B（68.26）达 +2.41；Motion Quality 79.66 为全场最高。值得注意的是它在 3D Accuracy（91.58）等单项并非最高，说明综合 EWMScore 的领先来自运动与可控性的均衡，而非单点碾压。</p>
 
-<p><em>Paper's Table 1, verbatim (caption: WorldArena benchmark comparison).</em></p>
+<p><img src="/assets/2606.18375/fig3.png" alt="Figure 3: WorldArena 定性 rollout"></p>
 
-<p>表 1 支撑了主要结论之一：PAIWorld 在 EWMScore 上领先并保持较高 controllability/motion quality，说明它不是靠牺牲控制性换取几何一致。</p>
+<p><em>Paper's Figure 3, verbatim (caption: "Qualitative results on the WorldArena benchmark...").</em> 展示物理合理的动力学 rollout，用于佐证 Motion Quality 的定量领先。</p>
 
-<p><img src="/assets/2606.18375/fig3.png" alt="Figure 3: WorldArena qualitative samples"></p>
+<h3 id="agibot-challenge2026（table-2）">AgiBot-Challenge2026（Table 2） <a class="heading-anchor" href="#agibot-challenge2026（table-2）" aria-label="Link to agibot-challenge2026（table-2）">#</a></h3>
 
-<p><em>Paper's Figure 3, verbatim (caption: "Qualitative results on the WorldArena benchmark ...").</em></p>
+<p><img src="/assets/2606.18375/tab2.png" alt="Table 2: AgiBot-Challenge2026 基准"></p>
 
-<p>该图展示了多视角下动作轨迹与场景变化的同步性。作者用它佐证“看起来合理”之外的跨视角一致性，尤其是物体运动与视角切换之间的对应关系。</p>
+<p><em>Paper's Table 2, verbatim.</em> 总排名第 2（EWMScore 0.8245），但 Scene Consistency 0.9041 为所有队伍最佳，直接支撑"跨视角一致性"的核心卖点；PSNR/nDTW 与冠军队伍差距很小。</p>
 
-<p><img src="/assets/2606.18375/tab4.png" alt="Table 4: CVA and REPA ablation"></p>
+<h3 id="文本条件多视角生成（table-3）">文本条件多视角生成（Table 3） <a class="heading-anchor" href="#文本条件多视角生成（table-3）" aria-label="Link to 文本条件多视角生成（table-3）">#</a></h3>
 
-<p><em>Paper's Table 4, verbatim (caption: Ablation on CVA and REPA).</em></p>
+<p><img src="/assets/2606.18375/tab3.png" alt="Table 3: AgiBot-World 文本条件基准"></p>
 
-<p>表 4 是全文最关键实证：CVA-only 与 REPA-only 各自有效，但联合项提升最大，且超过简单相加直觉，直接支撑“双支柱耦合”而非“两个独立 trick”。</p>
+<p><em>Paper's Table 3, verbatim.</em> 7 项中 6 项最优：MEt3R 14.20（最低，几何一致最佳）、SSIM 0.7683、LPIPS 0.1844、FID 45.04、FVD 175.78 均领先基线（Genie-Envisioner / Cosmos-Predict2 / Wan2.1）。读者应注意在追求几何一致的同时，感知质量指标也同步领先，说明在此设定下几何约束未牺牲画质。</p>
 
-<p><img src="/assets/2606.18375/fig7.png" alt="Figure 7: Text-conditioned multi-view comparison"></p>
+<h3 id="消融（table-4）——-核心证据">消融（Table 4）—— 核心证据 <a class="heading-anchor" href="#消融（table-4）——-核心证据" aria-label="Link to 消融（table-4）——-核心证据">#</a></h3>
 
-<p><em>Paper's Figure 7, verbatim (caption: "Qualitative comparison of multi-view video generation...").</em></p>
+<p><img src="/assets/2606.18375/tab4.png" alt="Table 4: CVA / REPA 消融"></p>
 
-<p>这部分显示方法在文本条件设置下也保持几何一致优势，说明收益不局限于动作条件机器人数据，而是扩展到了更一般的多视角生成。</p>
+<p><em>Paper's Table 4, verbatim.</em> 这是全文最载重的一张表。单独 CVA 给出 $\Delta=0.93$，单独 REPA 给出 $\Delta=0.72$，二者可加期望为 1.65；但联合达到 $\Delta=2.64$，<strong>超可加</strong>。这一间隙（2.64 > 1.65）是"通信路径与几何目标必须耦合"论点的直接实证，也是本文最关键的实验读数。</p>
+
+<p><strong>学习/敏感性观察</strong>：论文以固定 $\lambda=0.5$ 报告，未披露对 $\lambda$、锚点数 $K$ 的敏感性扫描，也未报告学习曲线形态或过优化信号（如纹理捷径塌缩的定量诊断），此为可复现性上的空白。</p>
+
+<hr>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>Step</th><th>论点</th><th>证据</th><th>推进到下一步</th></tr>
-<tr><td>1</td><td>多视角世界建模失败根因不是单一模块缺失，而是“通信路径缺 + 几何约束缺”</td><td>引言问题分解 + 方法设计对应两类缺陷</td><td>需要提出同时覆盖两类缺陷的结构</td></tr>
-<tr><td>2</td><td>仅加跨视角交互不足以保证 3D 一致，仍可能走纹理捷径</td><td>方法中单独讨论 CVA 的局限 + REPA 设计动机</td><td>必须引入几何关系监督</td></tr>
-<tr><td>3</td><td>仅加几何监督不足以在多视角时序生成中传播约束</td><td>方法中单独讨论 REPA 的局限 + 显式跨视角注意力必要性</td><td>必须保留跨视角信息通路</td></tr>
-<tr><td>4</td><td>二者联合可形成更强约束闭环</td><td>表 4 联合项显著优于两个单项</td><td>支撑“缺一不可”的核心命题</td></tr>
-<tr><td>5</td><td>该命题在不同任务设定均成立</td><td>WorldArena/AgiBot + 文本条件多视角结果</td><td>说明方法具有跨设定鲁棒性而非单 benchmark 过拟合</td></tr>
+<tr><th>步</th><th>论断</th><th>段内依据</th></tr>
+<tr><td>1</td><td>多视角机器人操作要求每个时间步的严格跨视角 3D 一致（§1 Para 2）。</td><td>三类相机（ego/eye-to-hand/wrist）本质多视角。</td></tr>
+<tr><td>2</td><td>现有方法只做 token 拼接，逼迫隐式对应，导致漂移/深度/纹理失效（§1 Para 3、Abstract Para 2）。</td><td>失效模式枚举。</td></tr>
+<tr><td>3</td><td>根因是两个缺陷：无通信路径 + 无几何先验，且二者作用在不同层级须共存（§1 Para 4–5）。</td><td>概念论证：通信无几何塌缩为捷径；几何无通路无法传播。</td></tr>
+<tr><td>4</td><td>据此设计三组件：CVA + Geo-RoPE 建路径，Latent 3D-REPA 供几何目标（§3.3–3.5, Eq. 4–11）。</td><td>载重方程实例化两支柱。</td></tr>
+<tr><td>5</td><td>联合训练目标 $\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{diff}} + 0.5\,\mathcal{L}_{\text{REPA}}$（§3.7, Eq. 12）。</td><td>生成与几何对齐同时优化。</td></tr>
+<tr><td>6</td><td>消融显示 CVA+REPA 联合增益 2.64 超过可加期望 1.65（§4.4, Table 4）。</td><td>支撑步 3 的"必须共存"主张。</td></tr>
+<tr><td>7</td><td>端到端在 WorldArena 第 1、AgiBot-Challenge2026 第 2、文本条件 6/7 最优（§4.2–4.3）。</td><td>Table 1/2/3。</td></tr>
 </table>
 
-<h2 id="7-实现-cross-reference">7. 实现 Cross-Reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+<hr>
 
-<ul>
-<li>实现状态：<code>[实现未公开]</code>（论文未给出可审计代码仓库与逐文件实现锚点）。</li>
-</ul>
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<h3 id="核心技术壁垒（实现视角）">核心技术壁垒（实现视角） <a class="heading-anchor" href="#核心技术壁垒（实现视角）" aria-label="Link to 核心技术壁垒（实现视角）">#</a></h3>
+<p><strong>[实现未公开]</strong> —— L1 未记录开源代码库或 file:line；论文报告在 Cosmos-Predict2.5 DiT 骨干（~14B）上实现，但未给出仓库链接。最接近的开放参考为 Cosmos-Predict2（骨干）、Depth Anything 3（几何教师）、以及 REPA 表征对齐的开源实现。</p>
 
-<p>真正难复现的不是某个单独公式，而是训练稳定性：CVA 会改变注意力信息流，REPA 会额外施加关系结构约束，二者叠加后容易出现优化竞争。作者通过门控初始化（AdaLN-Zero gate=0）、冻结几何教师、以及联合损失权重设定把系统带到可训练区间，这一整套“耦合调参”是主要门槛。</p>
+<p><strong>核心技术壁垒（§2 Q2 呼应）</strong>：最难复制的不是任一模块，而是把 <strong>relational（相似度矩阵）几何监督</strong>专门施加在<strong>具备几何位置编码（Geo-RoPE）的跨视角注意力通道</strong>上，使几何约束沿显式通路传播。复制单个 CVA 或单个 REPA 都只能拿到 ~0.7–0.9 的 $\Delta$（消融行），真正的 2.64 增益依赖二者的精确耦合与训练期同步激活——这在 L1 中无代码级细节可对照，是重实现的最大风险点。</p>
 
-<h3 id="关键实现细节（易忽略）">关键实现细节（易忽略） <a class="heading-anchor" href="#关键实现细节（易忽略）" aria-label="Link to 关键实现细节（易忽略）">#</a></h3>
+<p><strong>关键实现细节（易漏）</strong>：</p>
 
 <ol>
-<li><strong>Geo-RoPE 的双通道编码拆分</strong>：把 query/key 维度切成 ray 子空间与 pose 子空间，否则空间变化信号与全局位姿信号会互相干扰。</li>
-<li><strong>关系蒸馏采用 anchor 采样</strong>：不做全 token 两两关系矩阵，降低开销并让 REPA 在 14B 级 DiT 训练中可落地。</li>
-<li><strong>CVA 门控从 0 启动</strong>：先保证主干稳定，再逐步让跨视角通路“介入”，减小早期训练震荡。</li>
+<li><strong>AdaLN-Zero gate=0 初始化</strong>（§3.7 Para 2）：CVA 块以 gate=0 起步，前向初始等价于冻结骨干，避免破坏 14B 预训练权重——若初始化非零，训练早期极易发散。这是插件式接入大 WFM 的关键稳定技巧。</li>
+<li><strong>锚点采样降成本</strong>（§3.5, Eq. 8）：关系监督用采样锚点集 $\mathcal{A}$ 把 $O(M^2)$ 降到 $O(MK)$；锚点数 $K$ 的选择直接影响几何监督的方差与训练成本，论文未披露具体 $K$，实现时需自行调参。</li>
 </ul>
+
+<p><strong>训练配方与规模</strong>（§4.1）：</p>
+
+<table>
+<tr><th>Stage</th><th>Purpose</th><th>Data</th><th>Steps</th><th>LR</th><th>Batch</th><th>Special</th></tr>
+<tr><td>Pretrain/融合</td><td>多视角一致世界模型</td><td>2.5M clips（AgiBot 35% / RoboMIND 20% / Galaxea 15% / RoboTwin 15% / RoboCOIN 15%）</td><td>30k</td><td>warmup 3k → $3\times10^{-5}$，cosine 衰减</td><td>[论文未披露]</td><td>200×H200，~7 天，$\lambda=0.5$，DA3 冻结，CVA gate=0</td></tr>
+</table>
+
+<p>GPU 时约 200 GPU × 7 天 ≈ 33.6k H200·天（MFU [论文未披露]）；关键超参 $\lambda=0.5$ 已披露，锚点数 $K$、batch、梯度裁剪 / ZeRO 阶段 [论文未披露]。</p>
 
 </div>
 </div>
