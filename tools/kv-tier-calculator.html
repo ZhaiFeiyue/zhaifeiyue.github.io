@@ -101,14 +101,18 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
     <div class="panel">
       <h2>调度 M / N</h2>
       <div class="sld"><div class="top"><span class="lab">N · 并发在飞会话</span><span class="val" id="v_N">40</span></div><input type="range" id="N" min="1" max="256" step="1" value="40" oninput="calc()"><div class="sub">生产 = λ·T_gap(Little)· 工作集 = N × W</div></div>
-      <div class="sld"><div class="top"><span class="lab">M · active(执行)</span><span class="val" id="v_M">14</span></div><input type="range" id="M" min="1" max="128" step="1" value="14" oninput="calc()"><div class="sub">M 的 KV 钉在 L1(compute 常驻)</div></div>
+      <div class="sld"><div class="top"><span class="lab">M · active(执行)</span><span class="val" id="v_M">14</span></div><input type="range" id="M" min="1" max="128" step="1" value="14" oninput="updFlow()"><div class="sub">M 的 KV 钉在 L1;也定 λ</div></div>
       <div class="sld"><div class="top"><span class="lab">chunked_prefill</span><span class="val" id="v_chunk">32 K</span></div><input type="range" id="chunk" min="4096" max="131072" step="4096" value="32768" oninput="calc()"><div class="sub">每 forward 的 prefill 算力预算(new token)</div></div>
+      <div class="sld"><div class="top"><span class="lab">TPOT · decode/token</span><span class="val" id="v_tpot">26 ms</span></div><input type="range" id="tpot" min="5" max="100" step="1" value="26" oninput="updFlow()"><div class="sub">compute 快慢 → λ=M/(G·TPOT)</div></div>
+      <div class="sld"><div class="top"><span class="lab">G · 每轮输出</span><span class="val" id="v_G">224</span></div><input type="range" id="G" min="32" max="1024" step="16" value="224" oninput="updFlow()"><div class="sub">tok/轮</div></div>
     </div>
 
     <div class="panel">
-      <h2>流量 → N(Little)</h2>
-      <div class="sld"><div class="top"><span class="lab">λ · 新轮到达率</span><span class="val" id="v_lam">4</span></div><input type="range" id="lam" min="1" max="64" step="1" value="4" oninput="updN()"><div class="sub">轮/s</div></div>
-      <div class="sld"><div class="top"><span class="lab">T_gap · 轮间留存</span><span class="val" id="v_tg">10</span></div><input type="range" id="tg" min="1" max="120" step="1" value="10" oninput="updN()"><div class="sub">s(思考+排队)· N=λ·T_gap</div></div>
+      <h2>T_gap 组成 → N</h2>
+      <div class="sld"><div class="top"><span class="lab">T_think · 思考</span><span class="val" id="v_th">4</span></div><input type="range" id="th" min="0" max="60" step="1" value="4" oninput="updFlow()"><div class="sub">s</div></div>
+      <div class="sld"><div class="top"><span class="lab">T_tool · 工具调用</span><span class="val" id="v_to">10</span></div><input type="range" id="to" min="0" max="180" step="1" value="10" oninput="updFlow()"><div class="sub">s(agent 常主导)</div></div>
+      <div class="sld"><div class="top"><span class="lab">T_queue · 排队</span><span class="val" id="v_qu">3</span></div><input type="range" id="qu" min="0" max="60" step="1" value="3" oninput="updFlow()"><div class="sub">s</div></div>
+      <div class="sub" id="flow_out" style="margin-top:6px;font-family:var(--mono);color:var(--accent)"></div>
     </div>
 
     <div class="panel">
@@ -162,6 +166,17 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
     </div>
 
     <div class="card">
+      <h3>复用命中层(T_gap 决定沉降深度)</h3>
+      <div class="note" style="margin-bottom:8px">空闲块以 <b>R=λ·W</b> 下沉;空闲 T_gap 后深度 <b>D=λ·W·T_gap=N·W</b>(compute 越快 λ 越大 → 沉越深)。复用命中层 = D 落在哪个容量区间。</div>
+      <div class="metrics">
+        <div class="metric"><div class="k">λ 轮完成率</div><div class="v" id="o_lam">—</div><div class="s">M/(G·TPOT)</div></div>
+        <div class="metric"><div class="k">下沉深度 D</div><div class="v" id="o_D">—</div><div class="s">=N·W</div></div>
+        <div class="metric"><div class="k">复用命中</div><div class="v" id="o_rtier" style="font-size:1.05rem">—</div><div class="s">D vs 各层</div></div>
+        <div class="metric"><div class="k">L3 命中 T_gap 窗口</div><div class="v" id="o_win" style="font-size:.9rem">—</div><div class="s">秒</div></div>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>命中分布</h3>
       <div class="metrics">
         <div class="metric"><div class="k">L1 命中</div><div class="v" id="o_l1p" style="color:var(--l1)">—</div></div>
@@ -200,12 +215,16 @@ const PRE={
   real:{l1:197,l2:64,l3:256,N:120,M:44,W:34,nw:2048}
 };
 function preset(k){const p=PRE[k];for(const key in p)$(key).value=p[key];calc();}
-function updN(){
-  const lam=parseFloat($('lam').value), tg=parseFloat($('tg').value);
-  $('v_lam').textContent=lam;$('v_tg').textContent=tg;
-  let N=Math.round(lam*tg);
-  const nEl=$('N'); N=Math.max(+nEl.min,Math.min(+nEl.max,N));
-  nEl.value=N;
+function updFlow(){
+  const M=parseFloat($('M').value),G=parseFloat($('G').value),tpot=parseFloat($('tpot').value);
+  const th=parseFloat($('th').value),to=parseFloat($('to').value),qu=parseFloat($('qu').value);
+  $('v_M').textContent=M;$('v_G').textContent=G;$('v_tpot').textContent=tpot+' ms';
+  $('v_th').textContent=th;$('v_to').textContent=to;$('v_qu').textContent=qu;
+  const lam=M/(G*tpot/1000);          // turns/s = M/(G·TPOT)
+  const Tgap=th+to+qu;
+  let N=Math.round(lam*Tgap);
+  const nEl=$('N'); N=Math.max(+nEl.min,Math.min(+nEl.max,N)); nEl.value=N;
+  $('flow_out').innerHTML='λ=M/(G·TPOT)='+lam.toFixed(1)+' 轮/s · T_gap='+Tgap+'s · N=λ·T_gap='+Math.round(lam*Tgap)+(N<Math.round(lam*Tgap)?'(截到'+N+')':'');
   calc();
 }
 
@@ -302,6 +321,22 @@ function calc(){
       (cov>=1?'当前池 ≥ N·W → 在飞会话都能兜住,几乎无 evict-miss。':'当前池 &lt; N·W → 有 '+fmtT(overflowT)+' tok 的在飞 KV 兜不住 → evict → 下一轮 miss(重算)。补 L2/L3 或降 N。')+'</small>';
   }
 
+  // reuse timing → tier (D = λ·W·T_gap = N·W; compute sets λ)
+  const G=num('G'),tpot=num('tpot'),Tgap=num('th')+num('to')+num('qu');
+  const lam=M/(G*tpot/1000);           // turns/s
+  const D=N*W;                          // sink depth after T_gap
+  let rtier,rcol;
+  if(D<C1){rtier='L1';rcol='var(--l1)';}
+  else if(D<C1+C2){rtier='L2';rcol='var(--l2)';}
+  else if(D<C1+C2+C3){rtier='L3 ✅';rcol='var(--l3)';}
+  else{rtier='miss';rcol='var(--miss)';}
+  $('o_lam').textContent=lam.toFixed(1)+'/s';
+  $('o_D').textContent=fmtT(D);
+  $('o_rtier').textContent=rtier;$('o_rtier').style.color=rcol;
+  const winLo=(C1+C2)/(lam*W), winHi=(C1+C2+C3)/(lam*W);
+  $('o_win').textContent=winLo.toFixed(0)+'–'+winHi.toFixed(0)+'s';
+  $('o_win').style.color=(Tgap>=winLo&&Tgap<=winHi)?'var(--l3)':'var(--mt)';
+
   // diagnostics
   const hT=1-nw/W, hF=1-chunk/C1, Ls=nw*C1/chunk, Ns=(C1+C2)/W;
   $('o_ht').textContent=pct(hT);$('o_hf').textContent=pct(hF);
@@ -326,7 +361,7 @@ function fillbar(widthPct,segs){
   let inner=segs.map(([c,p,l])=>p>0.2?'<span style="background:'+c+';width:'+p+'%">'+(l||'')+'</span>':'').join('');
   return '<div class="fill" style="width:'+widthPct+'%">'+inner+'</div>';
 }
-calc();
+updFlow();
 </script>
 </body>
 </html>
