@@ -78,6 +78,7 @@
   <a href="#idle">B3.4 空闲感知 · 2606.00866</a>
   <a href="#b4">B4 预测 vs 观测</a>
   <a href="#b5">B5 KV 分层 offload</a>
+  <a href="#b6">B6 Low Latency Generation</a>
   <h4>四 · KimiPoC 自研实践</h4>
   <a href="#poc-loop">自研 Agent Loop</a>
   <a href="#poc-swe">SWE 提升实践</a>
@@ -309,6 +310,35 @@ flowchart TB
     <li><b>分层存储</b>：GPU↔CPU↔SSD 多级 KV（NEO 2411.01142 / APEX 2506.03296 / KVDrive 2605.18071 / Tutti 2605.03375）</li>
     <li><b>回收 idle 资源</b>：把空闲 GPU 变成投机 drafter（SPECTRE 2605.08151）；decode 空闲 SM 跑 PEFT（Harli 2511.11729）</li>
   </ul>
+
+  <h3 id="b6">B6 · Low Latency Generation（TileRT / megakernel）</h3>
+  <p><b>出发点（可直接拿来用）：Speed as the next scaling law。</b> AI 推理需求从"质量→吞吐→速度"演进，Agent / TTS / voice 都推动 <b>near-BS=1、延迟优先</b>的负载；更关键的是 <b>Test-Time Scaling 让速度直接等于能力</b>——固定延迟预算下，推理越快 = 越多 rollout / 越深推理链。所以速度本身成了一个 scaling 维度。<span class="ref">TileRT / Speed-as-scaling-law blog</span></p>
+
+  <h4>问题：小 BS decode 是 memory-bound，但执行边界把带宽浪费掉了</h4>
+  <div class="callout"><span class="lbl">数量级差距</span>8×H200 NVL 聚合带宽 ~38 TB/s、GLM-5.1 每 token 激活 ~42GB → 理论 ~1000 tok/s；实际传统框架只有<b>几十 tok/s</b>。根因不是算力，是 <b>kernel 间的执行边界</b>（launch/setup/teardown、cross-kernel barrier、global-mem 往返、TP sync）——BS≈1 时这些固定开销进入关键路径，形成 "memory pipeline bubbles"（Hazy Research 实测传统框架只用了 ~50% 带宽）。<span class="ref">TileRT · Mirage MPK · Hazy "Look Ma No Bubbles"</span></div>
+
+  <h4>为什么对 MoE 尤其关键：MoE 收益是"碗型"的</h4>
+  <p>关键事实（多篇 2026 工作一致）：<b>MoE decode 延迟 ∝ 一个 batch 激活的 experts 的<u>并集</u>大小，而不是 token 数</b>——因为 decode 是 memory-bound，时间花在把 expert 权重从 HBM 搬进来；activation 流量 &lt; 权重的 0.6%。<span class="ref">METRO 2512.09277 · OEA 2511.02237 · ELDR 2607.00466</span></p>
+  <div class="mermaid">
+flowchart LR
+  S["小 BS（BS≈1）<br/>并集≈k 个 experts<br/>读权重最少<br/>→ 延迟优势（甜点）"] --> M["中 BS<br/>并集单调增长逼近 N<br/>两头都摊不到"]
+  M --> L["大 BS（~千）<br/>并集≈全部 experts<br/>+EP all-to-all / 负载不均<br/>TPOT 爆；但吞吐/成本优势"]
+  </div>
+  <table>
+   <tr><th>BS 区间</th><th>激活 experts 并集</th><th>MoE 相对 dense 的优势</th></tr>
+   <tr><td><b>小 BS（延迟甜点）</b></td><td>最小（≈k，如 8/256）</td><td>只读少数 experts → <b>单请求延迟远低于 dense</b>（dense 无论 BS 都读全量）</td></tr>
+   <tr><td>中 BS</td><td>随 BS 增长逼近 N</td><td>延迟优势被摊薄、吞吐优势未到 → 两头不讨好</td></tr>
+   <tr><td><b>大 BS（吞吐甜点）</b></td><td>≈全部 experts</td><td>每 token 只算 k experts 的 FLOPs → <b>吞吐/成本优势</b>（经典卖点），但 TPOT 差</td></tr>
+  </table>
+  <div class="callout key"><span class="lbl">量化 & 推论</span>Qwen3-30B-A3B：激活 experts 16→128，MoE 层延迟涨 <b>4.7×</b>（BS 固定）；而固定 experts 数、动 BS 几乎不动延迟。MoE 要到 BS ~1.6k 才进入 compute-bound。<b>推论：低延迟必然落在小 BS（大 BS 的 TPOT 已经爆了），而小 BS 恰恰是 MoE 读 experts 最少、延迟优势最大的甜点。</b> 这就是为什么 MaaS 开始卷 low-latency MoE 推理——它是 MoE 结构性能给、dense 给不了的差异化能力。</div>
+
+  <h4>解法：两条腿（消边界 + 缩小 experts 并集）</h4>
+  <div class="grid">
+    <div class="card"><h4>系统侧：消除执行边界（persistent megakernel）</h4><p class="sub">把小 BS 的理论带宽优势兑现出来。<br/>· <b>TileRT</b>：AOT 把整模型展开成一个常驻 Engine Kernel + tile 级调度 + warp/GPU 三级特化，8×B200 上 DeepSeek-V3.2 600 tok/s <span class="ref">tile-ai-tilert</span><br/>· <b>Fleet</b>：chiplet-aware megakernel（Chiplet-task + M-major L2 复用），MI350 bs=1–16 比 vLLM 1.3–1.5× <span class="ref">2604.15379</span><br/>· <b>Mirage MPK</b>：自动编译成 megakernel，1.2–6.7× <span class="ref">2512.22219</span></p></div>
+    <div class="card"><h4>算法侧：缩小激活 experts 并集</h4><p class="sub">从源头降低 memory-bound 延迟。<br/>· <b>METRO</b>：均衡"激活 experts 数"而非 token 数，decode 延迟 −11–22% <span class="ref">2512.09277</span><br/>· <b>OEA</b>：batch-aware 路由，让 token 搭"已加载 experts"的车 <span class="ref">2511.02237</span><br/>· <b>ELDR</b>：expert-locality 路由，同域请求并集少 17–21% <span class="ref">2607.00466</span></p></div>
+  </div>
+  <div class="callout ex"><span class="lbl">⚠ 两条腿缺一不可</span>Fleet 明确指出：<b>MoE 的 expert-route-per-token 会破坏 megakernel 的 M-major 权重协作前提</b>（dense 才好协作）。所以 MoE 低延迟不能只靠 megakernel 消边界，还必须靠<b>路由把 experts 并集压小</b>——系统 + 算法两条腿一起，才拿得到小 BS 的延迟甜点。</div>
+  <div class="callout key"><span class="lbl">对 MORI / infra 的启示</span>低延迟 MoE serving = <b>小 BS memory-bound + persistent kernel（消边界）+ expert-locality 路由（缩并集）</b>。MORI 作为 prefix/KV 调度器，天然可以再加一层 <b>"expert-signature / locality-aware 路由"</b>：把 expert 签名相近的请求聚到同一 worker，缩小每步激活的 experts 并集——与 ELDR 同向，且能和现有的 prefix 亲和路由叠加。</div>
   </section>
 
   <!-- PART 4 · KimiPoC -->
