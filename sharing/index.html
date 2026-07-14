@@ -81,6 +81,7 @@
   <a href="#b4">B4 预测 vs 观测</a>
   <a href="#b5">B5 KV 分层 offload</a>
   <a href="#b6">B6 Low Latency Generation</a>
+  <a href="#b7">B7 Swarm 下资源协同 + TCS</a>
   <h4>四 · KimiPoC 自研实践</h4>
   <a href="#poc-loop">自研 Agent Loop</a>
   <a href="#poc-swe">SWE 提升实践</a>
@@ -586,6 +587,39 @@ flowchart LR
   </div>
   <div class="callout ex"><span class="lbl">⚠ 两条腿缺一不可</span>Fleet 明确指出：<b>MoE 的 expert-route-per-token 会破坏 megakernel 的 M-major 权重协作前提</b>（dense 才好协作）。所以 MoE 低延迟不能只靠 megakernel 消边界，还必须靠<b>路由把 experts 并集压小</b>——系统 + 算法两条腿一起，才拿得到小 BS 的延迟甜点。</div>
   <div class="callout key"><span class="lbl">对 MORI / infra 的启示</span>低延迟 MoE serving = <b>小 BS memory-bound + persistent kernel（消边界）+ expert-locality 路由（缩并集）</b>。MORI 作为 prefix/KV 调度器，天然可以再加一层 <b>"expert-signature / locality-aware 路由"</b>：把 expert 签名相近的请求聚到同一 worker，缩小每步激活的 experts 并集——与 ELDR 同向，且能和现有的 prefix 亲和路由叠加。</div>
+
+  <h3 id="b7">B7 · Agent Swarm 突发下的资源协同（CPU/GPU/NIC + ToolCallServer）</h3>
+  <div class="callout"><span class="lbl">问题</span>Agent swarm 一开，一个用户轮次会<b>瞬间扇出 N 个 subagent</b>，每个都是一条完整请求 = <b>LLM decode（GPU）+ toolcall（CPU sandbox）+ KV 传输（NIC/PCIe）</b>。服务端要<b>瞬间承受 N 条异构请求</b>。若按"GPU 备峰值 + 每 session 一个 sandbox 备峰值"分别供给，三种资源都大部分时间空转 → 成本爆炸。目标：<b>在同一批节点上高效利用三种资源，降低整体资源占用</b>。</div>
+
+  <h4>核心洞察：agent 的相位是异构且互补的</h4>
+  <p class="sub">一个 agent 轮次里，GPU 推理 / CPU 工具 / NIC 传输<b>交替发生、忙窗互补</b>；而且 <b>serving 本身是 CPU-light</b>（实测 prefill CPU <b>&lt;30%</b>、decode <b>&lt;20%</b>）。所以把多个错相位的 agent 叠在一起，用一种资源的空窗去承载另一种，就能<b>同时抬高三者利用率</b> → 单节点服务更多 agent → 同吞吐下用更少节点。</p>
+  <div class="mermaid">
+flowchart LR
+  subgraph 单节点三资源被错相位填满
+    direction LR
+    G["GPU：A.decode → B.decode → C.decode"]
+    C2["CPU：C.tool → A.tool → B.tool"]
+    N["NIC/PCIe：B.KV传输 → C.KV → A.KV"]
+  end
+  G -. A 在 CPU 跑 tool 时，GPU 给 B/C .-> C2
+  C2 -. 传输错峰塞进各自空窗 .-> N
+  </div>
+  <table>
+   <tr><th>资源</th><th>做法</th><th>关键数据 / 机制</th></tr>
+   <tr><td><b>CPU</b></td><td>空闲核跑 sandbox（与 serving 同驻）+ core 隔离 + 动态池</td><td>serving CPU-light（prefill&lt;30% / decode&lt;20%）；<code>cpuset</code> Zone A/B + CAT/MBA 隔离，Zone A 兜 tokenize/IPC 突发</td></tr>
+   <tr><td><b>GPU</b></td><td>toolcall↔serving overlap + 投机降 JCT；HBM 紧时把 decode attention 卸到 CPU</td><td>tool 占端到端 <b>15–25%</b>（极端 81–92%）；256K–1M 上下文 KV <b>18–74 GB</b>，过 PCIe <b>0.3–1.3 s</b></td></tr>
+   <tr><td><b>NIC/PCIe</b></td><td>egress 感知调度（PD KV 传输 vs KV offload 抢同一 PCIe egress）</td><td>预取塞 idle 窗 + 非关键流量错峰 + NIC 回写绕开 egress → 恢复带宽、降 TTFT</td></tr>
+  </table>
+
+  <h4>ToolCallServer 设计：用"池化 + 控制/数据面分离"扛住 swarm 突发</h4>
+  <p class="sub">要瞬间接住 N 个 toolcall，最怕两件事：<b>冷启动风暴</b>（Docker 每 session 新容器 30–60s）和<b>数据面单点</b>。TCS 的设计正是针对这两点：</p>
+  <div class="grid">
+    <div class="card"><h4>池化，而非按需起容器</h4><p class="sub">sandbox pod 是<b>共享动态池</b>：claim/release + 租约，用完 <b>reset-on-claim</b> 复用，配 <b>keep-warm 池</b> + <b>PersistentBash（长驻 PTY）</b> 消除 fork/exec 开销。<br/>冷启动是杀手：Docker 30–60s → keep-alive 2–5s → microVM 热 1–2ms。突发来了从热池里 claim，而不是同时冷起 N 个。</p></div>
+    <div class="card"><h4>TCS 纯控制面，数据面 P2P</h4><p class="sub">worker 经 TCS 原子 claim 到 pod（Redis <code>pod:alive</code>/<code>pod:lease</code> 两个 TTL key，<code>idle = alive ∧ ¬lease</code>），之后 <b>worker 直连 pod gRPC <code>Sandbox.CallTool</code></b>，TCS 不在数据路径。<br/>一次 run 有几十~上百次 toolcall，去掉每次的代理跳 + 序列化；也消除单点重启断所有 in-flight 的风险。</p></div>
+  </div>
+  <div class="callout ex"><span class="lbl">弹性池 & 定量</span>autoscaler 按 <code>idle = alive − lease</code> 伸缩池子；空闲 pod 走<b>休眠/恢复</b>（workspace <code>tar|zstd</code> 落盘快照 + rehydrate）回收。池大小按 Little's law：<b>并发 sandbox 数 N ≈ λ·T_gap</b>（到达率 × 平均持有时长），预留 <b>pool ≥ N·W</b>。这样池子随 swarm 突发弹性伸缩，而不是为峰值常备。</div>
+
+  <div class="callout key"><span class="lbl">一句话：怎么"降低整体资源利用率"</span>不是让某个资源更闲，而是<b>把三种资源的空窗互相填满</b>——GPU 忙时别的 agent 在 CPU 跑 tool、CPU 忙时 GPU 服务别人、传输错峰塞进空窗；再用<b>共享弹性 sandbox 池 + P2P 数据面</b>接住 swarm 突发。结果是<b>同样的 agent 吞吐用更少节点</b>。这正是 MORI「同时握 serving + tool 两端控制权」才能做的 cross-layer 协同——通用 serving（把 LLM 当 API、sandbox 各管各）做不到。</div>
   </section>
 
   <!-- PART 4 · KimiPoC -->
