@@ -815,6 +815,8 @@ flowchart LR
   <h3 id="b8">B8 · 现身说法：MORI-UMBP 端到端 Agentic 栈（AMD × Kimi × SGLang）</h3>
   <div class="callout key"><span class="lbl">Kimi 做的事</span>AMD 与 Kimi（月之暗面）+ SGLang 团队，<b>回到第一性原理为 agentic 负载从零重建了推理服务栈</b>：<b>Kimi K2.7-Code 跑在 SGLang + MoRI + ROCm 之上、承载于 AMD Instinct™ MI355X</b>。结论一句话——agentic 服务的胜负手不是 FLOPs，而是 <b>KV 缓存</b>：能复用多少、装不下 HBM 时落在哪、以及<b>调度器知不知道它在哪</b>。这套栈把前面 B1–B7 的主题全部落成了一个真实系统。</div>
 
+  <div class="card" style="text-align:center"><img src="figures/overview.png" style="max-width:100%;border-radius:8px" alt="端到端 agentic 方案总览"><p class="sub"><b>图 1 · 端到端架构（三层）</b>：上=benchmark client（并发 Kimi Code CLI，跑 ProgramBench 衍生负载，开 session）；中=scheduler（融合 <b>workload SLO 预测</b> + <b>auto cache 管理</b>（cache-aware 路由 / 预取 / TTL·context 淘汰 / path search）+ <b>auto PD</b>（XpYd 配比 / PP·TP·DP·EP 自动并行 / 扩缩容 / 动态路由）+ <b>metrics center</b>）；下=<b>Unified Memory &amp; Bandwidth Pool</b>（HBM→DRAM→SSD 多层，PD 分离，前缀经 RDMA/XGMI 跨节点迁移、活跃/去激活换入换出）。决定胜负的就是<b>调度器 + UMBP</b> 这一块。</p></div>
+
   <h4>为什么要重建：agentic 负载击穿了聊天时代的假设</h4>
   <table>
    <tr><th>Agentic 特征</th><th>击穿的旧假设 → 新结论</th></tr>
@@ -853,6 +855,13 @@ flowchart LR
    <tr><td>零拷贝单次 RDMA</td><td>主机 KV 缓冲一次性注册（hugepage + NUMA + 预 fault），一次 Put/Get = 一次 RDMA</td><td>缓存流量不从 decode 抢算力</td></tr>
   </table>
   <div class="callout key"><span class="lbl">一条主线：同一个"不变前缀复用"原理，被搬到三层</span>agentic 上下文每轮线性增长、但<b>新增的只是尾巴、前缀不变</b>。UMBP 把它用在 <b>KV</b>（掉出 HBM 的前缀仍可路由、RDMA 取回而非重算）、DeltaTok 把它用在 <b>token</b>（只重编新增 turn）、增量传输把它用在 <b>P→D 传输</b>（只传增量页）。三处都是"<b>别对不变的前缀做重复功</b>"——这就是整套栈的统一杠杆。</div>
+
+  <h4>关键图 &amp; 实测数据</h4>
+  <div class="grid">
+    <div class="card" style="text-align:center"><img src="figures/incremental-kv-ttft.png" style="max-width:100%;border-radius:8px" alt="PD 增量 KV 传输 每轮 TTFT"><p class="sub"><b>图 · PD 增量 KV 传输</b>（1P1D×MI355X，DeepSeek-R1 MXFP4，DP8/TP8）：decode 侧跨轮留 radix cache，prefill 只传增量页。后段前缀重的轮省最多——round1 <b>2.44→1.06s</b>、round2 1.24→0.78s，<b>单轮最多 −57%、三轮均 −21%</b>（1.73→1.37s），并释放 prefill NIC egress。<span class="ref">sglang#26288</span></p></div>
+    <div class="card" style="text-align:center"><img src="figures/deltatok-latency.png" style="max-width:100%;border-radius:8px" alt="DeltaTok 每轮 tokenize 延迟 vs 上下文"><p class="sub"><b>图 · DeltaTok 增量 tokenize</b>（EPYC 9575F / Zen5，DeepSeek-V3 tokenizer，vs HF tokenizers）：HF 每轮全量重编 O(N)（1M ~1.6s）；DeltaTok 只编新增 turn O(1)（~0.09ms），与上下文无关地保持平坦——1M 时 <b>18,592×</b>，且逐字节精确。</p></div>
+  </div>
+  <div class="card" style="text-align:center"><img src="figures/loadback-roofline.png" style="max-width:100%;border-radius:8px" alt="KV 回读各级带宽 vs roofline"><p class="sub"><b>图 · 零 CU loadback（回读路径各级 vs 硬件 roofline）</b>：(a) L2→L1 随 CU 扩展、32 CU 跑满 H2D <b>~51 GB/s</b>——瓶颈是 H2D 不是 CU 并行度，MoRI 用 <b>SDMA 零 CU</b> 驱动这跳；(b) 本地 L3→L2 memcpy 4 线程即 <b>~66 GB/s</b>（已超 H2D 需求，多线程无增益）；(c) 远端 L3→L2 RDMA QP=4 <b>~42 GB/s</b>（~96% 有效线速）。圈出点为所选工作点。</p></div>
 
   <div class="callout ex"><span class="lbl">评测：性能不付精度税</span>性能：在 <b>ProgramBench</b> 衍生的 agentic 编程 trace 上，报 pareto——以 <b>p90-E2E</b> 为横轴的 tok/s/chip 与每百万 token TCO。精度：用 <b>Kimi Vendor Verifier（KVV/K2VV）</b>（AIME2025 长输出压 KV/量化、K2VV 测工具触发 F1 + JSON Schema）对比 offload 开/关，证明跨层 offload + 成本模型路由 + FP4 量化 + 投机解码<b>不引入偏差</b>。<span class="ref">AMD × Kimi × SGLang agentic blog · MORI-UMBP · sglang#25377</span></div>
   </section>
@@ -921,6 +930,8 @@ flowchart LR
    <tr><td><b>子代理 pod 租约 &lt; 父</b></td><td>孤儿一次性 pod 应比父更早回收</td><td>已实现（子 ~60s vs 父 ~90s）</td></tr>
   </table>
   <div class="callout key"><span class="lbl">对 MORI 的意义</span>subagent 把"上下文独立性"和"亲和路由/急切驱逐"变成了 serving 的一等需求。<b>fork 的双侧（prefill+decode）亲和</b>、<b>按 session 的 KV 驱逐</b>、<b>pod 差异化租约</b>——这些正是 MORI 相对通用 serving 的差异化价值点。</div>
+
+  <div class="callout ex"><span class="lbl">serving 侧的自研落地 → 见 §B8</span>上面是 harness/agent-loop 侧的自研；<b>serving 侧的自研就是 MORI-UMBP 端到端栈</b>（AMD × Kimi × SGLang，Kimi K2.7-Code on MI355X）——调度器感知的多层 KV 缓存 + PD 增量传输 + DeltaTok 增量 tokenize + 零 CU loadback，带实测图与数据，详见 <a href="#b8">§B8</a>。两部分合起来就是"harness + serving 两端都自研"的完整 Kimi 实践。</div>
   </section>
 
   <!-- PART 5 -->
