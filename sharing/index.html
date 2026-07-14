@@ -302,21 +302,35 @@ sequenceDiagram
   <p class="sub" style="margin-top:6px">即 arguments 分片 <code>{"que</code> → <code>ry":"Ada</code> → <code>..."}</code> 逐片 <code>+=</code> 累积，直到能 <code>json.loads</code> 成功才判定"这个 tool_call 齐了"。</p>
   <div class="callout ex"><span class="lbl">serving 侧要求 & 坑</span><b>需引擎支持流式<u>结构化</u> tool_calls</b>（SGLang <code>--tool-call-parser</code>，产出 <code>delta.tool_calls[].function.arguments</code> 分片）。反例：有些模型把 tool call 当<b>纯文本</b>吐——<code>&lt;tools&gt;{...}&lt;/tools&gt;</code> 或 Kimi 原生 token <code>&lt;|tool_call_begin|&gt;…&lt;|tool_call_argument_begin|&gt;{…}&lt;|tool_call_end|&gt;</code>——它们走 <code>content</code> delta 而非结构化 tool_calls，得先 normalize，且"边流边判 arguments 是否已成完整 JSON"更难，提前 dispatch 的可靠性下降。<b>好处是这条流式路径复用同一套 profiling（TTFT/TPOT）与 UI token 流（<code>on_delta</code>）</b>——streaming 本就是投机执行/重叠的公共底座。</div>
 
-  <h4>③ prefix keep-warm：stall 期间保温下一轮前缀（2A prime / 2B KV-pin）</h4>
+  <h4>③ prefix keep-warm：保温与 toolcall 并行 overlap（2A prime / 2B KV-pin）</h4>
   <div class="card">
-  <svg viewBox="0 0 760 190" width="100%" style="max-width:760px" role="img" aria-label="prefix keep-warm 执行序列">
-    <text x="100" y="18" fill="#a6adc8" font-size="13">tool stall 是真空窗——用它保住下一轮前缀，让 next-turn prefill 命中</text>
-    <text x="92" y="56" text-anchor="end" fill="#a6adc8" font-size="12">GPU</text>
-    <text x="92" y="90" text-anchor="end" fill="#a6adc8" font-size="11">保温</text>
-    <text x="92" y="126" text-anchor="end" fill="#a6adc8" font-size="12">Tool</text>
-    <rect x="100" y="40" width="228" height="26" rx="4" fill="#8bd5a0"/><text x="214" y="57" text-anchor="middle" fill="#12202a" font-size="11">decode</text>
-    <rect x="328" y="76" width="190" height="16" rx="3" fill="#7aa2ff"/><text x="423" y="88" text-anchor="middle" fill="#0f1220" font-size="9">p2a prime (max_tokens=1) / p2b session-KV-pin</text>
-    <rect x="328" y="110" width="190" height="26" rx="4" fill="#ffcf6b"/><text x="423" y="128" text-anchor="middle" fill="#12202a" font-size="11">tool exec（真正的 stall）</text>
-    <rect x="518" y="40" width="26" height="26" rx="4" fill="#8bd5a0"/><text x="548" y="57" fill="#8bd5a0" font-size="10">warm prefill（命中）</text>
-    <rect x="518" y="150" width="76" height="20" rx="4" fill="none" stroke="#5a6078" stroke-dasharray="5 3"/><text x="556" y="164" text-anchor="middle" fill="#8891ac" font-size="9">冷 prefill（若不保温）</text>
-    <line x1="328" y1="34" x2="328" y2="136" stroke="#3a3f57" stroke-dasharray="3 3"/>
+  <svg viewBox="0 0 760 205" width="100%" style="max-width:760px" role="img" aria-label="prefix keep-warm 与 toolcall 并行 overlap 执行序列">
+    <text x="100" y="16" fill="#a6adc8" font-size="13">tool stall 是真空窗——保温与 toolcall 并行 overlap，让下一轮 prefill 命中</text>
+    <!-- overlap 高亮窗 -->
+    <rect x="328" y="80" width="190" height="66" rx="6" fill="#16243a" stroke="#8bd5a0" stroke-dasharray="5 3"/>
+    <path d="M328,44 L328,38 L518,38 L518,44" fill="none" stroke="#8bd5a0"/>
+    <text x="423" y="33" text-anchor="middle" fill="#8bd5a0" font-size="11">tool stall 窗口：保温 ∥ toolcall 并行</text>
+    <!-- lane labels -->
+    <text x="92" y="67" text-anchor="end" fill="#a6adc8" font-size="12">GPU</text>
+    <text x="92" y="100" text-anchor="end" fill="#a6adc8" font-size="11">保温</text>
+    <text x="92" y="135" text-anchor="end" fill="#a6adc8" font-size="12">Tool</text>
+    <!-- decode -->
+    <rect x="100" y="50" width="228" height="26" rx="4" fill="#8bd5a0"/><text x="214" y="67" text-anchor="middle" fill="#12202a" font-size="11">decode</text>
+    <!-- prime / kv-pin，与 tool 并发 -->
+    <rect x="328" y="88" width="190" height="18" rx="3" fill="#7aa2ff"/><text x="423" y="100" text-anchor="middle" fill="#0f1220" font-size="9">p2a prime (max_tokens=1) / p2b session-KV-pin</text>
+    <!-- tool exec -->
+    <rect x="328" y="116" width="190" height="26" rx="4" fill="#ffcf6b"/><text x="423" y="133" text-anchor="middle" fill="#12202a" font-size="11">tool exec（真正的 stall）</text>
+    <!-- 并发标记 -->
+    <text x="533" y="112" fill="#8bd5a0" font-size="13" font-weight="700">∥ 并发</text>
+    <!-- warm prefill -->
+    <rect x="518" y="50" width="26" height="26" rx="4" fill="#8bd5a0"/><text x="550" y="67" fill="#8bd5a0" font-size="10">warm prefill（命中）</text>
+    <!-- cold ghost -->
+    <rect x="518" y="158" width="76" height="20" rx="4" fill="none" stroke="#5a6078" stroke-dasharray="5 3"/><text x="556" y="172" text-anchor="middle" fill="#8891ac" font-size="9">冷 prefill（若不保温）</text>
+    <!-- 窗口边界 -->
+    <line x1="328" y1="44" x2="328" y2="146" stroke="#3a3f57" stroke-dasharray="3 3"/>
+    <line x1="518" y1="44" x2="518" y2="146" stroke="#3a3f57" stroke-dasharray="3 3"/>
   </svg>
-  <p class="sub">2A：stall 期间对当前窗口发一个 <code>max_tokens=1</code> 的 fire-and-forget 请求（带同一 <code>x-mori-session-id</code> 亲和到持有 KV 的 worker），best-effort 保住 RadixAttention 前缀。2B：用上游 <code>session_id</code> 请求字段 + <code>--enable-session-radix-cache</code>（配 priority 逐出策略）把前缀 KV 钉住不被逐出——2A 的鲁棒版，引擎无此特性则忽略该字段，安全独立合并。</p>
+  <p class="sub"><b>保温本身就是一次 GPU 活动，和 CPU 侧的 tool 执行天然并行</b>：<code>tools_node</code> 在启动工具的<b>同时</b>并发触发保温（fire-and-forget），二者共享同一段 stall 窗口 —— 等于把 overlap② 的"藏工具"再叠一层"藏下一轮的冷 prefill"。<br/>2A prime：stall 期间对当前窗口发一个 <code>max_tokens=1</code> 请求（带同一 <code>x-mori-session-id</code> 亲和到持有 KV 的 worker），best-effort 保住 RadixAttention 前缀，一个 done-callback 消费掉结果。2B KV-pin：用上游 <code>session_id</code> 字段 + <code>--enable-session-radix-cache</code>（配 priority 逐出策略）把前缀 KV 钉住不被逐出——2A 的鲁棒版，引擎无此特性则忽略该字段、安全独立合并。</p>
   </div>
 
   <div class="callout key"><span class="lbl">一句话 & 对 MORI 意义</span>fan-out 藏"多工具的 sum"、streaming 藏"decode 尾部"、keep-warm 藏"下一轮的冷 prefill"——<b>三段被浪费的 GPU 时间线各有一招</b>。关键设计：全部对<b>只读工具</b>生效、写类工具串行保序、结果按原序消费（纯延迟优化、语义不变）。这正是 MORI「同时握 serving + tool 两端控制权」才能做的 cross-layer 优化——通用 serving（把 LLM 当 API）做不到。<span class="ref">mori-scheduler PR #157 · overlap_bench</span></div>
