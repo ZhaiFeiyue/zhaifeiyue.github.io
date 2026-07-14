@@ -73,6 +73,7 @@
   <a href="#a4">④ 用多大模型 / 怎么编排</a>
   <h4>三 · Infra 与调度</h4>
   <a href="#b1">B1 传统 serving 失效</a>
+  <a href="#b1s">B1.5 无状态→有状态</a>
   <a href="#b2">B2 mixed-mode KV 转换</a>
   <a href="#b3">B3 Agent 调度（重头）</a>
   <a href="#idle">B3.4 空闲感知 · 2606.00866</a>
@@ -226,6 +227,37 @@ flowchart TB
     <div class="card"><h4>负载特征变了</h4><p class="sub">长 session、KV cache 持续增长、工具调用突发、decode 状态不可迁移。</p></div>
     <div class="card"><h4>瓶颈也变了</h4><p class="sub">工具执行（CPU 侧）可占端到端最高 <b>88%</b> 延迟，且 GPU 越强、这个占比越突出。<span class="ref">2511.00739</span></p></div>
   </div>
+
+  <h3 id="b1s">B1.5 · 从无状态到有状态：agent client 主动操作服务端 KV</h3>
+  <div class="callout key"><span class="lbl">核心命题</span>过去 LLM server 是<b>无状态</b>的"请求进→回复出"；但 Claude Code / Kimi Code / Cursor 这些 agent client <b>每一轮都在主动改写上下文</b>，而这些改写<b>直接决定服务端 KV cache 的复用 / 失效 / 搬迁</b>。换句话说，client 的 slash 命令本质是一组<b>"远程 KV cache 操作指令"</b>——server 因此被迫从无状态转向<b>有状态</b>：必须记住每个 session 的 KV 落点、前缀指纹、并区分"读缓存"和"写缓存"。<span class="ref">调查来自 mori-scheduler：Claude Code 反编译 + Kimi Code 源码 + Cursor 文档</span></div>
+
+  <h4>三家 CLI 的上下文命令 = 对服务端前缀的四类操作（ABCD）</h4>
+  <p class="sub">Prefix cache 只认前缀：token 序列 <code>[系统提示]+[历史…]+[本轮]</code> 从头逐 token 匹配，<b>遇到第一个不同的 token，其后全部失效重算</b>。所以每条命令的杀伤力 = 它改动了序列里<b>多靠前</b>的位置。破坏力 <b>A&gt;B&gt;C&gt;D</b>。</p>
+  <table>
+   <tr><th>档</th><th>对消息序列的操作</th><th>服务端 KV 后果</th><th>Claude Code</th><th>Kimi Code</th><th>Cursor</th></tr>
+   <tr><td><b>A 全清</b></td><td>清空 + 重建 system</td><td>整条前缀作废、冷启动</td><td><code>/clear</code> <code>/resume</code></td><td><code>/new</code> <code>/sessions</code></td><td><code>/clear</code> <code>/resume</code></td></tr>
+   <tr><td><b>B 换头</b>（压缩）</td><td>丢弃前段、插 1 条摘要</td><td>摘要点<b>之前全废</b>（最隐蔽的坑）</td><td><code>/compact</code></td><td><code>/compact</code></td><td><code>/summarize</code></td></tr>
+   <tr><td><b>C 砍尾</b></td><td>从某点起删掉后面</td><td>截断点之前命中</td><td><code>/rewind</code></td><td><code>/undo</code></td><td><code>/rewind</code></td></tr>
+   <tr><td><b>D 加尾</b></td><td>只在尾部 append</td><td>已有前缀<b>全命中</b>（最便宜）</td><td>默认轮</td><td><code>/import</code></td><td>默认轮</td></tr>
+   <tr><td>特殊·旁问</td><td>fork 子 agent + 不回写</td><td><b>只读父前缀、主线不污染</b></td><td><code>/btw</code></td><td><code>/btw</code></td><td>无</td></tr>
+   <tr><td>特殊·分叉</td><td>复制成新 session</td><td>复用父前缀、新 cache key</td><td><code>/branch</code> <code>/fork</code></td><td><code>/fork</code></td><td><code>/fork</code> <code>/branch</code></td></tr>
+  </table>
+  <div class="callout ex"><span class="lbl">最能说明问题的一条：/btw 的 skipCacheWrite</span>Claude Code 的旁问不是设 timeout/ttl，而是 <code>runForkedAgent({ maxTurns:1, canUseTool:deny, <b>skipCacheWrite:true</b> })</code>——cache 写标记从"最后一条"移到"倒数第二条"，<b>只读父前缀、不把自己尾巴写进 KV cache</b>。这证明 client 已经在<b>逐命令地精细操作服务端 KV 的读/写</b>——server 若还当自己无状态，这套语义根本无从落地。</div>
+
+  <h4>细化观点：为什么 server 必须"有状态"——两条轴</h4>
+  <div class="mermaid">
+flowchart LR
+  H["agent client<br/>改写上下文<br/>(A/B/C/D)"] --> P["prompt 前缀<br/>相对上轮变在哪"]
+  P --> S["server 判新旧<br/>身份轴 + 内容轴"]
+  S --> R["路由 + KV 保留/淘汰<br/>只传增量 KV"]
+  </div>
+  <div class="grid">
+    <div class="card"><h4>轴 A · 身份轴（会话认识吗）</h4><p class="sub">按 <code>session_id</code> 记住"上一轮落在哪个 worker（+dp rank）"，带 TTL 覆盖 agent 思考/工具间隙。<b>回头客</b> → 路由回原 worker（那里握着温 KV），prefill 只传 delta；<b>生客/过期/被全清换了 id</b> → 冷路由。<br/>→ 这要求 server 维护 <code>session→(worker,dp_rank)</code> 落点表——<b>天然是有状态的</b>。</p></div>
+    <div class="card"><h4>轴 B · 内容轴（前缀缓存里有吗）</h4><p class="sub">把 prompt 切块算指纹、查全局 KV 索引：命中足够长前缀 → <b>内容温</b>（只重算尾部）；查不到 → <b>内容冷</b>（整段重算）。<br/>→ server 要维护跨实例的<b>前缀指纹索引</b> + 块生命周期（保留/迁移/淘汰）。</p></div>
+  </div>
+  <div class="callout key"><span class="lbl">最隐蔽的非对称 & 量化收益</span><b>"身份温、内容冷"（换头/压缩）</b>是最大的坑：会话亲和让你以为省了，其实前缀已废、这一轮照样贵——所以<b>压缩的频率与切点直接决定命中率的周期性塌陷</b>。反过来，把有状态调度做对，收益很实：mori-scheduler 实测 <code>x-mori-session-id</code> 会话亲和让 <b>TTFT −76%</b>。无状态 RR/P2C 在 agent 负载下会把温 KV 白白浪费掉。</div>
+
+  <div class="callout ex"><span class="lbl">对 MORI 的立身点</span>agent 时代的 serving 是一条贯穿两端的链：<b>client 的 harness 操作（A/B/C/D + 旁问/分叉）↔ server 的 KV 调度（两轴判新旧 + 读写解耦）必须协同</b>。几条直接推论：① <b>保护前缀开头比优化结尾值钱</b>（system/memory/tool 定义要稳）；② <b>压缩要晚、要少、多留尾</b>；③ <b>把"读缓存/写缓存"解耦（skipCacheWrite 旁问）上升为 server 一等能力</b>；④ session id 要稳定且在 TTL 内复用。这正是通用 serving 给不了、而 MORI 同时握着 serving + tool 两端控制权能做的差异化。</div>
 
   <h3 id="b2">B2 · 例子②：mixed mode 下 KV cache 的"转换"</h3>
   <p>"mixed mode" 指 prefill 与 decode 混合/分离下，多轮 agent 的 KV cache 如何被处理。核心是 <b>PD 分离</b> 与 <b>append-prefill</b>。</p>
