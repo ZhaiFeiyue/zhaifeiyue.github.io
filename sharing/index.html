@@ -80,9 +80,14 @@
   <a href="#idle">B3.4 空闲感知 · 2606.00866</a>
   <a href="#b4">B4 预测 vs 观测</a>
   <a href="#b5">B5 KV 分层 offload</a>
-  <h4>四 · 收尾</h4>
-  <a href="#c1">C1 社区 vs 学术</a>
-  <a href="#c2">C2 趋势 · MORI 启示</a>
+  <h4>四 · KimiPoC 自研实践</h4>
+  <a href="#poc-loop">自研 Agent Loop</a>
+  <a href="#poc-swe">SWE 提升实践</a>
+  <a href="#poc-subagent">Subagent 设计</a>
+  <a href="#poc-infra">对 Infra 的要求</a>
+  <h4>五 · 收尾</h4>
+  <a href="#c1">社区 vs 学术</a>
+  <a href="#c2">趋势 · MORI 启示</a>
 </nav>
 
 <main>
@@ -185,6 +190,7 @@ flowchart TB
   <div class="callout key"><span class="lbl">金句</span>逆向分析 Claude Code 得到的比例：<b>约 1.6% 是"决策逻辑"，98.4% 是确定性的基础设施</b>（上下文管理、工具执行、权限、错误恢复、缓存）。<span class="ref">2604.14228</span></div>
   <div class="card"><h4>Harness 的职责清单</h4>
   <p class="sub">① 上下文拼装与压缩 · ② 工具调用与结果回填 · ③ 权限/安全边界 · ④ 错误恢复与重试 · ⑤ prompt/KV 缓存复用 · ⑥ 可观测与审计。<b>护城河在这里，不在 loop 结构本身。</b></p></div>
+  <div class="callout ex"><span class="lbl">最新工作</span><b>SmoothAgent（lookahead context engineering）</b>：把 summarization/offload/子代理隔离等"上下文变换"识别为<b>可分段、与未来 token 无关</b>，于是能<b>异步提前</b>执行、预备好变换后的 KV，直接替换而不阻塞主链路——TTFT 最高降 11.9×（基于 SGLang）。<span class="ref">2607.00151</span> 这类"上下文变换提前算"正把 harness 的上下文管理和 serving 调度打通。</div>
 
   <h3 id="a3">A3 · Loop vs 结构化 DAG</h3>
   <p>把 agent 执行抽象成调度器五元组，用"就绪单元数 <code>|U|</code>"衡量：ReAct loop 是 <code>|U|=1</code>，结构化 DAG 是 <code>|U|≥1</code>（可并行）。</p>
@@ -246,7 +252,8 @@ flowchart LR
 
   <h4>3.1 路由/负载均衡的演进</h4>
   <div class="kf">无状态(RR / Random / P2C) → 一致性哈希 → <b>cache-aware(Radix Tree)</b> → <b>session 亲和</b></div>
-  <p class="sub">核心矛盾：cache 亲和（把请求发去有它 KV 的实例）vs 负载均衡。新做法只均衡"每个 session 的<b>首个</b>请求"，其余走 cache-aware。<span class="ref">DualMap / SMetric 2607.08565</span></p>
+  <p class="sub">核心矛盾：cache 亲和（把请求发去有它 KV 的实例）vs 负载均衡。</p>
+  <div class="callout ex"><span class="lbl">最新工作</span><b>SMetric（balanced session-centric scheduling）</b>：洞察到"只均衡每个 session 的<b>首个</b>请求"就够——首请求纯按负载均衡分发，后续请求走 cache-aware 最大化本地 KV 复用，再配一个全局 KV store 兜底。既不牺牲复用、又不压垮少数实例。colocation 下集群 TPS +10–16%，disagg 下 prefill TPS +2–34%。<span class="ref">2607.08565</span></div>
 
   <h4>3.2 调度单元的"上移"（贯穿主线）</h4>
   <div class="mermaid">
@@ -308,9 +315,75 @@ flowchart TB
   </ul>
   </section>
 
-  <!-- PART 4 -->
+  <!-- PART 4 · KimiPoC -->
   <section>
-  <h2 id="c1">第四部分 · 社区 vs 学术界的倾向性（例子③）</h2>
+  <h2 id="poc">第四部分 · KimiPoC：我们自研的 Agent Loop 与 SWE 实战</h2>
+  <p class="sub">前面讲的是"业界怎么做"；这一部分讲"<b>我们自己怎么做的</b>"——在自研 orchestrator + 自建 sandbox + 自部署 Kimi-K2.6 serving 上，做了一个完整的 coding agent，并把 SWE-bench 分数从基线一路打上去。所有结论都来自我们自己的真实跑测。</p>
+
+  <h3 id="poc-loop">4.1 为什么要自研 Agent Loop</h3>
+  <div class="callout key"><span class="lbl">关键发现</span>我们探针测过：开源 sglang serving <b>不支持</b> Moonshot 托管版的 <code>swarm</code> 多代理参数（发过去被静默忽略）。所以"多代理编排必须自己在 orchestrator 里实现"——这也直接呼应了 §A2 的结论：<b>护城河在 harness/编排，不在模型接口。</b></div>
+  <p>自研 loop 用 LangGraph 骨架，三节点循环：</p>
+  <div class="mermaid">
+flowchart LR
+  IN([task]) --> CC[condense_context<br/>压缩/拼装上下文]
+  CC --> LLM[llm_node<br/>Kimi-K2.6 推理]
+  LLM -->|工具调用| TN[tools_node<br/>bash/read/str_replace/task...]
+  TN --> CC
+  LLM -->|完成| OUT([patch/结果])
+  </div>
+  <p class="sub">组件：自研 orchestrator（<code>agent_graph.py</code> + <code>swebench_runner.py</code>）· 自建 sandbox（TCS pods）· 自部署 Kimi-K2.6（多 TP4 实例并行）。</p>
+
+  <h3 id="poc-swe">4.2 SWE 提升实践：什么真正管用</h3>
+  <table>
+   <tr><th>基准</th><th>配置</th><th>Resolve</th></tr>
+   <tr><td>Lite hard-30</td><td>基线（无 str_replace）</td><td>5/30（17%）</td></tr>
+   <tr><td>Lite hard-30</td><td>+ str_replace + 语法门</td><td>9/30（30%）</td></tr>
+   <tr><td>Lite hard-30</td><td>+ reproduce-first + retry-on-empty + max-turns</td><td><b>19/30（63%，修正评分后）</b></td></tr>
+   <tr><td>Verified-100</td><td>全套 harness · 2×TP4</td><td><b>59/100（59%）</b></td></tr>
+  </table>
+  <p class="sub">对照：SWE-bench Lite 全量基线约 24.3%。<b>harness 工程把 Kimi-K2.6 从 17% 拉到 ~60%。</b></p>
+
+  <h4>真正"推动指针"的三件事（按贡献排序）</h4>
+  <ol class="big">
+    <li><b><code>str_replace</code> + 语法门</b>（17%→30%，两次跑都 9/30，唯一可复现的稳定收益）：精确+唯一匹配、Python 语法检查、出错不写入。根治了行级 <code>file_patch</code> 造成的 <code>NameError/SyntaxError</code> 代码损坏。用 <code>python_exec</code> 片段实现 → 无需重建 sandbox 镜像。（借鉴 OpenHands ACI editor："编辑器质量 > 模型"）</li>
+    <li><b>retry-on-empty + reproduce-first + max-turns 25→60</b>（最大杠杆，30%→53%/63%）：头号失败模式是 <b>empty-patch</b>——"探索了半天但从没改代码"（约占一半，sympy 7/7）。针对它把空补丁从 ~15 降到 4。</li>
+    <li><b>评分器 per-repo 修复</b>：in-sandbox grader 把 test_patch heredoc 里的 pytest 行误当命令、django FAIL_TO_PASS 是文档串导致 shell 崩——修好后回收了多例"假失败"（Lite 3 例、Verified 7 例），<b>真实分数比原始更高</b>。</li>
+  </ol>
+  <div class="callout"><span class="lbl">诚实的边界</span>N=30 单次跑有 ±3–5 的方差（我们见过 9/14/16/19）；str_replace 以下的增量特性在噪声地板附近，需要 N≥100 才能分辨信号。—— 这也是为什么我们更信 Verified-100 的 59%。</div>
+
+  <h3 id="poc-subagent">4.3 Subagent：agent-as-a-tool</h3>
+  <p>子代理 = <b>把"另一个 agent loop"当一次工具调用</b>：全新隔离的消息历史、跑到结束、<b>只把最终摘要</b>返回给父代理。子代理嘈杂的探索（读文件/grep/日志）留在子窗口里被丢弃 → 上下文经济 + 可并行。</p>
+  <div class="card"><h4>两条正交的轴（核心心智模型）</h4>
+  <p class="sub"><b>上下文</b>（默认独立、一次性、返回摘要；<code>fork</code> 是显式 opt-in 才继承父上下文）与 <b>sandbox</b>（借用父 pod / 独占自己的 pod）是<b>相互独立</b>的两个维度。一个"改完代码交回父代理"的子代理，上下文仍完全独立——它只是<b>借用父的 sandbox</b> 干活，再摘要回来（等价于一次 bash 调用）。</p></div>
+  <table>
+   <tr><th>模式</th><th>sandbox</th><th>写仓库?</th><th>典型用途</th></tr>
+   <tr><td>borrow-parent(write)</td><td>共享父 pod，串行</td><td>是（持久）</td><td>实现者交接、P1 continue-fixing</td></tr>
+   <tr><td>borrow-parent(read)</td><td>共享父 pod</td><td>否（/tmp）</td><td>轻量探索</td></tr>
+   <tr><td>own pod</td><td>独立 pod</td><td>是（自己的副本）</td><td>best-of-N、P1 verifier</td></tr>
+  </table>
+  <p class="sub">安全不变量：<b>一个 pod 同时只能有一个写者</b>（borrow 是串行的、父被 await 阻塞；并行写必须各用独立 pod）；<code>MAX_SUBAGENT_DEPTH=1</code>（子代理不能再生子代理）；一次性、不 resume。</p>
+  <div class="grid">
+    <div class="card"><h4>P1 · 验证器重试（oracle-free）</h4><p class="sub">模型只<b>写复现</b>，harness 判定：复现必须在<b>未修复</b>代码上先 FAIL、打补丁后 PASS 才算数；<b>单调回退</b>（新补丁只有让复现转 PASS 才保留，否则 revert）→ 免疫 fix-churn 和假 FAIL。绝不读 FAIL_TO_PASS。</p></div>
+    <div class="card"><h4>P2 · best-of-N（oracle-free 选择）</h4><p class="sub">N 个独立 pod 并行解，选择器用"复现是否 pre-fix FAIL + 更小 diff + lint 干净"等无 oracle 信号选赢家，只对赢家评一次分。</p></div>
+  </div>
+  <div class="callout ex"><span class="lbl">巧思</span>串行子代理本身就是一个<b>任务级上下文压缩</b>原语：把子任务几十轮探索<b>坍缩成一条摘要</b>——"委派子任务"和"压缩该子任务轨迹"是同一个操作（与 §A2/token 级压缩正交）。</div>
+
+  <h3 id="poc-infra">4.4 Subagent 对 Infra（MORI serving）的要求</h3>
+  <p>子代理这个算法特性，直接给底层 serving 提了新需求——正好把本场"算法 ↔ infra"两条线接起来：</p>
+  <table>
+   <tr><th>需求</th><th>为什么</th><th>状态</th></tr>
+   <tr><td><b>fork 的亲和路由</b></td><td>fork 继承父上下文 → 必须路由到持有父历史 KV 的 worker（<b>prefill+decode 都要</b>，因 decode 亲和把历史 KV 累积在 decode worker）。用 <code>x-mori-affinity-session-id</code>=父 id 做路由键、<code>x-mori-session-id</code>=子 id 做 KV 归属键</td><td>已实现（mori-sched 优先用亲和键）</td></tr>
+   <tr><td><b>独立子代理 = 无亲和</b></td><td>默认独立上下文，KV 前缀不共享 → free/least-loaded 放置即可</td><td>已有</td></tr>
+   <tr><td><b>EvictSession（按 session 急切驱逐 KV）</b></td><td>一次性子代理返回即"死"，其 KV 前缀不该污染 radix cache</td><td>⛔ 卡在 sglang（只有 LRU / 全局 flush，无按 session evict）</td></tr>
+   <tr><td><b>ClonePod（CoW 秒级克隆）</b></td><td>best-of-N 需要从父状态种子化 N 个 pod</td><td>tar-relay 层已实现；containerd CoW 为北极星</td></tr>
+   <tr><td><b>子代理 pod 租约 &lt; 父</b></td><td>孤儿一次性 pod 应比父更早回收</td><td>已实现（子 ~60s vs 父 ~90s）</td></tr>
+  </table>
+  <div class="callout key"><span class="lbl">对 MORI 的意义</span>subagent 把"上下文独立性"和"亲和路由/急切驱逐"变成了 serving 的一等需求。<b>fork 的双侧（prefill+decode）亲和</b>、<b>按 session 的 KV 驱逐</b>、<b>pod 差异化租约</b>——这些正是 MORI 相对通用 serving 的差异化价值点。</div>
+  </section>
+
+  <!-- PART 5 -->
+  <section>
+  <h2 id="c1">第五部分 · 社区 vs 学术界的倾向性（例子③）</h2>
   <div class="two card" style="padding:0">
     <div><h4>学术界</h4><p class="sub">追求形式化保证（competitive ratio / Lipschitz 界）、命名新范式、benchmark 驱动、"预测 vs 观测"之争。</p></div>
     <div><h4>工业/社区</h4><p class="sub">harness 工程、prompt caching 经济学、可复现、开源底座（vLLM/SGLang）、"够用就好"。</p></div>
