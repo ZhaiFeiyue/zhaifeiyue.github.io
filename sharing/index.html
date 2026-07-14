@@ -66,14 +66,11 @@
   <h4>一 · 系统全貌</h4>
   <a href="#lifecycle">1.1 请求生命周期</a>
   <a href="#components">1.2 组件全解（10）</a>
-  <h4>二 · 算法：问题驱动</h4>
-  <a href="#a1">2.1 根问题 lost-in-middle</a>
-  <a href="#a2">2.2 解法谱 学术→工业</a>
-  <a href="#a3">2.3 压缩 vs prefix-cache</a>
-  <a href="#a4">2.4 CC/Cursor 更新时间线</a>
-  <a href="#a5">2.5 Subagent 为何关键</a>
-  <a href="#a6">2.6 Kimi Agent Swarm</a>
-  <a href="#a7">2.7 其他算法维度</a>
+  <h4>二 · 算法：4 个核心问题</h4>
+  <a href="#a1">① 长上下文用不好 → subagent</a>
+  <a href="#a2">② 降成本 → mixed-model + 跨模型KV</a>
+  <a href="#a3">③ 隐藏等待 → 投机执行</a>
+  <a href="#a4">④ 用多大模型 / 怎么编排</a>
   <h4>三 · Infra 与调度</h4>
   <a href="#b1">B1 传统 serving 失效</a>
   <a href="#b2">B2 mixed-mode KV 转换</a>
@@ -180,74 +177,42 @@ flowchart TB
 
   <!-- PART 2 -->
   <section>
-  <h2>第二部分 · Agent 算法：为什么会演化成今天这样</h2>
-  <p class="sub">这一部分不按"技术清单"讲，而按<b>一条因果链</b>讲：<b>根问题（长上下文不好使）→ 引出一整套解法（学术到工业）→ 解法自身的矛盾（压缩 vs 缓存）→ 最终催生 subagent / swarm</b>。这样才能看懂 Claude Code CLI、Cursor 这半年的每一步更新到底在解决什么。</p>
+  <h2>第二部分 · Agent 算法：4 个核心问题与解决方向</h2>
+  <p class="sub">算法部分不铺技术清单，只抓 <b>4 个真正驱动 agent 演化的问题</b>，每个讲清"问题是什么 / 解决方向 / 到哪一步了"。核心是<b>问题</b>与<b>方向</b>。</p>
 
-  <h3 id="a1">2.1 一切的根问题：长上下文的 "lost in the middle"</h3>
-  <p>Agent 是多轮循环，上下文只会越来越长。但学术界反复证明：<b>"塞得下" ≠ "用得好"</b>——放在上下文中间的信息会被系统性忽略。</p>
+  <h3 id="a1">① 长上下文用不好（lost-in-middle）→ 上下文管理 → Subagent</h3>
+  <p>这是最主线的一条因果链。Agent 是多轮循环、上下文越滚越长，但学术界反复证明 <b>"塞得下" ≠ "用得好"</b>：</p>
   <table>
    <tr><th>结论</th><th>论文</th></tr>
-   <tr><td>信息放在开头/结尾好用，放中间显著变差（U 型曲线）；多跳 QA 更明显</td><td>Lost in the Middle & In-Between <span class="ref">2412.10079</span></td></tr>
-   <tr><td>就算"针"能被检索到，光是上下文变长本身就拉低表现</td><td>Context Length Alone Hurts <span class="ref">2510.05381</span></td></tr>
-   <tr><td>超越字面匹配的长文评测：真实推理随长度崩得更快</td><td>NoLiMa <span class="ref">2502.05167</span></td></tr>
-   <tr><td>长上下文智能退化有"临界阈值"，归因 RoPE 长程衰减 + 注意力弥散</td><td>Intelligence Degradation <span class="ref">2601.15300</span></td></tr>
-   <tr><td>训练侧补救：数据合成让模型"真正用满上下文"</td><td>Make Your LLM Fully Utilize Context <span class="ref">2404.16811</span></td></tr>
+   <tr><td>信息放中间显著变差（U 型），多跳更明显</td><td>Lost in the Middle & In-Between <span class="ref">2412.10079</span></td></tr>
+   <tr><td>光是上下文变长本身就拉低表现（即使能检索到）</td><td>Context Length Alone Hurts <span class="ref">2510.05381</span></td></tr>
+   <tr><td>长上下文智能退化有临界阈值（RoPE 衰减+注意力弥散）</td><td>Intelligence Degradation <span class="ref">2601.15300</span> · NoLiMa <span class="ref">2502.05167</span></td></tr>
   </table>
-  <div class="callout key"><span class="lbl">因果起点</span>正因为"长上下文天然不好使"，agent 才<b>不能</b>把所有历史一股脑塞进去。<b>如何把"对的信息、放在对的位置、别太长"——就是下面所有算法工作的共同母题。</b></div>
+  <p><b>解决方向：不硬塞，而是"选 / 压 / 换"上下文</b>——学术打地基（数据合成 <span class="ref">2404.16811</span>、对比解码 <span class="ref">2506.08371</span>），工业做工程（Cursor DCD 上下文虚拟化、Claude Code 5 层 compaction <span class="ref">2604.14228</span>、RLM 外部存储 <span class="ref">2512.24601</span>、PEEK 定向地图 <span class="ref">2605.19932</span>、CMV 结构无损裁剪 <span class="ref">2602.22402</span>）。</p>
+  <div class="callout ex"><span class="lbl">但压缩自带矛盾：压缩 vs prefix-cache</span>我们实测（matplotlib-24149）：不压缩 prefix 命中爬到 <b>96.95%</b>；一开压缩就变<b>锯齿</b>——每次压缩当轮塌到 ~30%（改了历史前缀 → 其后缓存全失效）。业界解法是 Anthropic 在<b>缓存查找之后于 API 层删（删而不失效）</b>；我们在 sglang 上靠<b>"晚压少压 + summary 钉死 offset + 只删尾不改头"</b>，离线 61%→93.5%。<span class="ref">2604.14228</span></div>
+  <div class="callout key"><span class="lbl">方向的终点 = Subagent</span><b>Subagent = 把子任务当一次工具调用</b>：独立上下文、只回一条摘要。它同时做到 ①对抗 lost-in-middle（噪声不进主上下文）②<b>任务级压缩</b>（子轨迹坍缩成摘要，比 token 级更彻底）③<b>prefix-safe</b>（不改父前缀，绕开压缩伤缓存的矛盾）④可并行。<b>Kimi Agent Swarm</b> 再把它推成"模型原生的多代理并行"——用"多个隔离上下文并行"替代"一个巨型上下文"。（我们的实现见<a href="#poc-subagent">第四部分</a>；半年 CC/Cursor 迭代主线：溢出→压缩→压缩伤缓存→<b>subagent</b>→记忆/导航）</div>
 
-  <h3 id="a2">2.2 于是有了一整套解法：从学术到工业</h3>
-  <p>面对 lost-in-the-middle，解法沿两条路线展开，学术打地基、工业做工程：</p>
-  <div class="grid">
-    <div class="card"><h4>学术侧（改模型/解码/评测）</h4><p class="sub">· 训练：数据合成用满上下文 <span class="ref">2404.16811</span><br/>· 解码：对比解码缓解"后验显著性衰减" <span class="ref">2506.08371</span><br/>· 评测：NoLiMa / Retrieval-at-limit 把问题量化 <span class="ref">2502.05167 / 2511.05850</span></p></div>
-    <div class="card"><h4>工业侧（context engineering：不硬塞，选/压/换）</h4><p class="sub">· <b>Cursor DCD</b>：上下文虚拟化，文件系统按需 lazy-load，不预塞<br/>· <b>Claude Code 5 层 compaction</b>：预算→snip→microcompact→collapse→auto <span class="ref">2604.14228</span><br/>· <b>RLM</b>：把 context 当外部存储、递归子调用 <span class="ref">2512.24601</span><br/>· <b>PEEK</b>：固定预算的"定向地图" <span class="ref">2605.19932</span><br/>· <b>CMV</b>：结构无损裁剪 + 压缩 cost model <span class="ref">2602.22402</span></p></div>
-  </div>
-  <div class="callout"><span class="lbl">一句话</span>学术把"为什么不好使"讲清楚（位置偏置 / 注意力弥散 / RoPE 衰减）；工业把"那就别硬塞"落成产品（虚拟化 / 压缩 / 外部存储 / 地图）。<b>两边指向同一件事：主动管理进入模型的那段上下文。</b></div>
-
-  <h3 id="a3">2.3 但压缩自身有个大矛盾：压缩 vs prefix-cache</h3>
-  <p>"压缩上下文"听起来只有好处，实测却踩到一个核心矛盾——<b>压缩省了长度，却打爆了 KV 前缀缓存</b>。</p>
-  <div class="callout ex"><span class="lbl">我们的实测（matplotlib-24149，同题三配置）</b></span>不压缩：prefix 命中随轮次爬到 <b>96.95%</b>；开压缩后命中变成<b>锯齿</b>——平时 94–99%，<b>每次压缩当轮塌到 ~30%</b>。根因：压缩改写了历史前缀 → 前缀里任何字节变化都使其后缓存全部失效 → 那一轮几乎重新 prefill 整段 context。<b>"早压 / 频繁压" 是 prefix-cache 反模式。</b></div>
-  <div class="grid">
-    <div class="card"><h4>业界怎么解（Claude Code / Anthropic）</h4><p class="sub">在<b>缓存查找之后</b>于 API 层删旧 tool 结果（<code>context-management</code> beta / <code>cache_edits</code> microcompact）→ <b>删而不改客户端前缀字节 → 不失效</b>；把 prefix 命中当一等指标监控（cache-break detection）。<span class="ref">2604.14228</span></p></div>
-    <div class="card"><h4>我们在 sglang(RadixAttention) 上的落地</h4><p class="sub">sglang 是自动前缀缓存，原则同样是<b>"不改前缀"</b>：① 晚压少压（阈值贴到 ~85%，实测 128K 几乎不触发）② summary 钉死在固定 offset、滚动更新 ③ <b>只删尾、不改头</b>，一次压狠、压后冻结 ④ 大 tool 输出确定性 offload（byte-stable）。离线回放：滑窗 61% → 新栈 <b>93.5%</b>。</p></div>
-  </div>
-  <div class="callout key"><span class="lbl">最优解反直觉</span>不是"更聪明地压缩"，而是"<b>尽量不压（给够 context）+ 压时不动前缀 + 盯住命中率</b>"。—— 这条矛盾，正是下一步 subagent 登场的伏笔。</div>
-
-  <h3 id="a4">2.4 从年初到现在：Claude Code CLI / Cursor 的更新在解决什么</h3>
-  <p class="sub">把这半年工具侧的迭代按"解决的问题"归纳成几波（源自 KB 对 Claude Code 源码 / Cursor 的分析）：</p>
-  <div class="mermaid">
-flowchart LR
-  W1["第1波<br/>上下文溢出<br/>→ compaction/summary"] --> W2["第2波<br/>压缩打爆缓存<br/>→ microcompact/cache-edit<br/>删而不失效"]
-  W2 --> W3["第3波<br/>单上下文塞不下+被污染<br/>→ 上下文虚拟化(Cursor DCD)<br/>+ 按需检索"]
-  W3 --> W4["第4波 ⭐<br/>长程任务噪声累积<br/>→ Subagent/Task 隔离"]
-  W4 --> W5["第5波<br/>导航/记忆<br/>→ orientation map/主动记忆"]
-  </div>
-  <p class="sub">主线很清楚：<b>先解决"塞不下"，再解决"压缩伤缓存"，再解决"塞得下也用不好（lost-in-middle）"——最后一步的答案，就是 subagent。</b></p>
-
-  <h3 id="a5">2.5 Subagent 为什么变得尤为重要（它到底解决什么）</h3>
-  <p><b>Subagent = 把"另一个 agent loop"当一次工具调用</b>：全新隔离上下文、跑到完、<b>只把最终摘要</b>返回父代理。它一次性解决了前面几个问题：</p>
+  <h3 id="a2">② 降成本 → mixed-model 执行 → 跨模型 KV 共享（核心难题）</h3>
+  <p>Cursor 引入了 <b>mixed-model 执行</b>：<b>同一个 chat 里按问题难度切换 mode / model</b>——简单步用小/快模型，难步才上强模型，从而大幅降成本；Claude Code 也有类似的多模型/多档位执行。</p>
+  <div class="callout key"><span class="lbl">它引入的核心算法问题</span>不同 model <b>权重不同</b> → 同样的 token 序列产生的 <b>KV cache 不一样</b> → 在"模型切换点"，前面用 model A 建好的 KV <b>无法被 model B 复用</b>，prefix cache 在切换处失效、要重新 prefill 整段历史。<b>省了 token 单价，却可能赔上 KV 重算</b>——mixed-model 的收益能不能落袋，取决于能否跨模型共享/复用 KV。</div>
+  <p><b>KB 调查到的解决方向（跨模型 KV 共享）：</b></p>
   <table>
-   <tr><th>它解决的问题</th><th>机制</th></tr>
-   <tr><td><b>对抗 lost-in-middle</b></td><td>子任务几十轮探索的噪声不进主上下文 → 主上下文短、干净、关键信息不被冲淡</td></tr>
-   <tr><td><b>天然压缩（且是最优压缩）</b></td><td>子任务轨迹<b>坍缩成一条摘要</b>回到父 → "委派子任务"和"压缩该子任务"是同一操作；比 token 级摘要更彻底</td></tr>
-   <tr><td><b>prefix-cache 友好</b></td><td>子上下文独立、结束即弃 → <b>父的前缀字节完全不动</b>（绕开 2.3 的压缩伤缓存矛盾）</td></tr>
-   <tr><td><b>可并行</b></td><td>多个子代理各自独立上下文/沙箱并行探索（best-of-N 等）</td></tr>
+   <tr><th>方向</th><th>做法</th><th>出处</th></tr>
+   <tr><td><b>冻结共享 base，让 KV 天生相同</b></td><td>PrefillShare：冻结 base prefill 模块 + cache-conditioned 微调 → N 个模型共享同一份 KV（O(N)→O(1)），disaggregated，吞吐 3.9×</td><td>2602.12029</td></tr>
+   <tr><td><b>跨模型精确 cache 复用</b></td><td>ICaRus：冻结 encoder + LoRA decoder，全层 KV 精确共享；8 agent 下 P95 11.1×、吞吐 3.8×（代价 2× decode compute）</td><td>2603.13281</td></tr>
+   <tr><td><b>跨上下文/agent 的 KV 通信对齐</b></td><td>KVCOMM：在线复用其他 context 的 KV，用 anchor/offset + RoPE 对齐做"KV 通信"</td><td>2510.12872</td></tr>
+   <tr><td><b>multi-LoRA 同 base 共享</b></td><td>ForkKV：fork/CoW 拆共享 bCache（xW）+ per-adapter rCache（xA_i），per-agent 内存趋近 1.6%</td><td>2604.06370</td></tr>
   </table>
-  <div class="callout ex"><span class="lbl">对照 2.3</span>Token 级压缩改历史 → 伤前缀缓存；<b>subagent 是"任务级压缩"</b>——它不改父的历史，只在父里追加一条摘要 → 既压缩又 prefix-safe。这就是为什么半年迭代最后收敛到 subagent。（我们自己的 subagent 设计与实现见<a href="#poc-subagent">第四部分 KimiPoC</a>）</div>
+  <div class="callout ex"><span class="lbl">一句话</span>mixed-model 想省钱，前提是"切换模型时别丢 KV"。<b>要么让不同模型共享同一份 KV（冻结 base：PrefillShare/ICaRus），要么把一个模型的 KV 变换/对齐给另一个用（KVCOMM）。</b>这是 mixed-model 能否真正降本的关键，也是 serving 侧要接的活。</div>
 
-  <h3 id="a6">2.6 Kimi 的 Agent Swarm 解决什么问题</h3>
-  <p><b>Agent Swarm</b>（Moonshot 托管版）把 subagent 从"一个父串行调子"推到"<b>模型原生的多代理并行编排</b>"：一个协调者把任务分解、并行派发给多个子代理、再汇总。</p>
-  <div class="grid">
-    <div class="card"><h4>解决什么</h4><p class="sub">单 agent 的两个天花板：① 串行——探索/子任务只能一个个来；② 上下文——再压也压不过"一个巨型上下文"的物理上限与 lost-in-middle。swarm 用<b>"多个隔离上下文并行"替代"一个巨型上下文"</b>，同时拿到并行度 + 上下文隔离。</p></div>
-    <div class="card"><h4>我们的发现（呼应 KimiPoC）</h4><p class="sub">探针实测：开源 sglang serving <b>静默忽略</b> <code>swarm</code> 参数（托管特性，开源权重上没有）→ 所以我们<b>自己在 orchestrator 里实现了同等的多代理编排</b>（agent-as-a-tool + P1/P2）。模型权重仍能胜任协调者/子代理角色。<span class="ref">见第四部分</span></p></div>
-  </div>
-  <div class="callout key"><span class="lbl">收束</span>从 lost-in-middle 一路推下来：单上下文用不好 → 压缩 → 压缩伤缓存 → <b>subagent（任务级压缩+隔离，prefix-safe）</b> → <b>swarm（并行化的 subagent）</b>。这是一条完整的因果链，而不是一堆并列技巧。</div>
+  <h3 id="a3">③ 隐藏等待（工具 stall）→ 投机执行</h3>
+  <p>Agent 大量时间卡在等工具返回（CPU 侧可占端到端 88% 延迟）。方向：<b>在模型"思考"时提前把大概率要调的工具跑掉</b>，把等待藏进思考时间。</p>
+  <div class="callout"><span class="lbl">解决方向</span>PASTE：模式感知投机执行下一个工具 <span class="ref">2603.18897</span>；Speculative Tool Calls：小模型投机预测 tool call 并异步执行 <span class="ref">2512.15834</span>。原理同投机解码——"赌大概率的未来，赌对白赚、赌错丢弃"，从 token 级扩展到 tool 级。</div>
 
-  <h3 id="a7">2.7 其他算法维度（简要，配 KB 出处）</h3>
+  <h3 id="a4">④ 该用多大模型 / 怎么编排</h3>
   <div class="grid">
-    <div class="card"><h4>Loop vs DAG / Harness</h4><p class="sub">SGH 用 <code>|U|</code> 连续谱统一 70+ 项目 <span class="ref">2604.11378</span>；但生产验证"loop + 强 harness 已够用"（Claude Code "1.6% 决策 + 98.4% 基础设施" <span class="ref">2604.14228</span>）。</p></div>
-    <div class="card"><h4>模型级路由</h4><p class="sub">不是每步都用最强模型：RouteLLM <span class="ref">2406.18665</span> / OI-MAS <span class="ref">2601.04861</span> / Chimera <span class="ref">2603.22206</span>；最强模型可能是最差 planner <span class="ref">AgentOpt 2604.06296</span>。</p></div>
-    <div class="card"><h4>投机执行</h4><p class="sub">思考时提前跑下一个工具，藏起 tool stall：PASTE <span class="ref">2603.18897</span> / Speculative Tool Calls <span class="ref">2512.15834</span>。</p></div>
-    <div class="card"><h4>主动记忆</h4><p class="sub">被动检索 → 可学习记忆技能：AutoMem <span class="ref">2607.01224</span> / Proactive Memory <span class="ref">2607.08716</span> / 模型自驱动 GC SideQuest <span class="ref">2602.22603</span>。</p></div>
+    <div class="card"><h4>模型级路由</h4><p class="sub">不是每步都用最强模型（与 ② 互补：② 管"切换后 KV 怎么办"，这里管"何时切"）：RouteLLM <span class="ref">2406.18665</span> / OI-MAS <span class="ref">2601.04861</span> / Chimera <span class="ref">2603.22206</span>；反直觉——最强模型可能是最差 planner <span class="ref">AgentOpt 2604.06296</span>。</p></div>
+    <div class="card"><h4>Loop vs DAG / Harness</h4><p class="sub">SGH 用 <code>|U|</code> 连续谱统一 70+ 项目 <span class="ref">2604.11378</span>；但生产验证"loop + 强 harness 已够用"——Claude Code "<b>1.6% 决策 + 98.4% 基础设施</b>" <span class="ref">2604.14228</span>。护城河在 harness，不在 loop 结构。</p></div>
   </div>
   </section>
 
