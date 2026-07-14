@@ -856,6 +856,34 @@ flowchart LR
   </table>
   <div class="callout key"><span class="lbl">One mainline: the same "reuse the unchanged prefix" principle, carried to three layers</span>Agentic context grows linearly each turn, but <b>only the tail is new; the prefix is unchanged</b>. UMBP applies it to <b>KV</b> (a prefix that has fallen out of HBM stays routable, fetched back over RDMA rather than recomputed), DeltaTok applies it to <b>tokens</b> (re-encode only the new turn), and incremental transfer applies it to <b>P→D transfer</b> (send only the incremental pages). All three are "<b>don't do repeated work on the unchanged prefix</b>" — this is the whole stack's unifying lever.</div>
 
+  <h4>How incremental P→D transfer works across turns</h4>
+  <div class="card">
+  <svg viewBox="0 0 720 250" width="100%" style="max-width:720px" role="img" aria-label="Per-round P to D KV transfer schematic">
+    <text x="10" y="16" fill="#a6adc8" font-size="13">What crosses the P→D wire each round: round 1 sends the full prefix, later rounds send only the delta</text>
+    <!-- legend -->
+    <rect x="150" y="30" width="12" height="12" rx="2" fill="#8bd5a0"/><text x="167" y="40" fill="#a6adc8" font-size="11">decode already holds (radix cache)</text>
+    <rect x="400" y="30" width="12" height="12" rx="2" fill="#ffcf6b"/><text x="417" y="40" fill="#a6adc8" font-size="11">transferred P→D this round (Δ)</text>
+    <!-- Round 1 -->
+    <text x="142" y="90" text-anchor="end" fill="#a6adc8" font-size="12">Round 1</text>
+    <rect x="150" y="72" width="116" height="30" rx="4" fill="#ffcf6b"/><text x="208" y="91" text-anchor="middle" fill="#12202a" font-size="11">turn 0</text>
+    <text x="512" y="91" fill="#a6adc8" font-size="11">P→D: full prefix · TTFT <tspan font-weight="700" fill="#e8eaf2">2.44→1.06s</tspan></text>
+    <!-- Round 2 -->
+    <text x="142" y="138" text-anchor="end" fill="#a6adc8" font-size="12">Round 2</text>
+    <rect x="150" y="120" width="116" height="30" rx="4" fill="#8bd5a0"/><text x="208" y="139" text-anchor="middle" fill="#12202a" font-size="11">turn 0</text>
+    <rect x="266" y="120" width="116" height="30" rx="4" fill="#ffcf6b"/><text x="324" y="139" text-anchor="middle" fill="#12202a" font-size="11">turn 1</text>
+    <text x="512" y="139" fill="#a6adc8" font-size="11">P→D: Δ only (turn 1) · <tspan font-weight="700" fill="#e8eaf2">1.24→0.78s</tspan></text>
+    <!-- Round 3 -->
+    <text x="142" y="186" text-anchor="end" fill="#a6adc8" font-size="12">Round 3</text>
+    <rect x="150" y="168" width="116" height="30" rx="4" fill="#8bd5a0"/><text x="208" y="187" text-anchor="middle" fill="#12202a" font-size="11">turn 0</text>
+    <rect x="266" y="168" width="116" height="30" rx="4" fill="#8bd5a0"/><text x="324" y="187" text-anchor="middle" fill="#12202a" font-size="11">turn 1</text>
+    <rect x="382" y="168" width="116" height="30" rx="4" fill="#ffcf6b"/><text x="440" y="187" text-anchor="middle" fill="#12202a" font-size="11">turn 2</text>
+    <text x="512" y="187" fill="#a6adc8" font-size="11">P→D: Δ only (turn 2)</text>
+    <!-- baseline note -->
+    <rect x="150" y="216" width="348" height="20" rx="4" fill="none" stroke="#5a6078" stroke-dasharray="5 3"/><text x="324" y="230" text-anchor="middle" fill="#8891ac" font-size="10">baseline: re-transfers the WHOLE bar every round</text>
+  </svg>
+  <p class="sub">Baseline (radix cache off) re-ships the entire prefix every round — turn N pays to transfer everything turns 0…N-1 already sent. Incremental transfer sends <b>only the orange delta</b>, because decode's radix cache already holds the green part. The saving grows with the session, exactly where agentic traffic lives.</p>
+  </div>
+
   <h4>Key figures &amp; measured data</h4>
   <div class="grid">
     <div class="card" style="text-align:center"><img src="figures/incremental-kv-ttft.png" style="max-width:100%;border-radius:8px" alt="PD incremental KV transfer per-turn TTFT"><p class="sub"><b>Figure · PD incremental KV transfer</b> (1P1D×MI355X, DeepSeek-R1 MXFP4, DP8/TP8): the decode side keeps its radix cache across turns, and prefill transfers only the incremental pages. Later prefix-heavy turns save the most — round1 <b>2.44→1.06s</b>, round2 1.24→0.78s, <b>up to −57% in a single round, −21% averaged over three rounds</b> (1.73→1.37s), and frees prefill NIC egress. <span class="ref">sglang#26288</span></p></div>
