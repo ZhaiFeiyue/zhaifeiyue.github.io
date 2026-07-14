@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Draft-Conditioned Constrained Decoding for Structured Generation in LLMs — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Draft-Conditioned Constrained Decoding for Structured Generation in LLMs</h1>
+<div class="card-meta"><span class="badge badge-model">model</span> 2603.03305</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">constrained-decoding</span><span class="tag">structured-generation</span><span class="tag">kl-projection</span><span class="tag">test-time-scaling</span><span class="tag">tool-calling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2603.03305.html">← Synthesis</a>
+<a href="/overview/model.html">← model Survey</a>
+<a href="https://arxiv.org/abs/2603.03305" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="draft-conditioned-constrained-decoding-for-structured-generation-in-llms-—-l2">Draft-Conditioned Constrained Decoding for Structured Generation in LLMs — L2 <a class="heading-anchor" href="#draft-conditioned-constrained-decoding-for-structured-generation-in-llms-—-l2" aria-label="Link to draft-conditioned-constrained-decoding-for-structured-generation-in-llms-—-l2">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Constrained decoding masks+renormalizes each step; when the base model puts little mass on schema tokens, this is a reverse-KL projection with a large "projection tax" that steers toward valid-but-wrong outputs. DCCD first generates an unconstrained draft, then constrains conditioned on it — raising feasible mass, cutting distortion, keeping exact validity. +24pp on GSM8K (1B: 15.2%→39.0%).</p>
+
+<h2 id="2-痛点-方法-结果-q1-q2-q3">2. 痛点 / 方法 / 结果 (Q1 / Q2 / Q3) <a class="heading-anchor" href="#2-痛点-方法-结果-q1-q2-q3" aria-label="Link to 2-痛点-方法-结果-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 — 痛点.</strong> Hard structural constraints (JSON schema, CFG, tool-call signatures) are non-negotiable in agentic/tool pipelines: one bad brace breaks downstream execution. Standard constrained decoding (CD) guarantees validity by masking invalid tokens and renormalizing at each step — but this is not a passive filter. When the base model assigns low probability to the schema-forced token (e.g. <code>{</code>, <code>"</code>, a field name), renormalization is a large perturbation. Repeated across many low-entropy formatting steps, this induces a <em>trajectory bias</em> toward prefixes that are easy to keep valid, even when they correspond to a wrong solution. Prior work documents 10–30% degradation vs unconstrained generation.</p>
+
+<p><strong>Q2 — 方法.</strong> DCCD = training-free two-step inference that decouples <em>semantic planning</em> from <em>structural enforcement</em>. Step 1: draft $y \sim p_{\mathrm{draft}}(\cdot\mid x)$ — free-form reasoning/plan, <strong>not</strong> required to be valid. Step 2: constrained-decode the final structured output conditioned on $(x,y)$, masking on the same valid-next-token set $A(h_t)$ but scoring with the draft-conditioned distribution $p_2(\cdot\mid x,y,z_{<t})$. Optional best-of-$K$: sample $K$ drafts, pick the one with the largest cumulative log feasible mass $\sum_t\log\alpha$ (least distortion). The projector may be a <em>smaller</em> model than the drafter since Step 2 is mostly realization, not reasoning.</p>
+
+<ul>
+<li><strong>核心技术壁垒</strong>: the insight that feasible mass $\alpha(h_t)$ is <em>not fixed at inference</em> — while $\pi_\theta$ and the valid set $A(h_t)$ are fixed, the <em>conditioning context</em> is free, so appending a draft $d$ moves probability onto schema tokens ($\alpha(h_t;d)\gg\alpha(h_t)$) and shrinks the per-step $\mathrm{KL}=\log\frac1{\alpha}$ <strong>without relaxing any constraint</strong>. This reframes the quality-validity tradeoff as an artifact of <em>how</em> constraints are enforced, not an intrinsic cost.</li>
+</ul>
+
+<p><strong>Q3 — 结果.</strong> Across GSM8K, GSM-Symbolic, MATH500, FOLIO and 1B–14B models, DCCD gives the best aggregated strict accuracy at every scale, largest relative gains for small models (Qwen2.5-1.5B 22.8→36.8 avg). Test-time compute converts to accuracy better than CD (GSM8K 78→83 vs CD 64→73 as $n$: 1→13). ~78–80.5% win rate on non-verifiable summarization. +39% response confidence (0.527 vs 0.393).</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2603.03305/fig2.png" alt="Figure: DCCD vs standard constrained decoding data flow"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "Draft-Conditioned Constrained Decoding (DCCD) reduces distortion from structural constraints... DCCD instead first samples an unconstrained draft $y\sim\rho_\theta(\cdot\mid x)$ and conditions the next-token distribution on the draft... before applying the grammar mask.").</em></p>
+
+<p>Top row (CD): the base policy's next-token probs (e.g. mass on natural-language <code>Ok</code>, <code>Th</code>) get the grammar mask applied directly — the schema token <code>{</code> has only 0.3 mass, so masking+renormalization heavily distorts. Bottom row (DCCD): after conditioning on draft $y$, the same <code>{</code> token now carries 0.9 mass, so applying the identical mask barely perturbs the distribution. The inset bar shows the net effect: +10.6 avg accuracy (32.9→43.5) across 6 models × 4 datasets. Notice the mask is <em>identical</em> in both rows — DCCD changes only the distribution being projected, never the constraint.</p>
+
+<p>The two-stage control flow (draft model → projector with masking) is a sequence, not a per-block architecture:</p>
+
+<div class="mermaid">
+flowchart LR
+  X[Prompt x] --> D["p_draft: free-form draft y ~ p_draft(·|x)"]
+  X --> P
+  D -->|"context (x,y)"| P["p_proj: p_2(z_t | x,y,z_<t)"]
+  P --> M["mask ⊙ I[· ∈ A(h_t)]"]
+  M --> R["renormalize by α(h̃_t)"]
+  R --> Z["valid output z_1:T ∈ L(x)"]
+  R -.->|"autoregressive z_<t"| P
+</div>
+
+<p>The draft never enters the validity check: the mask keys on $A(h_t)$ where $h_t=(x,z_{<t})$ — the <em>final-output</em> prefix only — so exact validity is preserved regardless of what the (possibly invalid) draft contained.</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>Notation table.</strong></p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$x,\ z_{1:T},\ V$</td><td>prompt, output token seq (len $T$), vocabulary</td></tr>
+<tr><td>$\pi_\theta,\ \rho_\theta$</td><td>base LM per-step / induced sequence distribution</td></tr>
+<tr><td>$h_t \triangleq (x,z_{<t})$</td><td>decoding state (constraint keys on this)</td></tr>
+<tr><td>$L(x)\subseteq V^*$</td><td>set of structurally valid sequences</td></tr>
+<tr><td>$A(h_t)$</td><td>valid-next-token set (tokens with ≥1 valid completion)</td></tr>
+<tr><td>$\alpha(h_t)=\sum_{a\in A(h_t)}\pi_\theta(a\mid h_t)$</td><td>feasible mass</td></tr>
+<tr><td>$q,\ \rho_q$</td><td>constrained per-step / sequence distribution</td></tr>
+<tr><td>$d,\ y$</td><td>auxiliary draft context / instantiated draft</td></tr>
+<tr><td>$\alpha(\tilde h_t)=\sum_{a\in A(h_t)}p_2(a\mid \tilde h_t)$</td><td>draft-conditioned feasible mass, $\tilde h_t=(x,y,z_{<t})$</td></tr>
+<tr><td>$\bar U$</td><td>validity-gated utility $U\cdot\mathbb{I}[z\in L(x)]$</td></tr>
+</table>
+
+<p><strong>方程物理意义.</strong> Base factorization $\rho_\theta(z_{1:T}\mid x)=\prod_t \pi_\theta(z_t\mid h_t)$ (Eq.1). CD reweights: $q(z_t\mid h_t)=\pi_\theta(z_t\mid h_t)\mathbb{I}[z_t\in A(h_t)]/\alpha(h_t)$ (Eq.4). The per-step distortion is <em>exactly</em> $\mathrm{KL}(q\|\pi_\theta)=\log\frac1{\alpha(h_t)}$ (Eq.5) — small feasible mass ⇒ large distortion. Summed over the trajectory this is an additive <strong>projection tax</strong> $\mathrm{KL}(\rho_q\|\rho_\theta)=\mathbb{E}_{z\sim\rho_q}\big[\sum_t\log\frac1{\alpha(h_t)}\big]$. Geometrically, $q(\cdot\mid h_t)=\arg\min_{p\in\Delta_{A(h_t)}}\mathrm{KL}(p\|\pi_\theta)$ (Eq.7): CD = repeated reverse-KL projection onto the valid simplex. Even among valid strings, $\rho_q(z\mid x)=\rho_\theta(z\mid x)/\prod_t\alpha(h_t)$ (Eq.8) — a prefix-dependent reweighting that favors "easy-to-project" prefixes. DCCD keeps the mask on $A(h_t)$ but swaps $\pi_\theta$ for the draft-conditioned $p_2$ (Eq.14), raising $\alpha(\tilde h_t)$ (Eq.15). Appendix A closes the loop: for validity-gated utility, the utility gap between any $P,Q$ is bounded $\le \mathrm{TV}(P,Q)\le\sqrt{\tfrac12\mathrm{KL}(P\|Q)}$ (Eq.17, Pinsker). With $P=\rho_q,\ Q=\rho_\theta$ and the projection-tax identity (Eq.18), raising $\alpha(h_t)$ shrinks the KL and tightens the worst-case accuracy loss.</p>
+
+<p><strong>6 minimum checks.</strong></p>
+<ol>
+<li><em>Eq.5 consistency</em>: $\mathrm{KL}(q\|\pi)=\sum_a q(a)\log\frac{q(a)}{\pi(a)}=\sum_{a\in A}q(a)\log\frac1{\alpha}=\log\frac1\alpha$ since $q$ is supported on $A$ — ✓ (uses $q(a)=\pi(a)/\alpha$).</li>
+<li><em>Eq.8 telescoping</em>: $\prod_t \pi_\theta(z_t\mid h_t)/\alpha(h_t)=\rho_\theta(z\mid x)/\prod_t\alpha(h_t)$ — ✓ numerator is exactly the base factorization (Eq.1).</li>
+<li><em>Projection-tax sign</em>: $\alpha\in(0,1]\Rightarrow\log\frac1\alpha\ge0$, so the tax is nonnegative and monotone in $-\log\alpha$ — ✓ physically a "cost".</li>
+<li><em>Feasible-mass monotonicity claim</em> (Eq.11): $\pi_\theta(s_t\mid h_t,d)\gg\pi_\theta(s_t\mid h_t)\Rightarrow\alpha(h_t;d)\gg\alpha(h_t)$ — holds when the extra mass lands on tokens <em>inside</em> $A(h_t)$; the paper asserts drafts do this for formatting tokens, empirically confirmed by Fig.3 (per-token $\alpha$ rises 0.34→0.85, 0.53→0.95).</li>
+<li><em>Pinsker direction</em> (Eq.17): TV bound uses $\mathrm{KL}(P\|Q)$ with $Q=\rho_\theta$ high-utility reference; note this bounds <em>loss relative to base</em>, not absolute optimality — the base model itself must be competent. Consistent, but the guarantee is only as good as $\rho_\theta$'s utility.</li>
+<li><em>Best-of-$K$ selector</em> (Alg.1): $k^\star=\arg\max_k \sum_t\log\alpha^{(k)}_t$ maximizes cumulative feasible mass ⇔ minimizes the projection tax of the realized trajectory — a coherent surrogate, but it selects for <em>low distortion</em>, not directly for <em>correctness</em> (see §6 step 4).</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><img src="/assets/2603.03305/fig5.png" alt="Figure: aggregated strict accuracy across all datasets by model"></p>
+
+<p><em>Paper's Figure 5 (caption: "Average performance comparison across all evaluation datasets... DCCD achieves the best aggregated performance, with the largest relative gains for smaller models... 1B: 10.2%→20.9%").</em></p>
+
+<p>DCCD (green) is highest at every scale vs Constrained Prompt (CP), Constrained Few-Shot (CF), and grammar CD. Reading the bars: Qwen2.5-1.5B jumps 22.8→36.8, 7B 42.7→54.2, 14B 47.4→58.1. The clearest signal supporting the theory is the <em>shape</em>: the smaller the model (lower feasible mass, worst projection tax), the larger the DCCD lift — exactly what §4's mechanism predicts. (Note the Llama-3.2-1B green bar reads 20.9 here, matching the caption's "→20.9%"; an L1-extracted table had a transcription ambiguity, resolved in favor of the figure.)</p>
+
+<p><img src="/assets/2603.03305/fig6.png" alt="Figure: parameter efficiency, accuracy per billion parameters"></p>
+
+<p><em>Paper's Figure 6 (caption: "Parameter efficiency (accuracy per billion parameters)... DCCD consistently achieves higher accuracy per parameter, with the largest gains in low-capacity regimes").</em></p>
+
+<p>Each cluster compares a single-model CD (purple, e.g. 14B) against a <em>parameter-matched</em> DCCD composition (green, e.g. 7B+1.5B). DCCD accuracy-per-B roughly triples on GSM8K (6.1→18.8) and MATH500 (3.4→12.7). This is the load-bearing efficiency claim: splitting a fixed parameter budget into drafter+projector beats spending it all on one constrained model.</p>
+
+<p><img src="/assets/2603.03305/fig7.png" alt="Figure: test-time scaling, DCCD vs CD as draft count n grows"></p>
+
+<p><em>Paper's Figure 7 (caption: "Test-time scaling comparison across GSM8K and MATH500... DCCD (blue) shows superior scaling versus Constrained Decoding (red), with widening performance gaps as n increases from 1 to 13").</em></p>
+
+<p>Best-of-$K$ draft selection lets DCCD absorb test-time compute more productively than repeated constrained sampling: on GSM8K DCCD 78→83 vs CD 64→73; on MATH500 42→47 vs 29→37. Gains saturate around $n\approx7$ (best drafts already sampled), and the gap never closes — allocating compute to <em>diverse drafts</em> beats resampling <em>under</em> the constraint.</p>
+
+<p><img src="/assets/2603.03305/fig3.png" alt="Figure: per-token feasible mass, toy JSON example"></p>
+
+<p><em>Paper's Figure 3 (feasible-mass toy example: for the answer to $3(2x-1)=81$, CD emits valid-but-wrong <code>"27"</code>, DCCD emits correct <code>"14"</code>; per-token $\alpha$ bars).</em></p>
+
+<p>This is the empirical anchor for the projection-tax story: on the forced formatting/answer tokens CD's feasible mass is often ≤0.53 and near-zero for early tokens (~1% of vocab feasible), while DCCD lifts each to 0.85–0.97. Low $\alpha$ at many steps is precisely what accumulates into distortion and the valid-but-wrong <code>"27"</code>.</p>
+
+<p><img src="/assets/2603.03305/fig4.png" alt="Figure: token-wise answer-token confidence distribution"></p>
+
+<p><em>Paper's Figure 4 (caption: "Constrained decoding spreads probability mass across multiple plausible answer tokens... incorrect answer '27' receiving moderate confidence (0.46). DCCD shows a sharp, concentrated distribution with near-perfect confidence (1.0) on the correct token '14'").</em></p>
+
+<p>Where CD smears mass across <code>27/28/6/84/9</code>, DCCD collapses onto the correct <code>14</code>. The reasoning content was already in the draft; conditioning makes the answer slot near-deterministic once the schema is satisfied.</p>
+
+<p><img src="/assets/2603.03305/fig9.png" alt="Figure: response-level confidence distribution CD vs DCCD"></p>
+
+<p><em>Paper's Figure 7 in source text / response-confidence histogram (Llama-3.2-3B, GSM8K): DCCD mean 0.527 vs CD 0.393, a +39% rightward shift.</em></p>
+
+<p>Notably DCCD's confidence is the <em>joint</em> $p_{\mathrm{draft}}(d\mid x)\cdot p_2(y\mid x,d)$ — a product of two stages — yet still exceeds single-stage CD. Separating reasoning from formatting raises confidence even though naively multiplying two probabilities should lower it.</p>
+
+<p><img src="/assets/2603.03305/fig8.png" alt="Figure: non-verifiable summarization win rate"></p>
+
+<p><em>Paper's Figure 8 (caption: "Win rate comparison between DCCD and CD on non-verifiable summarization tasks... approximately 78–80.5% win rate across all evaluation dimensions").</em></p>
+
+<p>LLM-as-judge on 256-token TL;DR summaries: DCCD wins ~78% (quality), 78% (faithfulness), 80.5% (coverage), showing the staged recipe generalizes beyond verifiable math to open-ended generation.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>Step</th><th>Paper-internal support</th></tr>
+<tr><td>1</td><td>CD masks+renormalizes ⇒ per-step reverse-KL distortion $=\log\frac1{\alpha(h_t)}$</td><td>Eq.4–5 derivation</td></tr>
+<tr><td>2</td><td>Distortions add over the trajectory ⇒ cumulative "projection tax" $\sum_t\log\frac1{\alpha}$; reweights even valid strings by $\prod_t\alpha^{-1}$, biasing toward easy-to-project (locally valid) prefixes</td><td>Eq.7–8, toy example, Fig.3</td></tr>
+<tr><td>3</td><td>Feasible mass $\alpha$ depends on conditioning context, which is free at inference ⇒ appending a draft $d$ gives $\alpha(h_t;d)\gg\alpha(h_t)$</td><td>Eq.10–11</td></tr>
+<tr><td>4</td><td>Instantiate $d$ as an unconstrained draft $y$; constrain conditioned on $(x,y)$ ⇒ same exact validity ($A(h_t)$ unchanged), smaller distortion</td><td>Eq.12–15, Alg.1</td></tr>
+<tr><td>5</td><td>Smaller distortion (KL) ⇒ tighter worst-case utility-loss bound via Pinsker on validity-gated utility</td><td>Eq.16–18 (Appendix A)</td></tr>
+<tr><td>6</td><td>Best-of-$K$ by cumulative $\log\alpha$ picks the least-distorted trajectory ⇒ test-time compute converts to accuracy</td><td>Alg.1 selector, Fig.7</td></tr>
+<tr><td>7</td><td>Empirically: best strict accuracy at all 1B–14B scales, largest lift for small models, better param-efficiency and scaling</td><td>Fig.1, Fig.5, Fig.6, Fig.7</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+<ol>
+<li><strong>The mask keys only on the final-output prefix $A(h_t)=A(x,z_{<t})$, not on the draft</strong> (Eq.14). The draft $y$ sits in context but is excluded from the constraint state, so an invalid/free-form draft never threatens the exact-validity guarantee — this is what lets Step 1 be fully unconstrained.</li>
+<li><strong>The selection signal is the distortion surrogate itself</strong>: best-of-$K$ ranks drafts by cumulative log feasible mass $\sum_t\log\alpha^{(k)}_t$ (Alg.1), requiring <em>no external verifier</em> — the draft that made the constraint least distortive is chosen. The paper notes this is swappable (log-likelihood, verifier, judge, majority vote).</li>
+</ul>
+
+<p><strong>核心技术壁垒 (deep-dive).</strong> The single hardest-to-replicate insight is not the two-step procedure (obvious in hindsight) but the <em>reframing</em>: proving that the quality-validity tradeoff is a KL-projection artifact whose magnitude is $\log\frac1{\alpha(h_t)}$, then observing $\alpha$ is a <em>free variable at inference</em> because it depends on conditioning context (Eq.10). This turns "constraints hurt accuracy" from an accepted cost into a <em>reducible distortion</em>, and it is what justifies keeping the constraint set fully intact (no relaxation, exact guarantees) while recovering unconstrained-level accuracy. Everything else (best-of-$K$, param-efficient drafter/projector split) follows mechanically from this identity.</p>
+
+<p><strong>Implementation stack.</strong> CD baseline uses XGrammar integrated with vLLM; JSON tasks via Pydantic schemas (<code>class MATHSchema(BaseModel): steps: List[str]; answer: str</code>), symbolic/logical tasks via Lark-style CFGs (GSM-Symbolic <code><<expr>></code> grammar; FOLIO first-order-logic grammar verified by Prover9). DCCD's own decoding code is [实现未公开] — no repository link in the source; the method is described only as pseudocode (Algorithm 1) plus the XGrammar/vLLM masking backend.</p>
+
+<h2 id="8-serving-deployment-considerations">8. Serving deployment considerations <a class="heading-anchor" href="#8-serving-deployment-considerations" aria-label="Link to 8-serving-deployment-considerations">#</a></h2>
+
+<ul>
+<li><strong>No new hardware minimum vs the base models</strong>: DCCD is training-free and reuses the same LMs; Table 1 models span Llama-3.2-1B → Qwen2.5-14B, all standard-precision instruction-tuned checkpoints.</li>
+<li><strong>Latency cost is the draft pass</strong>: Step 1 generates $K$ full drafts, Step 2 runs one constrained projection on the selected draft. Total decode cost ≈ $K\times$ draft length + 1 constrained pass — the param-efficiency win (Fig.6) is <em>per-parameter accuracy</em>, not per-FLOP latency; best-of-$K$ trades compute for accuracy (Fig.7).</li>
+<li><strong>Prefix-caching friendly</strong>: the projector conditions on $(x,y)$; the draft $y$ can be cached as a prefix across the constrained pass, and a smaller projector reduces the KV/compute of the expensive masked stage.</li>
+<li><strong>Quantization</strong>: [论文未披露] — the paper neither quantizes nor discusses KV-cache formats; all experiments are at the checkpoints' native precision.</li>
+</ul>
+
+<h2 id="9-training-recipe-llm-specific-asks">9. Training recipe & LLM-specific asks <a class="heading-anchor" href="#9-training-recipe-llm-specific-asks" aria-label="Link to 9-training-recipe-llm-specific-asks">#</a></h2>
+
+<p>This is an <strong>inference-time method, not a model release</strong> — several deep-model rows are therefore N/A:</p>
+
+<table>
+<tr><th>Stage</th><th>Goal</th><th>Data (tokens + mix)</th><th>LR schedule</th><th>Context</th><th>Techniques</th></tr>
+<tr><td>(any)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>N/A — DCCD is training-free; no pre-training, mid-training, SFT, or post-training is performed. Uses off-the-shelf Llama-3.x / Qwen2.5 Instruct checkpoints.</td></tr>
+</table>
+
+<ul>
+<li><strong>Scaling-law fit</strong>: N/A — no model trained; the "scaling" studied is <em>test-time</em> draft count $n$ (Fig.7), not parameter/data scaling.</li>
+<li><strong>Parameter breakdown / capacity budget</strong>: N/A — no new parameters; the relevant budget is the drafter+projector <em>composition</em> (Fig.6), e.g. 7B+1.5B ≈ 8.5B matched against a single 14B CD.</li>
+<li><strong>Quantization checklist</strong>: N/A — paper does not discuss quantization.</li>
+<li><strong>Hardest-to-replicate "training trick"</strong>: N/A as training; the inference analogue is the feasible-mass reframing (§7 核心技术壁垒).</li>
+</ul>
+
+<h2 id="10-open-questions-llm-specific-angles">10. Open questions (LLM-specific angles) <a class="heading-anchor" href="#10-open-questions-llm-specific-angles" aria-label="Link to 10-open-questions-llm-specific-angles">#</a></h2>
+
+<ul>
+<li><strong>Where does the advantage saturate/invert?</strong> Fig.5 shows the lift <em>shrinks</em> as models grow (large models already have high feasible mass); at very large scale DCCD may add latency for negligible gain. At what capacity does CD's projection tax become small enough to skip the draft?</li>
+<li><strong>Cross-modality transfer</strong>: the mechanism is generic to any hard token-level constraint — would draft-conditioning help constrained <em>code</em> generation, or vision/audio tokenizers with structural grammars? Untested.</li>
+<li><strong>Hardware affinity / low-precision</strong>: does FP8/FP4 quantization (which sharpens or flattens the logit distribution) change feasible mass and thus the projection tax? Untested — a low-precision projector might see <em>lower</em> $\alpha$ and larger distortion, partially offsetting DCCD's gain.</li>
+<li><strong>Selector fidelity</strong>: cumulative-$\log\alpha$ selects for <em>least distortion</em>, not <em>correctness</em> — when is the least-distorted draft also the most correct, and when does an external verifier strictly dominate?</li>
+</ul>
+
+<h2 id="appendix-模型架构图">Appendix: 模型架构图 <a class="heading-anchor" href="#appendix-模型架构图" aria-label="Link to appendix-模型架构图">#</a></h2>
+
+<p>N/A — this paper is an inference-time decoding procedure, not a model release. There is no released model architecture, no official <code>modeling_*.py</code>, and no config.json to reverse-engineer (Table 1 uses stock Llama-3.x / Qwen2.5 checkpoints whose architectures are documented elsewhere). The only "architecture" is the two-stage decoding control flow, drawn as a Mermaid sequence in §3. No per-block attention/FFN diagrams apply because the method leaves the underlying transformer untouched.</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

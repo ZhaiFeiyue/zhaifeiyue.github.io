@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Opportunistic Expert Activation: Batch-Aware Expert Routing for Faster Decode Without Retraining — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Opportunistic Expert Activation: Batch-Aware Expert Routing for Faster Decode Without Retraining</h1>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2511.02237</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">moe</span><span class="tag">inference-routing</span><span class="tag">decode-latency</span><span class="tag">memory-bound</span><span class="tag">training-free</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2511.02237.html">← Synthesis</a>
+<a href="/overview/algorithm.html">← algorithm Survey</a>
+<a href="https://arxiv.org/abs/2511.02237" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="opportunistic-expert-activation-oea-—-l2">Opportunistic Expert Activation (OEA) — L2 <a class="heading-anchor" href="#opportunistic-expert-activation-oea-—-l2" aria-label="Link to opportunistic-expert-activation-oea-—-l2">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>MoE decode is memory-bound at moderate batch sizes, so latency is linear in the number of <em>unique</em> activated experts $T$ (the union over the batch). OEA re-routes tokens at inference (no retraining): guarantee each token a top-$n_i$ baseline, then let tokens piggyback extra experts already loaded for others — cutting $T$ for free. 39% / 15% MoE decode speedup on Qwen3-30B / 235B, no significant accuracy loss.</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 — 痛点 (problem).</strong> During autoregressive decode the effective batch seen by an MoE layer equals the request batch size $B$ (one token/sequence/step), which is small. Because per-expert load grows only at rate $k/N$ (e.g. $1/16$ in Qwen3), the batch size needed to reach the compute-bound regime is in the thousands ($\approx 1.6\text{k}$ for Qwen3). So for moderate $B$ the MoE layer is memory-bound: latency is dominated by fetching each activated expert's weights HBM→SRAM, i.e. it scales with the number of <em>unique</em> activated experts. That union grows fast: at $N=128, k=8, B=16$, uniform routing activates $\approx 82$ experts — up to a $10\times$ increase over $B=1$.</p>
+
+<p><strong>Q2 — 方法 (method).</strong> Opportunistic Expert Activation (OEA), a two-phase batch-aware router applied only at decode, with no model change. <strong>Phase 1</strong> gives every token an <em>independent</em> baseline of its top-$n_i$ experts ($n_i=\min(k_0, t_i)$, an adaptive top-$p$ capped at $k_0$), producing the union $S^{\text{base}}=\bigcup_i S^{\text{base}}_i$. <strong>Phase 2</strong> lets each token <em>piggyback</em> additional experts, but only those already in $S^{\text{base}}$ — so $T=|S^{\text{base}}|$ is unchanged and the extra work is latency-free in the memory-bound regime. Kept router scores are renormalized.</p>
+
+<p>The <strong>核心技术壁垒</strong> is the <em>additive guarantee-then-piggyback</em> asymmetry: OEA first fixes $T$ to a batch-independent per-token floor and then only augments <em>within</em> that fixed set. This is what separates it from Lynx's subtractive "activate-the-union-then-drop-unpopular" scheme, which can delete an expert that is unpopular batch-wide but critical to one token. Replicating the <em>idea</em> is easy; replicating the <em>result</em> requires trusting (and empirically validating) that adding out-of-policy experts strictly helps rather than hurts — the paper's most counterintuitive finding.</p>
+
+<p><strong>Q3 — 结果 (result).</strong> On Qwen3-30B (H100, bf16, $N=128, k=8$): simplified OEA at $k_0=3$ halves the activated-expert count (48.8→25.1 avg) and cuts MoE latency 39%; $k_0=5$ cuts 23%, all with no statistically significant benchmark loss (except GPQA for the pruned-only variant). On Qwen3-235B (TP=8): $k_0=5$ gives 15% MoE latency reduction (smaller, attributed to all-reduce overhead), holding accuracy on all benchmarks except LiveCodeBench (−2%). Latency-vs-$T$ linearity is confirmed at $R^2>0.99$.</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p>The load-bearing empirical premise — MoE decode latency is (near-perfectly) linear in the number of activated experts — is Figure 1:</p>
+
+<p><img src="/assets/2511.02237/fig1.png" alt="Figure 1: mean MoE latency vs number of activated experts"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "Mean MoE latency as a function of the number of activated experts within a decode batch. The average is computed over all layers and decode steps across a GPQA evaluation of the vanilla Qwen3-30B-A3B model.").</em></p>
+
+<p>Notice the regression fits at $R^2>0.99$ with standard errors $<2\cdot10^{-4}$: every additional distinct expert adds a nearly constant fetch cost, so <em>minimizing the union of experts</em> is the correct optimization target. This is the whole justification for OEA operating on $T$ rather than per-token compute.</p>
+
+<p>The routing procedure itself has no paper figure, so a flowchart clarifies the two-phase control flow (Algorithm 1, general form):</p>
+
+<div class="mermaid">
+flowchart TD
+  A["Batch of B tokens, router scores R(x_i)"] --> B["Phase 1: per token i<br/>t_i = min experts reaching cum-mass p<br/>n_i = min(k0, t_i)<br/>S_base_i = top-n_i experts"]
+  B --> C["Union: S_base = ∪ S_base_i"]
+  C --> D["Phase 2: per token i<br/>S_i ← S_base_i<br/>walk ranks j = n_i+1 .. maxP"]
+  D --> E{"|S_i| > kmax?"}
+  E -->|yes| G["stop for this token"]
+  E -->|no| F{"e_ij ∈ S_base?"}
+  F -->|yes| H["add e_ij to S_i (piggyback, free)"]
+  F -->|no| I["skip"]
+  H --> D
+  I --> D
+  G --> J["Renormalize kept scores, run MoE"]
+</div>
+
+<p>The key structural point the raster cannot convey: Phase 2's <code>if e_ij ∈ S_base</code> gate is what makes the augmentation <em>cost-free</em> — no token can pull in an expert that isn't already being fetched for the batch.</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>This is an empirical paper built on one analytical latency model; there is <strong>无形式化作者证明 — 仅实证</strong> for the quality-preservation claim (that is validated by experiment, not theorem). The one formal object is the roofline latency decomposition, which the paper derives but does not prove as a bound.</p>
+
+<p><strong>Notation table</strong></p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$N$</td><td>total experts (128 for Qwen3-30B/235B)</td></tr>
+<tr><td>$k$</td><td>experts activated per token by default router (8)</td></tr>
+<tr><td>$B$</td><td>decode batch size</td></tr>
+<tr><td>$T$</td><td>number of <em>unique</em> activated experts in the batch (the union size)</td></tr>
+<tr><td>$\text{cnt}_i$</td><td>tokens routed to expert $E_i$</td></tr>
+<tr><td>$a$</td><td>per-token compute time in an expert</td></tr>
+<tr><td>$b$</td><td>weight-fetch cost HBM→SRAM (memory-bound term)</td></tr>
+<tr><td>$e_{i,j}$</td><td>token $i$'s $j$-th ranked expert</td></tr>
+<tr><td>$n_i=\min(k_0,t_i)$</td><td>baseline experts for token $i$</td></tr>
+<tr><td>$k_0, p, k^{\max}, \text{maxP}$</td><td>the four OEA hyperparameters</td></tr>
+</table>
+
+<p><strong>方程物理意义.</strong> The per-expert cost model is $f(0)=0$, $f(n)=an+b$ for $n>0$. Summing over experts:</p>
+
+<p>$$\sum_{i=1}^N f(\text{cnt}_i)=\sum_{i=1}^N\left(b\cdot\mathbb{1}_{\text{cnt}_i>0}+a\cdot\text{cnt}_i\right)=b\cdot T + a\cdot Bk$$</p>
+
+<p>The first term $b\cdot T$ is memory-bound (fixed per activated expert), the second $a\cdot Bk$ is compute-bound (each of $B$ tokens routes to $k$ experts, so total load is $Bk$). In the memory-bound regime $b\cdot T$ dominates, hence gains are near-proportional to the drop in $T$. The expected union under uniform routing is $\mathbb{E}[T]=N\left(1-(1-\tfrac{k}{N})^B\right)$, giving $\approx 82$ at $N=128, k=8, B=16$.</p>
+
+<p><strong>6 minimum checks:</strong></p>
+
+<ol>
+<li><strong>Assumption — memory-bound regime.</strong> Holds only when $\text{cnt}_i$ is small (moderate $B$); the paper explicitly bounds applicability, using OEA at decode only, not prefill. Breaks at large $B$ (thousands) where $a\cdot Bk$ dominates and reducing $T$ stops helping.</li>
+<li><strong>Assumption — experts not executed in parallel.</strong> Eq. 2's "latency $\propto T$" assumes serial expert execution. Under expert parallelism the driver becomes the <em>max</em> per-machine expert count (acknowledged in §7 future work).</li>
+<li><strong>$\text{cnt}_i\le B$</strong> always (a token routes to an expert at most once); this bound survives any re-routing, so $T\le N$ and $\sum_i\text{cnt}_i=Bk$ hold exactly.</li>
+<li><strong>Grouped-GEMM caveat.</strong> Optimized kernels batch expert compute but still must load all activated weights; the $b\cdot T$ constraint is unchanged. Confirmed empirically (Fig. 1), so the simplification does not invalidate the target.</li>
+<li><strong>Uniform-routing idealization.</strong> $\mathbb{E}[T]$ and $\mathbb{E}[\text{cnt}_i]=Bk/N$ assume balanced routing (what load-balancing losses target). Real routing skews, but Fig. 1's tight fit shows the <em>linear-in-$T$</em> relation survives regardless.</li>
+<li><strong>Quality preservation is empirical, not guaranteed.</strong> Nothing proves piggybacked (out-of-policy) experts help; §4.1's $\text{maxP}=8$-hurts result is offered as evidence that they confer a <em>strict</em> advantage — a claim that would ideally be backed by a stability/robustness bound but is not.</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p>The central quality result is the piggybacking gain: OEA's Pareto frontier (cross-entropy delta vs activated-expert count) strictly dominates pruning-only (Phase-1) at $B=16$.</p>
+
+<p><img src="/assets/2511.02237/fig2.png" alt="Figure 2: pruned vs OEA Pareto frontier at B=16"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "The two types of dots correspond to the Pareto frontiers of pruned and OEA experiments at batch size B=16. OEA consistently performs better.").</em></p>
+
+<p>Lower-left is better; OEA's frontier sits below pruning everywhere, so for the same activated-expert budget OEA loses less cross-entropy — the Phase-2 piggyback is doing real work, not just bookkeeping.</p>
+
+<p>The simplified router (drop $p$, drop $\text{maxP}$, set $k^{\max}=k$, keep only $k_0$) matches the best hyperparameter choices, justifying the reduced sweep cost:</p>
+
+<p><img src="/assets/2511.02237/fig3.png" alt="Figure 3: simplified OEA vs all other settings at B=16"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "The two types of dots correspond to the Pareto frontiers of simplified OEA and the rest of experiments at batch size B=16. Simplified OEA performs comparably to the best hyperparameter choices.").</em></p>
+
+<p>The simplified frontier tracks the full-sweep frontier, meaning practitioners can deploy with a single knob $k_0$ — which simultaneously sets the quality floor and the expert-count reduction.</p>
+
+<p>Downstream accuracy (Qwen3-30B, 4 runs, bold = SE-adjusted no-worse-than-vanilla):</p>
+
+<p><img src="/assets/2511.02237/tab1.png" alt="Table 1: Qwen3-30B pruned vs OEA benchmark accuracies"></p>
+
+<p><em>Paper's Table 1, verbatim (caption: "Benchmark accuracies for Phase 1 (pruned, top-k0) vs simplified OEA routing on Qwen3-30B-A3B ... Setups that are no worse than vanilla (standard-error adjusted) are in bold.").</em></p>
+
+<p>The decisive contrast is the low-$k_0$ column: pruned at $k_0=3$ collapses (aime24 51.2, gpqa 45.7) while OEA at the same $k_0=3$ recovers to 80.0 / 58.6 — piggyback recovery from an otherwise-broken config, at zero extra latency.</p>
+
+<p>The 235B case is even starker; pruning degrades catastrophically at low $k_0$ where OEA holds:</p>
+
+<p><img src="/assets/2511.02237/tab2.png" alt="Table 2: Qwen3-235B pruned vs OEA benchmark accuracies"></p>
+
+<p><em>Paper's Table 2, verbatim (caption: "Benchmark accuracies for Phase 1 (pruned, top-k0) and simplified OEA routing on Qwen3-235B-A22B ... averaged over 3 runs.").</em></p>
+
+<p>Pruned $k_0=3$ LiveCodeBench falls to 5.7 (vanilla 68.5); OEA at $k_0=3$ restores 63.4. This is the paper's strongest evidence that guarantee-then-piggyback beats union-then-drop.</p>
+
+<p>Finally, the expert-count reduction translates directly to measured latency:</p>
+
+<p><img src="/assets/2511.02237/tab3.png" alt="Table 3: Qwen3-30B MoE layer latency (microseconds)"></p>
+
+<p><em>Paper's Table 3, verbatim (caption: "Average MoE layer latency (in microseconds) when using simplified OEA on Qwen3-30B-A3B.").</em></p>
+
+<p>Normalized average drops to 0.61 at $k_0=3$ (the 39% headline) and 0.77 at $k_0=5$ (23%), matching the activated-expert reduction in Table 4 (0.51 / 0.72) — consistent with the near-proportional prediction of Eq. 2 in the memory-bound regime.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>MoE decode at moderate $B$ is memory-bound; latency $\approx b\cdot T + a\cdot Bk$ with $b\cdot T$ dominant</td><td>§3.1 Eq. 2 latency model; §2 per-expert-load $k/N$ argument</td></tr>
+<tr><td>2</td><td>Therefore reducing the unique activated-expert count $T$ reduces latency near-proportionally</td><td>Eq. 2 first term; Fig. 1 empirical $R^2>0.99$ fit</td></tr>
+<tr><td>3</td><td>A per-token top-$n_i$ baseline preserves each token's critical computation independent of batch</td><td>§3.2 Phase 1; adaptive top-$p$ capped at $k_0$; motivated by top-experts-are-critical</td></tr>
+<tr><td>4</td><td>Adding only experts already in $S^{\text{base}}$ recovers quality while keeping $T=\lvert S^{\text{base}}\rvert$ fixed</td><td>§3.2 Phase 2; Fig. 2 OEA frontier dominates pruning</td></tr>
+<tr><td>5</td><td>The full sweep collapses to a one-knob $k_0$ router with no loss</td><td>§4.1 findings ($p{<}1$, $\text{maxP}{<}N$, $k^{\max}{>}k$ don't help); Fig. 3</td></tr>
+<tr><td>6</td><td>Net effect: 39% / 15% MoE latency cut with no significant accuracy loss, no retraining</td><td>Tables 1–5; latency reductions from halved expert counts</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>The paper integrates the router into <strong>SGLang</strong> [zheng2024sglang] and runs decode-only re-routing; no author code release is indicated in L1, so the reference implementation status is <strong>[实现未公开]</strong>. The closest open surface is SGLang's MoE routing path, into which Phase-1 top-$n_i$ selection and the Phase-2 union-membership gate would be inserted before the expert dispatch.</p>
+
+<p><strong>核心技术壁垒 (dedicated paragraph).</strong> The single hardest-to-replicate insight is not the algorithm (it is a few dozen lines) but the empirical validity of the <em>additive</em> design under aggressive $k_0$. The subtractive Lynx-style scheme is the intuitive default; the non-obvious bet is that guaranteeing a small per-token floor and then piggybacking <em>out-of-policy</em> experts (ranks beyond the token's own top-$k$) strictly outperforms both smaller and larger active sets. The paper's $\text{maxP}=8$-strictly-hurts and $k^{\max}=9,10,11$-degrade results are the evidence, but they run against the prior that an unselected expert is useless to a token — anyone re-implementing must reproduce this or they will mis-tune the piggyback bounds and lose the free recovery.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
+
+<ol>
+<li><strong>CUDA-Graph padding is not free for MoEs.</strong> Under default SGLang, a batch of size 7 padded up to a captured size 8 can be <em>slower</em> than a real batch of 8, because the padding token activates out-of-distribution experts, inflating $T$. The paper's fix is to capture CUDA Graphs up to size 16 (no padding); a proper fix is a padding mask that zeros padding tokens' expert choices. Miss this and latency measurements are non-monotonic and misleading.</li>
+<li><strong>Piggybacking is redundant at $B=1$</strong> and only benefits moderate batches — OEA must be gated to decode (not prefill) and to non-trivial batch sizes, otherwise it adds control-flow cost with no upside. The single knob $k_0$ controls both the quality floor and the $T$ reduction, so batch-size-dependent $k_0$ (larger, safer $k_0$ at small $B$) is the natural tuning axis.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

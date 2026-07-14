@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Efficient MoE Serving in the Memory-Bound Regime: Balance Activated Experts, Not Tokens (METRO) — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Efficient MoE Serving in the Memory-Bound Regime: Balance Activated Experts, Not Tokens (METRO)</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2512.09277 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2512.09277/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="metro-2512-09277-—-l3-per-paper-synthesis">METRO (2512.09277) — L3 per-paper synthesis <a class="heading-anchor" href="#metro-2512-09277-—-l3-per-paper-synthesis" aria-label="Link to metro-2512-09277-—-l3-per-paper-synthesis">#</a></h1>
+
+<blockquote>
+Target: *Efficient MoE Serving in the Memory-Bound Regime: Balance Activated
+Experts, Not Tokens*. Synthesized against 8 framework peers spanning MoE
+systems (DeepSeek-V3), memory-bound decode optimization (FastDecode, NEO),
+the serving substrate (vLLM), disaggregation (Mooncake), scheduling
+(FastServe), and multi-model placement (FlexRLHF, HybridFlow).
+</blockquote>
+
+<hr>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>METRO sits at the intersection of three lineages in the <code>framework</code> cluster.</p>
+<p>The peers divide cleanly by *what problem in the same "runtime = f(memory</p>
+<p>traffic in decode)" chain* they attack.</p>
+
+<p><strong>A. Direct substrate / same object (MoE-EP serving).</strong></p>
+
+<ul>
+<li><strong>2412.19437 (DeepSeek-V3)</strong> — the single most tightly-coupled peer. METRO</li>
+<p>evaluates <em>on</em> DeepSeek-V3 and inherits its exact MoE topology (256 routed</p>
+<p>experts, 8 active/token, 37B active params) <a href="/papers/2412.19437/detail.html#core-contribution" class="ref-link" title="2412.19437#core-contribution">[2412.19437]</a>.</p>
+<p>Crucially, DeepSeek-V3 introduces <strong>auxiliary-loss-free load balancing</strong> and,</p>
+<p>for serving, <strong>redundant expert deployment</strong> to fight decode load imbalance —</p>
+<p>i.e. it is a <em>token-balancing / replication</em> system, exactly the paradigm</p>
+<p>METRO argues is wrong for decode. DeepSeek-V3 itself admits "推理时的 domain</p>
+<p>shift 可能导致 load imbalance … 用 redundant expert deployment 缓解，但没有量化</p>
+<p>imbalance 的程度" <a href="/papers/2412.19437/detail.html#3-key-innovations" class="ref-link" title="2412.19437#3-key-innovations">[2412.19437]</a>. METRO is the answer to</p>
+<p>the question DeepSeek-V3 left open but mis-framed.</p>
+<li><strong>2309.06180 (vLLM/PagedAttention)</strong> — the serving substrate. METRO is</li>
+<p>implemented as a router-kernel swap inside vLLM's decode-phase CUDA graphs,</p>
+<p>and every real-system number is measured on vLLM/8×A100. vLLM is <code>tool</code>, not</p>
+<p>competitor: it manages KV cache <a href="/papers/2309.06180/detail.html#§1-tl-dr" class="ref-link" title="2309.06180#§1-tl-dr">[2309.06180]</a>, METRO manages</p>
+<p>expert routing above it.</p>
+</ul>
+
+<p><strong>B. Same regime diagnosis (decode is memory-bound), different lever.</strong></p>
+
+<ul>
+<li><strong>2403.11421 (FastDecode)</strong> and <strong>2411.01142 (NEO)</strong> — both start from the</li>
+<p><em>identical</em> root observation METRO uses: decode attention/FFN is</p>
+<p>memory-bandwidth-bound, GPU-CPU bandwidth gap (~3×) is far smaller than the</p>
+<p>compute gap (~100×) <a href="/papers/2411.01142/detail.html#q1-痛点" class="ref-link" title="2411.01142#q1-痛点">[2411.01142]</a> <a href="/papers/2403.11421/detail.html#q1-痛点" class="ref-link" title="2403.11421#q1-痛点">[2403.11421]</a>.</p>
+<p>They monetize it by <em>moving compute to where the memory is</em> (CPU offload);</p>
+<p>METRO monetizes it by <em>minimizing which weights get loaded</em> (fewer activated</p>
+<p>replicas). Same diagnosis, orthogonal cure.</p>
+</ul>
+
+<p><strong>C. Same "phase heterogeneity" tension, different scope.</strong></p>
+
+<ul>
+<li><strong>2407.00079 (Mooncake)</strong> — disaggregates prefill (compute-bound) from decode</li>
+<p>(memory-bound) into separate clusters <a href="/papers/2407.00079/detail.html#§1-tl-dr" class="ref-link" title="2407.00079#§1-tl-dr">[2407.00079]</a>. METRO</p>
+<p>explicitly targets the <em>co-deployed</em> small-system case Mooncake abandons, and</p>
+<p>in §VII concedes that under disaggregation its gains shrink to 4.3–5.0%.</p>
+<li><strong>2312.11819 (FlexRLHF)</strong> and <strong>2409.19256 (HybridFlow)</strong> — the "different</li>
+<p>phases want different parallelism/placement" idea in the RLHF-training world:</p>
+<p>generation is memory-bound, training is compute-bound, so use different</p>
+<p>parallel configs per phase <a href="/papers/2409.19256/detail.html#core-contribution" class="ref-link" title="2409.19256#core-contribution">[2409.19256]</a></p>
+<p><a href="/papers/2312.11819/detail.html#core-contribution" class="ref-link" title="2312.11819#core-contribution">[2312.11819]</a>. METRO is the <em>inference-decode</em> analogue</p>
+<p>of this compute-vs-memory phase-awareness, restricted to the routing knob.</p>
+<li><strong>2305.05920 (FastServe)</strong> — the scheduling peer. Both accept vLLM's</li>
+<p>substrate and change only one algorithm; FastServe changes the *request</p>
+<p>scheduler* (skip-join MLFQ) <a href="/papers/2305.05920/detail.html#§1-tl-dr" class="ref-link" title="2305.05920#§1-tl-dr">[2305.05920]</a> while METRO changes</p>
+<p>the <em>within-batch expert router</em>. They are composable, not competing.</p>
+</ul>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<p><strong>What's genuinely new (contradictory to the field's consensus):</strong> every prior</p>
+<p>EP load balancer — including the one baked into DeepSeek-V3's serving stack and</p>
+<p>EPLB — optimizes <em>token balance</em>. METRO's L1 states "all existing EP … balancers</p>
+<p>aim to balance the number of tokens" <a href="/papers/2512.09277/detail.html#q1-—-痛点-the-problem" class="ref-link" title="2512.09277#q1-—-痛点-the-problem">[2512.09277]</a>. The delta is a</p>
+<p>sign flip: METRO proves that in the memory-bound decode regime, token-balancing</p>
+<p><em>inflates</em> activated expert replicas ~30% and thereby <em>raises</em> decode latency</p>
+<p>14% and <em>drops</em> throughput 10% at 1.5× replication <a href="/papers/2512.09277/detail.html#q3-—-结果-the-results" class="ref-link" title="2512.09277#q3-—-结果-the-results">[2512.09277]</a>.</p>
+<p>No peer in scope makes this claim; DeepSeek-V3's redundant-expert story</p>
+<p>implicitly assumes more replicas + balanced tokens is strictly good</p>
+<p><a href="/papers/2412.19437/detail.html#3-key-innovations" class="ref-link" title="2412.19437#3-key-innovations">[2412.19437]</a> — METRO contradicts it directly.</p>
+
+<p><strong>Incremental relative to the memory-bound-decode peers.</strong> The <em>observation</em></p>
+<p>that decode is memory-bound is shared verbatim with FastDecode and NEO</p>
+<p><a href="/papers/2403.11421/detail.html#q1-痛点" class="ref-link" title="2403.11421#q1-痛点">[2403.11421]</a> <a href="/papers/2411.01142/detail.html#q1-痛点" class="ref-link" title="2411.01142#q1-痛点">[2411.01142]</a>; METRO adds no new</p>
+<p>hardware insight there. What is new is the <strong>actuator</strong>: FastDecode/NEO reduce</p>
+<p><em>where</em> the bytes live (offload KV+attention to CPU); METRO reduces *how many</p>
+<p>distinct weight tensors* get streamed (min activated experts). This is a</p>
+<p>different term in the same roofline equation — traffic = (weights loaded) +</p>
+<p>(activations/KV moved). FastDecode/NEO attack the KV term; METRO attacks the</p>
+<p>expert-weight term, which it shows dominates (activation traffic <0.6% of weight</p>
+<p>traffic at 1K batch) <a href="/papers/2512.09277/detail.html#q1-—-痛点-the-problem" class="ref-link" title="2512.09277#q1-—-痛点-the-problem">[2512.09277]</a>. So they are complementary, not</p>
+<p>overlapping.</p>
+
+<p><strong>Formalization delta.</strong> Among the eight peers, METRO is one of only two with a</p>
+<p>genuine closed-form optimization model (the MIN-EXP-ROUTING ILP + Lemma 1 +</p>
+<p>makespan reduction) <a href="/papers/2512.09277/detail.html#4-作者证明" class="ref-link" title="2512.09277#4-作者证明">[2512.09277]</a>. The RLHF peers (FlexRLHF,</p>
+<p>HybridFlow) and the offload peers (FastDecode, NEO) rely on analytical *cost</p>
+<p>models / simulators* rather than a provable-optimum formulation</p>
+<p><a href="/papers/2409.19256/detail.html#limitations" class="ref-link" title="2409.19256#limitations">[2409.19256]</a> <a href="/papers/2403.11421/detail.html#§4-作者证明" class="ref-link" title="2403.11421#§4-作者证明">[2403.11421]</a>. vLLM and FastServe</p>
+<p>have "no formal throughput model" <a href="/papers/2309.06180/detail.html#§4-作者证明" class="ref-link" title="2309.06180#§4-作者证明">[2309.06180]</a></p>
+<p><a href="/papers/2305.05920/detail.html#§4-作者证明" class="ref-link" title="2305.05920#§4-作者证明">[2305.05920]</a>. METRO's Lemma 1 (single-replica optimality) is</p>
+<p>the load-bearing theoretical contribution nobody else in scope offers.</p>
+
+<p><strong>Delta vs the disaggregation camp.</strong> Mooncake's thesis is "decouple the phases</p>
+<p>physically so decode never sees prefill's replication choices"</p>
+<p><a href="/papers/2407.00079/detail.html#§1-tl-dr" class="ref-link" title="2407.00079#§1-tl-dr">[2407.00079]</a>. METRO's thesis is "keep them co-deployed but fix the</p>
+<p>routing so decode isn't punished by prefill-friendly replication"</p>
+<p><a href="/papers/2512.09277/detail.html#q1-—-痛点-the-problem" class="ref-link" title="2512.09277#q1-—-痛点-the-problem">[2512.09277]</a>. These are competing philosophies for the same</p>
+<p>tension; METRO even quantifies that under Mooncake-style disaggregation its own</p>
+<p>benefit collapses (§VII: no-replication ≈ METRO in decode).</p>
+
+<hr>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<ol>
+<li><strong>The B200 headline rests on a proprietary, unvalidated simulator.</strong> The</li>
+<p>4.11× and most large-model numbers come from "a proprietary industrial</p>
+<p>simulator" with silicon validation "unable to share … due to NDA"</p>
+<p><a href="/papers/2512.09277/detail.html#5-实验与数据" class="ref-link" title="2512.09277#5-实验与数据">[2512.09277]</a>. The only <em>real</em> hardware is 8×A100 running</p>
+<p>Qwen3-30B, where gains are far more modest (throughput +0.7–15.9%, TPOT</p>
+<p>−1.9–12.9%). Compare Mooncake, whose 525% headline is <em>also</em> simulated but</p>
+<p>whose real-trace result (75% more requests) is on a production platform</p>
+<p><a href="/papers/2407.00079/detail.html#q3-结果" class="ref-link" title="2407.00079#q3-结果">[2407.00079]</a>. METRO's most reproducible-doubtful claims are the least</p>
+<p>reproducible ones — the classic "sim-inflated headline" pattern this KB has</p>
+<p>flagged before (cf. FlexRLHF's easy-to-beat trlX baseline</p>
+<p><a href="/papers/2312.11819/detail.html#6-performance-evaluation" class="ref-link" title="2312.11819#6-performance-evaluation">[2312.11819]</a>).</p>
+</ul>
+
+<ol>
+<li><strong>"All-gather is free" is regime-fragile.</strong> METRO's whole communication</li>
+<p>argument depends on NCCL launch cost (~100µs) dwarfing the transfer delta</p>
+<p>(~3µs vs ~400ns) at 32 tokens/GPU <a href="/papers/2512.09277/detail.html#4-作者证明" class="ref-link" title="2512.09277#4-作者证明">[2512.09277]</a>. This is an</p>
+<p>argument that the <em>fixed cost</em> hides the <em>variable cost</em> — precisely because</p>
+<p>batches are tiny. But at larger decode batches (the very regime the 4.11×</p>
+<p>Pareto point exploits by running "4× larger batches"), the all-gather's 2MB</p>
+<p>vs all-to-all's 256KB gap scales while the NCCL fixed cost does not. The</p>
+<p>paper never shows the crossover batch where all-gather stops being free. NEO</p>
+<p>independently found "kernel launch overhead is a hidden bottleneck" that</p>
+<p>forced a Triton→CUDA rewrite <a href="/papers/2411.01142/detail.html#§7-实现-cross-reference" class="ref-link" title="2411.01142#§7-实现-cross-reference">[2411.01142]</a> — a</p>
+<p>warning that launch-cost accounting is treacherous.</p>
+</ul>
+
+<ol>
+<li><strong>Placement is frozen at EPLB, so the objective is only locally optimal.</strong></li>
+<p>METRO deliberately does not touch replication/placement to avoid harming</p>
+<p>prefill <a href="/papers/2512.09277/detail.html#q2-—-方法-the-approach" class="ref-link" title="2512.09277#q2-—-方法-the-approach">[2512.09277]</a>. But EPLB places replicas *to balance</p>
+<p>expected tokens* <a href="/papers/2512.09277/detail.html#3-架构-方法图" class="ref-link" title="2512.09277#3-架构-方法图">[2512.09277]</a>. Routing to minimize</p>
+<p>activated experts on top of a token-balanced placement is a constrained</p>
+<p>optimization: the true global optimum (co-designed placement + routing for</p>
+<p>decode) is unreachable. The paper's own Lemma-1 optimum is optimum <em>given A</em>,</p>
+<p>not over A. DeepSeek-V3's redundant-expert deployment</p>
+<p><a href="/papers/2412.19437/detail.html#3-key-innovations" class="ref-link" title="2412.19437#3-key-innovations">[2412.19437]</a> suggests placement and routing are</p>
+<p>coupled in production — METRO's separation may leave gains on the table.</p>
+</ul>
+
+<ol>
+<li><strong>Single-SM kernel with lock-serialized concurrency <64 is an A100-era bet.</strong></li>
+<p>METRO argues one SM suffices because expert-count parallelism (≤256) is</p>
+<p>throttled below 64 by locking <a href="/papers/2512.09277/detail.html#7-实现-cross-reference" class="ref-link" title="2512.09277#7-实现-cross-reference">[2512.09277]</a>. On</p>
+<p>future GPUs with more experts (the paper's own §VII predicts sparser, larger</p>
+<p>MoE) or finer-grained routing, the lock-guarded greedy on a single SM could</p>
+<p>become the bottleneck it currently hides under FFN time. This is the mirror</p>
+<p>image of DeepSeek-V3's warp-specialized 20-SM comm kernel</p>
+<p><a href="/papers/2412.19437/detail.html#关键技术细节" class="ref-link" title="2412.19437#关键技术细节">[2412.19437]</a> — METRO under-provisions where DeepSeek</p>
+<p>over-provisions, and neither shows the scaling curve.</p>
+</ul>
+
+<ol>
+<li><strong>Self-admitted collapse regimes are large.</strong> METRO concedes it helps little</li>
+<p>on prefill-heavy GSM8K (+3–4.2%), vanishes at strict SLO (batch ≤64 leaves</p>
+<p>the memory-bound regime, full TP wins) <a href="/papers/2512.09277/detail.html#6b-workload-characterization-—-where-it-wins-loses" class="ref-link" title="2512.09277#6b-workload-characterization-—-where-it-wins-loses">[2512.09277]</a>, and shrinks to ~5% under</p>
+<p>disaggregation. The honest envelope is "decode-heavy, co-deployed, moderate</p>
+<p>SLO, moderate batch" — a narrower slice than the abstract implies.</p>
+</ul>
+
+<hr>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<p>METRO is a <strong>paradigm-corrective, not a paradigm-founding</strong> paper. It does not</p>
+<p>introduce a new system layer (unlike vLLM's PagedAttention, which redefined KV</p>
+<p>management <a href="/papers/2309.06180/detail.html#§1-tl-dr" class="ref-link" title="2309.06180#§1-tl-dr">[2309.06180]</a>) nor a new deployment topology (unlike</p>
+<p>Mooncake's disaggregation <a href="/papers/2407.00079/detail.html#§1-tl-dr" class="ref-link" title="2407.00079#§1-tl-dr">[2407.00079]</a>). Instead it inverts the *objective</p>
+<p>function* of an existing, near-universal component (the EP load balancer). Its</p>
+<p>niche is the same "one algorithm swap inside vLLM" niche FastServe occupies for</p>
+<p>scheduling <a href="/papers/2305.05920/detail.html#§7-实现-cross-reference" class="ref-link" title="2305.05920#§7-实现-cross-reference">[2305.05920]</a> — low adoption friction, high</p>
+<p>composability.</p>
+
+<p><strong>Adoption evidence: thin.</strong> The L2 records "no upstream-merge or</p>
+<p>production-deployment claim," "[实现未公开]," no repo link</p>
+<p><a href="/papers/2512.09277/detail.html#7-实现-cross-reference" class="ref-link" title="2512.09277#7-实现-cross-reference">[2512.09277]</a>. Contrast the ecosystem winners in</p>
+<p>scope: vLLM is the de-facto standard engine <a href="/papers/2309.06180/detail.html#§7-实现-cross-reference" class="ref-link" title="2309.06180#§7-实现-cross-reference">[2309.06180]</a>,</p>
+<p>HybridFlow/veRL is an actively-adopted open EuroSys'25 project</p>
+<p><a href="/papers/2409.19256/detail.html#10-adoption-maturity" class="ref-link" title="2409.19256#10-adoption-maturity">[2409.19256]</a>, and DeepSeek-V3's weights + DualPipe</p>
+<p>reference are open <a href="/papers/2412.19437/detail.html#10-adoption-maturity" class="ref-link" title="2412.19437#10-adoption-maturity">[2412.19437]</a>. METRO's ideas are</p>
+<p>individually cheap to copy ("a competitor can copy Algorithm 1 in an afternoon"</p>
+<p><a href="/papers/2512.09277/detail.html#7-实现-cross-reference" class="ref-link" title="2512.09277#7-实现-cross-reference">[2512.09277]</a>) — its moat is the <em>reframing insight</em>,</p>
+<p>which is exactly the part that diffuses fastest through the literature. Expect</p>
+<p>the idea (min activated experts) to be absorbed into vLLM/SGLang EPLB</p>
+<p>implementations faster than METRO-the-artifact gets adopted.</p>
+
+<p><strong>Paradigm positioning.</strong> METRO belongs to a small but growing sub-genre:</p>
+<p>"token-balance is the wrong metric for memory-bound work." It is the routing</p>
+<p>counterpart to DeepSeek-V3's auxiliary-loss-free balancing</p>
+<p><a href="/papers/2412.19437/detail.html#key-findings" class="ref-link" title="2412.19437#key-findings">[2412.19437]</a> (which also questions naive balance objectives,</p>
+<p>but for <em>training quality</em>, not <em>decode traffic</em>). Together they mark a shift</p>
+<p>from "balance tokens" to "balance the thing that actually costs" across both</p>
+<p>training and serving.</p>
+
+<hr>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<ol>
+<li><strong>Co-designed placement + routing for decode (closes attack-surface #3).</strong></li>
+<p>METRO freezes EPLB placement; the cluster suggests a hybrid where placement</p>
+<p>is <em>also</em> activated-expert-aware. FlexRLHF/HybridFlow already treat</p>
+<p>per-phase placement as a search problem <a href="/papers/2409.19256/detail.html#3-key-innovations" class="ref-link" title="2409.19256#3-key-innovations">[2409.19256]</a></p>
+<p><a href="/papers/2312.11819/detail.html#3-key-innovations" class="ref-link" title="2312.11819#3-key-innovations">[2312.11819]</a>; porting their auto-mapping /</p>
+<p>Placement-Ratio search to jointly optimize (replication, placement, routing)</p>
+<p>for a co-deployed prefill+decode SLO is a clean unexplored combination.</p>
+</ul>
+
+<ol>
+<li><strong>METRO × CPU-offload (compose the two memory-bound cures).</strong> FastDecode/NEO</li>
+<p>remove the KV term from decode traffic <a href="/papers/2411.01142/detail.html#q2-方法" class="ref-link" title="2411.01142#q2-方法">[2411.01142]</a>; METRO</p>
+<p>removes redundant expert-weight loads. A stack that offloads KV to CPU</p>
+<p><em>and</em> minimizes activated experts would attack both terms of the roofline</p>
+<p>simultaneously — neither paper studies the interaction, and NEO's</p>
+<p>never-worse greedy guarantee <a href="/papers/2411.01142/detail.html#§4-作者证明" class="ref-link" title="2411.01142#§4-作者证明">[2411.01142]</a> could be extended to</p>
+<p>also fall back on routing.</p>
+</ul>
+
+<ol>
+<li><strong>Adaptive objective by measured arithmetic intensity.</strong> METRO applies min-</li>
+<p>activated-experts only to decode and keeps EPLB routing for prefill — a</p>
+<p><em>binary</em> phase switch. The Pareto analysis shows the real boundary is a</p>
+<p>continuous crossover (batch ≤64 → full TP wins)</p>
+<p><a href="/papers/2512.09277/detail.html#6b-workload-characterization-—-where-it-wins-loses" class="ref-link" title="2512.09277#6b-workload-characterization-—-where-it-wins-loses">[2512.09277]</a>. An adaptive</p>
+<p>router that interpolates between token-balance and expert-balance objectives</p>
+<p>by the <em>measured</em> operational intensity per batch (à la NEO's per-iteration</p>
+<p>greedy choice between two plans <a href="/papers/2411.01142/detail.html#q2-方法" class="ref-link" title="2411.01142#q2-方法">[2411.01142]</a>) would remove the</p>
+<p>hand-drawn phase boundary.</p>
+</ul>
+
+<ol>
+<li><strong>METRO under disaggregation with elastic replication.</strong> §VII shows METRO's</li>
+<p>benefit shrinks under Mooncake-style disaggregation because decode prefers</p>
+<p>no-replication. But Mooncake's decode pool is elastic</p>
+<p><a href="/papers/2407.00079/detail.html#框架特定分析" class="ref-link" title="2407.00079#框架特定分析">[2407.00079]</a>; an unexplored direction is decode-pool</p>
+<p>replication <em>driven by</em> METRO's activated-expert objective rather than</p>
+<p>token load — turning the disaggregated decode cluster into METRO's ideal</p>
+<p>substrate instead of its worst case.</p>
+</ul>
+
+<ol>
+<li><strong>Extending Lemma 1 to fine-grained / node-limited routing.</strong> DeepSeek-V3</li>
+<p>uses node-limited routing (≤4 nodes/token) <a href="/papers/2412.19437/detail.html#关键技术细节" class="ref-link" title="2412.19437#关键技术细节">[2412.19437]</a>.</p>
+<p>METRO's single-replica-optimality lemma assumes free replica choice within a</p>
+<p>flat NVLink domain <a href="/papers/2512.09277/detail.html#4-作者证明" class="ref-link" title="2512.09277#4-作者证明">[2512.09277]</a>. Re-deriving the optimum under</p>
+<p>hierarchical (NVLink-within-node, IB-across-node) topology — where activating</p>
+<p>an off-node replica costs far more than an on-node one — is an open</p>
+<p>theoretical + systems combination the flat-domain formulation cannot express.</p>
+</ul>
+
+<hr>
+
+<h2 id="附-引用完整性">附:引用完整性 <a class="heading-anchor" href="#附-引用完整性" aria-label="Link to 附-引用完整性">#</a></h2>
+
+<p>Scope entities cited with <code>[ref:L2:...]</code>: 2412.19437, 2309.06180, 2403.11421,</p>
+<p>2411.01142, 2407.00079, 2409.19256, 2312.11819, 2305.05920 (all 8), plus target</p>
+<p>self-citations to 2512.09277. Contradiction explicitly marked in §2 (METRO vs</p>
+<p>DeepSeek-V3 redundant-expert token-balancing assumption) and §1-A.</p>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/EPLB.html">EPLB</a> (baseline) 
+<a href="/papers/2412.19437.html">2412.19437</a> (related) 
+<a href="/papers/2505.09388.html">2505.09388</a> (related) 
+<a href="/papers/2309.0618.html">2309.0618</a> (tool) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

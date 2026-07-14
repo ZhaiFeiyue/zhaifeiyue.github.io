@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SmoothAgent: Efficient Long-Horizon LLM-Based Agent Serving with Lookahead Context Engineering — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">SmoothAgent: Efficient Long-Horizon LLM-Based Agent Serving with Lookahead Context Engineering</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2607.00151</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-serving</span><span class="tag">context-engineering</span><span class="tag">kv-cache</span><span class="tag">ttft</span><span class="tag">scheduling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2607.00151.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2607.00151" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="smoothagent-—-l2-distillation">SmoothAgent — L2 Distillation <a class="heading-anchor" href="#smoothagent-—-l2-distillation" aria-label="Link to smoothagent-—-l2-distillation">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Context engineering (offload/summarize/truncate/isolate) keeps agent contexts short but each rewrite invalidates the KV cache and forces a re-prefill, spiking TTFT. SmoothAgent observes these rewrites are <em>segment-decomposable</em> — each prefix segment transforms independently of future tokens — so it precomputes transformed KV caches asynchronously in a lookahead stream and splices them in at commit time. A best-effort SLO-aware scheduler admits lookahead work only within LC slack. Up to 11.9× lower transform-point TTFT.</p>
+
+<hr>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-the-problem">Q1 — 痛点 (the problem) <a class="heading-anchor" href="#q1-—-痛点-the-problem" aria-label="Link to q1-—-痛点-the-problem">#</a></h3>
+
+<p>Long-horizon LLM agents accumulate context every turn (tool outputs, observations, history), which both raises cost/GPU-memory and degrades reliability through <strong>context rot</strong> — quality drops as context grows even inside the supported window. To fight this, production frameworks apply <strong>context engineering</strong> (reduction, offloading, isolation) to control length. But from a systems view every such technique is a <strong>context transformation</strong>: it rewrites the prefix, which <strong>invalidates the existing KV cache</strong> and forces a blocking re-prefill. The added latency — named <strong>context transformation overhead</strong> — lands directly on the critical path and produces sharp tail-TTFT spikes at each trigger, violating SLOs in latency-sensitive settings.</p>
+
+<p><strong>Agent scope</strong>: task class is <em>open-ended coding/analysis</em> (multi-step code reading via shell tools); interaction pattern is <em>continuous multi-turn</em> long-lived sessions; autonomy is <em>fully autonomous</em> per turn (no human-in-the-loop in the evaluated loop). This is an agent-<em>serving</em> / infrastructure paper, not a new agent reasoning method.</p>
+
+<h3 id="q2-—-方法-the-method">Q2 — 方法 (the method) <a class="heading-anchor" href="#q2-—-方法-the-method" aria-label="Link to q2-—-方法-the-method">#</a></h3>
+
+<p>Two coupled mechanisms plus a formal property:</p>
+
+<ol>
+<li><strong>Segment-decomposability</strong> (formal observation): a transformation $T$ over context $C$ partitioned into segments $\{S_1,\dots,S_n\}$ satisfies $T(C)=T(S_1)\,\|\,\cdots\,\|\,T(S_n)$ — each segment's transform depends only on itself (and prior state), never on future tokens. This is what licenses <em>ahead-of-time</em> execution.</li>
+<li><strong>Lookahead programming model</strong>: maintain a <em>lookahead context</em> alongside the working context. A 4-method strategy interface (<code>should_lookahead</code> / <code>transform</code> / <code>should_commit</code> / <code>should_promote</code>) lets the runtime asynchronously precompute transformed KV caches in a background stream, then at commit <strong>directly replace the prefix</strong> instead of re-prefilling. Developers keep their agent loop; they only implement the interface and insert two hooks.</li>
+<li><strong>Lookahead-aware scheduler</strong>: treats lookahead requests as <strong>best-effort (BE)</strong> jobs that never delay <strong>latency-critical (LC)</strong> requests, gated by a context-aware batch-latency model (Eq. 1) that — unlike token-budget-only models — accounts for KV-cache length in attention cost.</li>
+</ul>
+
+<p><strong>核心技术壁垒 (THE hardest-to-replicate insight)</strong>: the isolation strategy reframes <em>auto-regressive instruction decoding as a stream of fine-grained segments</em>, so the sub-agent's KV cache is built incrementally <strong>during</strong> delegation-instruction generation. Because decode is slower than prefill, the sub-agent prefill is fully hidden behind the decode it overlaps — turning a bottleneck (slow decode) into free preparation time. Getting this right (segment granularity, prefix-dependency ordering, near-zero final commit prefill) is the subtlest engineering in the paper.</p>
+
+<h3 id="q3-—-结果-the-results">Q3 — 结果 (the results) <a class="heading-anchor" href="#q3-—-结果-the-results" aria-label="Link to q3-—-结果-the-results">#</a></h3>
+
+<ul>
+<li><strong>11.9×</strong> transform-point TTFT improvement (summarization, the most expensive transform).</li>
+<li>Avg tail-TTFT reduction <strong>62.0%</strong> (Qwen3-8B) / <strong>61.5%</strong> (Qwen3-32B) in PD co-located.</li>
+<li><strong>64.5%</strong> avg reduction in PD disaggregated (up to 64 concurrent agents).</li>
+<li><strong>26.8%–80.5%</strong> transform-point TTFT reduction across 4 real frameworks (LangChain, LlamaIndex, AutoGen, OpenClaw).</li>
+<li>Performance model max relative error <strong>13.7%</strong> vs <strong>41.5%</strong> for a token-budget-only model.</li>
+</ul>
+
+<hr>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<h3 id="the-core-execution-timeline">The core execution timeline <a class="heading-anchor" href="#the-core-execution-timeline" aria-label="Link to the-core-execution-timeline">#</a></h3>
+
+<p><img src="/assets/2607.00151/fig4.png" alt="Figure 4: lookahead execution timeline with main and lookahead streams"></p>
+
+<p><em>Paper's Figure 4 (caption: "Execution timeline of the lookahead programming model. The main stream proceeds normally while the lookahead stream asynchronously computes the transformed segments' KV cache in advance. At commit time, the pre-computed result is spliced.").</em> The main stream runs the agent loop uninterrupted while the lookahead stream materializes transformed-segment KV caches off the critical path. The key thing to notice: the commit is a <strong>splice</strong>, not a prefill — the expensive work has already happened, so no TTFT spike appears at the trigger.</p>
+
+<h3 id="the-overhead-this-eliminates">The overhead this eliminates <a class="heading-anchor" href="#the-overhead-this-eliminates" aria-label="Link to the-overhead-this-eliminates">#</a></h3>
+
+<p><img src="/assets/2607.00151/fig3.png" alt="Figure 3: context transformation overhead from KV invalidation"></p>
+
+<p><em>Paper's Figure 3 (caption: "An illustrative example of context transformation overhead, including KV cache invalidation and additional transformation cost, which leads to TTFT spikes.").</em> When earlier turns are summarized, the prefix changes, cached KV entries for that prefix become invalid, and the next response must re-prefill — this is the spike SmoothAgent hides.</p>
+
+<h3 id="the-agent-loop-agent-specific-state-of-one-turn">The agent loop (agent-specific: state of one turn) <a class="heading-anchor" href="#the-agent-loop-agent-specific-state-of-one-turn" aria-label="Link to the-agent-loop-agent-specific-state-of-one-turn">#</a></h3>
+
+<p>Per the agent template, the one-turn loop is a state machine. SmoothAgent overlays a lookahead sub-loop on the standard observe→act loop:</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Commit
+    Commit: on_commit (splice if ready, else promote+await)
+    Generate: llm.generate(messages)
+    ToolCall: execute_tool -> obs
+    SegBoundary: on_segment_boundary (enqueue transform)
+    Commit --> Generate
+    Generate --> ToolCall: has_tool_call
+    Generate --> SegBoundary: no_tool_call
+    ToolCall --> SegBoundary
+    SegBoundary --> Commit: not task_done
+    SegBoundary --> [*]: task_done
+
+    state LookaheadStream {
+        Idle --> Transforming: should_lookahead()
+        Transforming --> Idle: segment done
+        Transforming --> Promoted: should_promote()
+        Promoted --> Idle: committed
+    }
+</div>
+
+<p><strong>Memory model</strong>: short-term = working context window (<code>MainState.messages</code>); long-term = file system (offloading writes observations to <code>/path/to/fileN</code> and leaves pointers); episodic = the growing multi-turn trace itself. <strong>Tool invocation</strong>: standard tool-call → <code>execute_tool</code> → observation appended (shell commands <code>head</code>/<code>tail</code>/<code>sed</code> in the eval). <strong>Error recovery</strong>: if a lookahead transform has <em>not</em> finished at the commit point, the runtime falls back to <strong>synchronous execution</strong> (promote priority, await) — i.e., worst case degrades gracefully to the baseline, never worse.</p>
+
+<h3 id="planning-reasoning-agent-specific">Planning & reasoning (agent-specific) <a class="heading-anchor" href="#planning-reasoning-agent-specific" aria-label="Link to planning-reasoning-agent-specific">#</a></h3>
+
+<p>Planning style is a <strong>predetermined workflow</strong>, not tree search or ReAct-style deliberation — the "intelligence" here is systems scheduling, not agent reasoning. Decomposition is <strong>top-down</strong> for isolation (main agent → sub-task instruction → sub-agent). Budget is context-length-driven: transforms trigger at token thresholds (e.g. offloading at 15K, summarization soft/hard at 11K/15K). <strong>Backtracking</strong>: none at the reasoning level; the only "undo" is that an unready lookahead result is simply discarded and recomputed synchronously.</p>
+
+<h3 id="strategy-instantiations">Strategy instantiations <a class="heading-anchor" href="#strategy-instantiations" aria-label="Link to strategy-instantiations">#</a></h3>
+
+<p><img src="/assets/2607.00151/fig5.png" alt="Figure 5: offloading replaces observations with external-storage references"></p>
+
+<p><em>Paper's Figure 5 (caption: "Offloading transforms bulky observations (e.g., tool outputs) into compact references to external storage. Since each completed observation can be rewritten independently, the transformed KV cache can be prepared ahead of time.").</em> Offloading is lossless (exact fidelity, restorable) but yields the <em>smallest</em> speedup because after the first trigger the context is already compact.</p>
+
+<p><img src="/assets/2607.00151/fig8.png" alt="Figure 8: isolation prepares sub-agent context during instruction decoding"></p>
+
+<p><em>Paper's Figure 8 (caption: "Context isolation launches a sub-agent with a clean context. By decomposing instruction generation into segments, the sub-agent context can be prepared ahead of time.").</em> Sub-figure (b) shows the delegation instruction split into decode-time chunks (S2, S3); each chunk incrementally extends the sub-agent KV cache so almost all sub-agent prefill overlaps the (slower) instruction decode — the core-barrier trick from §2.</p>
+
+<hr>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证</strong> for the end-to-end speedup (no convergence/success guarantee — expected for an agent-serving paper; what <em>could</em> have been bounded is the commit-miss probability as a function of the soft-vs-hard threshold gap). However, the paper <strong>does</strong> carry two load-bearing analytical models that admit checks.</p>
+
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$C$</td><td>current accumulated context</td></tr>
+<tr><td>$T(\cdot)$</td><td>context transformation function</td></tr>
+<tr><td>$S_i$</td><td>$i$-th context segment; $\</td><td>$ = concatenation</td></tr>
+<tr><td>$M$</td><td>total forward tokens in a batch</td></tr>
+<tr><td>$B_{\mathrm{decode}}, B_{\mathrm{prefill}}$</td><td>decode / prefill request sets</td></tr>
+<tr><td>$q_j$</td><td>query tokens in prefill chunk $j$; $\mathrm{prefix}_j$ its cached prefix len</td></tr>
+<tr><td>$L_j$</td><td>KV-cache length of decode request $j$</td></tr>
+<tr><td>$\alpha_{\mathrm{d}}, \alpha_{\mathrm{p}}$</td><td>profiled decode / prefill attention coefficients</td></tr>
+<tr><td>$A_j$</td><td>per-chunk prefill attention work</td></tr>
+<tr><td>$t_{\mathit{budget}}, \delta$</td><td>LC slack budget / TBT SLO bound</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p>Segment-decomposability: $$T(C)=T(S_1)\;\|\;T(S_2)\;\|\;\cdots\;\|\;T(S_n)$$ the whole-context transform equals concatenation of independently-transformed segments — independence from future tokens is exactly the license for lookahead.</p>
+
+<p>Batch-latency model (Eq. 1): $$\mathrm{EstBatchLatency}(B)=T_{\mathrm{GEMM}}(M)+\alpha_{\mathrm{d}}\sum_{j\in B_{\mathrm{decode}}}L_{j}+\alpha_{\mathrm{p}}\sum_{j\in B_{\mathrm{prefill}}}A_{j}$$ decomposes cost into token-driven GEMM (lookup table), KV-length-driven decode attention (linear in $\sum L_j$), and query×prefix-driven prefill attention $A_j=q_j\cdot\mathrm{prefix}_j+\tfrac{q_j(q_j+1)}{2}$. This is the scheduler's admission oracle.</p>
+
+<h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Dimensional consistency</strong>: all three RHS terms of Eq. 1 are latencies (coefficients $\alpha$ carry time/token-work units); sum is a latency. ✓</li>
+<li><strong>Limiting case (no cached context)</strong>: with $\mathrm{prefix}_j=0$ and $L_j\to 0$, attention terms shrink and Eq. 1 collapses toward pure $T_{\mathrm{GEMM}}(M)$ — recovering the token-budget-only model as a degenerate case. ✓ (explains why token-budget-only works for stateless but fails for long-KV agent workloads.)</li>
+<li><strong>Causal-mask arithmetic</strong>: $A_j=\sum_{i=0}^{q_j-1}(\mathrm{prefix}_j+1+i)=q_j\cdot\mathrm{prefix}_j+\tfrac{q_j(q_j+1)}{2}$ — the closed form matches the arithmetic-series sum. ✓</li>
+<li><strong>Monotonicity</strong>: $\mathrm{EstBatchLatency}$ increases in $M$, $L_j$, $\mathrm{prefix}_j$, $q_j$ — every added request/token can only raise estimated latency, so greedy admission (Alg. 1/2) is safe (admitting a chunk never <em>decreases</em> predicted cost). ✓</li>
+<li><strong>Slack safety</strong>: Alg. 1 admits BE chunk $c$ only if $\mathrm{EstBatchLatency}(B_{LC}\cup B_{BE}\cup\{c\})\le t_{budget}=\max(0,s_{min})$; since $t_{budget}$ is the min LC slack, no LC deadline is violated <em>if the model is accurate</em>. ✓ (conditional on check 6.)</li>
+<li><strong>Empirical model accuracy</strong>: Fig 15 — context-aware model max relative error 13.7% vs 41.5% token-budget-only, validating that check-5's guarantee rests on a sufficiently accurate oracle. ✓ (bounds the residual SLO risk.)</li>
+</ul>
+
+<h3 id="agent-specific-asks">Agent-specific asks <a class="heading-anchor" href="#agent-specific-asks" aria-label="Link to agent-specific-asks">#</a></h3>
+
+<ul>
+<li><strong>Success-rate model</strong>: N/A — the paper optimizes <em>latency</em>, not task success; it holds accuracy fixed by replicating each framework's native strategy verbatim (only removing the blocking).</li>
+<li><strong>Latency budget per turn</strong>: yes — the whole point. Per turn = LLM inference + tool call + (hidden) transform; the sweep is <em>concurrency</em> (1/4/8/16, up to 64) × <em>strategy</em> × <em>model scale</em>, and TTFT stays smooth (Fig 12) rather than claiming an absolute "interactive" bound.</li>
+<li><strong>Failure mode classification</strong>: the dominant "failure" is a <strong>commit miss</strong> (lookahead not ready in time) → falls back to synchronous, mitigated by the soft-threshold and <code>should_promote</code> early-priority signal. No taxonomy of >1 class.</li>
+</ul>
+
+<hr>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<h3 id="end-to-end-transform-point-ttft">End-to-end transform-point TTFT <a class="heading-anchor" href="#end-to-end-transform-point-ttft" aria-label="Link to end-to-end-transform-point-ttft">#</a></h3>
+
+<p><img src="/assets/2607.00151/fig10.png" alt="Figure 10: transform-point TTFT on Qwen3-8B across strategies and concurrency"></p>
+
+<p><em>Paper's Figure 10 (caption: "Transform-point TTFT for each strategy on Qwen3-8B (PD co-located) at concurrency levels 1, 4, 8, and 16. SmoothAgent eliminates the transformation-induced TTFT spike across all strategies and concurrency levels.").</em> The spike SmoothAgent removes is largest for summarization and smallest for offloading; note offloading's benefit shrinks as concurrency rises (bars converge), because repeated offloads operate on already-compact context.</p>
+
+<p><img src="/assets/2607.00151/fig12.png" alt="Figure 12: single-agent context length and per-turn TTFT trace"></p>
+
+<p><em>Paper's Figure 12 (caption: "Context length (top) and per-turn TTFT (bottom) for a single Qwen3-8B agent under each strategy...").</em> This is the load-bearing case study: the top row shows each strategy capping context growth at its trigger, while the bottom row shows the baseline's TTFT spike at exactly that trigger — and SmoothAgent's flat profile because the cost was amortized across preceding turns. Triggers: offloading/summarization at 15K, keep-recent-K at turn 22, summarization soft threshold at 11K.</p>
+
+<h3 id="pd-disaggregated-scale-out">PD disaggregated scale-out <a class="heading-anchor" href="#pd-disaggregated-scale-out" aria-label="Link to pd-disaggregated-scale-out">#</a></h3>
+
+<p><img src="/assets/2607.00151/fig13.png" alt="Figure 13: transform-time TTFT under PD disaggregation up to 64 agents"></p>
+
+<p><em>Paper's Figure 13 (caption: "Transform-time TTFT on Qwen3-8B in a PD disaggregated deployment with four prefill and four decode instances.").</em> Absolute TTFT is higher than co-located (KV transfer + routing overhead) but the relative spike elimination holds (avg 64.5%), showing lookahead survives the disaggregated setting where NIXL moves KV between instances.</p>
+
+<h3 id="scheduler-isolation-model-validation">Scheduler isolation & model validation <a class="heading-anchor" href="#scheduler-isolation-model-validation" aria-label="Link to scheduler-isolation-model-validation">#</a></h3>
+
+<p><img src="/assets/2607.00151/fig14.png" alt="Figure 14: LC latency vs increasing best-effort lookahead traffic"></p>
+
+<p><em>Paper's Figure 14 (caption: "Impact of lookahead traffic on latency-critical requests. Our lookahead-aware scheduler effectively reduces the interference as lookahead traffic increases.").</em> Vanilla SGLang lets LC TTFT-p99 (disaggregated) / TBT (co-located) blow past target as BE load grows; SmoothAgent's slack-gated admission keeps LC latency flat — this is the evidence that BE work makes progress without dominating the critical path.</p>
+
+<p><img src="/assets/2607.00151/fig15.png" alt="Figure 15: performance-model accuracy vs cached-context length"></p>
+
+<p><em>Paper's Figure 15 (caption: "Accuracy of the context-aware performance model from Section 4 under controlled mixed batches with fixed generation work and varying cached-context lengths.").</em> With generation work held fixed, only cached-context length varies; the token-budget-only prediction diverges (41.5% max error) while the context-aware model tracks measured latency (13.7%) — justifying why KV length must enter the admission oracle.</p>
+
+<p><strong>Setup at a glance</strong>: H100 80GB / NVLink / EPYC; Qwen3-8B (1 GPU) and Qwen3-32B (TP=4); GQA, 32K max context; 28-step code-analysis task (~600–650 tok/step); baseline = same strategies executed <em>synchronously</em> on SGLang.</p>
+
+<hr>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>Step</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Agent context grows monotonically each turn, causing context rot + cost.</td><td>§1–§2; Fig 1</td></tr>
+<tr><td>2</td><td>Frameworks apply context engineering (offload/reduce/isolate) to cap length.</td><td>§1 para 2; Fig 2(a)</td></tr>
+<tr><td>3</td><td>Each such transform rewrites the prefix → invalidates KV cache → blocking re-prefill → TTFT spike ("transformation overhead").</td><td>§1 para 3; Fig 2(b), Fig 3</td></tr>
+<tr><td>4</td><td>These transforms are segment-decomposable: $T(C)=\</td><td>_i T(S_i)$, each segment independent of future tokens.</td><td>§3.1; Eq. (segment-decomp)</td></tr>
+<tr><td>5</td><td>Therefore transforms can run ahead of time in a lookahead stream and be spliced at commit, removing the spike.</td><td>§3.2; Fig 4</td></tr>
+<tr><td>6</td><td>All three strategy families (offloading, reduction, isolation) instantiate the 4-method interface and satisfy the property.</td><td>§3.3–§3.5; Figs 5–8</td></tr>
+<tr><td>7</td><td>Lookahead work risks interfering with LC requests; a context-aware batch-latency model (Eq. 1) predicts co-batch cost including KV length.</td><td>§4; Eq. 1; Fig 15</td></tr>
+<tr><td>8</td><td>A best-effort scheduler admits lookahead only within LC slack (Alg. 1 disaggregated / Alg. 2 co-located), never delaying LC.</td><td>§4; Algs 1–2; Fig 14</td></tr>
+<tr><td>9</td><td>End-to-end this eliminates transform-point spikes: up to 11.9×, avg ~62% co-located / 64.5% disaggregated, 26.8–80.5% across real frameworks.</td><td>§6.2; Figs 10–13</td></tr>
+</table>
+
+<hr>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>Artifact is public: <code>https://github.com/PanZaifeng/SmoothAgent</code> (§0). Specific file:line citations are not resolvable from L1 alone, so concrete internal references are marked <code>[实现未公开]</code> at the line level; the reproducible interface contracts are given verbatim in the paper.</p>
+
+<ul>
+<li><strong>Strategy interface</strong> (<code>should_lookahead</code> / <code>transform</code> / <code>should_commit</code> / <code>should_promote</code>, <code>MainState</code> / <code>LookaheadState</code>) — Listing 1, reproduced verbatim in L1 §3.2. <code>[实现未公开]</code> at file:line; behavior fully specified by the listing.</li>
+<li><strong>Agent-loop hooks</strong> (<code>runtime.on_commit</code>, <code>runtime.on_segment_boundary</code>) — Listing 2, L1 §3.2. Two hooks are the entire integration surface.</li>
+<li><strong>Scheduler</strong> integrated into <strong>SGLang v0.5.9</strong> (§5); Algorithms 1 (PD disaggregated, slack-driven admission) and 2 (PD co-located, priority-ordered decode→LC→BE under TBT $\delta$) reproduced verbatim in L1 §4. KV transfer via <strong>NIXL</strong> in disaggregation.</li>
+</ul>
+
+<h3 id="核心技术壁垒-dedicated-paragraph">核心技术壁垒 (dedicated paragraph) <a class="heading-anchor" href="#核心技术壁垒-dedicated-paragraph" aria-label="Link to 核心技术壁垒-dedicated-paragraph">#</a></h3>
+
+<p>The single hardest-to-replicate insight is the <strong>isolation streaming reformulation</strong> (§3.5). A naïve implementation treats the delegation instruction as one monolithic output and cannot start building the sub-agent context until decoding finishes — so all sub-agent prefill lands synchronously at the switch. SmoothAgent instead partitions the <em>auto-regressive decode itself</em> into fine-grained segments (S2, S3, …), each a chunk of newly generated tokens depending only on the prior prefix, and extends the sub-agent KV cache chunk-by-chunk <em>while</em> the instruction is still decoding. Because instruction decode is inherently slower than prefill, there is enough wall-clock slack to hide nearly all sub-agent prefill, leaving only a short final commit prefill. Replicating this requires (a) making decode emit at segment granularity, (b) preserving the strict prefix-dependency ordering so each lookahead request sees the correct prior state, and (c) sizing segments so the overlap actually hides the prefill without adding decode overhead. This "slowness-as-opportunity" inversion is the paper's subtlest and least obvious engineering.</p>
+
+<h3 id="关键实现细节-easy-to-miss-tricks">关键实现细节 (easy-to-miss tricks) <a class="heading-anchor" href="#关键实现细节-easy-to-miss-tricks" aria-label="Link to 关键实现细节-easy-to-miss-tricks">#</a></h3>
+
+<ol>
+<li><strong>Soft summarization threshold</strong> (§3.4 para 7): trigger lookahead summarization at a threshold <em>slightly below</em> the real hard limit (11K vs 15K). Because the exact boundary would otherwise require observing the full context, the soft threshold lets summarization start early; the boundary discrepancy is bounded by the soft–hard gap and, for long contexts, is negligible — and may even <em>improve</em> fidelity by summarizing slightly less. Missing this makes summarization lookahead impossible to start in time.</li>
+<li><strong>In-order lookahead enqueue</strong> (§3.2 para 5): lookahead requests are executed strictly in order so each observes the correct previously-transformed prefix state; and <code>should_promote</code> (default = <code>should_commit</code>) can be overridden to raise scheduling priority <em>before</em> the commit point, reducing commit misses. Getting the ordering wrong silently corrupts the transformed prefix.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

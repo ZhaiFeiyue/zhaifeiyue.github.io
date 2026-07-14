@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Draft-Conditioned Constrained Decoding for Structured Generation in LLMs — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Draft-Conditioned Constrained Decoding for Structured Generation in LLMs</h1>
+<div class="card-meta"><span class="badge badge-model">model</span> 2603.03305 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2603.03305/detail.html">→ Detail (L2)</a>
+<a href="/overview/model.html">← model Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="dccd-2603-03305-—-l3-synthesis">DCCD (2603.03305) — L3 Synthesis <a class="heading-anchor" href="#dccd-2603-03305-—-l3-synthesis" aria-label="Link to dccd-2603-03305-—-l3-synthesis">#</a></h1>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>本篇 (DCCD) 是一个 <strong>training-free、inference-time、logit/context-space</strong> 的解码干预方法，针对 structured</p>
+<p>generation 下 constrained decoding 的 quality-validity tradeoff。按"与本篇的关系强度"排序，其 peer 集群分三档：</p>
+
+<p><strong>A 档 — 方法论直系亲属（inference-time 解码干预，同一 paradigm）</strong></p>
+
+<ul>
+<li><strong>2506.08371 (PCD, Positional Contrastive Decoding)</strong> — 最近的方法论镜像。同样是 training-free、在</li>
+<p>transformer forward 之后 / sampler 之前插入的解码算法，同样把长上下文/结构失败诊断为 **"know but don't</p>
+<p>tell"（模型编码了正确答案却选不出）** 而非召回失败 <a href="/papers/2506.08371/detail.html#2-痛点-方法-结果" class="ref-link" title="2506.08371#2-痛点-方法-结果">[2506.08371]</a>。DCCD 用"追加 draft context 抬高</p>
+<p>feasible mass"解决，PCD 用"对比 local-aware logits 减掉 proximal bias"解决——两者都不动权重、不放松约束。</p>
+<li><strong>2510.05381 (Context Length Alone Hurts)</strong> — <strong>结构同构的 mitigation</strong>。其 retrieve-then-solve（先让模型逐字</li>
+<p>recite 证据，再在短 prompt 上求解）与 DCCD 的 draft-then-constrain 是同一个 "两步、先自由生成语义、再在受控/短</p>
+<p>上下文里定稿" 的模板 <a href="/papers/2510.05381/detail.html#2-痛点-方法-结果" class="ref-link" title="2510.05381#2-痛点-方法-结果">[2510.05381]</a>。DCCD 的第二步是 constrained decode，2510.05381 的第二步是短</p>
+<p>prompt solve，骨架一致。</p>
+</ul>
+
+<p><strong>B 档 — 同一 "know but don't tell" 诊断家族（长上下文位置偏置）</strong></p>
+
+<ul>
+<li><strong>2404.16811 (FilM / IN2)</strong> — data-side 对照组。诊断 lost-in-the-middle 是 <strong>训练数据的位置偏置</strong>，用 1.75M 条</li>
+<p>位置均匀的合成数据做 SFT 修复 <a href="/papers/2404.16811/detail.html#2-q1-q2-q3" class="ref-link" title="2404.16811#2-q1-q2-q3">[2404.16811]</a>。与 DCCD 形成鲜明的 "training-time data fix vs</p>
+<p>inference-time context fix" 对轴。</p>
+<li><strong>2412.10079 (Lost in the Middle, and In-Between)</strong> — 纯诊断工作，把位置偏置分解为绝对位置 (U 形) + 证据间距</li>
+<p>(lost-in-between) 两个独立维度 <a href="/papers/2412.10079/detail.html#2-q1-q2-q3" class="ref-link" title="2412.10079#2-q1-q2-q3">[2412.10079]</a>。它提供了 DCCD 所处问题域的 "为什么直接约束/直接检索</p>
+<p>会退化" 的实证背景。</p>
+</ul>
+
+<p><strong>C 档 — 弱相关（同 category=model，但 paradigm 不同）</strong></p>
+
+<ul>
+<li><strong>2405.04434 (DeepSeek-V2)</strong> — model release + MLA/MoE 架构。与 DCCD 唯一实质交点是 <strong>parameter-efficiency</strong></li>
+<p>论证方式（V2 用 21B 激活匹配 70B dense <a href="/papers/2405.04434/detail.html#2-痛点-方法-结果" class="ref-link" title="2405.04434#2-痛点-方法-结果">[2405.04434]</a>；DCCD 用 drafter+projector 组合匹配单个更大</p>
+<p>的 CD 模型 <a href="/papers/2603.03305/detail.html#5-实验与数据" class="ref-link" title="2603.03305#5-实验与数据">[2603.03305]</a>）。</p>
+<li><strong>2510.26692 (Kimi Linear)</strong> — 架构 + <strong>test-time scaling</strong> 论证（RL 长 rollout / KV 效率）<a href="/papers/2510.26692/detail.html#2-q1-q2-q3" class="ref-link" title="2510.26692#2-q1-q2-q3">[2510.26692]</a>。</li>
+<p>与 DCCD 的交点只在 "test-time compute → accuracy" 这一叙事，机制毫不相干。</p>
+<li><strong>2509.17765 (Qwen3-Omni)</strong> — 唯一交点是它显式提到 Talker decoupling 允许对 text output 做 RAG/safety/结构化</li>
+<p>拦截 <a href="/papers/2509.17765/detail.html#2-q1-q2-q3" class="ref-link" title="2509.17765#2-q1-q2-q3">[2509.17765]</a>，即 DCCD 这类结构化解码方法的一个 <strong>上游宿主系统</strong>。</p>
+<li><strong>2512.13507 (Seedance 1.5)</strong> — 几乎无关（audio-visual diffusion 生成），仅同 category。此处不再纳入 delta 分析。</li>
+</ul>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<p><strong>新增 (novel)</strong>：</p>
+<ul>
+<li>**把 constrained decoding 形式化为 repeated reverse-KL projection，并给出可量化的 per-step distortion</li>
+<p>$=\log\frac1{\alpha(h_t)}$ 与 additive "projection tax"** <a href="/papers/2603.03305/detail.html#4-作者证明" class="ref-link" title="2603.03305#4-作者证明">[2603.03305]</a>。在此集群里，DCCD 是唯一</p>
+<p>给出<strong>闭式解析证明</strong>（Eq.5–8 + Pinsker bound）解释 "约束为何伤害正确性" 的工作。PCD 有 Theorem A.5（衰减率</p>
+<p>改善）<a href="/papers/2506.08371/detail.html#4-作者证明" class="ref-link" title="2506.08371#4-作者证明">[2506.08371]</a>，但那是关于 attention decay，不是约束投影；2510.05381 与 2412.10079 明确</p>
+<p>"无形式化证明，仅实证" <a href="/papers/2510.05381/detail.html#4-作者证明" class="ref-link" title="2510.05381#4-作者证明">[2510.05381]</a> <a href="/papers/2412.10079/detail.html#4-作者证明" class="ref-link" title="2412.10079#4-作者证明">[2412.10079]</a>。</p>
+<li><strong>关键 insight：feasible mass $\alpha$ 是推理时的自由变量</strong>——参数与 valid set 固定，但 conditioning context 自由，</li>
+<p>追加 draft 即可抬高 $\alpha(h_t;d)\gg\alpha(h_t)$ <a href="/papers/2603.03305/detail.html#2-痛点-方法-结果-q1-q2-q3" class="ref-link" title="2603.03305#2-痛点-方法-结果-q1-q2-q3">[2603.03305]</a>。这是全集群独有的角度。</p>
+<li><strong>best-of-K 用 cumulative log feasible mass 做选择信号，无需外部 verifier</strong> <a href="/papers/2603.03305/detail.html#7-实现-cross-reference" class="ref-link" title="2603.03305#7-实现-cross-reference">[2603.03305]</a>。</li>
+</ul>
+
+<p><strong>增量 (incremental) — 相对 2510.05381</strong>：</p>
+<p>DCCD 的 draft-then-constrain 与 2510.05381 的 retrieve-then-solve 是同一 "两步解耦" 模板的两个实例</p>
+<p><a href="/papers/2510.05381/detail.html#2-痛点-方法-结果" class="ref-link" title="2510.05381#2-痛点-方法-结果">[2510.05381]</a>。2510.05381 早于 DCCD 且已用两步法把 Mistral GSM8K 从 35.5%→66.7% (+31.2% @26K)</p>
+<p><a href="/papers/2510.05381/detail.html#5-实验与数据" class="ref-link" title="2510.05381#5-实验与数据">[2510.05381]</a>。DCCD 的增量在于：(a) 把第二步specialize 成 constrained decode（而非短 prompt</p>
+<p>solve），(b) 提供了为什么两步有效的 KL 理论，而 2510.05381 只有实证。**换言之 DCCD 是"带证明的、面向结构约束的</p>
+<p>两步法"**。</p>
+
+<p><strong>增量 (incremental) — 相对 PCD</strong>：</p>
+<p>两者都干预解码、都 training-free、都主打 "know but don't tell"。delta 在于 <strong>干预位置</strong>：PCD 在 <strong>logit 空间</strong>做</p>
+<p>减法（需要跑两次 forward 得到 $L$ 和 $L^*$，成本 ~2×）<a href="/papers/2506.08371/detail.html#8-serving-部署考量" class="ref-link" title="2506.08371#8-serving-部署考量">[2506.08371]</a>；DCCD 在 <strong>context 空间</strong></p>
+<p>做加法（先生成 draft 再条件化，成本 ≈ $K$×draft + 1 constrained pass）<a href="/papers/2603.03305/detail.html#8-serving-deployment-considerations" class="ref-link" title="2603.03305#8-serving-deployment-considerations">[2603.03305]</a>。</p>
+<p>PCD 不改变约束（本就无约束），DCCD 的核心贡献恰恰是<strong>在硬约束下保持 exact validity</strong>——这是 PCD 不涉及的问题域。</p>
+
+<p><strong>对比/矛盾 (contradictory) — parameter-efficiency 的口径</strong>：</p>
+<p>DCCD 声称 "smaller model pairs match or exceed larger constrained baselines"，其 Fig.6 显示 accuracy-per-B 约</p>
+<p>三倍 <a href="/papers/2603.03305/detail.html#5-实验与数据" class="ref-link" title="2603.03305#5-实验与数据">[2603.03305]</a>。但这是 <strong>per-parameter</strong> 而非 <strong>per-FLOP/per-latency</strong> 的效率</p>
+<p><a href="/papers/2603.03305/detail.html#8-serving-deployment-considerations" class="ref-link" title="2603.03305#8-serving-deployment-considerations">[2603.03305]</a>——drafter+projector 要跑 $K$ 个完整 draft。DeepSeek-V2 的</p>
+<p>parameter-efficiency 是<strong>真·激活参数减少</strong>（21B activated 直接省 compute）<a href="/papers/2405.04434/detail.html#2-痛点-方法-结果" class="ref-link" title="2405.04434#2-痛点-方法-结果">[2405.04434]</a>。两者都叫</p>
+<p>"parameter-efficient" 但一个省激活 FLOP、一个省参数计数却增 FLOP，口径相反。</p>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<ol>
+<li><strong>"projection tax" 理论只保证 loss 不超过 base，不保证提升。</strong></li>
+<p>Appendix A 的 Pinsker bound 用 $Q=\rho_\theta$（base model）作高效用参考，结论是 "约束不会比 base 差太多"</p>
+<p><a href="/papers/2603.03305/detail.html#4-作者证明" class="ref-link" title="2603.03305#4-作者证明">[2603.03305]</a>。但 DCCD 报告的是<strong>大幅提升</strong>（1B GSM8K 15.2%→39.0%）。理论只解释了 "为什么约束</p>
+<p>伤害可减小"，没有解释为什么 draft-conditioning 能<strong>超过</strong> unconstrained base。这里存在一个 explanatory gap：</p>
+<p>提升的真正来源可能是 draft 本身作为 CoT 的推理增益（与约束无关），而非 feasible-mass 抬升。2510.05381 的</p>
+<p>retrieve-then-solve 提升 <a href="/papers/2510.05381/detail.html#2-痛点-方法-结果" class="ref-link" title="2510.05381#2-痛点-方法-结果">[2510.05381]</a> 和本集群中 CoT 的已知增益都指向这个混淆。</p>
+</ul>
+
+<ol>
+<li><strong>best-of-K 选择信号是 distortion 代理，不是 correctness 代理。</strong></li>
+<p>$k^\star=\arg\max_k\sum_t\log\alpha^{(k)}_t$ 选的是"让约束最不失真"的 draft <a href="/papers/2603.03305/detail.html#7-实现-cross-reference" class="ref-link" title="2603.03305#7-实现-cross-reference">[2603.03305]</a>。</p>
+<p>L2 自己在 6-checks 里承认它 "selects for low distortion, not directly correctness" <a href="/papers/2603.03305/detail.html#4-作者证明" class="ref-link" title="2603.03305#4-作者证明">[2603.03305]</a>。</p>
+<p>一个语义错误但格式极顺的 draft 会有高 $\alpha$——这个 selector 可能系统性偏向 "好写但错" 的答案，正是论文</p>
+<p>声称要解决的 valid-but-wrong 病症的另一种形态。</p>
+</ul>
+
+<ol>
+<li><strong>1B 行的数据自相矛盾。</strong></li>
+<p>L1 记录 Fig.4 聚合表中 1B 的 DCCD (9.8) < CD (10.2)，却与 caption "1B: 10.2%→20.9%" 冲突</p>
+<p><a href="/papers/2603.03305/detail.html#1-tl-dr" class="ref-link" title="2603.03305#1-tl-dr">[2603.03305]</a>（L2 已把它 "resolve in favor of the figure"，但这是编辑决定而非原文澄清）。在</p>
+<p>feasible-mass 理论下 1B 本应受益最大（$\alpha$ 最低、tax 最重），若真实数据是 loss，则理论的核心预测在最关键</p>
+<p>的低容量点被证伪。</p>
+</ul>
+
+<ol>
+<li><strong>约束类型窄，泛化未验证。</strong></li>
+<p>实验只覆盖 JSON schema / expression grammar / FOL（Prover9）<a href="/papers/2603.03305/detail.html#5-实验与数据" class="ref-link" title="2603.03305#5-实验与数据">[2603.03305]</a>。对</p>
+<p><strong>structure-from-token-1</strong> 的场景（tool call / API argument，L1 §2 承认这类场景 interleaved-reasoning 会退化回</p>
+<p>标准 CD），DCCD 的 draft 阶段是否还成立未测——而这恰是 agentic pipeline 最需要的场景。</p>
+</ul>
+
+<ol>
+<li><strong>成本被 parameter-efficiency 叙事掩盖。</strong></li>
+<p>best-of-K 意味着 $K$ 次完整 draft 生成 + 1 次 constrained pass <a href="/papers/2603.03305/detail.html#8-serving-deployment-considerations" class="ref-link" title="2603.03305#8-serving-deployment-considerations">[2603.03305]</a>。</p>
+<p>与 PCD 的 ~2× forward 相比 <a href="/papers/2506.08371/detail.html#8-serving-部署考量" class="ref-link" title="2506.08371#8-serving-部署考量">[2506.08371]</a>，DCCD 在 $K>1$ 时的实际 latency 更高。论文用</p>
+<p>"per-parameter accuracy" 框定优势，回避了 per-latency 的对比。</p>
+</ul>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<p>DCCD 坐落在一个正在成型的 <strong>"training-free inference-time decoding intervention"</strong> paradigm 中，这个 paradigm</p>
+<p>的共同信念是 <strong>"模型已经知道答案，问题出在 decode/select 阶段"</strong>（know-but-don't-tell）。集群内三篇独立工作在</p>
+<p>不同问题域收敛到同一诊断：</p>
+
+<ul>
+<li>PCD：长上下文 gold token 排名衰减但仍在 top-8——排序失败非召回失败 <a href="/papers/2506.08371/detail.html#2-痛点-方法-结果" class="ref-link" title="2506.08371#2-痛点-方法-结果">[2506.08371]</a>。</li>
+<li>2510.05381：retrieval 100% exact-match 但推理仍退化——长度本身伤害 <a href="/papers/2510.05381/detail.html#2-痛点-方法-结果" class="ref-link" title="2510.05381#2-痛点-方法-结果">[2510.05381]</a>。</li>
+<li>DCCD：约束下输出 valid-but-wrong，reasoning 本在 draft 里——约束扭曲选择 <a href="/papers/2603.03305/detail.html#2-痛点-方法-结果-q1-q2-q3" class="ref-link" title="2603.03305#2-痛点-方法-结果-q1-q2-q3">[2603.03305]</a>。</li>
+</ul>
+
+<p>这三点的<strong>跨论文收敛</strong>是本集群最强的 paradigm-shift 信号：它把"长上下文/结构化失败"从"训练不足/架构缺陷"</p>
+<p>（FilM 的 data fix <a href="/papers/2404.16811/detail.html#2-q1-q2-q3" class="ref-link" title="2404.16811#2-q1-q2-q3">[2404.16811]</a>、Kimi Linear 的架构 fix <a href="/papers/2510.26692/detail.html#2-q1-q2-q3" class="ref-link" title="2510.26692#2-q1-q2-q3">[2510.26692]</a> 所代表的路线）</p>
+<p>重新 frame 为 <strong>"廉价的推理时可修 bug"</strong>。</p>
+
+<p>DCCD 在这个 paradigm 里的独特生态位是 <strong>唯一处理硬约束（exact validity）且带解析证明的成员</strong>。它站在两个更大</p>
+<p>趋势的交叉点：(1) <strong>structured generation / tool-calling 基础设施</strong>——XGrammar、Outlines、OpenAI/Anthropic</p>
+<p>structured outputs 已是生产标配 <a href="/papers/2603.03305/detail.html#2-related-works" class="ref-link" title="2603.03305#2-related-works">[2603.03305]</a>，而 Qwen3-Omni 的 Talker decoupling</p>
+<p><a href="/papers/2509.17765/detail.html#2-q1-q2-q3" class="ref-link" title="2509.17765#2-q1-q2-q3">[2509.17765]</a> 正是这类拦截点的宿主；(2) <strong>test-time scaling</strong>——best-of-K 把 DCCD 接入了与 Kimi</p>
+<p>Linear 的 RL rollout <a href="/papers/2510.26692/detail.html#2-q1-q2-q3" class="ref-link" title="2510.26692#2-q1-q2-q3">[2510.26692]</a> 同源的 "花推理算力换准确率" 叙事。</p>
+
+<p><strong>Adoption 证据薄弱</strong>：DCCD 代码未公开 <a href="/papers/2603.03305/detail.html#7-实现-cross-reference" class="ref-link" title="2603.03305#7-实现-cross-reference">[2603.03305]</a>，作者 h-index 0 / 0 citations</p>
+<p><a href="/papers/2603.03305/detail.html#全篇开放性惊讶点" class="ref-link" title="2603.03305#全篇开放性惊讶点">[2603.03305]</a>。相比之下 PCD 同样未公开代码 <a href="/papers/2506.08371/detail.html#7-实现-cross-reference" class="ref-link" title="2506.08371#7-实现-cross-reference">[2506.08371]</a>，而</p>
+<p>FilM 完全开源（代码+权重）<a href="/papers/2404.16811/detail.html#7-实现-cross-reference" class="ref-link" title="2404.16811#7-实现-cross-reference">[2404.16811]</a>、DeepSeek-V2 开源权重</p>
+<p><a href="/papers/2405.04434/detail.html#7-实现-cross-reference" class="ref-link" title="2405.04434#7-实现-cross-reference">[2405.04434]</a>。DCCD 目前是 "理论优雅但工程未落地" 的 preprint 阶段。</p>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<p>从集群成员的组合中，浮现几个 hybrid / adaptive 方向：</p>
+
+<ol>
+<li><strong>DCCD × PCD 的 logit+context 双干预。</strong></li>
+<p>DCCD 在 context 空间抬 feasible mass，PCD 在 logit 空间减 proximal bias。两者作用位置正交（一个在 forward 前</p>
+<p>一个在 forward 后），理论上可叠加：先 draft-condition 抬高 $\alpha$，再对 draft-conditioned logits 做</p>
+<p>contrastive 减法进一步 sharpen answer slot。PCD 的 top-γ 限制 <a href="/papers/2506.08371/detail.html#7-实现-cross-reference" class="ref-link" title="2506.08371#7-实现-cross-reference">[2506.08371]</a> 恰好能</p>
+<p>约束在 DCCD 抬高后的 valid-token 区域。集群内无人做此组合。</p>
+</ul>
+
+<ol>
+<li><strong>Adaptive draft skipping（由 α 触发）。</strong></li>
+<p>DCCD 自己的 open question 指出大模型 feasible mass 已高、draft 收益递减 <a href="/papers/2603.03305/detail.html#10-open-questions-llm-specific-angles" class="ref-link" title="2603.03305#10-open-questions-llm-specific-angles">[2603.03305]</a>。</p>
+<p>可以用 PCD 式的在线 salience/α 探测：只在 measured $\alpha(h_t)$ 低于阈值时才触发 draft 阶段，否则直接 CD——</p>
+<p>把 DCCD 从 "always two-step" 变成 "conditionally two-step"，回收大模型上的无谓 latency。</p>
+</ul>
+
+<ol>
+<li><strong>用 correctness-aware selector 替换 distortion selector。</strong></li>
+<p>针对 §3 攻击点 2，可把 best-of-K 的 $\sum\log\alpha$ 换成/融合 2510.05381 式的 recite-verify 信号，或</p>
+<p>majority-vote across valid realizations（L1 §4.2 已列为可替换项 <a href="/papers/2603.03305/detail.html#4-draft-conditioned-constrained-decoding" class="ref-link" title="2603.03305#4-draft-conditioned-constrained-decoding">[2603.03305]</a>），</p>
+<p>直接对 correctness 而非 distortion 排序。</p>
+</ul>
+
+<ol>
+<li><strong>把 feasible-mass 理论迁回长上下文诊断。</strong></li>
+<p>2412.10079 的 lost-in-between（证据间距是独立退化维度）<a href="/papers/2412.10079/detail.html#2-q1-q2-q3" class="ref-link" title="2412.10079#2-q1-q2-q3">[2412.10079]</a> 与 DCCD 的 "低 α 累积成</p>
+<p>distortion" 在数学上可能同构——两者都是 "多个低置信步骤累积"。一个未探索方向是用 DCCD 的 $\sum_t\log\frac1\alpha$</p>
+<p>projection-tax 框架去量化 multi-hop 检索中的累积扭曲，为 2412.10079 的实证现象补上解析解释。</p>
+</ul>
+
+<ol>
+<li><strong>低精度下的 feasible-mass 敏感性（跨集群共性 gap）。</strong></li>
+<p>DCCD、PCD、FilM、2412.10079 的 open questions <strong>全部</strong>独立提出 "FP8/FP4 量化是否改变 feasible mass /</p>
+<p>attention 排序 / 位置 pattern" 且<strong>全部未测</strong> <a href="/papers/2603.03305/detail.html#10-open-questions-llm-specific-angles" class="ref-link" title="2603.03305#10-open-questions-llm-specific-angles">[2603.03305]</a></p>
+<p><a href="/papers/2506.08371/detail.html#9-open-questions" class="ref-link" title="2506.08371#9-open-questions">[2506.08371]</a> <a href="/papers/2404.16811/detail.html#9-open-questions" class="ref-link" title="2404.16811#9-open-questions">[2404.16811]</a> <a href="/papers/2412.10079/detail.html#9-open-questions" class="ref-link" title="2412.10079#9-open-questions">[2412.10079]</a>。低精度</p>
+<p>projector 可能因 logit 分布变平而降低 $\alpha$、放大 projection tax——这是一个横跨整个 "know-but-don't-tell"</p>
+<p>paradigm 的系统性空白，留给 L4/topic 综合。</p>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/xgrammar.html">xgrammar</a> (baseline) 
+<a href="/papers/outlines.html">outlines</a> (baseline) 
+<a href="/papers/crane-2502.09061.html">crane-2502.09061</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
