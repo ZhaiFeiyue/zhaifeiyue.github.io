@@ -284,6 +284,24 @@ flowchart TB
   <p class="sub">SSE aggregator 在某 tool_call 的累积 arguments 首次解析成合法 JSON 时触发 <code>on_tool_ready</code>，立刻启动只读 tool，future 存入 <code>_INFLIGHT_TOOLS[session_id]</code>；<code>tools_node</code> 再按原始顺序消费——与 fan-out 组合、结果保序，registry miss 就重跑（安全兜底）。</p>
   </div>
 
+  <h4>②的前提：toolcall streaming —— 引擎增量吐 arguments</h4>
+  <p class="sub">overlap② 能"边 decode 边发工具"，前提是<b>引擎按 OpenAI 流式协议把 tool_call 的 <code>arguments</code> 分片增量吐出</b>（而不是等整轮结束一次性给）。客户端按 <code>index</code> 逐片累积，一旦 <b>name 齐 + 累积 arguments 解析成合法 JSON</b> 就立刻把快照交给 <code>on_tool_ready</code> 提前 dispatch（每个 tool_call 最多触发一次）：</p>
+  <div class="mermaid">
+sequenceDiagram
+  participant E as 引擎 SGLang tool-call-parser
+  participant C as 客户端 SSE aggregator
+  participant T as Tool 只读
+  E->>C: delta·name = web_search
+  E->>C: delta·arguments 片段 a
+  E->>C: delta·arguments 片段 b（累积拼接中）
+  E->>C: delta·arguments 片段 c
+  Note over C: name 齐 + 累积 arguments 解析成合法 JSON ✓
+  C->>T: on_tool_ready 立刻 dispatch（decode 仍在继续）
+  E->>C: 继续 stream 本轮其余 content 与其它 tool_call
+  </div>
+  <p class="sub" style="margin-top:6px">即 arguments 分片 <code>{"que</code> → <code>ry":"Ada</code> → <code>..."}</code> 逐片 <code>+=</code> 累积，直到能 <code>json.loads</code> 成功才判定"这个 tool_call 齐了"。</p>
+  <div class="callout ex"><span class="lbl">serving 侧要求 & 坑</span><b>需引擎支持流式<u>结构化</u> tool_calls</b>（SGLang <code>--tool-call-parser</code>，产出 <code>delta.tool_calls[].function.arguments</code> 分片）。反例：有些模型把 tool call 当<b>纯文本</b>吐——<code>&lt;tools&gt;{...}&lt;/tools&gt;</code> 或 Kimi 原生 token <code>&lt;|tool_call_begin|&gt;…&lt;|tool_call_argument_begin|&gt;{…}&lt;|tool_call_end|&gt;</code>——它们走 <code>content</code> delta 而非结构化 tool_calls，得先 normalize，且"边流边判 arguments 是否已成完整 JSON"更难，提前 dispatch 的可靠性下降。<b>好处是这条流式路径复用同一套 profiling（TTFT/TPOT）与 UI token 流（<code>on_delta</code>）</b>——streaming 本就是投机执行/重叠的公共底座。</div>
+
   <h4>③ prefix keep-warm：stall 期间保温下一轮前缀（2A prime / 2B KV-pin）</h4>
   <div class="card">
   <svg viewBox="0 0 760 190" width="100%" style="max-width:760px" role="img" aria-label="prefix keep-warm 执行序列">
