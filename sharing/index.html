@@ -82,6 +82,7 @@
   <a href="#b5">B5 KV 分层 offload</a>
   <a href="#b6">B6 Low Latency Generation</a>
   <a href="#b7">B7 Swarm 下资源协同 + TCS</a>
+  <a href="#b8">B8 MORI-UMBP 端到端栈</a>
   <h4>四 · KimiPoC 自研实践</h4>
   <a href="#poc-loop">自研 Agent Loop</a>
   <a href="#poc-swe">SWE 提升实践</a>
@@ -620,6 +621,48 @@ flowchart LR
   <div class="callout ex"><span class="lbl">弹性池 & 定量</span>autoscaler 按 <code>idle = alive − lease</code> 伸缩池子；空闲 pod 走<b>休眠/恢复</b>（workspace <code>tar|zstd</code> 落盘快照 + rehydrate）回收。池大小按 Little's law：<b>并发 sandbox 数 N ≈ λ·T_gap</b>（到达率 × 平均持有时长），预留 <b>pool ≥ N·W</b>。这样池子随 swarm 突发弹性伸缩，而不是为峰值常备。</div>
 
   <div class="callout key"><span class="lbl">一句话：怎么"降低整体资源利用率"</span>不是让某个资源更闲，而是<b>把三种资源的空窗互相填满</b>——GPU 忙时别的 agent 在 CPU 跑 tool、CPU 忙时 GPU 服务别人、传输错峰塞进空窗；再用<b>共享弹性 sandbox 池 + P2P 数据面</b>接住 swarm 突发。结果是<b>同样的 agent 吞吐用更少节点</b>。这正是 MORI「同时握 serving + tool 两端控制权」才能做的 cross-layer 协同——通用 serving（把 LLM 当 API、sandbox 各管各）做不到。</div>
+
+  <h3 id="b8">B8 · 现身说法：MORI-UMBP 端到端 Agentic 栈（AMD × Kimi × SGLang）</h3>
+  <div class="callout key"><span class="lbl">Kimi 做的事</span>AMD 与 Kimi（月之暗面）+ SGLang 团队，<b>回到第一性原理为 agentic 负载从零重建了推理服务栈</b>：<b>Kimi K2.7-Code 跑在 SGLang + MoRI + ROCm 之上、承载于 AMD Instinct™ MI355X</b>。结论一句话——agentic 服务的胜负手不是 FLOPs，而是 <b>KV 缓存</b>：能复用多少、装不下 HBM 时落在哪、以及<b>调度器知不知道它在哪</b>。这套栈把前面 B1–B7 的主题全部落成了一个真实系统。</div>
+
+  <h4>为什么要重建：agentic 负载击穿了聊天时代的假设</h4>
+  <table>
+   <tr><th>Agentic 特征</th><th>击穿的旧假设 → 新结论</th></tr>
+   <tr><td>多轮，<b>上下文随轮次线性增长</b></td><td>"prefill 是一次性成本"错 → 每轮都在逼近 HBM 上限</td></tr>
+   <tr><td><b>极高 KV 复用 roofline</b></td><td>"全重算也行"错 → 收益全在复用</td></tr>
+   <tr><td><b>工具调用间隔多</b></td><td>"延迟≈TTFT"错 → 优化 <b>p90 端到端延迟</b>，不是 TTFT</td></tr>
+   <tr><td><b>短命 subagent 突发</b></td><td>"流量平稳"错 → subagent 扇出以尖峰涌入</td></tr>
+   <tr><td><b>工作集超 HBM</b></td><td>"缓存装得下"错 → 必须跨层 offload 且<b>保持可路由</b></td></tr>
+  </table>
+  <p class="sub">核心痛点：KV 装不下 HBM、offload 已是刚需，但<b>调度器对缓存在哪一层 / 哪个节点 / 取回代价多少是"瞎"的</b>——现有 L3 后端（Mooncake / NIXL / HF3FS…）都是被动字节仓库，只答"存不存在"，答不出"谁能最快服务它"。</p>
+
+  <h4>核心：MORI-UMBP —— 调度器感知的多层 KV 缓存</h4>
+  <p class="sub"><b>UMBP（Unified Memory &amp; Bandwidth Pool）</b>管理一份横跨 <b>引擎 HBM → 主机 DRAM → UMBP 池 → SSD</b> 的单一逻辑缓存，并以两种方式接进 SGLang：既是 <b>HiCache L3 存储后端</b>，又是<b>调度器可查询的 KV 事件流</b>——把缓存放置从"谁持有前缀"升级成路由器可据以行动的<b>成本模型（谁能最快服务）</b>。</p>
+  <div class="mermaid">
+flowchart LR
+  E["引擎上报 KV 放置"] --> MA["UMBP master<br/>建索引 + 累积访问历史"]
+  MA --> R["路由器成本模型<br/>路由到最快副本"]
+  R --> H["路由决策反哺命中历史"]
+  H --> P["放置 / 淘汰 / 复制 策略"]
+  P --> MA
+  </div>
+  <div class="grid">
+    <div class="card"><h4>四大支柱</h4><p class="sub">① <b>调度器友好</b>：master 暴露访问计数 / 命中数 / 最近访问 / 每节点容量利用率 / 带宽直方图 / RPC 延迟 → 真·成本模型。② <b>可插拔策略</b>：offload / load / 淘汰 / 复制都是可编程接口（取代写死 LRU）。③ <b>智能体感知提示</b>（WIP）：TTL / session pinning / 优先级从 API 一路下达 UMBP。④ <b>AMD 硬件亲和</b>：IBGDA + SDMA、GPU-Direct Storage、GPU 发起的 NVMe。</p></div>
+    <div class="card"><h4>闭环收益</h4><p class="sub">引擎上报放置 → master 建索引+历史 → 路由器按成本模型路由 → 决策反哺命中历史 → 策略消费历史 → 负载更懂处用提示覆盖。<b>一句话：一个已掉出所有 HBM、却仍活在 UMBP 池里的前缀，依然可被路由、从最近副本经 RDMA 取回，而非重算</b>——这正是 agentic 极高命中率 roofline 承诺、却被被动字节仓库放走的收益。</p></div>
+  </div>
+
+  <h4>关键优化（每一项都源于某个 agentic 特征）</h4>
+  <table>
+   <tr><th>优化</th><th>做法</th><th>数据</th></tr>
+   <tr><td>成本模型路由</td><td>路由到"最快服务"的副本，而非恰好持有前缀的那个</td><td>直接推 p90-E2E pareto（拥塞链路上硬拽回的命中≈未命中）</td></tr>
+   <tr><td>多层 offload</td><td>线性增长的历史在 DRAM / 池 / SSD 间保持可路由，重入时 RDMA 取回而非重算</td><td>把理论复用 roofline 转成真实命中</td></tr>
+   <tr><td><b>零 CU loadback</b></td><td>沿层级预取（含把远端 KV 缓存到本地）+ 用 <b>SDMA Copy Engine</b> 做回读，不占 CU</td><td>L2→L1 H2D 跑满 <b>~51 GB/s</b> roofline；远端 RDMA 达线速 <b>~96%</b>（41.8/43.5）</td></tr>
+   <tr><td><b>DeltaTok 增量 tokenize</b></td><td>Zen5 上 Rust tokenizer，只重编新增 turn（O(1)、与上下文无关），逐字节精确</td><td>1M 上下文：全量重编 <b>~1.7s/轮</b> → delta <b>~0.1ms</b>（<b>18,592×</b>）</td></tr>
+   <tr><td>抗突发调度</td><td>缓存感知把 subagent 送往已持父前缀的副本；分布式模式复用 RDMA 连接 + 跨 DP rank 去重 put</td><td>subagent 突发不压垮吞吐、不耗尽端口</td></tr>
+   <tr><td>零拷贝单次 RDMA</td><td>主机 KV 缓冲一次性注册（hugepage + NUMA + 预 fault），一次 Put/Get = 一次 RDMA</td><td>缓存流量不从 decode 抢算力</td></tr>
+  </table>
+
+  <div class="callout ex"><span class="lbl">评测：性能不付精度税</span>性能：在 <b>ProgramBench</b> 衍生的 agentic 编程 trace 上，报 pareto——以 <b>p90-E2E</b> 为横轴的 tok/s/chip 与每百万 token TCO。精度：用 <b>Kimi Vendor Verifier（KVV/K2VV）</b>（AIME2025 长输出压 KV/量化、K2VV 测工具触发 F1 + JSON Schema）对比 offload 开/关，证明跨层 offload + 成本模型路由 + FP4 量化 + 投机解码<b>不引入偏差</b>。<span class="ref">AMD × Kimi × SGLang agentic blog · MORI-UMBP · sglang#25377</span></div>
   </section>
 
   <!-- PART 4 · KimiPoC -->
