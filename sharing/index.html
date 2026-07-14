@@ -207,9 +207,101 @@ flowchart TB
   </table>
   <div class="callout ex"><span class="lbl">一句话</span>mixed-model 想省钱，前提是"切换模型时别丢 KV"。<b>要么让不同模型共享同一份 KV（冻结 base：PrefillShare/ICaRus），要么把一个模型的 KV 变换/对齐给另一个用（KVCOMM）。</b>这是 mixed-model 能否真正降本的关键，也是 serving 侧要接的活。</div>
 
-  <h3 id="a3">③ 隐藏等待（工具 stall）→ 投机执行</h3>
-  <p>Agent 大量时间卡在等工具返回（CPU 侧可占端到端 88% 延迟）。方向：<b>在模型"思考"时提前把大概率要调的工具跑掉</b>，把等待藏进思考时间。</p>
-  <div class="callout"><span class="lbl">解决方向</span>PASTE：模式感知投机执行下一个工具 <span class="ref">2603.18897</span>；Speculative Tool Calls：小模型投机预测 tool call 并异步执行 <span class="ref">2512.15834</span>。原理同投机解码——"赌大概率的未来，赌对白赚、赌错丢弃"，从 token 级扩展到 tool 级。</div>
+  <h3 id="a3">③ 隐藏等待（工具 stall）→ 投机执行 / 执行重叠</h3>
+  <p>Agent 大量时间卡在等工具返回（CPU 侧可占端到端 88% 延迟）。核心是<b>一轮里 GPU 和 tool 天然串行、互相干等</b>。先看串行基线的执行序列——decode 生成完 tool_call 后，GPU 在整段 tool 执行期间<b>完全空闲</b>：</p>
+
+  <p class="sub" style="margin:4px 0">
+    <span style="display:inline-block;width:11px;height:11px;background:#4a6bd6;border-radius:2px;vertical-align:middle"></span> prefill &nbsp;
+    <span style="display:inline-block;width:11px;height:11px;background:#8bd5a0;border-radius:2px;vertical-align:middle"></span> decode &nbsp;
+    <span style="display:inline-block;width:11px;height:11px;background:#ffcf6b;border-radius:2px;vertical-align:middle"></span> tool exec &nbsp;
+    <span style="display:inline-block;width:11px;height:11px;background:#3a2130;border:1px solid #d98a8a;border-radius:2px;vertical-align:middle"></span> GPU 空闲/浪费 &nbsp;
+    <span style="display:inline-block;width:11px;height:11px;background:#7aa2ff;border-radius:2px;vertical-align:middle"></span> 保温前缀
+  </p>
+
+  <div class="card">
+  <svg viewBox="0 0 760 160" width="100%" style="max-width:760px" role="img" aria-label="串行基线执行序列">
+    <text x="100" y="18" fill="#a6adc8" font-size="13">串行基线：GPU 在工具执行期间整段空闲</text>
+    <text x="92" y="60" text-anchor="end" fill="#a6adc8" font-size="12">GPU · LLM</text>
+    <text x="92" y="112" text-anchor="end" fill="#a6adc8" font-size="12">Tool · CPU</text>
+    <rect x="100" y="44" width="76" height="28" rx="4" fill="#4a6bd6"/><text x="138" y="62" text-anchor="middle" fill="#fff" font-size="10">prefill</text>
+    <rect x="176" y="44" width="266" height="28" rx="4" fill="#8bd5a0"/><text x="309" y="62" text-anchor="middle" fill="#12202a" font-size="11">decode（思考 + 生成 tool_call）</text>
+    <rect x="442" y="44" width="190" height="28" rx="4" fill="#3a2130" stroke="#d98a8a" stroke-dasharray="4 3"/><text x="537" y="62" text-anchor="middle" fill="#ffb3b3" font-size="11">GPU 空闲 · 浪费</text>
+    <rect x="632" y="44" width="76" height="28" rx="4" fill="#4a6bd6"/><text x="670" y="62" text-anchor="middle" fill="#fff" font-size="10">冷 prefill</text>
+    <rect x="442" y="96" width="190" height="28" rx="4" fill="#ffcf6b"/><text x="537" y="114" text-anchor="middle" fill="#12202a" font-size="11">tool exec（sandbox 往返）</text>
+    <line x1="442" y1="72" x2="442" y2="96" stroke="#d98a8a" stroke-dasharray="3 3"/>
+    <line x1="632" y1="72" x2="632" y2="96" stroke="#d98a8a" stroke-dasharray="3 3"/>
+    <text x="700" y="146" text-anchor="end" fill="#a6adc8" font-size="11">时间 →</text>
+  </svg>
+  </div>
+
+  <div class="callout"><span class="lbl">算法层 idea：投机执行</span>PASTE：模式感知投机执行下一个工具 <span class="ref">2603.18897</span>；Speculative Tool Calls：小模型投机预测 tool call 并异步执行 <span class="ref">2512.15834</span>。原理同投机解码——"赌大概率的未来，赌对白赚、赌错丢弃"，从 token 级扩展到 tool 级。</div>
+
+  <h4>工程落地：mori-scheduler 最近 PR(#157) 的三类执行重叠</h4>
+  <p class="sub">投机执行是"赌未来"；mori-scheduler 走的是一条更稳、可叠加的路——<b>不预测，直接把已知的 tool 延迟藏进 GPU 时间线</b>。三类机制独立且可叠加，且大多 <b>piggyback 现有引擎、无需改 sglang</b>：</p>
+  <table>
+   <tr><th>#</th><th>overlap</th><th>思路</th><th>开关 / 依赖</th></tr>
+   <tr><td>0</td><td><b>fan-out</b></td><td>一轮里多个<b>独立只读</b> tool 并发执行 → 等 <code>max</code> 不等 <code>sum</code></td><td><code>AGENT_TOOL_FANOUT</code>（默认开）</td></tr>
+   <tr><td>1</td><td><b>streaming dispatch</b></td><td>只读 tool 的 arguments 一 streaming 完成就<b>边 decode 边发</b> → tool 往返盖在 decode 尾部</td><td><code>AGENT_TOOL_OVERLAP1</code></td></tr>
+   <tr><td>2A</td><td><b>prefix prime</b></td><td>tool stall 期间发一个 <code>max_tokens=1</code> 预热请求，让引擎 RadixAttention <b>保住下一轮前缀</b></td><td><code>..._OVERLAP2_PRIME</code>（纯客户端）</td></tr>
+   <tr><td>2B</td><td><b>KV-pin</b></td><td>用 <code>session_id</code> + <code>--enable-session-radix-cache</code> <b>钉住</b> session 前缀 KV，扛过 stall（2A 的鲁棒版）</td><td>需引擎 session-radix-cache</td></tr>
+  </table>
+
+  <h4>① fan-out：并发只读工具（等 max 不等 sum）</h4>
+  <div class="card">
+  <svg viewBox="0 0 760 210" width="100%" style="max-width:760px" role="img" aria-label="fan-out 执行序列">
+    <text x="100" y="18" fill="#a6adc8" font-size="13">一轮生成 3 个独立只读 tool：串行 Σ=9s → fan-out max=3s</text>
+    <text x="92" y="52" text-anchor="end" fill="#a6adc8" font-size="12">GPU</text>
+    <rect x="100" y="36" width="190" height="26" rx="4" fill="#8bd5a0"/><text x="195" y="53" text-anchor="middle" fill="#12202a" font-size="11">decode（emit 3× tool_call）</text>
+    <line x1="290" y1="30" x2="290" y2="196" stroke="#3a3f57" stroke-dasharray="3 3"/>
+    <text x="92" y="104" text-anchor="end" fill="#a6adc8" font-size="11">串行 Σ=9s</text>
+    <rect x="290" y="92" width="114" height="24" rx="4" fill="#ffcf6b" opacity="0.55"/><text x="347" y="108" text-anchor="middle" fill="#12202a" font-size="10">tool1</text>
+    <rect x="404" y="92" width="114" height="24" rx="4" fill="#ffcf6b" opacity="0.55"/><text x="461" y="108" text-anchor="middle" fill="#12202a" font-size="10">tool2</text>
+    <rect x="518" y="92" width="114" height="24" rx="4" fill="#ffcf6b" opacity="0.55"/><text x="575" y="108" text-anchor="middle" fill="#12202a" font-size="10">tool3</text>
+    <line x1="632" y1="86" x2="632" y2="122" stroke="#d98a8a"/><text x="636" y="98" fill="#ffb3b3" font-size="10">turn end</text>
+    <text x="92" y="166" text-anchor="end" fill="#a6adc8" font-size="11">fan-out max=3s</text>
+    <rect x="290" y="140" width="114" height="14" rx="3" fill="#ffcf6b"/><text x="347" y="151" text-anchor="middle" fill="#12202a" font-size="9">tool1</text>
+    <rect x="290" y="156" width="95" height="14" rx="3" fill="#ffcf6b"/><text x="337" y="167" text-anchor="middle" fill="#12202a" font-size="9">tool2</text>
+    <rect x="290" y="172" width="133" height="14" rx="3" fill="#ffcf6b"/><text x="356" y="183" text-anchor="middle" fill="#12202a" font-size="9">tool3</text>
+    <line x1="423" y1="134" x2="423" y2="192" stroke="#8bd5a0"/><text x="427" y="146" fill="#8bd5a0" font-size="10">turn end</text>
+    <rect x="423" y="140" width="209" height="46" fill="#12211a" stroke="#8bd5a0" stroke-dasharray="4 3" opacity="0.5"/><text x="527" y="167" text-anchor="middle" fill="#8bd5a0" font-size="11">省下</text>
+  </svg>
+  <p class="sub">只读工具走保守白名单（safe-by-omission）；写类工具（bash/edit）仍<b>串行保序</b>，pod 状态与消息顺序逐字节不变——纯延迟优化。</p>
+  </div>
+
+  <h4>② streaming dispatch：边 decode 边发工具</h4>
+  <div class="card">
+  <svg viewBox="0 0 760 165" width="100%" style="max-width:760px" role="img" aria-label="streaming dispatch 执行序列">
+    <text x="100" y="18" fill="#a6adc8" font-size="13">tool 的 args 一流式完成（t≈3）就发出去，盖在 decode 尾部</text>
+    <text x="92" y="60" text-anchor="end" fill="#a6adc8" font-size="12">GPU</text>
+    <text x="92" y="112" text-anchor="end" fill="#a6adc8" font-size="12">Tool</text>
+    <rect x="100" y="44" width="304" height="28" rx="4" fill="#8bd5a0"/><text x="252" y="62" text-anchor="middle" fill="#12202a" font-size="11">decode（继续生成本轮其余部分）</text>
+    <line x1="214" y1="36" x2="214" y2="124" stroke="#7aa2ff" stroke-dasharray="4 3"/><text x="218" y="34" fill="#7aa2ff" font-size="10">args 就绪</text>
+    <rect x="214" y="96" width="190" height="28" rx="4" fill="#ffcf6b"/><text x="309" y="114" text-anchor="middle" fill="#12202a" font-size="11">tool exec（与 decode 尾部重叠）</text>
+    <rect x="404" y="96" width="190" height="28" rx="4" fill="none" stroke="#5a6078" stroke-dasharray="5 3"/><text x="499" y="114" text-anchor="middle" fill="#8891ac" font-size="10">基线里本要串行等这段</text>
+    <line x1="404" y1="40" x2="404" y2="128" stroke="#8bd5a0"/><text x="408" y="140" fill="#8bd5a0" font-size="10">turn end（提前）</text>
+    <line x1="594" y1="90" x2="594" y2="128" stroke="#d98a8a" stroke-dasharray="3 3"/><text x="590" y="140" text-anchor="end" fill="#ffb3b3" font-size="10">基线 turn end</text>
+  </svg>
+  <p class="sub">SSE aggregator 在某 tool_call 的累积 arguments 首次解析成合法 JSON 时触发 <code>on_tool_ready</code>，立刻启动只读 tool，future 存入 <code>_INFLIGHT_TOOLS[session_id]</code>；<code>tools_node</code> 再按原始顺序消费——与 fan-out 组合、结果保序，registry miss 就重跑（安全兜底）。</p>
+  </div>
+
+  <h4>③ prefix keep-warm：stall 期间保温下一轮前缀（2A prime / 2B KV-pin）</h4>
+  <div class="card">
+  <svg viewBox="0 0 760 190" width="100%" style="max-width:760px" role="img" aria-label="prefix keep-warm 执行序列">
+    <text x="100" y="18" fill="#a6adc8" font-size="13">tool stall 是真空窗——用它保住下一轮前缀，让 next-turn prefill 命中</text>
+    <text x="92" y="56" text-anchor="end" fill="#a6adc8" font-size="12">GPU</text>
+    <text x="92" y="90" text-anchor="end" fill="#a6adc8" font-size="11">保温</text>
+    <text x="92" y="126" text-anchor="end" fill="#a6adc8" font-size="12">Tool</text>
+    <rect x="100" y="40" width="228" height="26" rx="4" fill="#8bd5a0"/><text x="214" y="57" text-anchor="middle" fill="#12202a" font-size="11">decode</text>
+    <rect x="328" y="76" width="190" height="16" rx="3" fill="#7aa2ff"/><text x="423" y="88" text-anchor="middle" fill="#0f1220" font-size="9">p2a prime (max_tokens=1) / p2b session-KV-pin</text>
+    <rect x="328" y="110" width="190" height="26" rx="4" fill="#ffcf6b"/><text x="423" y="128" text-anchor="middle" fill="#12202a" font-size="11">tool exec（真正的 stall）</text>
+    <rect x="518" y="40" width="26" height="26" rx="4" fill="#8bd5a0"/><text x="548" y="57" fill="#8bd5a0" font-size="10">warm prefill（命中）</text>
+    <rect x="518" y="150" width="76" height="20" rx="4" fill="none" stroke="#5a6078" stroke-dasharray="5 3"/><text x="556" y="164" text-anchor="middle" fill="#8891ac" font-size="9">冷 prefill（若不保温）</text>
+    <line x1="328" y1="34" x2="328" y2="136" stroke="#3a3f57" stroke-dasharray="3 3"/>
+  </svg>
+  <p class="sub">2A：stall 期间对当前窗口发一个 <code>max_tokens=1</code> 的 fire-and-forget 请求（带同一 <code>x-mori-session-id</code> 亲和到持有 KV 的 worker），best-effort 保住 RadixAttention 前缀。2B：用上游 <code>session_id</code> 请求字段 + <code>--enable-session-radix-cache</code>（配 priority 逐出策略）把前缀 KV 钉住不被逐出——2A 的鲁棒版，引擎无此特性则忽略该字段，安全独立合并。</p>
+  </div>
+
+  <div class="callout key"><span class="lbl">一句话 & 对 MORI 意义</span>fan-out 藏"多工具的 sum"、streaming 藏"decode 尾部"、keep-warm 藏"下一轮的冷 prefill"——<b>三段被浪费的 GPU 时间线各有一招</b>。关键设计：全部对<b>只读工具</b>生效、写类工具串行保序、结果按原序消费（纯延迟优化、语义不变）。这正是 MORI「同时握 serving + tool 两端控制权」才能做的 cross-layer 优化——通用 serving（把 LLM 当 API）做不到。<span class="ref">mori-scheduler PR #157 · overlap_bench</span></div>
 
   <h3 id="a4">④ 该用多大模型 / 怎么编排</h3>
   <div class="grid">
