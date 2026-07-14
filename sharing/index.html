@@ -207,7 +207,8 @@ flowchart TB
     <text x="512" y="54" fill="#8bd5a0" font-size="11">用得好</text>
   </svg>
   </div>
-  <p class="sub"><b>为什么会这样</b>：① 位置偏置（预训练里重要信息多在首尾，模型学出这种先验）② RoPE 等相对位置编码在<b>远距离衰减</b>③ 注意力随序列变长而<b>弥散</b>、被稀释。<b>为什么对 agent 尤其致命</b>：agent 每轮都往上下文追加（工具结果、历史），早期的关键指令/观察被不断<b>挤到中间</b>，越跑越"看不见"；而且<b>光是上下文变长本身就会拉低表现</b>（即便信息还能被检索到）。这就是"轨迹越堆越长 → 噪声累积 → 越做越差"的机理。</p>
+  <div class="callout key"><span class="lbl">本质原因：注意力预算有限，且按位置被不均匀分配</span>Transformer 每步的注意力经 <b>softmax 归一化、总和恒为 1</b>——是一份要在所有 token 上瓜分的<b>有限预算</b>。四个因素叠加，把这份预算从中段抽走：① <b>位置先验</b>（训练语料重要信息多在开头 → 模型学出"重视开头"）② <b>recency</b>（结尾离预测位置近、天然权重高）③ <b>位置编码远程衰减</b>（RoPE 等对远距离 token 打分衰减）④ <b>softmax 稀释 + attention sink</b>（序列越长注意力摊得越薄，还有一部分被"沉"到首 token）。结果：<b>开头（先验）+ 结尾（recency）拿走大部分预算，中段被饿死</b> → U 型。这也解释了"<b>光是上下文变长本身就拉低表现</b>"（预算被摊薄，与能否检索到无关）。<span class="ref">Intelligence Degradation 2601.15300 · NoLiMa 2502.05167 · Context Length Alone Hurts 2510.05381</span></div>
+  <p class="sub"><b>为什么对 agent 尤其致命</b>：agent 每轮都往上下文追加（工具结果、历史），<b>早期的关键指令/观察被不断挤到中间</b>，越跑越"看不见"；叠加长度本身的稀释效应——这就是"轨迹越堆越长 → 噪声累积 → 越做越差"的机理。</p>
 
   <p class="sub">学术界从多个角度反复验证了这一点：</p>
   <table>
@@ -216,7 +217,12 @@ flowchart TB
    <tr><td>光是上下文变长本身就拉低表现（即使能检索到）</td><td>Context Length Alone Hurts <span class="ref">2510.05381</span></td></tr>
    <tr><td>长上下文智能退化有临界阈值（RoPE 衰减+注意力弥散）</td><td>Intelligence Degradation <span class="ref">2601.15300</span> · NoLiMa <span class="ref">2502.05167</span></td></tr>
   </table>
-  <p><b>解决方向：不硬塞，而是"选 / 压 / 换"上下文</b>——学术打地基（数据合成 <span class="ref">2404.16811</span>、对比解码 <span class="ref">2506.08371</span>），工业做工程（Cursor DCD 上下文虚拟化、Claude Code 5 层 compaction <span class="ref">2604.14228</span>、RLM 外部存储 <span class="ref">2512.24601</span>、PEEK 定向地图 <span class="ref">2605.19932</span>、CMV 结构无损裁剪 <span class="ref">2602.22402</span>）。</p>
+  <h4>解决办法：算法 vs 工程，是两条正交的路</h4>
+  <div class="grid">
+    <div class="card"><h4>算法上：改模型本身，让它对中段更鲁棒</h4><p class="sub">· <b>训练 / 数据</b>：信息密集训练、位置均衡数据合成，逼模型用中段 <span class="ref">Make LLM Fully Utilize Context 2404.16811</span><br>· <b>解码</b>：对比解码 / 注意力校准，抵消位置偏置 <span class="ref">2506.08371</span><br>· <b>位置编码</b>：缓解 RoPE 远程衰减、attention scaling / 位置重标定<br>· <b>架构</b>：结构无损裁剪 <span class="ref">CMV 2602.22402</span>、外部存储替代超长上下文 <span class="ref">RLM 2512.24601</span><br>· <b>重排序</b>：把最相关的检索片段放到<b>首 / 尾</b>，主动避开中段</p></div>
+    <div class="card"><h4>工程上：不改模型，改喂进去的上下文</h4><p class="sub">核心是"<b>选 / 压 / 换 / 隔离 / 分层</b>"——让关键信息始终落在模型用得好的位置、且总量可控：<br>· <b>压缩 / 摘要</b>：Claude Code 5 层 compaction <span class="ref">2604.14228</span><br>· <b>上下文虚拟化</b>：Cursor DCD 按需加载<br>· <b>定向地图常驻</b>：PEEK context map <span class="ref">2605.19932</span><br>· <b>层级检索 / progressive disclosure</b>：先概览后下钻 <span class="ref">RAPTOR 2401.18059</span><br>· <b>subagent 隔离</b>：子任务独立上下文、只回摘要 → 噪声<b>根本不进</b>主上下文</p></div>
+  </div>
+  <p class="sub">一句话区分：<b>算法解</b>动的是"模型如何分配注意力预算"；<b>工程解</b>动的是"喂给模型的上下文长什么样"——后者见效快、是当前产品主线，前者是地基。</p>
   <div class="callout ex"><span class="lbl">但压缩自带矛盾：压缩 vs prefix-cache</span>我们实测（matplotlib-24149）：不压缩 prefix 命中爬到 <b>96.95%</b>；一开压缩就变<b>锯齿</b>——每次压缩当轮塌到 ~30%（改了历史前缀 → 其后缓存全失效）。业界解法是 Anthropic 在<b>缓存查找之后于 API 层删（删而不失效）</b>；我们在 sglang 上靠<b>"晚压少压 + summary 钉死 offset + 只删尾不改头"</b>，离线 61%→93.5%。<span class="ref">2604.14228</span></div>
   <div class="callout key"><span class="lbl">方向的终点 = Subagent</span><b>Subagent = 把子任务当一次工具调用</b>：独立上下文、只回一条摘要。它同时做到 ①对抗 lost-in-middle（噪声不进主上下文）②<b>任务级压缩</b>（子轨迹坍缩成摘要，比 token 级更彻底）③<b>prefix-safe</b>（不改父前缀，绕开压缩伤缓存的矛盾）④可并行。<b>Kimi Agent Swarm</b> 再把它推成"模型原生的多代理并行"——用"多个隔离上下文并行"替代"一个巨型上下文"。（我们的实现见<a href="#poc-subagent">第四部分</a>；半年 CC/Cursor 迭代主线：溢出→压缩→压缩伤缓存→<b>subagent</b>→记忆/导航）</div>
 
