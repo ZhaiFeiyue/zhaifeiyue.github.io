@@ -84,10 +84,15 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
   <div>
     <div class="panel">
       <h2>预设</h2>
-      <div class="presets">
+      <div class="presets" style="margin-bottom:8px">
         <button onclick="preset('exp')">16GB 实验</button>
         <button onclick="preset('full')">满配 288GB</button>
         <button onclick="preset('real')">真实负载</button>
+      </div>
+      <div class="presets">
+        <button onclick="preset('kimi')">Kimi K2.6</button>
+        <button onclick="preset('deepseek')">DeepSeek V3</button>
+        <button onclick="preset('llama8b')">Llama-8B</button>
       </div>
     </div>
 
@@ -140,6 +145,8 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
       <div class="sld"><div class="top"><span class="lab">P_active 激活参数</span><span class="val" id="v_pact">32 B</span></div><input type="range" id="pact" min="1" max="700" step="1" value="32" oninput="calc()"><div class="sub">recompute FLOPs=2·P·W</div></div>
       <div class="sld"><div class="top"><span class="lab">load-back BW</span><span class="val" id="v_bw">260 GB/s</span></div><input type="range" id="bwlb" min="20" max="1200" step="10" value="260" oninput="calc()"><div class="sub">L2/L3→L1</div></div>
       <div class="sld"><div class="top"><span class="lab">η_bw</span><span class="val" id="v_etab">0.80</span></div><input type="range" id="etab" min="0.1" max="1" step="0.05" value="0.8" oninput="calc()"><div class="sub">有效 BW = BW·η</div></div>
+      <div class="sld"><div class="top"><span class="lab">HBM BW(decode)</span><span class="val" id="v_bwh">8000 GB/s</span></div><input type="range" id="bwhbm" min="500" max="16000" step="500" value="8000" oninput="calc()"><div class="sub">decode 显存带宽界</div></div>
+      <div class="numrow"><label>bytes/param</label><input id="bpp" value="0.5" oninput="calc()"></div>
       <div class="numrow"><label>prefetch 可与 fwd 重合</label><input type="checkbox" id="ovl" checked onchange="calc()"></div>
     </div>
   </div>
@@ -231,9 +238,14 @@ const fmtT=t=>t>=1e6?(t/1e6).toFixed(2)+'M':t>=1e3?(t/1e3).toFixed(0)+'K':Math.r
 const pct=x=>(x*100).toFixed(1)+'%';
 
 const PRE={
+  // 场景预设(层级/并发)
   exp:{l1:16,l2:32,l3:32,N:40,M:14,W:34,nw:2048},
   full:{l1:197,l2:256,l3:256,N:40,M:44,W:34,nw:2048},
-  real:{l1:197,l2:64,l3:256,N:120,M:44,W:34,nw:2048}
+  real:{l1:197,l2:64,l3:256,N:120,M:44,W:34,nw:2048},
+  // 模型预设(KV 密度 d1、激活参数、bytes/param、TPOT)
+  kimi:{d1:15276,pact:32,bpp:0.5,tpot:26,G:224,W:34,chunk:32768},
+  deepseek:{d1:15000,pact:37,bpp:1,tpot:30,G:224,W:34,chunk:32768},
+  llama8b:{d1:7629,pact:8,bpp:2,tpot:12,G:224,W:34,chunk:32768}
 };
 function preset(k){const p=PRE[k];for(const key in p)$(key).value=p[key];calc();}
 function updFlow(){
@@ -258,6 +270,8 @@ function calc(){
   $('v_l1').textContent=L1+' GB';$('v_l2').textContent=L2+' GB';$('v_l3').textContent=L3+' GB';
   $('v_N').textContent=N;$('v_M').textContent=M;$('v_W').textContent=Wk+' K';$('v_nw').textContent=(nw/1024).toFixed(1)+' K';
   $('v_chunk').textContent=(chunk/1024).toFixed(0)+' K';
+  $('v_G').textContent=num('G');$('v_tpot').textContent=num('tpot')+' ms';
+  $('v_th').textContent=num('th');$('v_to').textContent=num('to');$('v_qu').textContent=num('qu');
   // capacities (tokens) & how many W-sized reqs each tier holds
   const C1=L1*d1,C2=L2*d23,C3=L3*d23;
   const rq=c=>(c/W).toFixed(c/W<10?1:0);
@@ -268,9 +282,19 @@ function calc(){
   $('cap_l2').textContent=L2+' GB · '+fmtT(C2)+' tok · '+rq(C2)+' req';
   $('cap_l3').textContent=L3+' GB · '+fmtT(C3)+' tok · '+rq(C3)+' req';
 
+  // compute/hw params (read once)
+  const tops=num('tops')*1e15, etac=num('etac'), pact=num('pact')*1e9, bpp=num('bpp');
+  const bwhbm=num('bwhbm')*1e9, etab=num('etab'), tpot=num('tpot'), G=num('G'), bw=num('bwlb')*1e9;
+  const bBytes=1e9/d1;
+  // K = hardware-sustainable decode concurrency = min(compute-bound, mem-BW-bound) → active useful L1
+  const Kcomp=tops*etac*(tpot/1000)/(2*pact);
+  const Kmem=Math.max(0,(bwhbm*etab*(tpot/1000)-pact*bpp))/(W*bBytes);
+  const Kmax=Math.max(1,Math.floor(Math.min(Kcomp,Kmem)));
+  const Meff=Math.min(M,Kmax);                   // compute/mem may cap M
+  const kbind=Kcomp<Kmem?'算力界':'显存带宽界';
   // working set & cascade
   const WS=N*W;
-  const active=Math.min(M*W,C1);                 // M active pinned in L1
+  const active=Math.min(Meff*W,C1);              // active useful L1 = min(M, K)·W, pinned in L1
   const inL1=Math.min(WS,C1);
   const cacheL1=Math.max(0,inL1-active);
   const inL2=Math.min(Math.max(0,WS-C1),C2);
@@ -317,7 +341,8 @@ function calc(){
   const pool=Math.max(0,C1-active)+C2+C3;
   const cov=WS>0?pool/WS:0;
   const rqp=c=>(c/W).toFixed(c/W<10?1:0);
-  $('o_active').textContent=fmtT(active);$('o_activegb').textContent=(active/d1).toFixed(1)+' GB';
+  $('o_active').textContent=fmtT(active);
+  $('o_activegb').textContent=(active/d1).toFixed(1)+'GB · K≤'+Kmax+'('+kbind+')'+(Meff<M?' ⚠M截到'+Meff:'');
   $('o_pool').textContent=fmtT(pool);$('o_poolreq').textContent=rqp(pool)+' req';
   $('o_ws').textContent=fmtT(WS);$('o_wsreq').textContent=N+' req';
   $('o_cov').textContent=cov>=1?'≥100%':pct(cov);
@@ -343,8 +368,8 @@ function calc(){
   }
 
   // reuse timing → tier (D = λ·W·T_gap = N·W; compute sets λ)
-  const G=num('G'),tpot=num('tpot'),Tgap=num('th')+num('to')+num('qu');
-  const lam=M/(G*tpot/1000);           // turns/s
+  const Tgap=num('th')+num('to')+num('qu');
+  const lam=Meff/(G*tpot/1000);        // turns/s (use effective active)
   const D=N*W;                          // sink depth after T_gap
   let rtier,rcol;
   if(D<C1){rtier='L1';rcol='var(--l1)';}
@@ -359,10 +384,9 @@ function calc(){
   $('o_win').style.color=(Tgap>=winLo&&Tgap<=winHi)?'var(--l3)':'var(--mt)';
 
   // prefetch vs recompute
-  const tops=num('tops')*1e15, etac=num('etac'), pact=num('pact')*1e9, bw=num('bwlb')*1e9, etab=num('etab');
   $('v_tops').textContent=num('tops').toFixed(1)+' P';$('v_etac').textContent=etac.toFixed(2);
   $('v_pact').textContent=num('pact')+' B';$('v_bw').textContent=num('bwlb')+' GB/s';$('v_etab').textContent=etab.toFixed(2);
-  const bBytes=1e9/d1;
+  $('v_bwh').textContent=num('bwhbm')+' GB/s';
   const Trec=(2*pact*W)/(tops*etac);      // s
   const Tpf=(W*bBytes)/(bw*etab);         // s
   const ovl=$('ovl').checked;
