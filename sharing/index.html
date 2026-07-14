@@ -840,10 +840,12 @@ flowchart LR
    <tr><td>成本模型路由</td><td>路由到"最快服务"的副本，而非恰好持有前缀的那个</td><td>直接推 p90-E2E pareto（拥塞链路上硬拽回的命中≈未命中）</td></tr>
    <tr><td>多层 offload</td><td>线性增长的历史在 DRAM / 池 / SSD 间保持可路由，重入时 RDMA 取回而非重算</td><td>把理论复用 roofline 转成真实命中</td></tr>
    <tr><td><b>零 CU loadback</b></td><td>沿层级预取（含把远端 KV 缓存到本地）+ 用 <b>SDMA Copy Engine</b> 做回读，不占 CU</td><td>L2→L1 H2D 跑满 <b>~51 GB/s</b> roofline；远端 RDMA 达线速 <b>~96%</b>（41.8/43.5）</td></tr>
+   <tr><td><b>增量 KV 传输（P→D）</b></td><td>PD 分离下 decode 侧跨轮保留 radix cache，prefill <b>只传 decode 还没有的增量页</b>（不再每轮重传整段前缀）</td><td>1P1D×MI355X（DeepSeek-R1 MXFP4）：round1 TTFT <b>2.44→1.06s</b>、round2 1.24→0.78s，三轮均 <b>−21%</b>（单轮最多 −57%），并释放 prefill 侧 NIC egress <span class="ref">sglang#26288</span></td></tr>
    <tr><td><b>DeltaTok 增量 tokenize</b></td><td>Zen5 上 Rust tokenizer，只重编新增 turn（O(1)、与上下文无关），逐字节精确</td><td>1M 上下文：全量重编 <b>~1.7s/轮</b> → delta <b>~0.1ms</b>（<b>18,592×</b>）</td></tr>
    <tr><td>抗突发调度</td><td>缓存感知把 subagent 送往已持父前缀的副本；分布式模式复用 RDMA 连接 + 跨 DP rank 去重 put</td><td>subagent 突发不压垮吞吐、不耗尽端口</td></tr>
    <tr><td>零拷贝单次 RDMA</td><td>主机 KV 缓冲一次性注册（hugepage + NUMA + 预 fault），一次 Put/Get = 一次 RDMA</td><td>缓存流量不从 decode 抢算力</td></tr>
   </table>
+  <div class="callout key"><span class="lbl">一条主线：同一个"不变前缀复用"原理，被搬到三层</span>agentic 上下文每轮线性增长、但<b>新增的只是尾巴、前缀不变</b>。UMBP 把它用在 <b>KV</b>（掉出 HBM 的前缀仍可路由、RDMA 取回而非重算）、DeltaTok 把它用在 <b>token</b>（只重编新增 turn）、增量传输把它用在 <b>P→D 传输</b>（只传增量页）。三处都是"<b>别对不变的前缀做重复功</b>"——这就是整套栈的统一杠杆。</div>
 
   <div class="callout ex"><span class="lbl">评测：性能不付精度税</span>性能：在 <b>ProgramBench</b> 衍生的 agentic 编程 trace 上，报 pareto——以 <b>p90-E2E</b> 为横轴的 tok/s/chip 与每百万 token TCO。精度：用 <b>Kimi Vendor Verifier（KVV/K2VV）</b>（AIME2025 长输出压 KV/量化、K2VV 测工具触发 F1 + JSON Schema）对比 offload 开/关，证明跨层 offload + 成本模型路由 + FP4 量化 + 投机解码<b>不引入偏差</b>。<span class="ref">AMD × Kimi × SGLang agentic blog · MORI-UMBP · sglang#25377</span></div>
   </section>
