@@ -100,7 +100,7 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
 
     <div class="panel">
       <h2>调度 M / N</h2>
-      <div class="sld"><div class="top"><span class="lab">N · admitted 会话</span><span class="val" id="v_N">40</span></div><input type="range" id="N" min="1" max="256" step="1" value="40" oninput="calc()"><div class="sub">工作集 = N × W</div></div>
+      <div class="sld"><div class="top"><span class="lab">N · 并发在飞会话</span><span class="val" id="v_N">40</span></div><input type="range" id="N" min="1" max="256" step="1" value="40" oninput="calc()"><div class="sub">生产 = λ·T_gap(Little)· 工作集 = N × W</div></div>
       <div class="sld"><div class="top"><span class="lab">M · active(执行)</span><span class="val" id="v_M">14</span></div><input type="range" id="M" min="1" max="128" step="1" value="14" oninput="calc()"><div class="sub">M 的 KV 钉在 L1(compute 常驻)</div></div>
       <div class="sld"><div class="top"><span class="lab">chunked_prefill</span><span class="val" id="v_chunk">32 K</span></div><input type="range" id="chunk" min="4096" max="131072" step="4096" value="32768" oninput="calc()"><div class="sub">每 forward 的 prefill 算力预算(new token)</div></div>
     </div>
@@ -109,6 +109,12 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
       <h2>负载</h2>
       <div class="sld"><div class="top"><span class="lab">W · 平均上下文</span><span class="val" id="v_W">34 K</span></div><input type="range" id="W" min="4" max="256" step="2" value="34" oninput="calc()"><div class="sub">tok/会话</div></div>
       <div class="sld"><div class="top"><span class="lab">new · 每轮新增</span><span class="val" id="v_nw">2.0 K</span></div><input type="range" id="nw" min="256" max="8192" step="256" value="2048" oninput="calc()"><div class="sub">未命中/prefill token</div></div>
+      <div class="numrow" style="margin-top:4px"><label>数据集</label>
+        <select id="ds" onchange="calc()" style="width:130px;padding:4px;border:1px solid var(--bd);border-radius:6px;font-size:.76rem">
+          <option value="loop">loop(benchmark)</option>
+          <option value="prod" selected>non-loop(生产)</option>
+        </select>
+      </div>
     </div>
 
     <div class="panel">
@@ -134,6 +140,19 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
         <span><i style="background:var(--free)"></i>空闲</span>
       </div>
       <div class="note" id="ws_note" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h3>有效缓存池 vs 工作集</h3>
+      <div class="note" style="margin-bottom:8px">只有 <b>active(K·w)</b> 是不可替代的「真 L1」;其余 L1 + L2 + L3 是同一个缓存池,只按延迟分级。真正要覆盖的是<b>并发在飞会话</b>的工作集 N·W,不是整个数据集。</div>
+      <div class="tier"><div class="hd"><b>有效缓存池 = (C1−active)+C2+C3</b><span class="cap" id="cap_pool"></span></div><div class="track" id="tk_pool"></div></div>
+      <div class="metrics">
+        <div class="metric"><div class="k">真 L1 (active)</div><div class="v" id="o_active">—</div><div class="s" id="o_activegb"></div></div>
+        <div class="metric"><div class="k">有效缓存池</div><div class="v" id="o_pool">—</div><div class="s" id="o_poolreq"></div></div>
+        <div class="metric"><div class="k">工作集 N·W</div><div class="v" id="o_ws">—</div><div class="s" id="o_wsreq"></div></div>
+        <div class="metric"><div class="k">覆盖率</div><div class="v" id="o_cov">—</div><div class="s">池 / 工作集</div></div>
+      </div>
+      <div class="verdict" id="o_dsnote" style="margin-top:12px">—</div>
     </div>
 
     <div class="card">
@@ -239,6 +258,35 @@ function calc(){
      WS<=C1+C2?'溢出 L1 → 落到 L2,<b>还够不到 L3</b>(需 N·W &gt; C1+C2 = '+fmtT(C1+C2)+')。':
      WS<=C1+C2+C3?'溢出 L1+L2 → <b>用上 L3</b>,把 evict 的 KV 兜住成 load-back 而非 miss。':
      '溢出 L1+L2+L3 → 出现 <b style="color:var(--miss)">miss='+fmtT(miss)+'</b> tok,需重算。');
+
+  // effective cache pool = (C1-active)+C2+C3  vs working set N·W
+  const pool=Math.max(0,C1-active)+C2+C3;
+  const cov=WS>0?pool/WS:0;
+  const rqp=c=>(c/W).toFixed(c/W<10?1:0);
+  $('o_active').textContent=fmtT(active);$('o_activegb').textContent=(active/d1).toFixed(1)+' GB';
+  $('o_pool').textContent=fmtT(pool);$('o_poolreq').textContent=rqp(pool)+' req';
+  $('o_ws').textContent=fmtT(WS);$('o_wsreq').textContent=N+' req';
+  $('o_cov').textContent=cov>=1?'≥100%':pct(cov);
+  $('o_cov').style.color=cov>=1?'var(--l1)':'var(--miss)';
+  $('cap_pool').textContent=fmtT(pool)+' tok · '+rqp(pool)+' req';
+  const poolFillT=Math.min(WS,pool), overflowT=Math.max(0,WS-pool);
+  $('tk_pool').innerHTML=fillbar(100,[
+    ['var(--l1)',pool>0?100*poolFillT/Math.max(pool,WS):0,poolFillT>0?'工作集在池内 '+fmtT(poolFillT):''],
+    ['var(--miss)',100*overflowT/Math.max(pool,WS),overflowT>0?'miss '+fmtT(overflowT):''],
+    ['var(--free)',pool>WS?100*(pool-WS)/Math.max(pool,WS):0,'空闲']
+  ]);
+  // dataset model note
+  const ds=$('ds').value;
+  const dn=$('o_dsnote');
+  if(ds==='loop'){
+    dn.className='verdict bal';
+    dn.innerHTML='🔁 <b>loop 数据集(benchmark)</b>:同一批会话反复出现 → 制造了<b>人为的跨会话复用</b>,命中率偏高。容量目标 = 覆盖 loop 集(有限)。<small>⚠️ 这不代表生产表现——生产不 loop。</small>';
+  }else{
+    dn.className=cov>=1?'verdict bal':'verdict kv';
+    dn.innerHTML='🌊 <b>non-loop 数据集(生产)</b>:数据集≈无限、每个会话只出现一次 → <b>没有跨会话复用</b>,唯一复用是<b>会话内多轮</b>(第 N 轮的前缀被第 N+1 轮用)。'+
+      '<small>所以缓存只需兜住<b>并发在飞会话</b>的 KV(N·W,N=λ·T_gap),直到它们的下一轮——<b>不是</b>去装整个数据集(装不下也没用)。'+
+      (cov>=1?'当前池 ≥ N·W → 在飞会话都能兜住,几乎无 evict-miss。':'当前池 &lt; N·W → 有 '+fmtT(overflowT)+' tok 的在飞 KV 兜不住 → evict → 下一轮 miss(重算)。补 L2/L3 或降 N。')+'</small>';
+  }
 
   // diagnostics
   const hT=1-nw/W, hF=1-chunk/C1, Ls=nw*C1/chunk, Ns=(C1+C2)/W;
