@@ -132,6 +132,16 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
       <div class="numrow"><label>d1 (L1 tok/GB)</label><input id="d1" value="15276" oninput="calc()"></div>
       <div class="numrow"><label>d2/d3 (tok/GB)</label><input id="d23" value="14232" oninput="calc()"></div>
     </div>
+
+    <div class="panel">
+      <h2>Prefetch vs Recompute</h2>
+      <div class="sld"><div class="top"><span class="lab">TOPS_peak</span><span class="val" id="v_tops">5.0 P</span></div><input type="range" id="tops" min="0.5" max="20" step="0.5" value="5" oninput="calc()"><div class="sub">PFLOPS</div></div>
+      <div class="sld"><div class="top"><span class="lab">η_compute (MFU)</span><span class="val" id="v_etac">0.60</span></div><input type="range" id="etac" min="0.1" max="1" step="0.05" value="0.6" oninput="calc()"><div class="sub">有效 TOPS = peak·η</div></div>
+      <div class="sld"><div class="top"><span class="lab">P_active 激活参数</span><span class="val" id="v_pact">32 B</span></div><input type="range" id="pact" min="1" max="700" step="1" value="32" oninput="calc()"><div class="sub">recompute FLOPs=2·P·W</div></div>
+      <div class="sld"><div class="top"><span class="lab">load-back BW</span><span class="val" id="v_bw">260 GB/s</span></div><input type="range" id="bwlb" min="20" max="1200" step="10" value="260" oninput="calc()"><div class="sub">L2/L3→L1</div></div>
+      <div class="sld"><div class="top"><span class="lab">η_bw</span><span class="val" id="v_etab">0.80</span></div><input type="range" id="etab" min="0.1" max="1" step="0.05" value="0.8" oninput="calc()"><div class="sub">有效 BW = BW·η</div></div>
+      <div class="numrow"><label>prefetch 可与 fwd 重合</label><input type="checkbox" id="ovl" checked onchange="calc()"></div>
+    </div>
   </div>
 
   <!-- ============ VISUALS ============ -->
@@ -174,6 +184,17 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
         <div class="metric"><div class="k">复用命中</div><div class="v" id="o_rtier" style="font-size:1.05rem">—</div><div class="s">D vs 各层</div></div>
         <div class="metric"><div class="k">L3 命中 T_gap 窗口</div><div class="v" id="o_win" style="font-size:.9rem">—</div><div class="s">秒</div></div>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>Prefetch vs Recompute(命中后取更快)</h3>
+      <div class="metrics">
+        <div class="metric"><div class="k">T_recompute</div><div class="v" id="o_trec">—</div><div class="s">2·P·W/(TOPS·η)</div></div>
+        <div class="metric"><div class="k">T_prefetch</div><div class="v" id="o_tpf">—</div><div class="s">W·b/(BW·η)</div></div>
+        <div class="metric"><div class="k">决策</div><div class="v" id="o_dec" style="font-size:1rem">—</div><div class="s" id="o_decwhy"></div></div>
+        <div class="metric"><div class="k">有效延迟</div><div class="v" id="o_teff">—</div><div class="s">overlap 后</div></div>
+      </div>
+      <div class="note" id="o_prnote" style="margin-top:8px"></div>
     </div>
 
     <div class="card">
@@ -336,6 +357,26 @@ function calc(){
   const winLo=(C1+C2)/(lam*W), winHi=(C1+C2+C3)/(lam*W);
   $('o_win').textContent=winLo.toFixed(0)+'–'+winHi.toFixed(0)+'s';
   $('o_win').style.color=(Tgap>=winLo&&Tgap<=winHi)?'var(--l3)':'var(--mt)';
+
+  // prefetch vs recompute
+  const tops=num('tops')*1e15, etac=num('etac'), pact=num('pact')*1e9, bw=num('bwlb')*1e9, etab=num('etab');
+  $('v_tops').textContent=num('tops').toFixed(1)+' P';$('v_etac').textContent=etac.toFixed(2);
+  $('v_pact').textContent=num('pact')+' B';$('v_bw').textContent=num('bwlb')+' GB/s';$('v_etab').textContent=etab.toFixed(2);
+  const bBytes=1e9/d1;
+  const Trec=(2*pact*W)/(tops*etac);      // s
+  const Tpf=(W*bBytes)/(bw*etab);         // s
+  const ovl=$('ovl').checked;
+  const fmtMs=t=>t<1?(t*1000).toFixed(1)+'ms':t.toFixed(2)+'s';
+  $('o_trec').textContent=fmtMs(Trec);$('o_tpf').textContent=fmtMs(Tpf);
+  const cheaper=Tpf<Trec?'prefetch':'recompute';
+  const dec=ovl?'prefetch':cheaper;
+  const teff=(dec==='prefetch')?(ovl?0:Tpf):Trec;
+  $('o_dec').textContent=dec;$('o_dec').style.color=dec==='prefetch'?'var(--l3)':'var(--miss)';
+  $('o_decwhy').textContent=ovl?'overlap→免费':(Tpf<Trec?'pf 更快':'recompute 更快');
+  $('o_teff').textContent=teff===0?'≈0(隐藏)':fmtMs(teff);
+  $('o_prnote').innerHTML=ovl
+    ?'prefetch 能和其它请求的 fwd 重合 → 有效延迟≈0 → <b>总是 prefetch</b>(load-back 被算力掩盖,§13 的 r≪1)。'
+    :'不重合(争同一通路):T_prefetch '+fmtMs(Tpf)+' vs T_recompute '+fmtMs(Trec)+' → 取更快 = <b>'+cheaper+'</b>。小模型/低 P_active 或巨 KV/低带宽时 recompute 反而可能更快。';
 
   // diagnostics
   const hT=1-nw/W, hF=1-chunk/C1, Ls=nw*C1/chunk, Ns=(C1+C2)/W;
