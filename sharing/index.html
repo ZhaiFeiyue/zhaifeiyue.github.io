@@ -74,6 +74,7 @@
   <a href="#a5">⑤ memory → knowledge</a>
   <a href="#a6">⑥ CLI功能 ↔ 算法演进</a>
   <h4>三 · Infra 与调度</h4>
+  <a href="#b0">B0 Agent E2E 架构</a>
   <a href="#b1">B1 传统 serving 失效</a>
   <a href="#b1s">B1.5 无状态→有状态</a>
   <a href="#b2">B2 mixed-mode KV 转换</a>
@@ -452,6 +453,69 @@ flowchart LR
   <!-- PART 3 -->
   <section>
   <h2>第三部分 · 支柱二：Agent Infra 与调度</h2>
+
+  <h3 id="b0">B0 · Agent E2E 架构 + 一次 task 的执行</h3>
+  <p>先建立全局图：<b>harness（Claude Code / Kimi Code / OpenHands 等）设计并驱动 agent loop</b>，向下经 <b>gateway/router</b> 把「LLM 调用」和「tool 调用」分别路由到 <b>LLM 集群</b>与 <b>sandbox 集群</b>。后面 B1–B8 讲的都是这张图里某一块的优化。</p>
+
+  <h4>① 端到端架构（三层）</h4>
+  <div class="mermaid">
+flowchart TB
+  subgraph L1["① Harness / Client —— 设计 agent loop"]
+    direction LR
+    CC[Claude Code]
+    KC[Kimi Code]
+    HN[OpenHands / harness]
+    LOOP["Agent Loop<br/>think → tool_call → observe → 重复<br/>压缩 / subagent / 规划 / 记忆"]
+    CC --- LOOP
+    KC --- LOOP
+    HN --- LOOP
+  end
+  subgraph L2["② Gateway / Router"]
+    LR["LLM Gateway / Router（mori-sched）<br/>会话亲和 · cache-aware · PD 分离 · 成本模型"]
+    TR["Toolcall Router（ToolCallServer）<br/>claim / lease · P2P 数据面 · 弹性池"]
+  end
+  subgraph L3["③ 执行集群"]
+    LLM["LLM 集群：SGLang PD<br/>GPU HBM · 多层 KV / UMBP"]
+    SB["Sandbox Pods<br/>CPU 工具执行"]
+  end
+  LOOP -->|LLM 调用 v1/chat| LR
+  LOOP -->|tool 调用| TR
+  LR --> LLM
+  TR --> SB
+  LLM -. KV 事件 / 成本模型 .- LR
+  SB -. CPU 空闲核与 GPU 同驻 .- LLM
+  </div>
+  <p class="sub">关键：harness 只发两类调用（LLM / tool）；<b>gateway/router 是把两端"看懂并协同"的地方</b>——LLM 侧做会话亲和 + cache-aware + PD，tool 侧做池化 + P2P（见 §B1.5 / §B3 / §B7 / §B8）。</p>
+
+  <h4>② 一次 task：agent loop 怎么转（每个 LLM 调用 & toolcall）</h4>
+  <div class="mermaid">
+sequenceDiagram
+  participant U as 用户 task
+  participant H as Harness（agent loop）
+  participant R as Gateway / Router
+  participant L as LLM 集群
+  participant S as Sandbox
+  U->>H: 提交 task，修复这个 bug
+  Note over H: 轮次 1（首轮 full prefill）
+  H->>R: LLM 调用①（system+prompt+tools）
+  R->>L: 路由（会话亲和，冷启动 P2C）
+  L-->>H: think + tool_call：read_file
+  H->>R: tool 调用①（只读，可提前 dispatch）
+  R->>S: read_file
+  S-->>H: 文件内容（observation）
+  Note over H: 轮次 2（append observation，prefix 命中）
+  H->>R: LLM 调用②（只传增量 KV）
+  R->>L: 回原 worker（温 KV）
+  L-->>H: tool_call：edit + bash 跑测试
+  H->>R: tool 调用②（写类，串行保序）
+  R->>S: edit / bash
+  S-->>H: 测试结果（红/绿）
+  Note over H: 轮次 3
+  H->>R: LLM 调用③
+  L-->>H: 完成，产出 patch
+  H-->>U: 最终答案
+  </div>
+  <p class="sub">一条 task = <b>多轮「LLM 调用 ↔ toolcall」交替</b>：每轮上下文线性增长、KV 持续复用；只读工具可边 decode 边发（§③ overlap），写类工具串行保序；跨轮走会话亲和只传增量 KV（§B1.5）。subagent 会在此基础上把某个子任务整体 fork 成一次隔离的子 loop。</p>
 
   <h3 id="b1">B1 · 为什么传统 serving 失效</h3>
   <div class="grid">
