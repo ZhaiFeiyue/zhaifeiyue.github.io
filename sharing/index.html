@@ -66,13 +66,14 @@
   <h4>一 · 系统全貌</h4>
   <a href="#lifecycle">1.1 请求生命周期</a>
   <a href="#components">1.2 组件全解（10）</a>
-  <h4>二 · 算法深挖</h4>
-  <a href="#a1">A1 Agent Loop</a>
-  <a href="#a2">A2 Harness</a>
-  <a href="#a3">A3 Loop vs DAG</a>
-  <a href="#a4">A4 规划/投机</a>
-  <a href="#a5">A5 模型路由</a>
-  <a href="#a6">A6 记忆/技能</a>
+  <h4>二 · 算法：问题驱动</h4>
+  <a href="#a1">2.1 根问题 lost-in-middle</a>
+  <a href="#a2">2.2 解法谱 学术→工业</a>
+  <a href="#a3">2.3 压缩 vs prefix-cache</a>
+  <a href="#a4">2.4 CC/Cursor 更新时间线</a>
+  <a href="#a5">2.5 Subagent 为何关键</a>
+  <a href="#a6">2.6 Kimi Agent Swarm</a>
+  <a href="#a7">2.7 其他算法维度</a>
   <h4>三 · Infra 与调度</h4>
   <a href="#b1">B1 传统 serving 失效</a>
   <a href="#b2">B2 mixed-mode KV 转换</a>
@@ -179,44 +180,74 @@ flowchart TB
 
   <!-- PART 2 -->
   <section>
-  <h2>第二部分 · 支柱一：Agent 算法深挖</h2>
+  <h2>第二部分 · Agent 算法：为什么会演化成今天这样</h2>
+  <p class="sub">这一部分不按"技术清单"讲，而按<b>一条因果链</b>讲：<b>根问题（长上下文不好使）→ 引出一整套解法（学术到工业）→ 解法自身的矛盾（压缩 vs 缓存）→ 最终催生 subagent / swarm</b>。这样才能看懂 Claude Code CLI、Cursor 这半年的每一步更新到底在解决什么。</p>
 
-  <h3 id="a1">A1 · Agent Loop / ReAct：最小可用范式</h3>
-  <p>最基础的 agent 就是一个循环：<b>观察 → 推理 → 行动 → 观察…</b>（ReAct）。模型每轮决定"继续想 / 调工具 / 结束"。</p>
-  <div class="callout"><span class="lbl">原理</span>把"一次性生成答案"拆成"边想边做、用工具补足能力"。天然缺陷：隐式依赖、错误无界传播、难审计——这也是后面所有工程/理论工作的起点。</div>
-
-  <h3 id="a2">A2 · Harness 要解决什么（例子①）</h3>
-  <p>agent loop 本身几行代码就能写出来；真正难的是围绕它的一整圈"基础设施"。</p>
-  <div class="callout key"><span class="lbl">金句</span>逆向分析 Claude Code 得到的比例：<b>约 1.6% 是"决策逻辑"，98.4% 是确定性的基础设施</b>（上下文管理、工具执行、权限、错误恢复、缓存）。<span class="ref">2604.14228</span></div>
-  <div class="card"><h4>Harness 的职责清单</h4>
-  <p class="sub">① 上下文拼装与压缩 · ② 工具调用与结果回填 · ③ 权限/安全边界 · ④ 错误恢复与重试 · ⑤ prompt/KV 缓存复用 · ⑥ 可观测与审计。<b>护城河在这里，不在 loop 结构本身。</b></p></div>
-  <div class="callout ex"><span class="lbl">最新工作</span><b>SmoothAgent（lookahead context engineering）</b>：把 summarization/offload/子代理隔离等"上下文变换"识别为<b>可分段、与未来 token 无关</b>，于是能<b>异步提前</b>执行、预备好变换后的 KV，直接替换而不阻塞主链路——TTFT 最高降 11.9×（基于 SGLang）。<span class="ref">2607.00151</span> 这类"上下文变换提前算"正把 harness 的上下文管理和 serving 调度打通。</div>
-
-  <h3 id="a3">A3 · Loop vs 结构化 DAG</h3>
-  <p>把 agent 执行抽象成调度器五元组，用"就绪单元数 <code>|U|</code>"衡量：ReAct loop 是 <code>|U|=1</code>，结构化 DAG 是 <code>|U|≥1</code>（可并行）。</p>
-  <div class="callout ex"><span class="lbl">例子</span>SGH 用 <code>|U|</code> 连续谱统一了 70+ 开源 agent 项目 <span class="ref">2604.11378</span>。但生产实践（Claude Code）证明：<b>loop + 强 harness 已足够好用</b>——DAG 的价值主要在有界恢复和可审计，不是必需。</div>
-
-  <h3 id="a4">A4 · 规划 / 反思 / 投机执行</h3>
-  <ul>
-    <li><b>并行工具调用</b>：一轮发多个 tool call，隐藏等待。</li>
-    <li><b>投机式工具执行</b>：在模型"思考"时提前跑下一个可能的工具，把 tool stall 藏进思考时间。<span class="ref">PASTE 2603.18897（模式感知）/ Speculative Tool Calls 2512.15834（小模型投机）</span></li>
-  </ul>
-  <div class="callout"><span class="lbl">原理</span>投机 = "赌一个大概率的未来，赌对就白赚时间，赌错就丢弃"。从 token 级 → tool 级 → 资源级，是一条清晰的扩展谱。</div>
-
-  <h3 id="a5">A5 · 模型级路由：不是每步都用最强模型</h3>
+  <h3 id="a1">2.1 一切的根问题：长上下文的 "lost in the middle"</h3>
+  <p>Agent 是多轮循环，上下文只会越来越长。但学术界反复证明：<b>"塞得下" ≠ "用得好"</b>——放在上下文中间的信息会被系统性忽略。</p>
   <table>
-   <tr><th>方法</th><th>思路</th><th>出处</th></tr>
-   <tr><td>RouteLLM</td><td>按难度在强/弱模型间路由</td><td>2406.18665</td></tr>
-   <tr><td>OI-MAS</td><td>confidence 调制的分层路由（每角色选 backbone）</td><td>2601.04861</td></tr>
-   <tr><td>Chimera</td><td>语义置信 + 拥塞感知，负载升高时单调回退</td><td>2603.22206</td></tr>
+   <tr><th>结论</th><th>论文</th></tr>
+   <tr><td>信息放在开头/结尾好用，放中间显著变差（U 型曲线）；多跳 QA 更明显</td><td>Lost in the Middle & In-Between <span class="ref">2412.10079</span></td></tr>
+   <tr><td>就算"针"能被检索到，光是上下文变长本身就拉低表现</td><td>Context Length Alone Hurts <span class="ref">2510.05381</span></td></tr>
+   <tr><td>超越字面匹配的长文评测：真实推理随长度崩得更快</td><td>NoLiMa <span class="ref">2502.05167</span></td></tr>
+   <tr><td>长上下文智能退化有"临界阈值"，归因 RoPE 长程衰减 + 注意力弥散</td><td>Intelligence Degradation <span class="ref">2601.15300</span></td></tr>
+   <tr><td>训练侧补救：数据合成让模型"真正用满上下文"</td><td>Make Your LLM Fully Utilize Context <span class="ref">2404.16811</span></td></tr>
   </table>
-  <div class="callout ex"><span class="lbl">反直觉</span>最强的独立模型可能是最差的 pipeline 参与者——Opus 作 planner 时会"自信地"绕过工具直接答，反而更差。<span class="ref">AgentOpt 2604.06296</span></div>
+  <div class="callout key"><span class="lbl">因果起点</span>正因为"长上下文天然不好使"，agent 才<b>不能</b>把所有历史一股脑塞进去。<b>如何把"对的信息、放在对的位置、别太长"——就是下面所有算法工作的共同母题。</b></div>
 
-  <h3 id="a6">A6 · 记忆与技能</h3>
-  <p>记忆正从"被动检索"走向"<b>主动、可学习的记忆技能</b>"：模型自己决定 encode 什么、何时召回、怎么组织。</p>
+  <h3 id="a2">2.2 于是有了一整套解法：从学术到工业</h3>
+  <p>面对 lost-in-the-middle，解法沿两条路线展开，学术打地基、工业做工程：</p>
   <div class="grid">
-    <div class="card"><h4>主动记忆</h4><p class="sub">AutoMem 把"记忆管理"当可训练技能，长程任务 2–4× <span class="ref">2607.01224</span>；Proactive Memory 用独立记忆代理主动注入提醒 <span class="ref">2607.08716</span>。</p></div>
-    <div class="card"><h4>模型自驱动 GC</h4><p class="sub">SideQuest 让模型自己判断哪些 tool response 已过期并清理 <span class="ref">2602.22603</span>——证明"recency=重要性"的启发式在 agent 场景会崩。</p></div>
+    <div class="card"><h4>学术侧（改模型/解码/评测）</h4><p class="sub">· 训练：数据合成用满上下文 <span class="ref">2404.16811</span><br/>· 解码：对比解码缓解"后验显著性衰减" <span class="ref">2506.08371</span><br/>· 评测：NoLiMa / Retrieval-at-limit 把问题量化 <span class="ref">2502.05167 / 2511.05850</span></p></div>
+    <div class="card"><h4>工业侧（context engineering：不硬塞，选/压/换）</h4><p class="sub">· <b>Cursor DCD</b>：上下文虚拟化，文件系统按需 lazy-load，不预塞<br/>· <b>Claude Code 5 层 compaction</b>：预算→snip→microcompact→collapse→auto <span class="ref">2604.14228</span><br/>· <b>RLM</b>：把 context 当外部存储、递归子调用 <span class="ref">2512.24601</span><br/>· <b>PEEK</b>：固定预算的"定向地图" <span class="ref">2605.19932</span><br/>· <b>CMV</b>：结构无损裁剪 + 压缩 cost model <span class="ref">2602.22402</span></p></div>
+  </div>
+  <div class="callout"><span class="lbl">一句话</span>学术把"为什么不好使"讲清楚（位置偏置 / 注意力弥散 / RoPE 衰减）；工业把"那就别硬塞"落成产品（虚拟化 / 压缩 / 外部存储 / 地图）。<b>两边指向同一件事：主动管理进入模型的那段上下文。</b></div>
+
+  <h3 id="a3">2.3 但压缩自身有个大矛盾：压缩 vs prefix-cache</h3>
+  <p>"压缩上下文"听起来只有好处，实测却踩到一个核心矛盾——<b>压缩省了长度，却打爆了 KV 前缀缓存</b>。</p>
+  <div class="callout ex"><span class="lbl">我们的实测（matplotlib-24149，同题三配置）</b></span>不压缩：prefix 命中随轮次爬到 <b>96.95%</b>；开压缩后命中变成<b>锯齿</b>——平时 94–99%，<b>每次压缩当轮塌到 ~30%</b>。根因：压缩改写了历史前缀 → 前缀里任何字节变化都使其后缓存全部失效 → 那一轮几乎重新 prefill 整段 context。<b>"早压 / 频繁压" 是 prefix-cache 反模式。</b></div>
+  <div class="grid">
+    <div class="card"><h4>业界怎么解（Claude Code / Anthropic）</h4><p class="sub">在<b>缓存查找之后</b>于 API 层删旧 tool 结果（<code>context-management</code> beta / <code>cache_edits</code> microcompact）→ <b>删而不改客户端前缀字节 → 不失效</b>；把 prefix 命中当一等指标监控（cache-break detection）。<span class="ref">2604.14228</span></p></div>
+    <div class="card"><h4>我们在 sglang(RadixAttention) 上的落地</h4><p class="sub">sglang 是自动前缀缓存，原则同样是<b>"不改前缀"</b>：① 晚压少压（阈值贴到 ~85%，实测 128K 几乎不触发）② summary 钉死在固定 offset、滚动更新 ③ <b>只删尾、不改头</b>，一次压狠、压后冻结 ④ 大 tool 输出确定性 offload（byte-stable）。离线回放：滑窗 61% → 新栈 <b>93.5%</b>。</p></div>
+  </div>
+  <div class="callout key"><span class="lbl">最优解反直觉</span>不是"更聪明地压缩"，而是"<b>尽量不压（给够 context）+ 压时不动前缀 + 盯住命中率</b>"。—— 这条矛盾，正是下一步 subagent 登场的伏笔。</div>
+
+  <h3 id="a4">2.4 从年初到现在：Claude Code CLI / Cursor 的更新在解决什么</h3>
+  <p class="sub">把这半年工具侧的迭代按"解决的问题"归纳成几波（源自 KB 对 Claude Code 源码 / Cursor 的分析）：</p>
+  <div class="mermaid">
+flowchart LR
+  W1["第1波<br/>上下文溢出<br/>→ compaction/summary"] --> W2["第2波<br/>压缩打爆缓存<br/>→ microcompact/cache-edit<br/>删而不失效"]
+  W2 --> W3["第3波<br/>单上下文塞不下+被污染<br/>→ 上下文虚拟化(Cursor DCD)<br/>+ 按需检索"]
+  W3 --> W4["第4波 ⭐<br/>长程任务噪声累积<br/>→ Subagent/Task 隔离"]
+  W4 --> W5["第5波<br/>导航/记忆<br/>→ orientation map/主动记忆"]
+  </div>
+  <p class="sub">主线很清楚：<b>先解决"塞不下"，再解决"压缩伤缓存"，再解决"塞得下也用不好（lost-in-middle）"——最后一步的答案，就是 subagent。</b></p>
+
+  <h3 id="a5">2.5 Subagent 为什么变得尤为重要（它到底解决什么）</h3>
+  <p><b>Subagent = 把"另一个 agent loop"当一次工具调用</b>：全新隔离上下文、跑到完、<b>只把最终摘要</b>返回父代理。它一次性解决了前面几个问题：</p>
+  <table>
+   <tr><th>它解决的问题</th><th>机制</th></tr>
+   <tr><td><b>对抗 lost-in-middle</b></td><td>子任务几十轮探索的噪声不进主上下文 → 主上下文短、干净、关键信息不被冲淡</td></tr>
+   <tr><td><b>天然压缩（且是最优压缩）</b></td><td>子任务轨迹<b>坍缩成一条摘要</b>回到父 → "委派子任务"和"压缩该子任务"是同一操作；比 token 级摘要更彻底</td></tr>
+   <tr><td><b>prefix-cache 友好</b></td><td>子上下文独立、结束即弃 → <b>父的前缀字节完全不动</b>（绕开 2.3 的压缩伤缓存矛盾）</td></tr>
+   <tr><td><b>可并行</b></td><td>多个子代理各自独立上下文/沙箱并行探索（best-of-N 等）</td></tr>
+  </table>
+  <div class="callout ex"><span class="lbl">对照 2.3</span>Token 级压缩改历史 → 伤前缀缓存；<b>subagent 是"任务级压缩"</b>——它不改父的历史，只在父里追加一条摘要 → 既压缩又 prefix-safe。这就是为什么半年迭代最后收敛到 subagent。（我们自己的 subagent 设计与实现见<a href="#poc-subagent">第四部分 KimiPoC</a>）</div>
+
+  <h3 id="a6">2.6 Kimi 的 Agent Swarm 解决什么问题</h3>
+  <p><b>Agent Swarm</b>（Moonshot 托管版）把 subagent 从"一个父串行调子"推到"<b>模型原生的多代理并行编排</b>"：一个协调者把任务分解、并行派发给多个子代理、再汇总。</p>
+  <div class="grid">
+    <div class="card"><h4>解决什么</h4><p class="sub">单 agent 的两个天花板：① 串行——探索/子任务只能一个个来；② 上下文——再压也压不过"一个巨型上下文"的物理上限与 lost-in-middle。swarm 用<b>"多个隔离上下文并行"替代"一个巨型上下文"</b>，同时拿到并行度 + 上下文隔离。</p></div>
+    <div class="card"><h4>我们的发现（呼应 KimiPoC）</h4><p class="sub">探针实测：开源 sglang serving <b>静默忽略</b> <code>swarm</code> 参数（托管特性，开源权重上没有）→ 所以我们<b>自己在 orchestrator 里实现了同等的多代理编排</b>（agent-as-a-tool + P1/P2）。模型权重仍能胜任协调者/子代理角色。<span class="ref">见第四部分</span></p></div>
+  </div>
+  <div class="callout key"><span class="lbl">收束</span>从 lost-in-middle 一路推下来：单上下文用不好 → 压缩 → 压缩伤缓存 → <b>subagent（任务级压缩+隔离，prefix-safe）</b> → <b>swarm（并行化的 subagent）</b>。这是一条完整的因果链，而不是一堆并列技巧。</div>
+
+  <h3 id="a7">2.7 其他算法维度（简要，配 KB 出处）</h3>
+  <div class="grid">
+    <div class="card"><h4>Loop vs DAG / Harness</h4><p class="sub">SGH 用 <code>|U|</code> 连续谱统一 70+ 项目 <span class="ref">2604.11378</span>；但生产验证"loop + 强 harness 已够用"（Claude Code "1.6% 决策 + 98.4% 基础设施" <span class="ref">2604.14228</span>）。</p></div>
+    <div class="card"><h4>模型级路由</h4><p class="sub">不是每步都用最强模型：RouteLLM <span class="ref">2406.18665</span> / OI-MAS <span class="ref">2601.04861</span> / Chimera <span class="ref">2603.22206</span>；最强模型可能是最差 planner <span class="ref">AgentOpt 2604.06296</span>。</p></div>
+    <div class="card"><h4>投机执行</h4><p class="sub">思考时提前跑下一个工具，藏起 tool stall：PASTE <span class="ref">2603.18897</span> / Speculative Tool Calls <span class="ref">2512.15834</span>。</p></div>
+    <div class="card"><h4>主动记忆</h4><p class="sub">被动检索 → 可学习记忆技能：AutoMem <span class="ref">2607.01224</span> / Proactive Memory <span class="ref">2607.08716</span> / 模型自驱动 GC SideQuest <span class="ref">2602.22603</span>。</p></div>
   </div>
   </section>
 
