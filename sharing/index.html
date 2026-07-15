@@ -706,6 +706,20 @@ flowchart LR
 
   <div class="callout ex"><span class="lbl">MORI's raison d'être</span>Serving in the agent era is a chain that spans both ends: <b>the client's harness operations (A/B/C/D + aside/fork) ↔ the server's KV scheduling (two-axis new-vs-old judgment + read/write decoupling) must be coordinated</b>. A few direct corollaries: ① <b>protecting the head of the prefix is worth more than optimizing the tail</b> (system/memory/tool definitions must be stable); ② <b>compaction should be late, sparse, and leave more tail</b>; ③ <b>elevate "read-cache/write-cache" decoupling (skipCacheWrite aside) to a first-class server capability</b>; ④ session ids should be stable and reused within the TTL. This is exactly the differentiation general serving can't provide but MORI can, by holding control of both the serving and tool ends.</div>
 
+  <h4>Stateless vs stateful scheduler: what each is actually good at</h4>
+  <p class="sub">"Stateful is better" is only half the story — the two make <b>opposite trade-offs</b>, and each wins on a different axis. A stateless scheduler treats every request as independent (route by load only, KV is nobody's business); a stateful one remembers <code>session→(worker, dp_rank, prefix fingerprint)</code> and routes to <b>reuse warm KV</b>. The tension is always <b>cache affinity vs load balancing</b>.</p>
+  <table>
+   <tr><th>Dimension</th><th>Stateless scheduler</th><th>Stateful scheduler</th></tr>
+   <tr><td><b>Routing basis</b></td><td>load only (RR / Random / P2C) — every request independent</td><td>session identity + prefix fingerprint → route to the worker holding warm KV</td></tr>
+   <tr><td><b>KV reuse / TTFT</b></td><td>✗ warm KV on the old worker is wasted; re-prefill each turn</td><td>✓ prefill sends only the delta — <b>TTFT −76%</b> measured (session affinity)</td></tr>
+   <tr><td><b>Load balancing</b></td><td>✓ near-perfect — any worker takes any request, no hotspots</td><td>△ affinity can pin a hot session to one worker → skew, needs rebalancing</td></tr>
+   <tr><td><b>Elasticity / autoscale</b></td><td>✓ add/remove workers freely; no migration</td><td>△ scaling must migrate/rebuild session state; drain carefully</td></tr>
+   <tr><td><b>Fault tolerance</b></td><td>✓ a worker dies → just retry elsewhere (no state lost)</td><td>✗ a worker dies → its warm KV + session location table are lost; must recompute/fail over</td></tr>
+   <tr><td><b>Memory / bookkeeping</b></td><td>✓ zero per-session state; trivial to operate</td><td>✗ must maintain location tables, TTLs, prefix fingerprints, read/write-cache decoupling</td></tr>
+   <tr><td><b>Best-fit workload</b></td><td>short, independent, single-turn Q&amp;A; uniform traffic</td><td>long multi-turn agent sessions with high prefix reuse &amp; tool gaps</td></tr>
+  </table>
+  <div class="callout key"><span class="lbl">The resolution: hybrid, not either/or</span>Under agent load the two aren't a binary choice — the winning designs are <b>stateful where it pays, stateless where it's safe</b>: ① <b>balance only the session's first request</b> (stateless load-balancing), then pin subsequent turns cache-aware (stateful reuse) — SMetric: colocation TPS <b>+10–16%</b>, disaggregation prefill TPS <b>+2–34%</b> <span class="ref">2607.08565</span>; ② keep a <b>global KV store as fallback</b> so a lost affinity degrades to a stateless miss, not a crash — recovering stateless's fault tolerance; ③ TTL-bounded affinity so idle sessions release back to the free pool, recovering stateless's elasticity. <b>Net: take stateful's TTFT/cost win on warm multi-turn traffic, and fall back to stateless's balance/robustness on the cold path.</b></div>
+
   <h3 id="b2">B2 · Example ②: the "transformation" of KV cache under mixed mode</h3>
   <p>"mixed mode" refers to how a multi-turn agent's KV cache is handled under mixed/disaggregated prefill and decode. The core is <b>PD disaggregation</b> and <b>append-prefill</b>.</p>
   <div class="mermaid">
