@@ -204,94 +204,166 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
-<h1 id="l3-synthesis-·-mori-2606-00866-—-相对空闲度驱动的-agentic-kv-cache-分层调度">L3 Synthesis · MORI (2606.00866) — 相对空闲度驱动的 agentic KV-cache 分层调度 <a class="heading-anchor" href="#l3-synthesis-·-mori-2606-00866-—-相对空闲度驱动的-agentic-kv-cache-分层调度" aria-label="Link to l3-synthesis-·-mori-2606-00866-—-相对空闲度驱动的-agentic-kv-cache-分层调度">#</a></h1>
+<h1 id="l3-synthesis-·-mori-2606-00866-—-相对空闲度驱动的-agentic-kv-cache-垂直分层">L3 Synthesis · MORI (2606.00866) — 相对空闲度驱动的 agentic KV-cache 垂直分层 <a class="heading-anchor" href="#l3-synthesis-·-mori-2606-00866-—-相对空闲度驱动的-agentic-kv-cache-垂直分层" aria-label="Link to l3-synthesis-·-mori-2606-00866-—-相对空闲度驱动的-agentic-kv-cache-垂直分层">#</a></h1>
 
 <h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
 
-<p>MORI <a href="/papers/2606.00866/detail.html#1-tl-dr" class="ref-link" title="2606.00866#1-tl-dr">[2606.00866]</a> 位于 <strong>agent serving 系统</strong>这条主线的最新一层。8 篇相关论文按「与 MORI 的机制距离」由近及远排列：</p>
+<p>MORI <a href="/papers/2606.00866/detail.html#1-tl-dr" class="ref-link" title="2606.00866#1-tl-dr">[2606.00866]</a> 处理一个具体问题：agentic program 在 tool-call 间隙让 KV cache 空占 HBM，MORI 用<strong>连续相对空闲度</strong> $\iota$ 把 program 排成一条谱线，最忙的留 GPU、最闲的下沉 CPU DRAM，并做双层准入。要把它放进 KB 图里，必须先做一次<strong>关键的三方消歧</strong>，再沿三条正交轴定位。</p>
 
-<p><strong>核心近亲 (同一 program-aware KV 调度问题, 同一 Berkeley/Stoica 谱系)</strong></p>
+<h3 id="1-0-⚠-名称冲突消歧（本篇最重要的图定位前提）">1.0 ⚠ 名称冲突消歧（本篇最重要的图定位前提） <a class="heading-anchor" href="#1-0-⚠-名称冲突消歧（本篇最重要的图定位前提）" aria-label="Link to 1-0-⚠-名称冲突消歧（本篇最重要的图定位前提）">#</a></h3>
+
+<p>KB 里有三个都叫 "MORI / mori" 的实体，它们<strong>除了名字之外互不相关</strong>，必须显式区分，否则整条 evidence chain 会被污染：</p>
+
+<table>
+<tr><th>名称</th><th>KB 实体</th><th>是什么</th><th>与本篇关系</th></tr>
+<tr><td><strong>paper-MORI</strong></td><td><code>2606.00866</code>（本篇）</td><td>"<strong>M</strong>emory <strong>O</strong>ffloader with <strong>R</strong>elative <strong>I</strong>dleness" —— 一个 agent-serving <strong>KV 垂直分层 offloader</strong>，主动把 KV 在 GPU HBM ↔ CPU DRAM 之间 promote/demote <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a></td><td>—</td></tr>
+<tr><td><strong>ROCm-mori</strong></td><td><code>ROCm-mori</code>（code）</td><td>AMD 的 <strong>RDMA / GPU 通信库</strong>（IBGDA、MoE dispatch/combine、MORI-IO/EP/SHMEM）<a href="/papers/ROCm-mori/detail.html#§1-tl-dr" class="ref-link" title="ROCm-mori#§1-tl-dr">[ROCm-mori]</a>，解决的是 GPU 间通信而非 KV 分层 <a href="/papers/ROCm-mori/detail.html#§14-comparison-with-alternatives" class="ref-link" title="ROCm-mori#§14-comparison-with-alternatives">[ROCm-mori]</a></td><td><strong>纯名称碰撞</strong>，技术无交集</td></tr>
+<tr><td><strong>repo mori-scheduler</strong></td><td><code>ZhaiFeiyue-mori-scheduler</code>（code）</td><td>AMD MI355X 上的<strong>前缀缓存感知多副本推理 ROUTER</strong>（ByteRadixTree + UMBP block-hash + PD 分离）<a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§1-tl-dr" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§1-tl-dr">[ZhaiFeiyue-mori-scheduler]</a></td><td><strong>同名但正交</strong>（详见 §1.1）</td></tr>
+</table>
+
+<p><strong>结论</strong>：paper-MORI 与 ROCm-mori 只共享名字；与 repo mori-scheduler 共享名字<strong>且</strong>同处 agent-serving 栈，但作用在<strong>不同层</strong>——不是竞争关系，而是可叠加的互补层。下面 §1.1 把这个正交性讲清楚。</p>
+
+<h3 id="1-1-正交轴一：垂直分层-vs-水平路由（本篇-vs-repo-mori-scheduler）">1.1 正交轴一：垂直分层 vs 水平路由（本篇 vs repo mori-scheduler） <a class="heading-anchor" href="#1-1-正交轴一：垂直分层-vs-水平路由（本篇-vs-repo-mori-scheduler）" aria-label="Link to 1-1-正交轴一：垂直分层-vs-水平路由（本篇-vs-repo-mori-scheduler）">#</a></h3>
+
+<p>这是本篇在 KB 图里最容易被误接的一条边，必须讲透：</p>
+
 <ul>
-<li><strong>Continuum (2511.02230)</strong> — 最强直接对手，也是 MORI 的 predecessor 之一。同样处理 multi-turn agent 的 tool-call 间隙 KV 管理，但用的是 <strong>KV cache TTL</strong>（cost-benefit 定时 pin）而非连续空闲度排序 <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>。两者共享 program-level FCFS 血统。</li>
-<li><strong>Autellix (2502.13965)</strong> — MORI 引用为 program-aware 调度奠基者之一。把 OS 的 Least-Attained-Service 提升到 program 级 (PLAS/ATLAS)，解决 program-level HoL blocking <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>。MORI 与它正交：Autellix 排<em>队列优先级</em>，MORI 排<em>内存层放置</em>。</li>
-<li><strong>TokenCake (2510.18586)</strong> — 机制上最像 MORI 的对手：同样把 tool-call idle window 当作 offload 机会，同样做 GPU KV 分区，但用 <strong>双调度器 (Temporal + Spatial)</strong> + 预测式 upload，而非单一空闲度排名 <a href="/papers/2510.18586/detail.html#2-q1-q2-q3" class="ref-link" title="2510.18586#2-q1-q2-q3">[2510.18586]</a>。</li>
+<li><strong>paper-MORI 做 VERTICAL tiering</strong>：它在<strong>单副本内部</strong>主动驱动 KV 在 GPU HBM ↔ CPU DRAM ↔ Waiting 三层间升降级 <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>，决策变量是空闲度 $\iota$。</li>
+<li><strong>repo mori-scheduler 做 HORIZONTAL routing</strong>：它在<strong>多 worker 之间</strong>做 TTFT-argmin 放置、PD 分离、session 亲和路由 <a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§8-api-design-decisions" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§8-api-design-decisions">[ZhaiFeiyue-mori-scheduler]</a>，并把 KV 层级当作<strong>只读信号</strong>——它的缓存接口只暴露 L1(HBM)/L2(DRAM)/L3(external) 的<strong>清除</strong>能力，从不主动驱动层间搬迁 <a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§5-entry-points-api-surface" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§5-entry-points-api-surface">[ZhaiFeiyue-mori-scheduler]</a>。（分析：router 的 UMBP tier 系数近似 HBM=1.0 / DRAM=0.9 / SSD=0.0 / remote=0.5，即"KV 在哪个层"只影响 replica 打分，不触发搬迁。）</li>
 </ul>
 
-<p><strong>同赛道不同刀法</strong></p>
+<p><strong>因此两者是同一栈的互补层，而非竞争者</strong>：一个真实部署完全可以用 repo mori-scheduler 做跨副本水平放置，同时在每个副本内跑 paper-MORI 做垂直 offload。二者攻击的浪费不同——router 消除的是"同前缀请求散落到不同 worker 导致的重复 prefill"<a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§1-tl-dr" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§1-tl-dr">[ZhaiFeiyue-mori-scheduler]</a>，MORI 消除的是"空闲 program 的 KV 空占 HBM"<a href="/papers/2606.00866/detail.html#2-q1-q2-q3" class="ref-link" title="2606.00866#2-q1-q2-q3">[2606.00866]</a>。</p>
+
+<h3 id="1-2-正交轴二：粒度对应-——-programid-≈-sessionid">1.2 正交轴二：粒度对应 —— program_id ≈ session_id <a class="heading-anchor" href="#1-2-正交轴二：粒度对应-——-programid-≈-sessionid" aria-label="Link to 1-2-正交轴二：粒度对应-——-programid-≈-sessionid">#</a></h3>
+
+<p>一个精确的跨系统对应关系：paper-MORI 的调度单元 <strong>program</strong>（客户端只需附一个 <code>program_id</code>，subagent 用独立 id）<a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a> 与 repo mori-scheduler 的 <strong>session_id</strong>（从 <code>x-mori-session-id</code> header 提取）<a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§7-critical-path-analysis" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§7-critical-path-analysis">[ZhaiFeiyue-mori-scheduler]</a> <strong>是同一粒度</strong>——都指"一个跨越多次 LLM call 的 agent 会话"。这与 ThunderAgent 的 <code>program_id</code> 抽象同源 <a href="/papers/2602.13692/detail.html#7-实现-cross-reference" class="ref-link" title="2602.13692#7-实现-cross-reference">[2602.13692]</a>。<strong>区别在于挂载在这个 id 上的状态</strong>：paper-MORI 给它挂了<strong>时间序列状态</strong>（滑窗空闲度），router 只把它当<strong>路由亲和 key</strong>。这条对应关系让"router 的 session 亲和"与"MORI 的 program 空闲排名"可以共用同一个 id 命名空间，是二者可组合的工程前提。</p>
+
+<h3 id="1-3-直接血统：program-aware-调度谱系">1.3 直接血统：program-aware 调度谱系 <a class="heading-anchor" href="#1-3-直接血统：program-aware-调度谱系" aria-label="Link to 1-3-直接血统：program-aware-调度谱系">#</a></h3>
+
 <ul>
-<li><strong>Speculative Tool Calls (2512.15834)</strong> — 与 MORI 目标相同（消除 tool-call 造成的 GPU 空转），但手段相反：MORI <em>接受</em>空闲窗口并用它 offload；投机工具则试图<em>消灭</em>空闲窗口（提前异步执行工具，让生成与工具重叠）<a href="/papers/2512.15834/detail.html#§2-q1-·-q2-·-q3" class="ref-link" title="2512.15834#§2-q1-·-q2-·-q3">[2512.15834]</a>。</li>
-<li><strong>KVCOMM (2510.12872)</strong> — multi-agent KV 复用，但攻击的是<em>跨 agent 前缀</em>的 prefill 重复，而非<em>跨时间</em>的分层放置 <a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a>。与 MORI 的 subagent 场景有交集（MORI 把 subagent 当一次长 tool call）。</li>
+<li><strong>ThunderAgent (2602.13692)</strong> —— MORI 的<strong>实现基底</strong>，MORI 在其 scheduler 上加 ~3300 LoC <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a>。ThunderAgent 首创把整个 workflow 抽象为 agentic program tuple，按 phase（Reasoning/Acting）暂停 acting、恢复 reasoning <a href="/papers/2602.13692/detail.html#2-q1-q2-q3" class="ref-link" title="2602.13692#2-q1-q2-q3">[2602.13692]</a>。MORI 的直接基线 TA / TA+O 就是它（TA + HiCache 非协调 offload）<a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a>。ThunderAgent 用的是<strong>二值 phase 标签 + 时间衰减权重</strong> $f(t)$，MORI 把它换成连续 $\iota$。</li>
+<li><strong>Continuum (2511.02230)</strong> —— 同处理 multi-turn tool-call 间隙的 KV 保留，但用 <strong>per-request KV TTL</strong>（cost-benefit 定时 pin）而非连续空闲度排序 <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>，共享 program-level FCFS 血统。</li>
+<li><strong>Autellix (2502.13965)</strong> —— program-aware 调度的奠基者，把 OS 的 Least-Attained-Service 提升到 program 级（PLAS/ATLAS），解决 program-level HoL blocking <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>。与 MORI 正交：Autellix 排<em>队列优先级</em>，MORI 排<em>内存层放置</em>。</li>
 </ul>
 
-<p><strong>上下文与边界</strong></p>
+<h3 id="1-4-offloading-kv-tiering-血统（垂直层的技术前身）">1.4 offloading / KV-tiering 血统（垂直层的技术前身） <a class="heading-anchor" href="#1-4-offloading-kv-tiering-血统（垂直层的技术前身）" aria-label="Link to 1-4-offloading-kv-tiering-血统（垂直层的技术前身）">#</a></h3>
+
 <ul>
-<li><strong>CPU-Centric Perspective (2511.00739)</strong> — 特征刻画论文，揭示 agent E2E 延迟高达 88% 花在 CPU 工具执行上 <a href="/papers/2511.00739/detail.html#tl-dr" class="ref-link" title="2511.00739#tl-dr">[2511.00739]</a>。这为 MORI 的整篇动机（tool-call gap 真实且巨大）提供独立佐证，但也构成攻击面（见 §3）。</li>
-<li><strong>RouteLLM (2406.18665)</strong> — 只在「agent serving 成本优化」这个宽泛类目下相关；它是 query→model 路由分类器，无 KV、无多轮、无 tool-call 状态 <a href="/papers/2406.18665/detail.html#§1-tl-dr" class="ref-link" title="2406.18665#§1-tl-dr">[2406.18665]</a>。与 MORI 几乎正交，仅作 taxonomy 对照。</li>
-<li><strong>Agent Interoperability Survey (2505.02279)</strong> — 协议层综述 (MCP/A2A/ACP/ANP)，与 MORI 的系统调度层无技术交集 <a href="/papers/2505.02279/detail.html#§1-tl-dr" class="ref-link" title="2505.02279#§1-tl-dr">[2505.02279]</a>。仅说明 agent 生态的另一维度。</li>
+<li><strong>NEO (2411.01142)</strong> —— CPU offloading 经典，用 asymmetric pipelining 把 decode attention + KVCache 卸到本机 CPU，核心 insight 是 decode attention 带宽受限、CPU/GPU 带宽差距远小于算力差距 <a href="/papers/2411.01142/detail.html#§2-痛点-方法-结果" class="ref-link" title="2411.01142#§2-痛点-方法-结果">[2411.01142]</a>。它是 <strong>phase-blind、单副本</strong>的。</li>
+<li><strong>FastDecode (2403.11421)</strong> —— 更激进：S-Part(GPU 线性层)/R-Part(远程 CPU attention) 分解，KVCache 完全离开 GPU <a href="/papers/2403.11421/detail.html#§2-痛点-方法-结果" class="ref-link" title="2403.11421#§2-痛点-方法-结果">[2403.11421]</a>。同样 phase-blind。</li>
+<li><strong>APEX (2506.03296)</strong> —— NEO 的后继，用 unified-batch Asynchronous Overlap + 跨 iteration 延迟同步替代 NEO 的 batch-splitting <a href="/papers/2506.03296/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2506.03296#§2-q1-痛点-q2-方法-q3-结果">[2506.03296]</a>。仍是"如何高效算 offloaded attention"，不管"该 offload 谁"。</li>
+<li><strong>CLO (2511.14510)</strong> —— CPU-light KV offloading：head 粒度近似缓存 + 零拷贝传输，把 CPU 侧管理开销降到近零 <a href="/papers/2511.14510/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.14510#§2-q1-q2-q3">[2511.14510]</a>。它证明 offload 的 CPU 侧代价可以很低——这是对 MORI "PCIe reload 便宜"假设的有力旁证，也是可组合方向（见 §5）。</li>
+<li><strong>FlexGen</strong>（KB 无 L2 note，仅外部引用）—— 离线吞吐向的 KV 卸载，属同一 offloading 谱系的更早坐标，此处仅作外部谱系锚点。</li>
 </ul>
+
+<p><strong>MORI 相对这条线的定位</strong>：这些系统都在回答"attention 怎么在 CPU 上高效算"或"KV 怎么搬"，都是 <strong>phase-blind + 单副本</strong>；MORI 回答的是<strong>该把哪个 program 的 KV 放哪一层</strong>——把 phase/idleness 信号引入 tier assignment，并加了双层准入 + 多副本亲和。</p>
+
+<h3 id="1-5-同赛道不同刀法：利用-idle-window-的另一种范式（speculation）">1.5 同赛道不同刀法：利用 idle window 的另一种范式（speculation） <a class="heading-anchor" href="#1-5-同赛道不同刀法：利用-idle-window-的另一种范式（speculation）" aria-label="Link to 1-5-同赛道不同刀法：利用-idle-window-的另一种范式（speculation）">#</a></h3>
+
+<ul>
+<li><strong>IdleSpec (2605.22154)</strong> —— 也盯上 tool-call idle window，但<strong>用它做推测性 planning</strong>（progressive/recovery 双 draft + Thompson 采样），把 idle 变成"多算点计算" <a href="/papers/2605.22154/detail.html#§2-q1-q2-q3" class="ref-link" title="2605.22154#§2-q1-q2-q3">[2605.22154]</a>。</li>
+<li><strong>PASTE (2603.18897)</strong> —— 用 idle window 做<strong>模式感知的推测性工具执行</strong>，提前跑下一个 tool <a href="/papers/2603.18897/detail.html#key-findings" class="ref-link" title="2603.18897#key-findings">[2603.18897]</a>。</li>
+</ul>
+
+<p>这两者与 MORI 的世界观相反：MORI <strong>接受</strong>空闲窗口并用它 offload（省内存）；speculation 派试图<strong>填满/消灭</strong>空闲窗口（省时间）。互不冲突，但暗含张力（见 §3 攻击 1）。</p>
+
+<h3 id="1-6-相邻上下文">1.6 相邻上下文 <a class="heading-anchor" href="#1-6-相邻上下文" aria-label="Link to 1-6-相邻上下文">#</a></h3>
+
+<ul>
+<li><strong>Pie (2510.24051)</strong> —— programmable serving，把 KV cache 控制权交给 inferlet 显式管理 <a href="/papers/2510.24051/detail.html#§1-tl-dr" class="ref-link" title="2510.24051#§1-tl-dr">[2510.24051]</a>。与 MORI 是"谁来决定 KV 放置"的两极：Pie 交给应用，MORI 交给基础设施自动排名。</li>
+<li><strong>SAGA (2605.00528)</strong> —— workflow-atomic 调度 + workflow-aware LRU eviction，明确量化了在线策略相对 Bélády 离线最优的 competitive ratio（1.31×）<a href="/papers/2605.00528/detail.html#2-q1-q2-q3" class="ref-link" title="2605.00528#2-q1-q2-q3">[2605.00528]</a>。这是 MORI 缺失的理论刻度（见 §3 攻击 3）。</li>
+</ul>
+
+<hr>
 
 <h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
 
-<p><strong>新颖点 (MORI 独有):</strong></p>
+<p><strong>新颖点（MORI 独有）：</strong></p>
+
 <ol>
-<li><strong>把空闲度从「二值/阈值」重构为「连续、相对」的排名。</strong> 这是 MORI 相对所有前作的本质 delta <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a>。Continuum 用 per-request TTL 定时器 <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>，TokenCake 用 per-agent 静态/动态优先级分数 <a href="/papers/2510.18586/detail.html#2-q1-q2-q3" class="ref-link" title="2510.18586#2-q1-q2-q3">[2510.18586]</a>，Autellix 用累计 attained service <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>——三者都是<em>绝对量</em>。MORI 的 $\iota$ 排名让 GPU:CPU 分界线<strong>自动滑到任意硬件容量比</strong>，无需 per-hardware 调参 <a href="/papers/2606.00866/detail.html#4-作者证明" class="ref-link" title="2606.00866#4-作者证明">[2606.00866]</a>。</li>
-<li><strong>单一 sort-and-fill 同时充当两层 admission control。</strong> 「从最忙一端填满每个 tier」这个动作本身就是 GPU 和 CPU 双层准入 <a href="/papers/2606.00866/detail.html#2-q1-q2-q3" class="ref-link" title="2606.00866#2-q1-q2-q3">[2606.00866]</a>。相比之下 Continuum 只管 GPU 侧（TTL 是 GPU 显存上界）<a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a>，MAS (2511.00739) 用独立弹性队列上限做准入 <a href="/papers/2511.00739/detail.html#q2-作者提出了什么新的方法？" class="ref-link" title="2511.00739#q2-作者提出了什么新的方法？">[2511.00739]</a>。</li>
+<li><strong>把空闲度从"二值/阈值"重构为"连续、相对"的排名。</strong> 这是本质 delta <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a>。ThunderAgent 用二值 phase + 衰减权重 $f(t)$ <a href="/papers/2602.13692/detail.html#2-q1-q2-q3" class="ref-link" title="2602.13692#2-q1-q2-q3">[2602.13692]</a>，Continuum 用 per-request TTL 定时器 <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>，Autellix 用累计 attained service <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>——三者的决策量都是<em>绝对/离散</em>的。MORI 的连续 $\iota = T_{acting}/(T_{reasoning}+T_{acting})$（滑窗 $k{=}5$）让 GPU:CPU 分界线<strong>自动滑到任意硬件容量比</strong>（1:1.6 vs 1:3.1 零重调）<a href="/papers/2606.00866/detail.html#4-作者证明" class="ref-link" title="2606.00866#4-作者证明">[2606.00866]</a>。这正是所有 CPU-offloading 前身（NEO/FastDecode/APEX）所缺的：它们把 KV <em>怎么搬</em>做到极致，却对<em>该搬谁</em> phase-blind <a href="/papers/2411.01142/detail.html#§2-痛点-方法-结果" class="ref-link" title="2411.01142#§2-痛点-方法-结果">[2411.01142]</a>。</li>
 </ul>
 
-<p><strong>增量点 (站在前作肩上):</strong></p>
 <ol>
-<li><strong>coordinated 两层放置 vs 前作的单层/uncoordinated。</strong> MORI 的直接基线 TA+O 正是「scheduler 管 GPU + HiCache 独立 LRU 管 CPU」的 uncoordinated 版本，MORI 证明协调 CPU tier 能把额外 DRAM 真正用起来（2× CPU 让 MORI TTFT 降但 TA+O 不动）<a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a>。这与 TokenCake 的「shared pressure snapshot 让两调度器一致」是同一洞见的不同实现 <a href="/papers/2510.18586/detail.html#7-实现-cross-reference" class="ref-link" title="2510.18586#7-实现-cross-reference">[2510.18586]</a>。</li>
-<li><strong>多 replica affinity 覆盖 CPU tier。</strong> MORI 追踪程序 KV 在 GPU <em>或</em> CPU 的驻留并路由回原 replica，把 churn 从 14–15% 降到 0.3–2.9% <a href="/papers/2606.00866/detail.html#2-q1-q2-q3" class="ref-link" title="2606.00866#2-q1-q2-q3">[2606.00866]</a>。Autellix 的 locality-aware 路由只到 primary engine 级别、multi-engine 收益仅 ~1.5× <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>。</li>
+<li><strong>垂直分层（本篇）而非水平路由（repo mori-scheduler）</strong>，且二者可叠加。MORI 主动驱动 GPU↔CPU 升降级 <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>；repo router 把 KV 层级当只读信号做跨副本打分 <a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§8-api-design-decisions" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§8-api-design-decisions">[ZhaiFeiyue-mori-scheduler]</a>。这不是同一维度的两种方案，而是同一栈的两层——delta 在于 MORI 把"层内该 offload 谁"补上了 router 不碰的那块。</li>
 </ul>
 
-<p><strong>矛盾/张力点:</strong></p>
 <ol>
-<li><strong>「空闲窗口是资源」vs「空闲窗口是敌人」。</strong> MORI 的整个设计前提是 tool-call idle window 值得利用来 offload <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>；Speculative Tool Calls 则视 tool 等待为纯浪费，用小模型投机执行去<em>消灭</em>它 <a href="/papers/2512.15834/detail.html#§2-q1-·-q2-·-q3" class="ref-link" title="2512.15834#§2-q1-·-q2-·-q3">[2512.15834]</a>。二者不冲突但暗含不同世界观——若投机把长 idle 窗口普遍缩短，MORI 可 offload 的窗口就变少（详见 §3）。</li>
+<li><strong>单一 sort-and-fill 同时充当两层 admission control。</strong> "从最忙一端填满每个 tier"这个动作本身就是 GPU 和 CPU 双层准入 <a href="/papers/2606.00866/detail.html#2-q1-q2-q3" class="ref-link" title="2606.00866#2-q1-q2-q3">[2606.00866]</a>。相比之下 NEO/FastDecode 根本没有 CPU 侧准入（过度 offload 会让 idle program 在 DRAM 里互相驱逐）<a href="/papers/2411.01142/detail.html#§2-痛点-方法-结果" class="ref-link" title="2411.01142#§2-痛点-方法-结果">[2411.01142]</a>；Continuum 只管 GPU 侧（TTL 是显存上界）<a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a>。</li>
 </ul>
+
+<ol>
+<li><strong>多 replica affinity 覆盖到 CPU tier。</strong> MORI 追踪 program KV 在 GPU <em>或</em> CPU 的驻留并路由回原 replica，把 churn 从 14–15% 降到 0.3–2.9% <a href="/papers/2606.00866/detail.html#2-q1-q2-q3" class="ref-link" title="2606.00866#2-q1-q2-q3">[2606.00866]</a>。这一点与 repo mori-scheduler 的 session 亲和路由 <a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§7-critical-path-analysis" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§7-critical-path-analysis">[ZhaiFeiyue-mori-scheduler]</a> 是<strong>同一亲和思想的不同层实现</strong>（router 的亲和只到 GPU 前缀命中；MORI 的亲和延伸到 DRAM 驻留）。Autellix 的 locality-aware 路由也只到 primary engine 级、multi-engine 收益仅 ~1.5× <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>。</li>
+</ul>
+
+<p><strong>增量点（站在前作肩上）：</strong></p>
+
+<ol>
+<li><strong>coordinated 两层放置 vs 前作的单层/uncoordinated。</strong> MORI 的直接基线 TA+O 正是"scheduler 管 GPU + HiCache 独立 LRU 管 CPU"的非协调版本；MORI 证明协调 CPU tier 能把额外 DRAM 真正用起来（2× CPU 让 MORI TTFT 38→33 s 而 TA+O 56→58 s 不动）<a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a>。CLO 从另一端佐证：CPU 侧 offload 管理开销可压到近零 <a href="/papers/2511.14510/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.14510#§2-q1-q2-q3">[2511.14510]</a>——MORI 的协调只要不引入重 CPU 开销就成立。</li>
+</ul>
+
+<p><strong>报告结果（可作本篇自述引用）：</strong> 80 并发 program 时 20–71% 更高输出吞吐、18–43% 更低 TTFT（vs 最强 offloading 基线 TA+O）；DP=3 维持 99%+ GPU 利用率，而 phase-oblivious 调度器仅 59–76% <a href="/papers/2606.00866/detail.html#2-q1-q2-q3" class="ref-link" title="2606.00866#2-q1-q2-q3">[2606.00866]</a>。</p>
+
+<p><strong>矛盾/张力点：</strong></p>
+
+<ol>
+<li><strong>"空闲窗口是资源"vs"空闲窗口是敌人"。</strong> MORI 的整个前提是 idle window 值得利用来 offload <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>；IdleSpec 用它做推测 planning <a href="/papers/2605.22154/detail.html#§2-q1-q2-q3" class="ref-link" title="2605.22154#§2-q1-q2-q3">[2605.22154]</a>、PASTE 用它做投机工具执行 <a href="/papers/2603.18897/detail.html#key-findings" class="ref-link" title="2603.18897#key-findings">[2603.18897]</a>。三者不直接冲突，但若 speculation 普遍缩短长 idle 窗口，MORI 可 offload 的窗口就变少（详见 §3）。</li>
+</ul>
+
+<hr>
 
 <h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
 
-<p><strong>攻击 1 — 空闲窗口的「可利用性」建立在工具无法被投机/加速的假设上。</strong></p>
-<p>MORI 的 §3.2 论证：短 tool call 的 offload 传输成本超过 gap 本身，只有长 idle 才值得 offload <a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a>。但 Speculative Tool Calls 表明无状态工具 (web search / file read / ls) 可提前异步执行、与生成重叠 <a href="/papers/2512.15834/detail.html#§2-q1-·-q2-·-q3" class="ref-link" title="2512.15834#§2-q1-·-q2-·-q3">[2512.15834]</a>。<strong>若投机工具普及，MORI 赖以 offload 的长 idle 窗口会被压缩</strong>——尤其 §3.3 里那 13% 长 tool call（占 58% tool 时间）中的一部分（如 pytest、compile）恰恰是投机难覆盖的有副作用工具，但 human-input / subagent 等<em>可提前调度</em>的窗口会缩水。MORI 未讨论与投机执行共存。</p>
+<p><strong>攻击 1 — "空闲窗口可利用"建立在工具不可被投机/加速的假设上。</strong></p>
+<p>MORI 论证短 tool call 的 offload 传输成本超过 gap 本身，只有长 idle 才值得 offload <a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a>。但 IdleSpec 表明 idle 期可并行做推测 planning <a href="/papers/2605.22154/detail.html#§2-q1-q2-q3" class="ref-link" title="2605.22154#§2-q1-q2-q3">[2605.22154]</a>，PASTE 表明 55% 的 edit→test、51% 的 search→fetch 等模式可提前投机执行 <a href="/papers/2603.18897/detail.html#key-findings" class="ref-link" title="2603.18897#key-findings">[2603.18897]</a>。<strong>若投机执行普及并把长 idle 窗口普遍压缩</strong>，MORI 赖以 offload 的窗口收缩——尤其 human-input / subagent 这类"可提前调度"的窗口。MORI 未讨论与投机执行共存时空闲信号 $\iota$ 会如何被扭曲。</p>
 
-<p><strong>攻击 2 — 88% 的 CPU 工具瓶颈可能意味着 offload 目标本身受争用。</strong></p>
-<p>CPU-Centric 论文测得 tool 执行占 E2E 高达 88%，且 CPU 在 BS=128 已 over-subscribe <a href="/papers/2511.00739/detail.html#key-findings" class="ref-link" title="2511.00739#key-findings">[2511.00739]</a>。MORI 把 idle 程序的 KV <strong>offload 到同节点 CPU DRAM</strong>，并假设 CPU-to-GPU PCIe reload 便宜 <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>。但如果同一批 CPU 核心正被 tool 执行 (FAISS/LexRank) 打满，offload/upload 的 host 侧 memcpy 会与工具执行争 CPU/内存带宽——<strong>MORI 的成本模型只算了 PCIe 传输，没算 host 端 CPU 争用</strong>。这在 RAG-heavy 或 ChemCrow 类 CPU-bound workload 下可能让 offload 净收益转负。</p>
+<p><strong>攻击 2 — offload 成本模型只算 PCIe，没算 host CPU 争用。</strong></p>
+<p>MORI 假设 CPU→GPU PCIe reload 便宜 <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>。但 NEO/FastDecode 的整条 insight 恰恰是 CPU 侧带宽与算力都是稀缺资源，offload 收益强正相关于 CPU 内存带宽 <a href="/papers/2411.01142/detail.html#§2-痛点-方法-结果" class="ref-link" title="2411.01142#§2-痛点-方法-结果">[2411.01142]</a><a href="/papers/2403.11421/detail.html#§2-痛点-方法-结果" class="ref-link" title="2403.11421#§2-痛点-方法-结果">[2403.11421]</a>。当同节点 CPU 正被 tool 执行或 CPU-attention 打满时，MORI 的 host 侧 memcpy 会与之争带宽。CLO 展示了"CPU-light"offload 是可能的（4 线程逼近 PCIe 峰值）<a href="/papers/2511.14510/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.14510#§2-q1-q2-q3">[2511.14510]</a>——反过来说，MORI 若不采用类似零拷贝路径，其 DRAM offload 的 host 开销在 CPU-bound workload 下可能吞掉净收益。</p>
 
-<p><strong>攻击 3 — 5 秒 tick + k=5 窗口对短命程序反应太慢。</strong></p>
-<p>MORI 的 sticky 策略默认 5 s 控制 tick、k=5 循环窗口 <a href="/papers/2606.00866/detail.html#4-作者证明" class="ref-link" title="2606.00866#4-作者证明">[2606.00866]</a>。Continuum 的实测显示 tool call 中位 925 ms (SWE-Bench)，且改进随 turn 数放大——per-turn 排队气泡是累积量 <a href="/papers/2511.02230/detail.html#§5-实验与数据" class="ref-link" title="2511.02230#§5-实验与数据">[2511.02230]</a>。<strong>对一个只有 6–11 个 turn 的短程序，5 s tick 可能在其大半生命周期里只调度 1–2 次</strong>，来不及把它从 busy 阶段的正确 tier 里放好。MORI 在 20 程序低并发下仅 +2% (546 vs 534) <a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a> 正是这个副作用的征兆——它承认低并发无优势，但没量化 tick 粒度对短程序尾延迟的伤害。</p>
+<p><strong>攻击 3 — "$\iota$ 是未来行为的可靠代理"缺形式化，且缺 competitive 刻度。</strong></p>
+<p>MORI 用"phase transition 稀疏 → 近期行为预测未来"为 windowed $\iota$ 辩护，但无形式化证明 <a href="/papers/2606.00866/detail.html#4-作者证明" class="ref-link" title="2606.00866#4-作者证明">[2606.00866]</a>。对比之下，Autellix 明确量化了 non-clairvoyant 相对 clairvoyant SRPT 的固有 gap <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>；SAGA 更进一步给出 WA-LRU 相对 Bélády 离线最优的 competitive ratio 1.31× <a href="/papers/2605.00528/detail.html#4-作者证明" class="ref-link" title="2605.00528#4-作者证明">[2605.00528]</a>。<strong>MORI 的 $\iota$-ranking 放置相对"已知每个 tool 时长的 oracle 放置"的 competitive gap 完全没测</strong>——SAGA 已经示范了这个刻度怎么给，MORI 没有对应的可诊断标量。</p>
 
-<p><strong>攻击 4 — 「idleness 是未来行为的可靠代理」缺形式化，且与 Autellix 的 SRPT gap 呼应。</strong></p>
-<p>MORI 用「phase transition 稀疏 → 近期行为预测未来」为 windowed $\iota$ 辩护 <a href="/papers/2606.00866/detail.html#4-作者证明" class="ref-link" title="2606.00866#4-作者证明">[2606.00866]</a>，但和所有同类一样无形式化证明。Autellix 明确量化了 non-clairvoyant 调度相对 clairvoyant SRPT 的固有 gap <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>。MORI 的 $\iota$ 本质也是 non-clairvoyant 预测器，<strong>它相对「已知每个 tool 时长的 oracle 放置」的 competitive gap 完全没测</strong>——这是可攻击的空白，Continuum 的 memoryfulness factor $\eta$ <a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a> 至少把「顺序是否有用」量化了，MORI 没有对应的可诊断标量。</p>
+<p><strong>攻击 4 — 5 秒 tick + k=5 窗口对短命程序反应太慢。</strong></p>
+<p>MORI 默认 5 s 控制 tick、k=5 循环窗口 <a href="/papers/2606.00866/detail.html#4-作者证明" class="ref-link" title="2606.00866#4-作者证明">[2606.00866]</a>。Continuum 实测 tool call 中位仅 925 ms 且改进随 turn 数放大——per-turn 气泡是累积量 <a href="/papers/2511.02230/detail.html#§5-实验与数据" class="ref-link" title="2511.02230#§5-实验与数据">[2511.02230]</a>。对一个只有 6–11 turn 的短 program，5 s tick 可能在其大半生命周期只调度 1–2 次。MORI 在 20 program 低并发下仅 +2%（546 vs 534）<a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a> 正是这个副作用的征兆——它承认低并发无优势，但没量化 tick 粒度对短程序尾延迟的伤害。</p>
+
+<p><strong>攻击 5 — 与 repo mori-scheduler 组合时的责任边界未定义。</strong></p>
+<p>若 MORI（垂直）与 repo router（水平）叠加，二者都会读/写 program 的驻留状态：MORI 主动 demote 一个 program 到 CPU 后，router 若把它当"cacheless"重新路由到别的副本，就会毁掉 MORI 刚做的 offload——这正是 MORI 论文里 TA+O 的 affinity-break 失败模式 <a href="/papers/2606.00866/detail.html#5-实验与数据" class="ref-link" title="2606.00866#5-实验与数据">[2606.00866]</a> 在跨系统层面的重演。MORI 论文只在单系统内解决了这个（把 CPU 驻留纳入亲和），但<strong>没有定义与一个外部水平 router 协同时的驻留状态共享协议</strong>。</p>
+
+<hr>
 
 <h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
 
-<p><strong>范式定位：从「二值 pin」到「连续相对排名」的调度器进化第三代。</strong></p>
+<p><strong>范式定位：调度器从"二值 pin"到"连续相对排名"的第三代，且开辟了一条独立的垂直分层轴。</strong></p>
 <ul>
-<li>第一代：program-aware 但只管 GPU 队列优先级（Autellix PLAS/ATLAS，2025-02）<a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>。</li>
-<li>第二代：引入 KV 保留 + CPU offloading，但决策是绝对量（Continuum TTL 定时器 2025-11 <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>；TokenCake 双调度器 2025-10 <a href="/papers/2510.18586/detail.html#2-q1-q2-q3" class="ref-link" title="2510.18586#2-q1-q2-q3">[2510.18586]</a>）。</li>
-<li>第三代 = MORI (2026-05)：把放置决策统一为一条<strong>连续相对排名</strong>，让分界线随硬件自适应，并把两层 admission 折叠进 sort-and-fill <a href="/papers/2606.00866/detail.html#6-论证链" class="ref-link" title="2606.00866#6-论证链">[2606.00866]</a>。</li>
+<li>第一代：program-aware 但只管 GPU 队列优先级（Autellix PLAS/ATLAS）<a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>。</li>
+<li>第二代：引入 KV 保留 + CPU offloading，但决策是绝对/二值量（Continuum TTL <a href="/papers/2511.02230/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.02230#§2-q1-q2-q3">[2511.02230]</a>；ThunderAgent 二值 phase + $f(t)$ <a href="/papers/2602.13692/detail.html#2-q1-q2-q3" class="ref-link" title="2602.13692#2-q1-q2-q3">[2602.13692]</a>）；同期 CPU-offloading 工程线（NEO/FastDecode/APEX）把<em>怎么搬</em>做深但 phase-blind <a href="/papers/2506.03296/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2506.03296#§2-q1-痛点-q2-方法-q3-结果">[2506.03296]</a>。</li>
+<li>第三代 = MORI：连续相对排名统一放置决策，分界线随硬件自适应，两层准入折叠进 sort-and-fill <a href="/papers/2606.00866/detail.html#6-论证链" class="ref-link" title="2606.00866#6-论证链">[2606.00866]</a>。</li>
 </ul>
 
-<p><strong>采用证据 / 工程可信度：</strong> MORI 建在 ThunderAgent + SGLang v0.5.10 之上，仅 ~3300+500 LoC，client 侧只需一个 <code>program_id</code> <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a>。这个「最小侵入 + 单字段 API」路线与 Continuum 的「vLLM 模块化回调插件」<a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a> 是同一采用哲学。但 <strong>MORI 代码未公开</strong> <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a>，而 Continuum 已开源 (github.com/Hanchenli/vllm-continuum) <a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a>、RouteLLM 已开源 <a href="/papers/2406.18665/detail.html#§7-实现-cross-reference" class="ref-link" title="2406.18665#§7-实现-cross-reference">[2406.18665]</a>——在可复现性上 MORI 目前落后于最直接的对手。</p>
+<p><strong>独占生态位一：硬件容量比自适应。</strong> MORI 是本簇里<strong>唯一把"GPU:CPU 容量比自适应"作为一等目标</strong>的系统——同代码服务 1:1.6 与 1:3.1 节点零重调 <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>。NEO/FastDecode/APEX/CLO 都假定固定拓扑或需 per-hardware profiling <a href="/papers/2411.01142/detail.html#§2-痛点-方法-结果" class="ref-link" title="2411.01142#§2-痛点-方法-结果">[2411.01142]</a><a href="/papers/2511.14510/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.14510#§2-q1-q2-q3">[2511.14510]</a>。</p>
 
-<p><strong>独特生态位：</strong> MORI 是本簇里<strong>唯一把「硬件容量比自适应」作为一等目标</strong>的系统——它明确针对 1:1.6 vs 1:3.1 GPU:CPU 比的差异 <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>。其余系统都假定固定拓扑。这让 MORI 在异构集群 / 多种 DRAM 配置的部署场景里有独占价值。</p>
+<p><strong>独占生态位二：网关可测量性（值得单独记一笔的综合洞察）。</strong> $\iota$ 只需每步 3 个时间戳即可在 proxy 端重建（forward-to-LLM=Reasoning 起点，stream-end=Acting 起点，next-request=Acting 终点）<a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>。这意味着 MORI 的核心信号<strong>可以部署在现有引擎（如 SGLang）之前的网关层</strong>，无需侵入 engine——这与 KB 里的路由/网关系统天然对接：repo mori-scheduler 这类前缀感知 router 已经在 proxy 端维护 per-session 时序遥测（load telemetry、健康 EMA）<a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§8-api-design-decisions" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§8-api-design-decisions">[ZhaiFeiyue-mori-scheduler]</a>，加一个 $\iota$ 重建器几乎零边际成本。换言之，MORI 的贡献不仅是一个调度算法，还是一个<strong>可在网关落地的可观测信号</strong>。</p>
+
+<p><strong>工程可信度与短板。</strong> MORI 建在 ThunderAgent + SGLang v0.5.10 之上，仅 ~3300+500 LoC，client 侧只需一个 <code>program_id</code> <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a>——这个"最小侵入 + 单字段 API"路线与 ThunderAgent 的三改动接入 <a href="/papers/2602.13692/detail.html#7-实现-cross-reference" class="ref-link" title="2602.13692#7-实现-cross-reference">[2602.13692]</a>、Continuum 的 vLLM 插件 <a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a> 同一采用哲学。但 <strong>MORI 代码未公开</strong> <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a>，而 Continuum 已开源、Pie 已开源 (github.com/pie-project/pie) <a href="/papers/2510.24051/detail.html#§7-实现-cross-reference" class="ref-link" title="2510.24051#§7-实现-cross-reference">[2510.24051]</a>——在可复现性上 MORI 落后于最直接的对手。</p>
+
+<hr>
 
 <h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
 
-<p><strong>方向 1 — MORI × 投机工具执行的混合调度。</strong></p>
-<p>若把 Speculative Tool Calls 的 client-side 投机 <a href="/papers/2512.15834/detail.html#§2-q1-·-q2-·-q3" class="ref-link" title="2512.15834#§2-q1-·-q2-·-q3">[2512.15834]</a> 作为 MORI 的输入信号：投机模型对「某程序下一个 tool 是短还是长」的预测，可以让 MORI 的 $\iota$ 从<em>后验窗口平均</em>升级为<em>带前瞻的估计</em>，缩短 §3 攻击 3 里的反应延迟。反过来，MORI 的 tier 状态可告诉投机器「哪些程序反正要 offload，不值得投机」。</p>
+<p><strong>方向 1 — MORI（垂直）× repo mori-scheduler（水平）的两层协同栈。</strong></p>
+<p>最自然的组合：repo router 做跨副本 TTFT-argmin + session 亲和放置 <a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§8-api-design-decisions" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§8-api-design-decisions">[ZhaiFeiyue-mori-scheduler]</a>，MORI 在每副本内做 $\iota$-驱动的垂直 offload <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>。关键待解问题（正是 §3 攻击 5）：需要一个<strong>共享驻留状态协议</strong>，让 router 知道某 program 的 KV 现在 pin 在哪个副本的 DRAM，避免把 MORI 刚 offload 的 program 当 cacheless 重路由。二者共用的 program_id ≈ session_id 命名空间 <a href="/papers/2606.00866/detail.html#7-实现-cross-reference" class="ref-link" title="2606.00866#7-实现-cross-reference">[2606.00866]</a><a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§7-critical-path-analysis" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§7-critical-path-analysis">[ZhaiFeiyue-mori-scheduler]</a> 是现成的接合键。</p>
 
-<p><strong>方向 2 — 自适应 tick / 窗口。</strong></p>
-<p>把 CPU-Centric 的静态→动态批判 <a href="/papers/2511.00739/detail.html#设计绑定批判" class="ref-link" title="2511.00739#设计绑定批判">[2511.00739]</a> 迁移到 MORI：k=5 和 5 s tick 是固定的 <a href="/papers/2606.00866/detail.html#4-作者证明" class="ref-link" title="2606.00866#4-作者证明">[2606.00866]</a>。可按程序当前 turn 速率自适应窗口——高频短程序用小 k 快反应，长 idle 程序用大 k 抗抖动。Continuum 的 memoryfulness factor $\eta$ <a href="/papers/2511.02230/detail.html#§7-实现-cross-reference" class="ref-link" title="2511.02230#§7-实现-cross-reference">[2511.02230]</a> 是天然的自适应触发信号。</p>
+<p><strong>方向 2 — MORI × 投机执行的混合调度。</strong></p>
+<p>把 IdleSpec/PASTE 的投机信号 <a href="/papers/2605.22154/detail.html#§2-q1-q2-q3" class="ref-link" title="2605.22154#§2-q1-q2-q3">[2605.22154]</a><a href="/papers/2603.18897/detail.html#key-findings" class="ref-link" title="2603.18897#key-findings">[2603.18897]</a> 作为 MORI 的前瞻输入：投机器对"下一个 tool 是短还是长"的预测，可让 $\iota$ 从<em>后验窗口平均</em>升级为<em>带前瞻的估计</em>，缩短 §3 攻击 4 的反应延迟。反过来，MORI 的 tier 状态可告诉投机器"哪些 program 反正要 offload、不值得投机"——把内存决策与计算决策解耦调度。</p>
 
-<p><strong>方向 3 — 把 subagent 从「一次长 tool call」提升为一等调度对象。</strong></p>
-<p>MORI 现在把 spawned subagent 当作父程序的单次长 tool call <a href="/papers/2606.00866/detail.html#3-架构-方法图" class="ref-link" title="2606.00866#3-架构-方法图">[2606.00866]</a>。KVCOMM 揭示 subagent 间大量共享上下文可跨前缀复用 KV <a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a>。混合方向：父程序 offload 到 CPU 期间，用 KVCOMM 的 anchor 偏移近似让 subagent 复用父程序 CPU 侧 KV，避免父程序 promote 回来时的全量 reload。</p>
+<p><strong>方向 3 — CPU-light offload 路径移植。</strong></p>
+<p>把 CLO 的 head 粒度近似缓存 + GDRCopy 零拷贝传输 <a href="/papers/2511.14510/detail.html#§2-q1-q2-q3" class="ref-link" title="2511.14510#§2-q1-q2-q3">[2511.14510]</a> 接进 MORI 的 CPU tier，直接消解 §3 攻击 2 的 host CPU 争用风险。MORI 决定<em>该 offload 谁</em>（policy），CLO 决定<em>怎么低成本 offload</em>（mechanism）——两者天然分工。</p>
 
-<p><strong>方向 4 — CPU-tier 感知的成本模型。</strong></p>
-<p>把攻击 2 转成设计：MORI 的 offload 决策应把 host CPU 争用（tool 执行占用的核心/带宽 <a href="/papers/2511.00739/detail.html#q1-这篇论文试图解决什么核心痛点？" class="ref-link" title="2511.00739#q1-这篇论文试图解决什么核心痛点？">[2511.00739]</a>）纳入 $\iota$ 或纳入 demotion 门槛——当 CPU 正被 CPU-heavy 工具打满时，offload 到该节点 DRAM 应被惩罚，转而走 §7.1 讨论的 SSD / 跨节点 RDMA tier。</p>
+<p><strong>方向 4 — 分层放置的形式化 competitive 分析。</strong></p>
+<p>借 SAGA 的 Bélády-ratio 框架 <a href="/papers/2605.00528/detail.html#4-作者证明" class="ref-link" title="2605.00528#4-作者证明">[2605.00528]</a> 与 Autellix 的 SRPT-gap 框架 <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>，给 MORI 的 $\iota$-ranking 放置建立相对 clairvoyant oracle（已知每个 tool 时长）的 competitive ratio，填补 §3 攻击 3 的空白。这是整簇（MORI/Continuum/ThunderAgent/SAGA）都值得补的理论方向，其根本难度宜留待 L4/topic 处理。</p>
 
-<p><strong>方向 5 — 分层调度的形式化 competitive 分析。</strong></p>
-<p>借 Autellix 的 SRPT-gap 框架 <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>，给 MORI 的 $\iota$-ranking 放置建立相对 clairvoyant oracle（已知每个 tool 时长）的 competitive ratio，填补 §3 攻击 4 的空白。这是整簇（MORI/Continuum/TokenCake/Autellix）共同缺失的理论方向，宜留待 L4/topic 处理其根本难度。</p>
+<p><strong>方向 5 — 网关侧 $\iota$ 作为 programmable 信号。</strong></p>
+<p>把 §4 的"网关可测量性"推到极致：在 Pie 式 programmable serving <a href="/papers/2510.24051/detail.html#§1-tl-dr" class="ref-link" title="2510.24051#§1-tl-dr">[2510.24051]</a> 中，把 $\iota$ 暴露为一个 inferlet 可读的一等信号，让应用自己决定"高 $\iota$ 时导出 KV / 低 $\iota$ 时 pin"——把 MORI 的基础设施自动排名与 Pie 的应用显式控制两极融合成一个可编程的分层接口。</p>
 
 </div>
 <div class="link-area">
