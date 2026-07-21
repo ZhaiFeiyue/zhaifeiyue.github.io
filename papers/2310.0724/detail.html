@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CacheGen: KV Cache Compression and Streaming for Fast Large Language Model Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">CacheGen: KV Cache Compression and Streaming for Fast Large Language Model Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2310.0724</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">compression</span><span class="tag">context-reuse</span><span class="tag">adaptive-streaming</span><span class="tag">ttft</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2310.0724" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="cachegen-—-kv-cache-compression-and-streaming">CacheGen — KV Cache Compression and Streaming <a class="heading-anchor" href="#cachegen-—-kv-cache-compression-and-streaming" aria-label="Link to cachegen-—-kv-cache-compression-and-streaming">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>当被复用的长上下文 KV cache 存在远端存储、需经普通云网络（单位数 Gbps）取回时，取回延迟可与重算 prefill 相当甚至更久。CacheGen 用改造过的视频编码流水线把 KV cache 编码成紧凑比特流（size 降 3.5–4.3×，TTFT 降 3.2–3.7×），并按带宽逐块自适应流式传输以守住 SLO。</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点：被复用-kv-cache-的-传输时延-是被忽略的瓶颈">Q1 — 痛点：被复用 KV cache 的"传输时延"是被忽略的瓶颈 <a class="heading-anchor" href="#q1-—-痛点：被复用-kv-cache-的-传输时延-是被忽略的瓶颈" aria-label="Link to q1-—-痛点：被复用-kv-cache-的-传输时延-是被忽略的瓶颈">#</a></h3>
+
+<p>复用上下文的 KV cache 可以省掉超线性增长的 prefill 计算，这一点已被 vLLM / SGLang / Prompt Cache 等系统利用。但这些系统隐含假设 KV cache 已在本地 GPU 显存，或经 NVLink（数百 Gbps）在 GPU 间共享。现实中 KV cache 体量巨大——Llama-34B 处理 Amazon 2023 年报（约 8 万 token）产生 19 GB KV cache，与模型本身相当——GPU 显存装不下这么多复用上下文，复用请求间隔可能长达数小时且不一定命中同一 GPU，因此 KV cache 通常被卸载到专用存储服务器。当它需要经普通云服务器间链路（单位数 Gbps）取回时，网络延迟可达数百毫秒到 10 秒以上，与不复用直接 prefill 相当。已有的 KV 压缩工作（丢 token、量化）都是为了缩小<strong>运行时显存占用</strong>、必须保留张量形状，没有针对<strong>传输时体积</strong>。</p>
+
+<h3 id="q2-—-方法：把-kv-cache-当视频来编码-按带宽自适应流式">Q2 — 方法：把 KV cache 当视频来编码 + 按带宽自适应流式 <a class="heading-anchor" href="#q2-—-方法：把-kv-cache-当视频来编码-按带宽自适应流式" aria-label="Link to q2-—-方法：把-kv-cache-当视频来编码-按带宽自适应流式">#</a></h3>
+
+<p>CacheGen 提出 "KV cache streamer" 抽象，承担三个角色：离线把 KV cache 编码成紧凑比特流、在变化的网络吞吐下流式传输、在接收端 GPU 解码回 KV cache。编码器建立在三个关于 KV cache 数值分布的经验洞察之上（§5.1），流水线与视频编码同构（group-of-pictures → delta → 量化 → 算术编码），但参数针对 KV 数据重新推导。流式层把上下文切成块（默认 1.5K token），每块离线编码成多个可独立解码的质量等级，运行时按上一块测得的吞吐挑选满足 SLO 且损失最小的配置，带宽过低时回退到发文本让 LLM 重算。</p>
+
+<p><code>核心技术壁垒</code>（THE 最难复现的洞察）：<strong>放弃 KV cache 的张量形状约束</strong>，从而能像视频一样做"delta + 层级差异化量化 + 按 channel-layer 分组的算术编码"三重压缩。所有竞品（H2O、LLMLingua、smart quantization）都被"必须保留张量形状供 LLM 直接消费"这一约束绑死，只能丢 token 或均匀量化；CacheGen 把 KV 目标从"运行时可用"改为"传输后再解码可用"，解锁了完全不同的压缩空间——这也是为何它能叠加在 H2O/LLMLingua 之上再降 3.3–4.2×。真正难复现的不是任一单步，而是"发现 KV cache 具备 channel-layer 熵集中 + token 局部性 + 浅层敏感三重结构"并把它们同时映射到一条编解码流水线。</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<p>3 Gbps 下，相较文本上下文 TTFT 降 3.1–4.7×，相较均匀量化基线降 3.2–3.7×；即便对比近乎无损的 8-bit 量化，仍降 1.67–1.81×（意味着高精度量化后仍存在大量可压缩冗余）。同质量下 KV cache 体积较均匀量化小 3.5–4.3×，质量退化不超过 2% accuracy / <0.1% F1 / <0.1 perplexity。自适应流式在 SLO=1s 下把违约率从 81% 降到 8%。离线编码延迟约 200 ms，存储成本与量化基线相当。</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p>CacheGen 的请求生命周期分离线（编码入库）与在线（取回解码）两条路径。整体系统对照如下——基线传全尺寸 KV 张量慢，CacheGen 传压缩比特流：</p>
+
+<p><img src="/assets/2310.07240/fig1.png" alt="Figure 1: CacheGen compresses KV cache before transmission"></p>
+
+<p><em>Paper's Figure 1（caption: "When the context is reused, CacheGen speeds up the sharing of its KV cache by compressing (encoding) the KV cache."）.</em> (a) 基线跨网络传"整块 KV cache 张量"很慢；(b) CacheGen 传"压缩后的 KV cache"。这张图钉死了 CacheGen 在系统中的位置：它是一个介于存储服务器与推理服务器之间的<strong>上下文加载模块</strong>，不改动 LLM 本体。</p>
+
+<p>三种加载方式的延迟构成对比揭示了设计取舍：</p>
+
+<p><img src="/assets/2310.07240/fig2.png" alt="Figure 2: three ways of loading context and their delay breakdown"></p>
+
+<p><em>Paper's Figure 2（caption: "How different ways of loading context affect the network delay ... and the computation delay ..."）.</em> (a) 传文本：数据少但计算延迟高（要重算 prefill）；(b) 传 KV cache：计算延迟低但数据量大；(c) CacheGen：传压缩 KV（或文本），网络与计算延迟同时省。关键读点是 (b) 中 "transfer KV" 那条网络时间条可长过 (a) 的 "process context" 计算条——这正是"隐藏瓶颈"的可视化。</p>
+
+<p><strong>编码流水线</strong>（change-based encoding，group-of-tokens）：每 10 个连续 token 组成一组，组内第一个 token（anchor）独立压缩，其余 token 只记录相对 anchor 的 delta 张量：</p>
+
+<p><img src="/assets/2310.07240/fig6.png" alt="Figure 6: anchor-token + delta tensor encoding within a token group"></p>
+
+<p><em>Paper's Figure 6（caption: "Within a token group, CacheGen computes delta tensors between KV tensors of the anchor token and those of remaining tokens."）.</em> 注意它不像视频那样逐帧做前后 delta，而是<strong>全组共用同一个 anchor</strong>，使组内所有 token 可并行编解码——这是为解码吞吐做的关键工程取舍（牺牲一点压缩率换并行）。</p>
+
+<p>请求 / 任务生命周期（arrival → schedule → dispatch → output）与调度决策可概括为：</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Q as User Query
+    participant IS as Inference Server (streamer)
+    participant SS as Storage Server
+    participant LLM as LLM (GPU)
+    Q->>IS: query + context_id
+    IS->>IS: 测上一块吞吐, 估 remaining_time = SLO - elapsed
+    loop 每个 chunk (1.5K tokens)
+        alt time_recompute <= remaining_time
+            IS->>SS: 放弃 KV, 取文本块
+            SS-->>IS: text chunk
+            IS->>LLM: 交 LLM 重算该块 KV
+        else 带宽够
+            IS->>SS: get_kv(chunk_id, level=最大且满足SLO)
+            SS-->>IS: 该等级的 KV 比特流
+            IS->>LLM: GPU 算术解码 (与下一块传输 pipeline)
+        end
+    end
+    LLM->>Q: generate_with_kv → 首 token
+</div>
+
+<p>调度纪律说明：streamer 的"调度器"以 <strong>chunk 为粒度</strong>做逐块配置决策（FCFS 顺序发送，无抢占——每块一旦发出即完成），准入/过载策略是<strong>在带宽过低时降级到文本重算</strong>（相当于用计算换带宽的软降级，而非丢弃请求）。"内存管理器"侧的分配单元是 <strong>1.5K-token 的 chunk</strong>；每个 chunk 离线预编码成多质量等级存于存储服务器的 <code>{chunk_id: encoded_KV}</code> 字典，无碎片问题，复用即按 <code>chunk_id</code> 直接命中。跨节点通信路径是普通云链路（单位数 Gbps TCP，非 NVLink/IB），传输的是编码后比特流而非张量。</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证。</strong></p>
+
+<p>本文没有吞吐/延迟的解析模型或定理，全部结论由跨 3 模型 × 4 数据集的实测支撑；最接近"形式化"的是 App. C.1 的 Algorithm 1（自适应流式伪代码），它是一个贪心的逐块配置选择规则而非可分析的性能模型。为满足 framework 类别对成本模型的期待，此处补记：一个显式的性能模型本可澄清的问题（论文当前留白）——</p>
+
+<ul>
+<li><strong>传输 vs 计算的交叉点</strong>：论文用 Fig 2/Fig 19 经验刻画"何时传 KV 划算、何时该回退文本"，但没有把它写成 <code>T_transfer(size, bw)</code> vs <code>T_prefill(len, concurrency)</code> 的闭式不等式。若有，chunk 长度、量化等级、回退阈值都能被解析地求最优，而非现在"经验取 1.5K token"。</li>
+<li><strong>自适应决策的最优性</strong>：Algorithm 1 每块取"满足 <code>size/throughput ≤ remaining_time</code> 的最大（最小损失）等级"，是逐块贪心；论文未证明该贪心相对全局最优配置序列的差距上界，也未分析"反应滞后至多一个 chunk"带来的 SLO 违约概率。</li>
+<li><strong>break-even 阈值</strong>：App. E 给出"每月 >150 次复用则存储比重算便宜"，这是把 $0.05/mo 存储与 $0.00085/次重算相除的一阶估算——正是一个 first-order mapping，但论文明确称其为 rough estimation，未展开为带并发/带宽变量的成本函数。</li>
+</ul>
+
+<p><code>核心技术壁垒</code>（承接 §2 Q2）：最难复现处在于把三条经验洞察（token 局部性 → delta；浅层敏感 → 分层量化；channel-layer 熵集中 → 分组 AC）<strong>同时</strong>成立并映射到一条负担得起解码开销的流水线；缺任一洞察，压缩率或质量就会崩。</p>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>头号结果——TTFT 降低</strong>（跨 3 模型 4 数据集）：</p>
+
+<p><img src="/assets/2310.07240/fig8.png" alt="Figure 8: Time-to-first-token across models and datasets"></p>
+
+<p><em>Paper's Figure 8（caption: "Time-to-first-token (TTFT): Across different models and different datasets, CacheGen reduces TTFT with little negative impacts on quality ..."）.</em> 每个子图横轴 TTFT、纵轴质量（accuracy/F1/perplexity），"Better" 指向左上。读点：CacheGen（绿）点几乎总在 Quantization / Text 左侧同一质量水平——即同质量更快，3 Gbps 下相对文本快 3.1–4.7×、相对量化快 3.2–3.7×。</p>
+
+<p><strong>同质量下体积降低</strong>：</p>
+
+<p><img src="/assets/2310.07240/fig9.png" alt="Figure 9: KV cache size reduction with little quality loss"></p>
+
+<p><em>Paper's Figure 9（caption: "Reducing KV cache size: Across various models, CacheGen reduces size of KV cache with little accuracy decrease on various datasets."）.</em> 证实 3.5–4.3× 的体积下降不是以质量为代价换来的（退化 ≤2% acc）。</p>
+
+<p><strong>互补性——叠加在上下文压缩之上</strong>：</p>
+
+<p><img src="/assets/2310.07240/fig10.png" alt="Figure 10: CacheGen further compresses H2O / LLMLingua KV caches"></p>
+
+<p><em>Paper's Figure 10（caption: "Reducing KV cache size on top of H2O [153] and LLMlingu [72] ..."）.</em> CacheGen 在 H2O 上再降 3.5–4×、在 LLMLingua 上再降 3.3–4.2×，说明这些方法产出的浮点 KV cache 仍保有 CacheGen 所利用的统计特性——CacheGen 与它们正交互补。</p>
+
+<p><strong>自适应流式的价值隔离</strong>：</p>
+
+<p><img src="/assets/2310.07240/fig13.png" alt="Figure 13: SLO violation rate with and without adaptation"></p>
+
+<p><em>Paper's Figure 13（caption: "CacheGen reduces SLO violation rate over CacheGen without adaptation and the quantization baseline."）.</em> SLO=1s 下违约率 81%→8%，SLO=0.5s 下违约率低 60%——单独把"无自适应"版本剥出来对比，证明逐块降级/回退逻辑本身贡献显著，而非仅靠编码器。</p>
+
+<p><strong>开销与消融</strong>：</p>
+
+<p><img src="/assets/2310.07240/fig15.png" alt="Figure 15: ablation of the three encoder ideas"></p>
+
+<p><em>Paper's Figure 15（caption: "Contributions of individual ideas behind KV encoder: change-based encoding, layer-wise quantization, and AC based on channel-layer grouping."）.</em> 从均匀量化基线逐步叠加 channel-layer AC → change-based encoding → 分层量化，熵-精度曲线逐级右移，AC 与 change-based encoding 贡献最大。配合 Fig 14（此处未内嵌）显示离线编码 ~200 ms、存储与量化基线持平、解码经 GPU + pipeline 后对端到端延迟影响极小。</p>
+
+<p><strong>§6 Workload characterization — 赢/输的具体区间</strong>（据 §7.3 Fig 11/12、App. D Fig 19）：</p>
+
+<table>
+<tr><th>Workload regime</th><th>CacheGen</th><th>Baseline (best of quant/text)</th><th>Why</th></tr>
+<tr><td>短上下文 (<1K token)</td><td>自动回退到传文本</td><td>文本 prefill 更快</td><td>压缩+解码开销 > 省下的传输，短文本 KV 本就不大</td></tr>
+<tr><td>长上下文 + 低带宽 (单位数 Gbps)</td><td>大幅领先</td><td>传全尺寸 KV 或重算都慢</td><td>传输时体积降 3.5–4.3× 直接砍传输条</td></tr>
+<tr><td>高带宽 (>20 Gbps)</td><td>领先收窄趋近持平</td><td>量化基线传 KV 也很快</td><td>传输不再是瓶颈, 压缩收益被吃掉</td></tr>
+<tr><td>高并发 (多请求争一 GPU)</td><td>显著领先</td><td>文本 prefill 抢算力, TTFT 飙升</td><td>复用 KV 避免昂贵 prefill, 释放算力</td></tr>
+<tr><td>带宽剧烈波动</td><td>自适应守住 SLO</td><td>固定等级频繁违约</td><td>逐块降级/回退文本</td></tr>
+</table>
+
+<p>论文诚实地暴露了"输"的区间（短上下文、超高带宽、超高端 GPU），而非只报平均。</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>步骤</th><th>论断</th><th>论文内依据</th></tr>
+<tr><td>1</td><td>长上下文可复用，复用 KV cache 可省超线性 prefill</td><td>§2.2：FiD 长上下文 accuracy 40%→48%；财报/法律/对话历史被多次查询复用</td></tr>
+<tr><td>2</td><td>但被复用 KV cache 常不在本地显存，需经普通网络取回</td><td>§3：Llama-34B×80K token = 19 GB KV cache；间隔数小时、不命中同 GPU → 卸载到存储服务器</td></tr>
+<tr><td>3</td><td>经单位数 Gbps 云链路取回，网络延迟 ≥ 直接 prefill，成隐藏瓶颈</td><td>§3 + Fig 2b：传 KV 时间条长过重算计算条</td></tr>
+<tr><td>4</td><td>KV cache 数值有可利用的分布结构（token 局部性 / 浅层敏感 / channel-layer 熵集中）</td><td>§5.1：Fig 3 delta 方差低 2.4–2.9×；Fig 4 浅层加噪掉分更多；Fig 5 按 channel/layer 分组熵更低</td></tr>
+<tr><td>5</td><td>因此可放弃张量形状，用 delta + 分层量化 + channel-layer AC 编成比特流</td><td>§5.2 + Fig 6 + Fig 15 消融：三步各自压低熵-精度曲线</td></tr>
+<tr><td>6</td><td>传输时体积大幅下降，同质量 TTFT 降 3.2–3.7×</td><td>§7.2 Fig 8/9：size 3.5–4.3×、TTFT 3.2–3.7×</td></tr>
+<tr><td>7</td><td>变带宽下逐块自适应可守 SLO</td><td>§7.4 Fig 13：SLO=1s 违约 81%→8%</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>代码公开：<code>https://github.com/UChi-JCL/CacheGen</code>（本地未克隆，具体行号 <code>[实现未公开]</code> 于本仓库；以下按论文 §6 描述定位）。约 2K 行 Python + 约 1K 行 CUDA，基于 PyTorch v2.0 / CUDA 12.0。</p>
+
+<p>框架集成两个接口（§6）：</p>
+<ul>
+<li><code>calculate_kv(context) -> KVCache</code>：对 HuggingFace <code>transformers</code> 用 <code>max_length=0</code>、<code>return_dict_in_generate=True</code> 拿到 KV cache。</li>
+<li><code>generate_with_kv(KVCache) -> text</code>：通过 <code>past_key_values</code> 参数塞入预算好的 KV，跳过 prefill；约 500 行 Python 完成 HF 集成。也接入 FastChat / llama.cpp / GGML；在 LangChain 的 <code>BaseLLM._generate</code> 内挂钩，判断当前上下文 KV 是否已存在再择路。</li>
+</ul>
+
+<p>KV 管理两个模块（§6）：</p>
+<ul>
+<li><code>store_kv(LLM) -> {chunk_id: encoded_KV}</code>：调 <code>calculate_kv</code>，沿 token 维切块，逐块多等级编码，存字典到存储服务器。</li>
+<li><code>get_kv(chunk_id) -> encoded_KV</code>：从存储服务器取该块编码比特流传给推理服务器。</li>
+</ul>
+
+<p><code>关键实现细节</code>（易被忽略的 1–2 个技巧）：</p>
+<ol>
+<li><strong>anchor token 保留 8-bit 高精度</strong>（§5.2）：组内其余 token 的 delta 都被激进量化（bin 0.5/1/1.5 由浅到深），但作为参考基准的 anchor 若失真会污染整组所有 delta 的分布，故必须单独高精度——一个小比例的高精度"锚"支配了整块的压缩质量。</li>
+<li><strong>GPU 算术编解码 + 传输 pipeline</strong>（§6）：改造 [101] 的 AC 库为 CUDA，每个 CUDA thread 负责一个 token 的编解码，并把 chunk <em>i</em> 的传输与 chunk <em>i−1</em> 的解码重叠——这是把 AC 从"CPU 慢操作"变成"可忽略开销"的关键，否则额外解码步会吃掉压缩省下的时间。</li>
+</ul>
+
+<p>自适应逻辑（App. C.1 Algorithm 1）为逐块贪心：测吞吐 → 若重算时间 ≤ 剩余 SLO 则发文本，否则取满足 <code>size/throughput ≤ remaining_time</code> 的最大（最小损失）等级编码发送。默认量化：层分三等距组，bin size 分别 0.5 / 1 / 1.5（§C.2）；默认块长 1.5K token，首块默认中等等级（Llama-7B 约 140 MB/chunk）。</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

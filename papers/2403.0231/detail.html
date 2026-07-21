@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve</h1>
+<div class="card-meta"><span class="badge badge-model">model</span> 2403.0231</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">llm-inference</span><span class="tag">scheduling</span><span class="tag">chunked-prefill</span><span class="tag">throughput-latency</span><span class="tag">roofline</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/model.html">← model Survey</a>
+<a href="https://arxiv.org/abs/2403.0231" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="sarathi-serve-—-l2-深度蒸馏">Sarathi-Serve — L2 深度蒸馏 <a class="heading-anchor" href="#sarathi-serve-—-l2-深度蒸馏" aria-label="Link to sarathi-serve-—-l2-深度蒸馏">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>在线 LLM serving 中,prefill(计算受限)与 decode(内存受限)交织导致吞吐-延迟二选一。Sarathi-Serve 用 chunked-prefill + stall-free batching:把长 prefill 切成受 token budget 约束的小块,piggyback 到 decode 批次而不打断 decode。Mistral-7B 提升 2.6×、Falcon-180B 提升 6.9× serving capacity。</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-痛点">Q1 — 痛点 (痛点) <a class="heading-anchor" href="#q1-—-痛点-痛点" aria-label="Link to q1-—-痛点-痛点">#</a></h3>
+
+<p>现有 LLM serving 调度器在<strong>吞吐与延迟之间存在硬性权衡</strong>,根源是每个请求分两阶段:</p>
+
+<ul>
+<li><strong>Prefill</strong>:并行处理整个 prompt,算力饱和(compute-bound),batching 几乎无增益。</li>
+<li><strong>Decode</strong>:每步只处理 1 个 token,内存带宽受限(memory-bound),batching 带来近线性吞吐提升。</li>
+</ul>
+
+<p>两类现有调度器各有致命缺陷:</p>
+<ul>
+<li><strong>Prefill-prioritizing</strong>(Orca / vLLM):贪婪地把新请求的 prefill 插进运行批次,一个含长 prompt 的 prefill iteration 可耗时数秒,导致正在运行的 decode 出现 <strong>generation stall</strong>(TBT 尾延迟飙升)。</li>
+<li><strong>Decode-prioritizing</strong>(FasterTransformer):跑完所有 decode 才接纳新 prefill,TBT 低但很多 iteration 批量很小、算力浪费,吞吐低。</li>
+</ul>
+
+<h3 id="q2-—-方法-方法">Q2 — 方法 (方法) <a class="heading-anchor" href="#q2-—-方法-方法" aria-label="Link to q2-—-方法-方法">#</a></h3>
+
+<p>利用 decode 批次的<strong>算术强度 slack</strong>(memory-bound 时算力空闲),把 prefill 拆块塞进 decode 批次:</p>
+
+<ol>
+<li><strong>Chunked-prefills</strong>:长 prompt 的 prefill 分成多个 chunk,跨多个 iteration 计算(来自前作 Sarathi)。</li>
+<li><strong>Stall-free batching</strong>(Algorithm 3):先按 SLO 算出每个 batch 的 token budget τ;每个 iteration 先装满所有正在跑的 decode,再放至多一个正在进行的 prefill chunk,最后在剩余预算内接纳新请求。decode 永不被 prefill 打断。</li>
+<li><strong>Token budget 决策</strong>:budget 越小 TBT 越低,但过度切块引入两种 overhead — (a) GPU 利用率降低,(b) attention 反复读取前序 chunk 的 KV-cache。还须避开 <strong>tile-quantization</strong> 效应(batch token 数须为 tile size 的倍数)。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>:并非"切块"这个动作,而是把 token budget 校准到 decode iteration 的<strong>内存受限拐点之下</strong>——既榨干 decode 的算力 slack、又不越过 compute-bound 阈值触发 TBT 爆炸(naive full-prefill hybrid 会把 TBT 抬高 28.3×)。同时预算须落在 tile-size 倍数上,否则单个多余 token 就带来一整块 tile 的浪费(257 vs 256 → +32% prefill 时间)。这个"贴着两个物理边界走"的联合校准是最难复制的洞见。</p>
+
+<h3 id="q3-—-结果-结果">Q3 — 结果 (结果) <a class="heading-anchor" href="#q3-—-结果-结果" aria-label="Link to q3-—-结果-结果">#</a></h3>
+
+<ul>
+<li>Serving capacity(满足 SLO 前提下的最大 QPS)全面超越 Orca 与 vLLM。</li>
+<li>严格 SLO 下最高 <strong>3.2×</strong> vs Orca(Mistral-7B, openchat);宽松 SLO 下最高 <strong>2.7×</strong> vs vLLM(Yi-34B, openchat)。</li>
+<li>Falcon-180B 端到端 <strong>6.9×</strong>,主要得益于均匀 iteration 计算减少 pipeline bubble。</li>
+<li>消融显示 chunked-prefill 与 hybrid-batching 二者<strong>互补</strong>,单用任一都会在某一维度退化。</li>
+</ul>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p>Sarathi-Serve 的核心是调度策略的对比,而非新的模型结构。下图给出四种调度策略在同一时间线上的行为对比(A/B 处于 decode,C/D 随后到达):</p>
+
+<p><img src="/assets/2403.02310/fig4.png" alt="Figure 4: 四种调度策略的时间线对比"></p>
+
+<p><em>Paper's Figure 4.</em> vLLM 把尽可能多的 prefill 排在恢复 decode 之前,产生 generation stall;Orca 支持 hybrid batch 但含长 prompt 的批次执行时间仍高,无法消除 stall;FasterTransformer 跑完 decode 才排新 prefill,无 stall 但批量小、吞吐低;Sarathi-Serve 把 C 的 prefill 切成 $p_0,p_1$ 两块,与 A/B 的 decode 合批,既不停 decode 也不停 prefill。</p>
+
+<p>宏观的两难关系由 Figure 2 概括:</p>
+
+<p><img src="/assets/2403.02310/fig2.png" alt="Figure 2: 吞吐-延迟权衡与调度策略"></p>
+
+<p><em>Paper's Figure 2.</em> 优先 prefill → 高吞吐但牺牲 TBT 尾延迟;优先 decode → 反之。Sarathi-Serve 通过 stall-free batching 同时拿到高吞吐与低 TBT。读者应注意 Sarathi-Serve 位于两条曲线的"帕累托前沿之外"。</p>
+
+<p>调度算法的控制流(Algorithm 3)可用如下状态流表示:</p>
+
+<div class="mermaid">
+flowchart TB
+    A[新 iteration: n_t ← 0] --> B[遍历 B 中已完成 prefill 的请求<br/>装入所有 decode token]
+    B --> C{存在未完成 prefill?}
+    C -->|是| D["取一个 chunk c = get_next_chunk_size(R, τ, n_t)<br/>n_t += c"]
+    C -->|否| E[接纳新请求循环]
+    D --> E
+    E --> F{"can_allocate ∧ n_t < τ ?"}
+    F -->|是, c>0| G[加入新请求 chunk<br/>n_t += c]
+    G --> F
+    F -->|否 / c=0| H[process_hybrid_batch]
+    H --> I[filter_finished_requests]
+    I --> A
+</div>
+
+<p>顺序:先塞满 decode(保证 decode 不被延迟)→ 再放一个 ongoing prefill chunk → 最后在 τ 剩余预算内接纳新请求。</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>本文以<strong>实证为主</strong>,唯一形式化模型是 §3.2 的 roofline。给出符号表与物理意义,并做最小检查。</p>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$T$</td><td>算子总执行时间</td></tr>
+<tr><td>$T_{\text{math}}$</td><td>数学运算耗时</td></tr>
+<tr><td>$T_{\text{mem}}$</td><td>从 HBM 取数耗时</td></tr>
+<tr><td>$\tau$</td><td>每 batch 的 token budget</td></tr>
+<tr><td>$N$</td><td>一个 prompt 被切成的 chunk 数</td></tr>
+</table>
+
+<h3 id="方程物理意义">方程物理意义 <a class="heading-anchor" href="#方程物理意义" aria-label="Link to 方程物理意义">#</a></h3>
+
+<p>roofline 执行时间模型:</p>
+
+<p>$$T = \max(T_{\text{math}}, T_{\text{mem}})$$</p>
+
+<p>物理意义:matmul kernel 把访存与计算 overlap,取二者较慢者(用 $\max$ 而非求和)。当 $T_{\text{math}} < T_{\text{mem}}$ 为 memory-bound(decode);当 $T_{\text{math}} = T_{\text{mem}}$ 时算力与带宽利用率同时最大化,对应最优算术强度 = 设备 FLOPS/带宽比。</p>
+
+<p>chunked-prefill 的 KV-cache 重读代价:若 prompt 切成 $N$ 块,则第 $k$ 块的 KV-cache 被加载 $N-k$ 次(第 1 块读 $N-1$ 次,以此类推),计算量不变但 HBM 读增加。</p>
+
+<h3 id="最小检查-6-项">最小检查(6 项) <a class="heading-anchor" href="#最小检查-6-项" aria-label="Link to 最小检查-6-项">#</a></h3>
+
+<ol>
+<li><strong>量纲一致性</strong>:$T$、$T_{\text{math}}$、$T_{\text{mem}}$ 均为时间量纲,$\max$ 保持量纲一致 ✓。</li>
+<li><strong>极限行为</strong>:batch → 单 decode token 时 $T_{\text{math}} \ll T_{\text{mem}}$,$T \approx T_{\text{mem}}$,与"decode memory-bound"一致 ✓。</li>
+<li><strong>拐点自洽</strong>:理论上 A100 约 200 token 转 compute-bound,实测因高 TP 固定开销推迟到 ~500-600 token(footnote 2),模型给出的是理想上界 ✓。</li>
+<li><strong>KV 重读求和</strong>:总额外读取 $\sum_{k=1}^{N-1}(N-k) = N(N-1)/2$,随 $N$ 二次增长,解释为何"过度切块"有惩罚 ✓。</li>
+<li><strong>单调性</strong>:token budget ↓ → 每 iteration prefill token ↓ → TBT ↓,但 chunk 数 ↑ → overhead ↑,存在权衡 ✓。</li>
+<li><strong>实测锚点</strong>:Fig 5 显示 1 个 decode token 的 linear 代价 ≈ 128 prefill token,印证 $T_{\text{mem}}$ 主导下"塞进上百 prefill token 几乎免费" ✓。</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<h3 id="prefill-vs-decode-的-batching-行为-动机基础">Prefill vs Decode 的 batching 行为(动机基础) <a class="heading-anchor" href="#prefill-vs-decode-的-batching-行为-动机基础" aria-label="Link to prefill-vs-decode-的-batching-行为-动机基础">#</a></h3>
+
+<p><img src="/assets/2403.02310/fig3.png" alt="Figure 3: prefill/decode 吞吐 vs batch size"></p>
+
+<p><em>Paper's Figure 3 (Mistral-7B, A100, prompt=1024).</em> decode 吞吐随 batch size 近线性增长,prefill 单请求已近饱和。这是 Takeaway-1,也是整个 hybrid-batching 论证的地基:decode 有 batching slack,prefill 没有。</p>
+
+<h3 id="算术强度与线性算子占比">算术强度与线性算子占比 <a class="heading-anchor" href="#算术强度与线性算子占比" aria-label="Link to 算术强度与线性算子占比">#</a></h3>
+
+<p><img src="/assets/2403.02310/fig5.png" alt="Figure 5: prefill/decode 各算子耗时"></p>
+
+<p><em>Paper's Figure 5.</em> linear 层主导 prefill 与 decode 运行时;由于 decode 算术强度极低,1 个 decode token 的 linear 代价 ≈ 128 个 prefill token —— 这正是"可免费 piggyback prefill"的量化依据。</p>
+
+<p><img src="/assets/2403.02310/fig7.png" alt="Figure 7: 线性层执行时间 vs token 数"></p>
+
+<p><em>Paper's Figure 7 (LLaMA2-70B, 不同 TP).</em> token 数少时执行时间被 HBM 取权重主导,在 128-512 区间几乎持平(尤其高 TP);越过临界阈值后随 token 数线性上升。这条曲线定义了 token budget 应落在的"平台区"。</p>
+
+<h3 id="chunk-合批的增量代价">Chunk 合批的增量代价 <a class="heading-anchor" href="#chunk-合批的增量代价" aria-label="Link to chunk-合批的增量代价">#</a></h3>
+
+<p><img src="/assets/2403.02310/fig8.png" alt="Figure 8: coalescing prefill 到 decode 的增量代价"></p>
+
+<p><em>Paper's Figure 8.</em> Decode+Full-Prefill(Orca)对 decode 延迟冲击巨大;Decode+Chunked-Prefill(Sarathi-Serve)在固定 token budget 下冲击小得多,且 decode batch 越大、context 越长,相对影响越小。</p>
+
+<h3 id="capacity-主结果">Capacity 主结果 <a class="heading-anchor" href="#capacity-主结果" aria-label="Link to capacity-主结果">#</a></h3>
+
+<p><img src="/assets/2403.02310/fig9.png" alt="Figure 9: Mistral-7B / Yi-34B capacity"></p>
+
+<p><em>Paper's Figure 9.</em> 严格(SLO-S)与宽松(SLO-R)两档下,Sarathi-Serve 的可持续 QPS 一致高于 Orca/vLLM。关键现象:Orca/vLLM 往往在达到最大吞吐前就已违反 P99 TBT SLO。</p>
+
+<p><img src="/assets/2403.02310/fig10.png" alt="Figure 10: LLaMA2-70B / Falcon-180B capacity"></p>
+
+<p><em>Paper's Figure 10.</em> 带 pipeline parallelism 的大模型上,均匀 iteration 计算额外压缩了 pipeline bubble,Falcon-180B 端到端提升达 6.9×。</p>
+
+<h3 id="组件消融-互补性">组件消融(互补性) <a class="heading-anchor" href="#组件消融-互补性" aria-label="Link to 组件消融-互补性">#</a></h3>
+
+<p>Table 4(Yi-34B, TP2, 128 请求, budget 1024)显示两个组件单用都会在某维度退化,合用最佳:</p>
+
+<table>
+<tr><th>Scheduler</th><th>openchat P50 TTFT</th><th>openchat P99 TBT</th><th>arxiv P50 TTFT</th><th>arxiv P99 TBT</th></tr>
+<tr><td>hybrid-batching-only</td><td>0.56</td><td>1.08</td><td>4.18</td><td>1.76</td></tr>
+<tr><td>chunked-prefills-only</td><td>1.04</td><td>0.34</td><td>4.86</td><td>0.38</td></tr>
+<tr><td>Sarathi-Serve (combined)</td><td>0.85</td><td>0.29</td><td>3.03</td><td>0.35</td></tr>
+</table>
+
+<p>hybrid-only 因长 prefill 仍造 stall → TBT 高;chunked-only 因 chunk 略低效 → TTFT 高;合用两维度都改善。</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>论证步骤</th><th>依据(paper 内部)</th></tr>
+<tr><td>1</td><td>prefill 计算受限、decode 内存受限,batching 只对 decode 有效</td><td>§2.2 Takeaway-1,Fig 3</td></tr>
+<tr><td>2</td><td>因此现有交织调度必然在吞吐与 TBT 间二选一(prefill-prioritizing 造 stall;decode-prioritizing 吞吐低)</td><td>§3.1 Takeaway-2,Fig 4</td></tr>
+<tr><td>3</td><td>decode 批次处于 memory-bound regime,存在算力 slack 可塞入更多 token</td><td>§3.2 Takeaway-3,Fig 5/6/7</td></tr>
+<tr><td>4</td><td>直接塞整段 prefill 会因越过 compute-bound 阈值把 TBT 抬到 28.3×,故须 chunk 并限制 token budget τ</td><td>§4.2,Fig 8</td></tr>
+<tr><td>5</td><td>在 τ 约束下先装 decode 再装 prefill chunk(stall-free),decode 永不被延迟</td><td>§4.2 Algorithm 3</td></tr>
+<tr><td>6</td><td>结果:在 SLO 内 capacity 全面超越 baseline,大模型因 bubble 缩减额外获益</td><td>§5.1,Fig 9/10,Table 4</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>实现建立在 vLLM 开源代码之上(PyTorch + xFormers 提供 matmul/attention kernel,NCCL 负责 PP/TP 通信),扩展了调度策略、chunked-prefill、pipeline parallelism 与 telemetry(§5 Implementation 段)。论文正文未给出行级代码路径,故:</p>
+
+<ul>
+<li>调度算法:见 Algorithm 3(§4.2,L1 line ~350),<code>compute_token_buget</code>、<code>get_next_chunk_size</code> 为关键函数,论文未公开其源码行号 → <strong>[实现未公开]</strong>。</li>
+<li>参考开源实现:项目对应 <code>sarathi-serve</code> / 已上游到 vLLM chunked-prefill 路径,论文未在正文给出 file:line 锚点 → <strong>[实现未公开]</strong>。</li>
+</ul>
+
+<p><strong>核心技术壁垒(§7 展开)</strong>:最难复制的是 token budget 的联合校准。它必须同时满足三个约束——(1) 落在 decode 内存受限"平台区"以内(Fig 7),越界即触发 TBT 线性爆炸(naive full-prefill 达 28.3×);(2) 是 GPU tile size 的整数倍,否则 tile-quantization 让单个多余 token(257 vs 256)带来 +32% prefill 时间;(3) 满足应用的 P99 TBT SLO。论文用一次性 profiling + 取 SLO 内最大可打包 token 数来定 τ,但把它调到"贴着物理边界又不越界"依赖对具体模型/硬件的细致标定,不是照搬公式就能得到。</p>
+
+<p><strong>关键实现细节(易漏)</strong>:</p>
+<ol>
+<li><strong>调度顺序不可换</strong>:必须先装满所有 decode,再放至多一个 ongoing prefill chunk,最后才接纳新请求;顺序保证 decode 从不被 prefill 挤占(Algorithm 3 lines 6-20)。</li>
+<li><strong>KV-cache 重读代价随 N 二次增长</strong>:$N$ 块切分总额外 HBM 读为 $N(N-1)/2$;但因 attention 只占总时间小头,过度切块的主要惩罚其实来自 linear 层利用率下降与更频繁的 allreduce 固定开销(Fig 11,§5.2)。</li>
+</ul>
+
+<h2 id="appendix-模型架构图">Appendix: 模型架构图 <a class="heading-anchor" href="#appendix-模型架构图" aria-label="Link to appendix-模型架构图">#</a></h2>
+
+<p>N/A — 本文为在线 serving 调度系统(Sarathi-Serve),而非模型发布(model release)。所评测的 Mistral-7B / Yi-34B / LLaMA2-70B / Falcon-180B 均为已有开源模型(均采用 decoder-only transformer,GQA/GQA-SW attention,见 Table 1),本文未提出新的模型结构,故不附代码驱动的模型架构图。</p>
+
+<p>评测模型的关键配置(§5,Table 1):</p>
+
+<table>
+<tr><th>Model</th><th>Attention</th><th>GPU 配置</th><th>总显存(每卡)</th></tr>
+<tr><td>Mistral-7B</td><td>GQA-SW</td><td>1 A100</td><td>80GB (80GB)</td></tr>
+<tr><td>Yi-34B</td><td>GQA</td><td>2 A100 (TP2)</td><td>160GB (80GB)</td></tr>
+<tr><td>LLaMA2-70B</td><td>GQA</td><td>8 A40 (TP4-PP2)</td><td>384GB (48GB)</td></tr>
+<tr><td>Falcon-180B</td><td>GQA</td><td>4 A100 × 2 节点 (TP4-PP2)</td><td>640GB (80GB)</td></tr>
+</table>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
