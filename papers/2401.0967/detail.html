@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2401.0967</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">prefill-decode-disaggregation</span><span class="tag">goodput</span><span class="tag">slo-serving</span><span class="tag">model-parallelism</span><span class="tag">placement-search</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2401.0967" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="distserve-—-l2-distillation">DistServe — L2 distillation <a class="heading-anchor" href="#distserve-—-l2-distillation" aria-label="Link to distserve-—-l2-distillation">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>DistServe splits LLM inference so prefill and decoding run on separate GPU pools, killing phase interference and letting each phase pick its own parallelism. A goodput-optimal placement search plus NVLINK-affinity KV transfer yields up to 7.4× higher request rate or 12.6× tighter SLO at >90% attainment.</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 — 痛点 (pain point).</strong> Existing serving systems colocate prefill and decoding on the same GPUs and batch both across requests to maximize aggregate throughput. This creates two coupled failures. First, <strong>prefill-decoding interference</strong>: a prefill step is compute-heavy and long, so when batched with decoding steps it stalls them (inflating TPOT), while adding decoding tokens to a prefill batch inflates TTFT. Second, <strong>resource + parallelism coupling</strong>: prefill wants intra-op parallelism to shrink execution time for tight TTFT, decoding wants large batches + a different parallelism plan for TPOT — colocation forces one shared plan tuned to the harder SLO, causing over-provisioning. The system optimizes throughput (tokens/s) but the real cost metric is <em>per-GPU goodput</em> — requests/s served within SLO per GPU.</p>
+
+<p><strong>Q2 — 方法 (method).</strong> Physically <strong>disaggregate</strong> the two phases onto separate "instances" (a unit owning one complete copy of weights). A prefill instance computes only the first token, then hands its KV cache to a decoding instance. Because the phases are decoupled, DistServe (a) co-optimizes GPU count + parallelism (intra-op TP / inter-op PP) per phase using a <strong>simulator-driven placement search</strong>, (b) replicates to hit the traffic rate, and (c) <strong>places segments bandwidth-aware</strong> so KV transfer rides NVLINK rather than the slow cross-node link.</p>
+
+<blockquote>
+<strong>核心技术壁垒 (the single hardest-to-replicate insight):</strong> the <em>instance-segment colocation</em> placement algorithm (Algorithm 2). The non-obvious observation is that KV-cache transfer happens <em>only between corresponding inter-op stages</em> of the prefill and decoding instances. By grouping layers into inter-op stages and forcing the same-stage prefill and decoding segments onto one physical node, all KV transfer stays on intra-node NVLINK — even a large model that cannot fit two full replicas in one 8-GPU node still transfers over NVLINK. This is what drops KV transfer to <0.1% of latency on a 25 Gbps cross-node testbed, and it is co-optimized jointly with the parallelism search rather than bolted on.
+</blockquote>
+
+<p><strong>Q3 — 结果 (result).</strong> Against vLLM: 2.0–4.6× higher rate (chatbot), 5.7× (code completion), 4.3× (summarization) and up to 12.6× tighter SLO. Against DeepSpeed-MII (chunked-prefill): 1.6–7.4× higher rate. KV transfer <0.1% of total latency for OPT-175B; >95% of requests see <30 ms transfer. Ablation shows disaggregation — not parallelism tuning — is the load-bearing gain ("vLLM++" best-search ≈ plain vLLM). Placement search runs in minutes and is model-size-independent.</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p>The motivation figure quantifies the "free lunch" of separation on a single 13B model / A100:</p>
+
+<p><img src="/assets/2401.09670/fig1.png" alt="Figure 1: colocated vs single-phase TTFT/TPOT under increasing request rate"></p>
+
+<p><em>Paper's Figure 1: Upper = P90 TTFT for existing (colocated) systems vs a prefill-only system; Down = P90 TPOT for existing vs a decoding-only system, both vs request rate.</em> Reading off the knees: colocated goodput is ~1.6 rps, but a prefill-only GPU sustains 5.6 rps and a decoding-only GPU 10 rps — so a 2-prefill + 1-decode split delivers 10 rps overall (3.3 rps/GPU), 2.1× the colocated system, with no new kernels, just reallocation.</p>
+
+<p>The runtime lifecycle — arrival → centralized controller → prefill instance → KV pull → decoding instance — is shown here:</p>
+
+<p><img src="/assets/2401.09670/fig6.png" alt="Figure 6: DistServe runtime system architecture"></p>
+
+<p><em>Paper's Figure 6: DistServe Runtime System Architecture.</em> The <strong>scheduler</strong> is a centralized controller running plain FCFS: each request is dispatched to the prefill instance with the <strong>shortest queue</strong>, then to the <strong>least-loaded</strong> decoding instance. The <strong>KV/memory manager</strong> is separated from the scheduler and uses a <em>pull</em> discipline — decoding instances fetch KV from prefill instances on demand, using the prefill instance's HBM as a queuing buffer to absorb burstiness. Transport is asynchronous <code>CudaMemcpy</code> on NVLINK intra-node and NCCL cross-node.</p>
+
+<p>The request lifecycle and the segment-colocation transport constraint can be seen structurally as:</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant Ctrl as Central Controller (FCFS)
+    participant P as Prefill instance (stage k segment)
+    participant D as Decoding instance (stage k segment)
+    C->>Ctrl: request (prompt)
+    Ctrl->>P: dispatch to shortest-queue prefill
+    P->>P: prefill compute, emit first token
+    Note over P,D: same inter-op stage k colocated on one node
+    D-->>P: pull KV cache over intra-node NVLINK
+    Ctrl->>D: assign to least-loaded decoding
+    D->>D: autoregressive decode (large batch)
+    D->>C: stream tokens
+</div>
+
+<p>The scheduling granularity is per-<strong>request</strong> for dispatch, but batch formation is token-count-driven: prefill batches are packed to a total sequence length near the compute-saturation threshold $L_m$, and decoding batches are packed to a max batch size (also named $L_m$ for the decode side) to keep execution time balanced across the pipeline and reduce bubbles.</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>This is a <strong>framework paper with a formal performance model</strong> (§3.1 M/D/1 queue + Appendix A latency model). Notation and checks below.</p>
+
+<p><strong>Notation table.</strong></p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$D$</td><td>per-request prefill execution time (constant under uniform prompt length)</td></tr>
+<tr><td>$R$</td><td>Poisson arrival rate</td></tr>
+<tr><td>$RD$</td><td>utilization; stability requires $RD<1$</td></tr>
+<tr><td>$D_s$</td><td>request-level latency under a given parallelism</td></tr>
+<tr><td>$D_m$</td><td>slowest-stage service time (inter-op)</td></tr>
+<tr><td>$K$</td><td>intra-op speedup coefficient, $1<K<2$</td></tr>
+<tr><td>$h,n,s,m$</td><td>hidden size, #heads, head size ($h=ns$), FFN intermediate size</td></tr>
+<tr><td>$B,t,t_2$</td><td>batch size, total tokens $t=\sum l_i$, squared-length sum $t_2=\sum l_i^2$</td></tr>
+<tr><td>$C_1..C_5$</td><td>profiled latency constants</td></tr>
+</table>
+
+<p><strong>Prefill single-device TTFT (M/D/1).</strong> Because one request saturates the GPU, requests are served FCFS without batching, giving a deterministic-service M/D/1 queue:</p>
+
+<p>$$Avg\_TTFT = D + \frac{RD^2}{2(1-RD)}$$</p>
+
+<p>Physical meaning: first term is raw execution, second is queuing delay that diverges as $RD\to1$.</p>
+
+<p><strong>Inter-op (2-way pipeline).</strong> With $D\approx D_s\approx 2D_m$ (inter-layer activation transfer is negligible), the bottleneck stage services at rate $1/D_m$:</p>
+
+<p>$$Avg\_TTFT_{inter} = D_s + \frac{RD_m^2}{2(1-RD_m)} = D + \frac{RD^2}{4(2-RD)}$$</p>
+
+<p><strong>Intra-op (2-way tensor).</strong> Execution time drops to $D_s=D/K$ but sublinearly ($K<2$) due to communication:</p>
+
+<p>$$Avg\_TTFT_{intra} = \frac{D}{K} + \frac{RD^2}{2K(K-RD)}$$</p>
+
+<p><strong>Prefill latency model (Appendix A.2), compute-bound GEMM + memory-bound attention:</strong></p>
+
+<p>$$T_{Prefill} = C_1\cdot(4th^2 + 2thm) + C_2\cdot\frac{3ht_2}{b} + C_3$$</p>
+
+<p><strong>Decoding latency model (Appendix A.3), both terms memory-bound:</strong></p>
+
+<p>$$T_{Decoding} = C_4\cdot(4h^2 + 2hm) + C_5\cdot 3ht$$</p>
+
+<p><strong>Six minimum checks:</strong></p>
+
+<ol>
+<li><strong>Why <code>min</code>/<code>sum</code> structure — the goodput objective is a min.</strong> Overall goodput is limited by the slower of the two phases; the placement replicates $n=\lceil R/config_p.goodput\rceil$ prefill and $m=\lceil R/config_d.goodput\rceil$ decoding instances, so each phase is provisioned to <em>its own</em> rate ceiling — the min over phases determines when SLO breaks.</li>
+<li><strong>Why divide by $K$, not by 2, in Eq.3.</strong> Intra-op cannot achieve perfect 2× speedup because of collective-communication overhead, so effective service rate is $K/D$ ($1<K<2$), degrading both the execution term and the queuing denominator relative to inter-op's clean $1/D_m$.</li>
+<li><strong>Interior vs boundary optimum (monotonicity).</strong> Comparing Eq.2 vs Eq.3: at low $R$ the execution term dominates, so intra-op (smaller first term) wins; at high $R$ the queuing term dominates, so inter-op (rate-doubling denominator) wins. The crossover is an <em>interior</em> optimum in the (intra,inter) plane — neither extreme is universally best, which is exactly why a search is needed.</li>
+<li><strong>What breaks monotonicity — $K$ sensitivity.</strong> As $K\to1$ (bad interconnect, long sequences), intra-op's advantage collapses and the crossover shifts left, so the optimal config is workload- and hardware-dependent, not monotone in rate alone.</li>
+<li><strong>Why $B$ drops out of the decoding GEMM term.</strong> In $T_3=C_4(4h^2+2hm)$ the batch $B$ vanishes because $h,m\gg B$: weight-load memory traffic dominates, so decode GEMM latency is ~constant in $B$ — the physical reason large decode batches are "free" and disaggregation lets you build them.</li>
+<li><strong>First-order mapping to the case study.</strong> Plugging Fig.1's workload (13B, in=512, out=64, one A100): the model predicts colocated goodput ~1.6 rps and separated 5.6 rps (prefill) / 10 rps (decode); combining 2 prefill + 1 decode GPU yields 10 rps = 3.3 rps/GPU = 2.1× — matching the reported number directly, not sweep-then-fit. The simulator built on $T_{Prefill}/T_{Decoding}$ is independently validated to <2% SLO-attainment error against real runs (Table 2).</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>Workloads and SLOs.</strong> Three applications with deliberately different SLO shapes stress different phases:</p>
+
+<p><img src="/assets/2401.09670/tab1.png" alt="Table 1: workloads and latency requirements"></p>
+
+<p><em>Paper's Table 1.</em> Chatbot (ShareGPT) has balanced TTFT/TPOT; code completion (HumanEval) demands very low TTFT (0.125 s), so both systems become TTFT-bound; summarization (LongBench) has loose TTFT (15 s) but stringent TPOT (0.15 s), isolating decode quality — the regime where colocation hurts most.</p>
+
+<p><strong>End-to-end chatbot gains</strong> across model scales:</p>
+
+<p><img src="/assets/2401.09670/fig8.png" alt="Figure 8: chatbot OPT-13B/66B/175B on ShareGPT"></p>
+
+<p><em>Paper's Figure 8: (a) OPT-13B, (b) OPT-66B, (c) OPT-175B; vertical line = max per-GPU rate meeting 90% attainment.</em> DistServe sustains 2.0–4.6× vLLM's rate. DeepSpeed-MII narrows the gap on larger models because chunked-prefill partially masks interference — but chunked prefill is slower than full prefill, so MII sacrifices TTFT.</p>
+
+<p><strong>The regime where the split matters most</strong> — code completion (TTFT-bound) vs summarization (TPOT-bound):</p>
+
+<p><img src="/assets/2401.09670/fig9.png" alt="Figure 9: code completion and summarization, OPT-66B"></p>
+
+<p><em>Paper's Figure 9: (a) Code Completion (HumanEval), (b) Summarization (LongBench).</em> Summarization is the extreme: 4.3× rate and <strong>12.6× tighter SLO</strong> vs vLLM, because vLLM's colocated decode is dragged by long prefills and fails TPOT, exactly the coupling §2.3 predicts.</p>
+
+<p><strong>Attributing the gain — latency breakdown:</strong></p>
+
+<p><img src="/assets/2401.09670/fig10.png" alt="Figure 10: OPT-175B latency breakdown and KV transfer CDF"></p>
+
+<p><em>Paper's Figure 10: Left = 5-stage latency breakdown for OPT-175B on ShareGPT; Right = CDF of KV-cache transmission time for three OPT models.</em> KV transfer is <0.1% of total latency and >95% of requests transfer in <30 ms despite the 25 Gbps cross-node testbed — the payoff of segment colocation (§4.2).</p>
+
+<p><strong>Ablation — is it disaggregation or just parallelism tuning?</strong></p>
+
+<p><img src="/assets/2401.09670/fig11.png" alt="Figure 11: ablation, vLLM / vLLM++ / DistServe-Low / DistServe-High"></p>
+
+<p><em>Paper's Figure 11: Ablation experiments.</em> "vLLM++" (best parallelism search under colocation) ≈ plain vLLM, proving parallelism tuning alone yields nothing; DistServe-High (unconstrained placement) > DistServe-Low (segment-colocation constrained), quantifying the price of the NVLINK constraint.</p>
+
+<p><strong>Simulator fidelity</strong> (justifies simulation-based ablation):</p>
+
+<p><img src="/assets/2401.09670/tab2.png" alt="Table 2: SLO attainment, simulator vs real system"></p>
+
+<p><em>Paper's Table 2.</em> Simulator vs real SLO attainment agrees within <2% across rates for both vLLM and DistServe-Low.</p>
+
+<p><strong>Baseline fairness / metric definitions.</strong> Baselines are vLLM [PagedAttention] with intra-op = 1/4/8 for the three OPT sizes (per prior work), and DeepSpeed-MII (chunked-prefill); MII cannot serve OPT-175B due to a <code>vocab_size/intra_op</code> divisibility kernel constraint. Metric is <strong>SLO attainment</strong> (fraction of requests meeting both TTFT and TPOT), and "goodput" is per-GPU requests/s at ≥90% attainment — not raw output tok/s. FP16 throughout; OPT (classic MHA) is chosen deliberately to <em>maximize</em> KV transfer pressure (GQA/MQA models would look even better).</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>Prefill is compute-bound, decoding memory-bound — fundamentally different characteristics.</td><td>§2.1; a 512-token 13B prefill saturates an A100, decode is bandwidth-bound (Fig.3).</td></tr>
+<tr><td>2</td><td>Colocating them causes interference: prefill stalls decode (TPOT↑), decode inflates prefill (TTFT↑).</td><td>§2.3, Fig.2 (batch exec-time grows when a prefill job is added).</td></tr>
+<tr><td>3</td><td>Colocation also couples resource + parallelism plans, forcing over-provisioning to meet the harder SLO.</td><td>§2.3 para 5; each phase prefers a different parallelism.</td></tr>
+<tr><td>4</td><td>Therefore disaggregate onto separate instances; each phase optimizes its own SLO independently.</td><td>§2.3 opportunity + §3.1/§3.2 per-phase analysis.</td></tr>
+<tr><td>5</td><td>Optimal per-phase parallelism is not fixed: intra-op wins at low rate/tight SLO, inter-op at high rate.</td><td>Eq.2 vs Eq.3 crossover; Fig.4(a), Fig.5.</td></tr>
+<tr><td>6</td><td>Since no closed-form SLO attainment exists for real workloads, use a simulator + enumerate placements.</td><td>§4.1 Algorithm 1, $O(NM^2)$; simulator validated <2% (Table 2).</td></tr>
+<tr><td>7</td><td>On low-bandwidth clusters, colocate same-stage prefill/decode segments to keep KV transfer on NVLINK.</td><td>§4.2 Algorithm 2 (instance-segment insight).</td></tr>
+<tr><td>8</td><td>Net effect: transfer becomes negligible and per-GPU goodput rises up to 7.4×.</td><td>§6.2 results + §6.3 breakdown (<0.1% transfer).</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>Implementation is public: <code>github.com/LLMServe/DistServe</code>. From the paper (§5): the algorithm module + RESTful frontend + orchestration layer are <strong>6.5K lines of Python</strong>; the parallel execution engine is <strong>8.1K lines of C++/CUDA</strong>. The frontend is <strong>OpenAI-API-compatible</strong> (sampling params like max output length, temperature). The orchestration layer handles request dispatch, KV transmission (NCCL cross-node, async <code>CudaMemcpy</code> intra-node), and result delivery. Each instance uses <strong>Ray actors</strong> for GPU workers and integrates continuous batching, FlashAttention, and PagedAttention; supports OPT and LLaMA. Specific file:line citations are <code>[实现未公开]</code> in the paper text itself, but the repository above is the authoritative source.</p>
+
+<p><strong>核心技术壁垒 (dedicated paragraph).</strong> The hardest-to-replicate piece is Algorithm 2's <em>instance-segment colocation</em>, not the disaggregation idea per se (concurrent works Splitwise/TetriInfer/DéjàVu also disaggregate). The subtlety: naively colocating whole prefill+decoding instances on one node fails for large models — two OPT-175B replicas (350 GB ×2) exceed an 8×80 GB node (640 GB). DistServe instead exploits that KV transfer is <em>stage-local</em>: split each instance into inter-op <strong>stage segments</strong> and colocate only the <em>matching-stage</em> prefill and decoding segments per node, so transfer is always NVLINK-local regardless of total model size. This constraint is folded <em>into</em> the parallelism search (<code>get_intra_node_configs</code>, the $P_p.num\_gpus + P_d.num\_gpus \le M$ guard), not applied afterward — reproducing it means jointly searching parallelism and placement under a per-node GPU budget, which is why a black-box disaggregation clone underperforms DistServe-High-style unconstrained placement but the constrained search still recovers most of the benefit.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
+<ol>
+<li><strong>Pull-based KV transfer</strong> — decoding instances <em>fetch</em> KV on demand and the prefill instance's HBM doubles as a queuing buffer. This is what prevents burst-induced memory overload on decode instances; a push design would OOM under bursty arrivals.</li>
+<li><strong>Token-count batch balancing via $L_m$</strong> — prefill batches are packed to a total sequence length near the GPU-saturation threshold $L_m$ (batch multiple short requests, or run a long request alone); decode uses $L_m$ as max batch size. Since new-token count reliably predicts batch execution time, this keeps pipeline stages balanced and suppresses bubbles without an explicit scheduler model.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Splitwise: Efficient Generative LLM Inference Using Phase Splitting — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Splitwise: Efficient Generative LLM Inference Using Phase Splitting</h1>
+<div class="card-meta"><span class="badge badge-model">model</span> 2311.18677</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">llm-inference</span><span class="tag">prefill-decode-disaggregation</span><span class="tag">kv-cache-transfer</span><span class="tag">cluster-provisioning</span><span class="tag">heterogeneous-serving</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2311.18677.html">← Synthesis</a>
+<a href="/overview/model.html">← model Survey</a>
+<a href="https://arxiv.org/abs/2311.18677" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="splitwise-efficient-generative-llm-inference-using-phase-splitting-—-l2">Splitwise: Efficient Generative LLM Inference Using Phase Splitting — L2 <a class="heading-anchor" href="#splitwise-efficient-generative-llm-inference-using-phase-splitting-—-l2" aria-label="Link to splitwise-efficient-generative-llm-inference-using-phase-splitting-—-l2">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>LLM inference has two phases with opposite hardware profiles: prompt (compute-bound) and token generation (memory-bound, power-insensitive). Splitwise runs them on separate, phase-matched machine pools, transferring the KV-cache over InfiniBand with layer-wise async overlap. Result: up to 1.4× throughput at 20% lower cost, or 2.35× throughput at iso-cost/power.</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-pain-point">Q1 — 痛点 (Pain point) <a class="heading-anchor" href="#q1-—-痛点-pain-point" aria-label="Link to q1-—-痛点-pain-point">#</a></h3>
+
+<p>Running prompt and token generation on the same machine forces a single hardware choice onto two workloads with contradictory demands. The prompt phase runs all input tokens through one parallel forward pass, saturating GPU FLOPs. The token generation phase produces one token per forward pass using the KV-cache, leaving compute idle while being bound by memory bandwidth and capacity. Table I quantifies why this hurts: from A100→H100 compute grew $3.43\times$ but HBM bandwidth only $1.64\times$ and capacity $1.00\times$ — so buying the latest GPU over-pays for compute the token phase cannot use. Mixed batching of the two phases on one machine also causes token latency (TBT) tail inflation when large prompts land in the same batch, forcing SLO over-provisioning.</p>
+
+<h3 id="q2-—-方法-method">Q2 — 方法 (Method) <a class="heading-anchor" href="#q2-—-方法-method" aria-label="Link to q2-—-方法-method">#</a></h3>
+
+<p>Split the two phases onto separate machine pools and manage each with hardware matched to its bottleneck. Splitwise maintains a <strong>prompt pool</strong>, a <strong>token pool</strong>, and an elastic <strong>mixed pool</strong>; a two-level scheduler (cluster-level CLS for pool management + JSQ routing; machine-level MLS for batching) assigns each request a prompt+token machine pair. The prompt machine generates the first token and streams the KV-cache to the token machine, which continues generation. The <strong>核心技术壁垒</strong> is making the KV-cache transfer nearly invisible: a layer-wise asynchronous transfer overlaps each layer's KV-cache shipment with the prompt computation of the next layer, over back-plane InfiniBand using the MSCCL++ zero-copy one-sided put primitive — so the transfer cost hides behind compute that is happening anyway (Q2 core barrier expanded in §7).</p>
+
+<h3 id="q3-—-结果-results">Q3 — 结果 (Results) <a class="heading-anchor" href="#q3-—-结果-results" aria-label="Link to q3-—-结果-results">#</a></h3>
+
+<p>On production Azure coding + conversation traces with BLOOM-176B and Llama2-70B: KV-cache transfer overhead is $<7\%$ of prompt-compute time and only $0.8\%$ of E2E; it adds $16.5\%$ to the second-token latency vs $64\%$ for a naive serialized transfer. At the cluster level, Splitwise-AA gives $1.4\times$ throughput at $20\%$ lower cost vs Baseline-H100; other variants reach $2.35\times$ throughput at iso-cost/power, or Splitwise-HHcap matches Baseline-H100 throughput at $25\%$ lower power. Performance model MAPE is $<3\%$.</p>
+
+<h2 id="3-架构-方法图-architecture">3. 架构 / 方法图 (Architecture) <a class="heading-anchor" href="#3-架构-方法图-architecture" aria-label="Link to 3-架构-方法图-architecture">#</a></h2>
+
+<p><img src="/assets/2311.18677/fig10.png" alt="Figure 10: High-level Splitwise system diagram"></p>
+
+<p><em>Paper's Figure 10, verbatim (caption: "High-level system diagram of Splitwise").</em></p>
+
+<p>Figure 10 shows the control plane: the cluster-level scheduler (CLS, ①) manages the three machine pools (③④) and routes each request via Join-the-Shortest-Queue, while the machine-level scheduler (MLS, ②) on each node owns its pending queue and per-iteration batching. The key edge is ⑤ — the KV-cache transfer from a prompt machine to its paired token machine. Note the scheduler assigns <em>both</em> machines simultaneously so the transfer can overlap with prompt compute.</p>
+
+<p><img src="/assets/2311.18677/fig1.png" alt="Figure 1: An LLM inference example"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "An LLM inference example").</em></p>
+
+<p>Figure 1 is the conceptual foundation: the prompt phase consumes all input tokens in one pass to emit the first token and populate the KV-cache, then the token phase loops one-token-at-a-time reading that cache. This is the two-phase asymmetry the entire design exploits.</p>
+
+<p>The prompt/token/mixed pool interaction can be summarized as a state machine:</p>
+
+<div class="mermaid">
+flowchart LR
+  REQ[New request] --> CLS[CLS: JSQ routing]
+  CLS -->|assign pair| P[Prompt machine<br/>FCFS, ≤2048 tok batch]
+  CLS -->|assign pair| T[Token machine<br/>FCFS, mem-aware batch]
+  P -->|layer-wise KV-cache<br/>over InfiniBand| T
+  P -.->|queue too long| MIX[Mixed pool<br/>mixed continuous batching]
+  T -.->|queue too long| MIX
+  MIX -.->|queue drained| P
+  MIX -.->|queue drained| T
+</div>
+
+<p>Machines temporarily borrowed into the mixed pool keep their home identity and return once their opposite-kind queue drains; infrequent load shifts trigger coarse re-purposing between pools.</p>
+
+<h2 id="4-作者证明-author-s-derivation">4. 作者证明 (Author's derivation) <a class="heading-anchor" href="#4-作者证明-author-s-derivation" aria-label="Link to 4-作者证明-author-s-derivation">#</a></h2>
+
+<p>无形式化作者证明 — 仅实证。The paper has 0 numbered display equations; its claims rest on characterization and simulation rather than closed-form proof. The load-bearing quantitative arguments and their internal checks:</p>
+
+<table>
+<tr><th>#</th><th>Check</th><th>Basis</th><th>Verdict</th></tr>
+<tr><td>1</td><td>Compute scales faster than memory across GPU generations</td><td>Table I: TFLOPs $3.43\times$, HBM BW $1.64\times$, capacity $1.00\times$</td><td>Consistent — motivates memory-cheap token hardware</td></tr>
+<tr><td>2</td><td>Token phase runs with very few active tokens</td><td>Fig 4: conversation spends 60–70% of time with $\leq$20 active tokens; coding >20% of time at 1 token</td><td>Consistent with per-request one-token-at-a-time generation</td></tr>
+<tr><td>3</td><td>E2E is token-dominated even for prompt-heavy coding</td><td>Fig 5(c): BLOOM-176B 1500-token prompt ≈ time of 6 output tokens</td><td>Internally consistent (prompt is one pass; tokens are serial)</td></tr>
+<tr><td>4</td><td>Token phase is power-insensitive</td><td>Fig 9: 700→350W (>50% cap) yields ~no token latency change; prompt highly sensitive</td><td>Consistent — grounds Splitwise-HHcap</td></tr>
+<tr><td>5</td><td>Prompt throughput saturates past 2048 tokens; token throughput scales to OOM</td><td>Fig 6(a) drop after 2048; Fig 6(b) rises until batch 64 OOM</td><td>Consistent — sets MLS 2048-token prompt cap</td></tr>
+<tr><td>6</td><td>Transfer overhead is small and mostly hidden</td><td>Fig 14/15: $<7\%$ prompt-compute, $0.8\%$ E2E, 16.5% second-token</td><td>Consistent — validates the async layer-wise design</td></tr>
+</table>
+
+<p><strong>Capacity budget (first-principles, from Table III).</strong> KV-cache bytes per token $\approx 2 \times n_{\text{layers}} \times d_{\text{model}} \times \text{bytes}$ (K and V), before GQA reduction. For BLOOM-176B ($70$ layers, hidden $14336$) at FP16: $2 \times 70 \times 14336 \times 2 \approx 4.0$ MB/token; for Llama2-70B ($80$ layers, hidden $8192$): $2 \times 80 \times 8192 \times 2 \approx 2.6$ MB/token (dense-attention upper bound; Llama2-70B's GQA cuts this substantially). This scale explains why the KV-cache transfer (proportional to prompt length) is the dominant Splitwise overhead and why hiding it behind layer compute matters.</p>
+
+<h2 id="5-实验与数据-experiments-data">5. 实验与数据 (Experiments & data) <a class="heading-anchor" href="#5-实验与数据-experiments-data" aria-label="Link to 5-实验与数据-experiments-data">#</a></h2>
+
+<p><img src="/assets/2311.18677/fig3.png" alt="Figure 3: Distribution for prompt and generated tokens"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "Distribution for prompt and generated tokens").</em></p>
+
+<p>Figure 3 grounds the workload asymmetry: coding has a large median prompt (1500 tokens) but tiny median output (13 tokens), while conversation is near-bimodal with median output 129. The reader should notice the ~115× input:output imbalance for coding — the token pool for coding can therefore be small.</p>
+
+<p><img src="/assets/2311.18677/fig6.png" alt="Figure 6: Impact of batching on throughput for the two LLMs"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "Impact of batching on the throughput for the 2 LLMs").</em></p>
+
+<p>Figure 6 is the direct source of two MLS policies: prompt throughput (a) degrades past 2048 tokens (median prompt already fills a batch), so the MLS caps prompt batches at 2048; token throughput (b) climbs monotonically with batch size until OOM, so the MLS batches tokens as aggressively as memory allows.</p>
+
+<p><img src="/assets/2311.18677/fig9.png" alt="Figure 9: Impact of power cap on prompt and token latency"></p>
+
+<p><em>Paper's Figure 9, verbatim (caption: "Impact of power cap on the prompt and token generation latency with the maximum batch size possible").</em></p>
+
+<p>Figure 9 is the empirical basis for Splitwise-HHcap: prompt latency (a) rises sharply as the power cap tightens, but token latency (b) is essentially flat down to a 50%-per-GPU cap. This asymmetry lets token machines run at 70% rated power with no throughput loss.</p>
+
+<p><img src="/assets/2311.18677/fig14.png" alt="Figure 14: KV-cache transfer overhead vs prompt size"></p>
+
+<p><em>Paper's Figure 14, verbatim (caption: "Overhead of the KV-cache transfer as the prompt size increases on A100s and H100s").</em></p>
+
+<p>Figure 14 shows the serialized transfer growing linearly with prompt size, while the optimized layer-wise transfer flattens to a constant ~8ms (A100) / ~5ms (H100) non-overlapped tail — the H100 setup being ~2× faster tracks its 2× InfiniBand bandwidth. Splitwise picks serialized for small prompts (<512 on H100) and layer-wise for large.</p>
+
+<p><img src="/assets/2311.18677/fig18.png" alt="Figure 18: Summary of throughput-optimized cluster designs"></p>
+
+<p><em>Paper's Figure 18, verbatim (caption: "Summary of throughput-optimized cluster designs"; (a) iso-power, (b) iso-cost).</em></p>
+
+<p>Figure 18 is the headline cluster comparison. Against Baseline-A100 at iso-power, Splitwise-AA delivers $2.15\times$ throughput at the same cost; at iso-cost, Splitwise-AA gives $1.4\times$ more throughput than Baseline-H100 (at 25% more power, 2× space) — the "older cheaper GPUs can win on Perf/$" result.</p>
+
+<h2 id="6-论证链-argument-chain-paper-internal">6. 论证链 (Argument chain, paper-internal) <a class="heading-anchor" href="#6-论证链-argument-chain-paper-internal" aria-label="Link to 6-论证链-argument-chain-paper-internal">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Support within paper</th></tr>
+<tr><td>1</td><td>LLM inference has two phases with opposite resource profiles</td><td>§II-B mechanics + Fig 5/6/7/8/9 characterization (Insights III–VI)</td></tr>
+<tr><td>2</td><td>Hardware compute has outpaced memory, so a single GPU choice mis-serves the token phase</td><td>Table I ratios (Insight VII from Table IV)</td></tr>
+<tr><td>3</td><td>Therefore split phases onto phase-matched machine pools with a two-level scheduler</td><td>§IV design: CLS/MLS, prompt/token/mixed pools</td></tr>
+<tr><td>4</td><td>Splitting is only viable if the inter-machine KV-cache transfer is cheap</td><td>§IV-C layer-wise async overlap over InfiniBand/MSCCL++</td></tr>
+<tr><td>5</td><td>Measured transfer overhead is negligible ($0.8\%$ E2E)</td><td>§VI-A, Fig 14/15</td></tr>
+<tr><td>6</td><td>So provisioned clusters beat homogeneous baselines on throughput/cost/power</td><td>§VI-B/C, Fig 18/19 (1.4×/20% lower cost; 2.35×; HHcap −25% power)</td></tr>
+<tr><td>7</td><td>And the design is robust to workload/model shifts via the elastic mixed pool</td><td>§VI-D, Fig 20 (≤7% setback on cross-workload)</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>The KV-cache transfer prototype is a public vLLM pull request built on MSCCL++; the cluster simulator is the open-source SplitwiseSim. Specific line-level anchors are not reproduced here — [实现未公开] at file:line granularity in the paper, but the artifact is archived at Zenodo DOI <code>10.5281/zenodo.11003049</code> (MIT code / CC-BY data), with the prototype on the vLLM repo [ref 1] and SplitwiseSim at [ref 20].</p>
+
+<p><strong>核心技术壁垒 (single hardest-to-replicate insight).</strong> The layer-wise asynchronous KV-cache transfer (§IV-C, Fig 11). Naively, one waits for the whole prompt phase to finish, then ships the entire KV-cache before the token phase can start — a serialized bubble that scales with prompt length and inflates second-token latency by 64%. The barrier is realizing the KV-cache for layer $l$ is finalized the moment layer $l$'s prompt compute completes, so an async one-sided put can fire per-layer and overlap with layer $l{+}1$'s compute. This requires: (a) a GPU-driven zero-copy communication path (MSCCL++ one-sided put over InfiniBand, no receiver-issued recv), (b) per-layer/per-request semaphore synchronization for correctness (each batched prompt request gets its own semaphore since it may route to a different token machine), and (c) a size-aware policy that reverts to serialized transfer for small prompts where the layer-wise sync interference would exceed the hidden latency. Reproducing the throughput numbers is easy; reproducing the near-zero perceived overhead depends entirely on getting this overlap and its synchronization right.</p>
+
+<p><img src="/assets/2311.18677/fig11.png" alt="Figure 11: Optimizing KV-cache transfer"></p>
+
+<p><em>Paper's Figure 11, verbatim (caption: "Optimizing KV-cache transfer in Splitwise"; (a) serialized, (b) layer-wise async overlap).</em></p>
+
+<p>Figure 11 contrasts the serialized Gantt (a) — transfer strictly after prompt, strictly before first token-phase step — against the layer-wise schedule (b) where each layer's transfer runs concurrently with the next layer's compute, collapsing the visible transfer to a small tail.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+<ol>
+<li><strong>Simultaneous pair assignment.</strong> The CLS assigns the prompt and token machine at the <em>same</em> scheduling instant, not sequentially — this is what makes the KV-cache transfer overlappable with prompt compute rather than a serial post-step.</li>
+<li><strong>Block-contiguity coalescing.</strong> KV-caches ship block-by-block in vLLM, but Splitwise coalesces contiguous KV blocks that share the same semaphore to minimize the number of InfiniBand transfers.</li>
+</ul>
+
+<hr>
+
+<h2 id="§8-serving-deployment-considerations">§8 Serving deployment considerations <a class="heading-anchor" href="#§8-serving-deployment-considerations" aria-label="Link to §8-serving-deployment-considerations">#</a></h2>
+
+<ul>
+<li><strong>Minimum serving hardware.</strong> Both models run TP-8 on a single 8-GPU DGX (A100 or H100); Table I lists 80GB HBM per GPU. Token machines can be lower-tier (A100 for token pool in Splitwise-HA, or power-capped H100 in Splitwise-HHcap).</li>
+<li><strong>KV-cache bytes/token → concurrency.</strong> From §4's estimate (~2.6–4.0 MB/token dense upper bound), the transferable per-request state and the token machine's memory capacity set max concurrency; Fig 7 shows token-phase memory growing with active batched tokens until OOM at batch 64.</li>
+<li><strong>Prefill vs decode bottleneck.</strong> Prompt (prefill) is compute/power-bound and throughput-caps past 2048 batched tokens (Fig 6a); decode (token) is memory-bound and scales with batch (Fig 6b) — the entire motivation for disaggregation.</li>
+<li><strong>Continuous / prefix caching friendliness.</strong> Token machines use pure continuous batching; the mixed pool uses mixed continuous batching. The paper explicitly does <em>not</em> reuse KV-cache across requests (§III) to emulate a security-isolated cloud service.</li>
+</ul>
+
+<h2 id="§9-open-questions">§9 Open questions <a class="heading-anchor" href="#§9-open-questions" aria-label="Link to §9-open-questions">#</a></h2>
+
+<ul>
+<li>At what prompt:output ratio does phase-splitting stop paying off? Coding (115× imbalance) makes token pools tiny; workloads with balanced ratios may see the mixed pool dominate and Splitwise "devolve into the iso-count baseline" (§VI-E).</li>
+<li>Can the phase-matched-hardware idea transfer beyond NVIDIA GPUs? The paper speculates AMD MI-250 or HBM-equipped Intel Sapphire-Rapids CPUs as token machines but leaves it to future work (§VII).</li>
+<li>Does a lower-bandwidth interconnect (RoCE/Ethernet, or InfiniBand-through-CPU for H100↔A100) preserve the near-zero transfer overhead? The authors argue a 10× slower link would still be beneficial given the overlap, and KV-cache compression could further cut bandwidth (§VII).</li>
+<li><strong>Headline reconciliation gap.</strong> The abstract/§I advertise "1.4× at 20% lower cost" and "2.35×", while §IX conclusion states "1.76× better throughput with 15% lower power at same cost" — the headline pairs differ across sections and are not reconciled in the source.</li>
+</ul>
+
+<h2 id="appendix-模型架构图">Appendix: 模型架构图 <a class="heading-anchor" href="#appendix-模型架构图" aria-label="Link to appendix-模型架构图">#</a></h2>
+
+<p>N/A — Splitwise is a serving/cluster deployment technique, not a model release with reference model code. The paper's own artifacts are a KV-cache-transfer patch to vLLM and the SplitwiseSim event-driven simulator; there is no <code>modeling_*.py</code> to extract per-block attention/FFN diagrams from. The relevant "architecture" is the cluster/scheduler system diagram embedded in §3 (Fig 10) and the pool state machine.</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

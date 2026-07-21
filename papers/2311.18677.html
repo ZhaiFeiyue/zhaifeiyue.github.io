@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: Splitwise: Efficient Generative LLM Inference Using Phase Splitting — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Splitwise: Efficient Generative LLM Inference Using Phase Splitting</h1>
+<div class="card-meta"><span class="badge badge-model">model</span> 2311.18677 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2311.18677/detail.html">→ Detail (L2)</a>
+<a href="/overview/model.html">← model Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="splitwise-2311-18677-—-l3-per-paper-synthesis">Splitwise (2311.18677) — L3 per-paper synthesis <a class="heading-anchor" href="#splitwise-2311-18677-—-l3-per-paper-synthesis" aria-label="Link to splitwise-2311-18677-—-l3-per-paper-synthesis">#</a></h1>
+
+<blockquote>
+Cross-paper positioning of Splitwise within the <code>model</code> category. <strong>重要 caveat</strong>: the
+supplied related set is category-siblings, not method-siblings. Only DeepSeek-V2
+<a href="/papers/2405.04434/detail.html#§2-痛点-方法-结果" class="ref-link" title="2405.04434#§2-痛点-方法-结果">[2405.04434]</a> and Qwen3-Omni <a href="/papers/2509.17765/detail.html#§2-q1-q2-q3" class="ref-link" title="2509.17765#§2-q1-q2-q3">[2509.17765]</a>
+touch the same axis as Splitwise (LLM <em>inference efficiency</em>). The other five
+(2403.06833, 2404.13208, 2410.09102 = safety/instruction-hierarchy;
+2404.16811, 2412.10079, 2506.08371 = long-context/position-bias) are <strong>orthogonal</strong>
+in method but share one deep structural fact that Splitwise itself exploits: the
+prefill/decode phase asymmetry. That shared substrate is the productive thread of this synthesis.
+</blockquote>
+
+<hr>
+
+<h2 id="1-相关论文-which-entities-are-related-and-why">1. 相关论文 (which entities are related and why) <a class="heading-anchor" href="#1-相关论文-which-entities-are-related-and-why" aria-label="Link to 1-相关论文-which-entities-are-related-and-why">#</a></h2>
+
+<p>The eight peers split into three relatedness tiers relative to Splitwise's core claim</p>
+<p>(*LLM inference has two phases with opposite hardware profiles; disaggregate them onto</p>
+<p>phase-matched machines* <a href="/papers/2311.18677/detail.html#tl-dr" class="ref-link" title="2311.18677#tl-dr">[2311.18677]</a>):</p>
+
+<table>
+<tr><th>Peer</th><th>Relatedness</th><th>Shared axis with Splitwise</th></tr>
+<tr><td><strong>2405.04434</strong> DeepSeek-V2 (MLA)</td><td><strong>Strong</strong></td><td>Same bottleneck — KV-cache dominates decode-phase memory/IO. MLA <em>shrinks</em> the object Splitwise <em>moves</em>. Complementary, not competing.</td></tr>
+<tr><td><strong>2509.17765</strong> Qwen3-Omni</td><td><strong>Medium</strong></td><td>Streaming inference + chunked-prefill + MoE for "KV-cache IO under concurrency" <a href="/papers/2509.17765/detail.html#§2-q1-q2-q3" class="ref-link" title="2509.17765#§2-q1-q2-q3">[2509.17765]</a>; a production serving system that lives downstream of the same prefill/decode split.</td></tr>
+<tr><td><strong>2404.16811</strong> FilM-7B (IN2)</td><td><strong>Weak (substrate)</strong></td><td>Prefill-phase quality (long-context utilization). Splitwise assumes prefill is "just compute"; these papers show prefill quality is itself fragile.</td></tr>
+<tr><td><strong>2412.10079</strong> Lost-in-between</td><td><strong>Weak (substrate)</strong></td><td>Same — prefill-phase failure modes (multi-hop position bias).</td></tr>
+<tr><td><strong>2506.08371</strong> PCD</td><td><strong>Weak (substrate)</strong></td><td>Decode-phase intervention (contrastive decoding) — 2× forward at decode, directly antagonistic to Splitwise's "decode is cheap/power-insensitive" premise.</td></tr>
+<tr><td><strong>2403.06833</strong> SEP</td><td><strong>Tangential</strong></td><td>Prefill-phase content semantics (instruction/data separation); no shared system axis.</td></tr>
+<tr><td><strong>2404.13208</strong> Instruction Hierarchy</td><td><strong>Tangential</strong></td><td>Behavioral fine-tuning; explicitly "zero side-effect on continuous batching / prefix caching" <a href="/papers/2404.13208/detail.html#8-部署与工程考量" class="ref-link" title="2404.13208#8-部署与工程考量">[2404.13208]</a> — the one place it touches serving.</td></tr>
+<tr><td><strong>2410.09102</strong> ISE</td><td><strong>Tangential</strong></td><td>Segment embedding; "KV-cache size and attention FLOPs identical to base" <a href="/papers/2410.09102/detail.html#4-作者证明" class="ref-link" title="2410.09102#4-作者证明">[2410.09102]</a> — again the only serving contact point.</td></tr>
+</table>
+
+<p><strong>The unifying thread</strong>: every one of these papers implicitly or explicitly partitions LLM</p>
+<p>inference into a <em>prefill</em> stage (parallel, compute-bound, one pass over the prompt) and a</p>
+<p><em>decode</em> stage (serial, memory-bound, one token per pass). Splitwise is the paper that</p>
+<p>turns that partition into a <strong>hardware provisioning boundary</strong></p>
+<p><a href="/papers/2311.18677/detail.html#6-论证链-argument-chain-paper-internal" class="ref-link" title="2311.18677#6-论证链-argument-chain-paper-internal">[2311.18677]</a>; the others operate <em>within</em> one</p>
+<p>side of the boundary. This is why they are legitimately in the same category yet rarely</p>
+<p>cite each other.</p>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta-what-s-new-incremental-contradictory">2. 本篇 vs 相关论文的 delta (what's new, incremental, contradictory) <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta-what-s-new-incremental-contradictory" aria-label="Link to 2-本篇-vs-相关论文的-delta-what-s-new-incremental-contradictory">#</a></h2>
+
+<p><strong>vs DeepSeek-V2 (2405.04434) — orthogonal-complementary, mild tension.</strong></p>
+<p>Splitwise's whole cost model is driven by KV-cache size: KV bytes/token set both the</p>
+<p>InfiniBand transfer cost (its dominant overhead <a href="/papers/2311.18677/detail.html#4-作者证明-authors-derivation" class="ref-link" title="2311.18677#4-作者证明-authors-derivation">[2311.18677]</a>)</p>
+<p>and the token-machine memory ceiling. DeepSeek-V2's MLA compresses KV-cache by 93.3%</p>
+<p><a href="/papers/2405.04434/detail.html#§2-痛点-方法-结果" class="ref-link" title="2405.04434#§2-痛点-方法-结果">[2405.04434]</a>, caching only a $d_c{+}d_h^R \approx 4.5 d_h$ latent</p>
+<p>instead of $2 n_h d_h$ <a href="/papers/2405.04434/detail.html#§2-痛点-方法-结果" class="ref-link" title="2405.04434#§2-痛点-方法-结果">[2405.04434]</a>. <strong>Delta</strong>: MLA makes the</p>
+<p>transferred object ~20× smaller, which would nearly <em>eliminate</em> Splitwise's transfer</p>
+<p>overhead — but it also <strong>weakens Splitwise's motivation</strong>, because a 20× smaller KV-cache</p>
+<p>means the token phase is far less memory-capacity-bound, so the "memory-cheap token</p>
+<p>hardware" argument (Insight VII, <a href="/papers/2311.18677/detail.html#5-实验与数据-experiments--data" class="ref-link" title="2311.18677#5-实验与数据-experiments--data">[2311.18677]</a>) shrinks.</p>
+<p>Splitwise predates and does not model MLA; DeepSeek-V2 does not model disaggregation.</p>
+<p>Their combination (MLA + disaggregation) is unexplored (see §5).</p>
+
+<p><strong>vs Qwen3-Omni (2509.17765) — incremental convergence.</strong></p>
+<p>Qwen3-Omni independently adopts two Splitwise-adjacent ideas: chunked prefilling with</p>
+<p>async Thinker/Talker execution, and MoE specifically to "reduce KV-cache IO and maintain</p>
+<p>TPS under concurrency" <a href="/papers/2509.17765/detail.html#§2-q1-q2-q3" class="ref-link" title="2509.17765#§2-q1-q2-q3">[2509.17765]</a>. <strong>Delta</strong>: Qwen3-Omni disaggregates</p>
+<p>by <em>module role</em> (Thinker vs Talker vs Code2Wav) rather than by <em>inference phase</em>, and does</p>
+<p>so <em>within a single model on one deployment</em>, not across machine pools. It confirms</p>
+<p>Splitwise's premise (KV-cache IO is the concurrency bottleneck) but solves it at the</p>
+<p>architecture layer rather than the cluster layer.</p>
+
+<p><strong>vs the long-context cluster (2404.16811 / 2412.10079 / 2506.08371) — hidden contradiction of a Splitwise simplification.</strong></p>
+<p>Splitwise treats the prompt/prefill phase as a homogeneous compute-bound blob whose only</p>
+<p>property is FLOPs and TTFT <a href="/papers/2311.18677/detail.html#2-q1--q2--q3" class="ref-link" title="2311.18677#2-q1--q2--q3">[2311.18677]</a>. These three papers show the</p>
+<p>prefill/long-context stage has rich <em>quality</em> structure that the phase-splitting abstraction</p>
+<p>erases: FilM-7B shows raw long prompts suffer lost-in-the-middle (VaL Gap 56.2 for the</p>
+<p>backbone) <a href="/papers/2404.16811/detail.html#§5-实验与数据" class="ref-link" title="2404.16811#§5-实验与数据">[2404.16811]</a>; Lost-in-between shows multi-hop degrades with</p>
+<p>inter-evidence distance independent of absolute position <a href="/papers/2412.10079/detail.html#§2-q1-q2-q3" class="ref-link" title="2412.10079#§2-q1-q2-q3">[2412.10079]</a>;</p>
+<p>PCD shows decode-time salience attenuation past 16K <a href="/papers/2506.08371/detail.html#§2-痛点-方法-结果" class="ref-link" title="2506.08371#§2-痛点-方法-结果">[2506.08371]</a>.</p>
+<p><strong>Delta</strong>: Splitwise's "prompt phase = just compute" is <em>quantitatively</em> true (TTFT grows</p>
+<p>linearly with prompt size <a href="/papers/2311.18677/detail.html#5-实验与数据-experiments--data" class="ref-link" title="2311.18677#5-实验与数据-experiments--data">[2311.18677]</a>) but</p>
+<p><em>qualitatively</em> incomplete — it says nothing about whether the tokens produced are correct.</p>
+
+<p><strong>vs the safety cluster (2403.06833 / 2404.13208 / 2410.09102) — near-zero method delta, one serving-layer intersection.</strong></p>
+<p>These are content/behavior papers. The only genuine intersection: Instruction Hierarchy and</p>
+<p>ISE both advertise <em>serving neutrality</em> — IH is pure behavioral fine-tuning with "zero</p>
+<p>side-effect on continuous batching / prefix caching" <a href="/papers/2404.13208/detail.html#8-部署与工程考量" class="ref-link" title="2404.13208#8-部署与工程考量">[2404.13208]</a>,</p>
+<p>ISE adds a $4{\times}4096$ table with "KV-cache size and attention FLOPs identical to the</p>
+<p>base model" <a href="/papers/2410.09102/detail.html#4-作者证明" class="ref-link" title="2410.09102#4-作者证明">[2410.09102]</a>. <strong>Delta</strong>: both were designed to be</p>
+<p><em>compatible with</em> systems like Splitwise (they don't perturb static shapes), whereas</p>
+<p>Splitwise is agnostic to what runs on its pools. This is a clean composition boundary, not a</p>
+<p>conflict.</p>
+
+<hr>
+
+<h2 id="3-可攻击面-adversarial-rebuttal-against-specific-claims">3. 可攻击面 (adversarial rebuttal against specific claims) <a class="heading-anchor" href="#3-可攻击面-adversarial-rebuttal-against-specific-claims" aria-label="Link to 3-可攻击面-adversarial-rebuttal-against-specific-claims">#</a></h2>
+
+<p><strong>Attack 1 — "KV-cache transfer overhead is negligible (0.8% E2E)" is workload-conditional.</strong></p>
+<p>Splitwise reports 0.8% E2E and a constant ~5–8ms non-overlapped tail</p>
+<p><a href="/papers/2311.18677/detail.html#5-实验与数据-experiments--data" class="ref-link" title="2311.18677#5-实验与数据-experiments--data">[2311.18677]</a>, but this rests on (a) full 200–400 Gbps</p>
+<p>InfiniBand and (b) a <em>dense-attention</em> KV-cache (~2.6–4.0 MB/token,</p>
+<p><a href="/papers/2311.18677/detail.html#4-作者证明-authors-derivation" class="ref-link" title="2311.18677#4-作者证明-authors-derivation">[2311.18677]</a>). The paper's own §VII concedes a 10× slower</p>
+<p>link "would likely still be beneficial" but never measures it. Meanwhile DeepSeek-V2 shows KV</p>
+<p>size is a design variable, not a constant <a href="/papers/2405.04434/detail.html#§2-痛点-方法-结果" class="ref-link" title="2405.04434#§2-痛点-方法-结果">[2405.04434]</a> — on an MLA</p>
+<p>model the transfer is trivially cheap, but on a long-context MHA model at 128K the per-request</p>
+<p>KV-cache balloons and the "hide it behind layer compute" trick has proportionally less compute</p>
+<p>to hide behind for short-output requests. **The 0.8% figure is not portable across attention</p>
+<p>architectures or context lengths.**</p>
+
+<p><strong>Attack 2 — "Splitting does not impact accuracy" is a lossless-transport claim, not an end-to-end-quality claim.</strong></p>
+<p>Splitwise asserts exactness via lossless KV-cache transfer [ref:L1:2311.18677] (§IV-E). True at</p>
+<p>the bit level, but the long-context cluster shows E2E answer quality on long prompts is <em>already</em></p>
+<p>degraded by position bias before any transfer occurs — FilM-7B backbone drops to 5–40% mid-context</p>
+<p><a href="/papers/2404.16811/detail.html#§5-实验与数据" class="ref-link" title="2404.16811#§5-实验与数据">[2404.16811]</a>. Splitwise correctly claims it <em>adds no new error</em>, but its</p>
+<p>framing ("same state as on a single machine") invites the reader to conclude the disaggregated</p>
+<p>system is <em>good</em>, when prefill quality is a separate, unaddressed failure axis.</p>
+
+<p>*<em>Attack 3 — the power-insensitivity of decode is decode-</em>without-intervention<em>.</em>*</p>
+<p>Insight VI ("token phase does not use the power budget", 700→350W ≈ no latency change,</p>
+<p><a href="/papers/2311.18677/detail.html#4-作者证明-authors-derivation" class="ref-link" title="2311.18677#4-作者证明-authors-derivation">[2311.18677]</a>) is what justifies Splitwise-HHcap. But PCD</p>
+<p>runs <em>two</em> decode-time forward passes (~2× compute at decode</p>
+<p><a href="/papers/2506.08371/detail.html#§8-serving-部署考量" class="ref-link" title="2506.08371#§8-serving-部署考量">[2506.08371]</a>) to fix salience attenuation. If any decode-time quality</p>
+<p>intervention (contrastive decoding, speculative verification, guidance) becomes standard, the</p>
+<p>"decode is compute-idle, power-cap it" premise partially collapses — you'd be power-capping hardware</p>
+<p>that a future decode workload actually needs. <strong>矛盾根源</strong>: Splitwise measured <em>vanilla</em> greedy/</p>
+<p>mixed-batch decode (2023); PCD (2025) shows decode compute demand is not fixed. Both are correct in</p>
+<p>their era; Splitwise's power claim is an artifact of the decode algorithms available at publication.</p>
+
+<p><strong>Attack 4 — headline inconsistency (self-acknowledged).</strong></p>
+<p>The abstract/§I advertise "1.4× at 20% lower cost" and "2.35×" while §IX states "1.76× at 15% lower</p>
+<p>power at same cost" <a href="/papers/2311.18677/detail.html#9-open-questions" class="ref-link" title="2311.18677#9-open-questions">[2311.18677]</a>. This is flagged in the source itself; any</p>
+<p>downstream comparison table must pick one operating point and name it, not quote "up to" figures.</p>
+
+<hr>
+
+<h2 id="4-生态位-paradigm-shift-positioning-adoption-evidence">4. 生态位 (paradigm-shift positioning, adoption evidence) <a class="heading-anchor" href="#4-生态位-paradigm-shift-positioning-adoption-evidence" aria-label="Link to 4-生态位-paradigm-shift-positioning-adoption-evidence">#</a></h2>
+
+<p>Splitwise is a <strong>paradigm-defining</strong> paper for the <code>prefill-decode-disaggregation</code> line — it is the</p>
+<p>canonical early statement (Nov 2023) that the two inference phases should be a <em>hardware</em> boundary,</p>
+<p>not just a scheduling one. Its adoption evidence is strong and concrete: open-source vLLM prototype +</p>
+<p>SplitwiseSim, MIT/CC-BY, Zenodo DOI [ref:L1:2311.18677] (Appendix A). The idea has since propagated</p>
+<p>into production stacks (disaggregated serving is now standard in vLLM/SGLang/Dynamo-class systems),</p>
+<p>and the peers here show the two phases being independently optimized:</p>
+
+<ul>
+<li><strong>Decode-side (KV-cache) compression</strong> as the dominant follow-on axis — DeepSeek-V2's MLA is the</li>
+<p>strongest example, reframing the KV-cache Splitwise <em>transports</em> as something to *shrink at the</p>
+<p>source* <a href="/papers/2405.04434/detail.html#§2-痛点-方法-结果" class="ref-link" title="2405.04434#§2-痛点-方法-结果">[2405.04434]</a>.</p>
+<li><strong>Streaming/chunked-prefill</strong> as production practice — Qwen3-Omni's async Thinker/Talker prefill</li>
+<p>and first-token-immediate synthesis <a href="/papers/2509.17765/detail.html#§3-架构--方法图" class="ref-link" title="2509.17765#§3-架构--方法图">[2509.17765]</a> is the multimodal descendant</p>
+<p>of "assign the pair simultaneously so transfer overlaps prefill"</p>
+<p><a href="/papers/2311.18677/detail.html#7-实现-cross-reference" class="ref-link" title="2311.18677#7-实现-cross-reference">[2311.18677]</a>.</p>
+</ul>
+
+<p>Positioning statement: Splitwise sits at the <strong>cluster/provisioning</strong> rung of the LLM-serving stack.</p>
+<p>Above it sit model-architecture choices (MLA, MoE) that change <em>what</em> gets disaggregated; below it</p>
+<p>sit interconnect/comm libraries (MSCCL++). It is neither obsoleted nor universal — its value is</p>
+<p>maximal exactly when the KV-cache is large (dense/MHA, long context) and minimal when the model</p>
+<p>already compresses KV aggressively.</p>
+
+<hr>
+
+<h2 id="5-未探索方向-hybrid-adaptive-directions-from-the-cluster">5. 未探索方向 (hybrid / adaptive directions from the cluster) <a class="heading-anchor" href="#5-未探索方向-hybrid-adaptive-directions-from-the-cluster" aria-label="Link to 5-未探索方向-hybrid-adaptive-directions-from-the-cluster">#</a></h2>
+
+<ol>
+<li><strong>MLA × disaggregation (the obvious hybrid).</strong> No paper in this set runs Splitwise-style</li>
+<p>disaggregation on an MLA model. MLA's 93.3% KV reduction <a href="/papers/2405.04434/detail.html#§2-痛点-方法-结果" class="ref-link" title="2405.04434#§2-痛点-方法-结果">[2405.04434]</a></p>
+<p>would shrink the transfer to near-free, potentially enabling disaggregation over cheap</p>
+<p>Ethernet/RoCE (Splitwise's own §VII wish). But it also erodes the memory-capacity gap that</p>
+<p>justifies heterogeneous token hardware. <strong>Open question the cluster poses but nobody answers</strong>:</p>
+<p>at what KV-compression ratio does phase-splitting stop paying for its own network complexity?</p>
+</ul>
+
+<ol>
+<li><strong>Quality-aware phase routing.</strong> Splitwise routes purely on queue length (JSQ,</li>
+<p><a href="/papers/2311.18677/detail.html#3-架构--方法图-architecture" class="ref-link" title="2311.18677#3-架构--方法图-architecture">[2311.18677]</a>). The long-context cluster shows prefill quality</p>
+<p>is position/length-dependent <a href="/papers/2404.16811/detail.html#§5-实验与数据" class="ref-link" title="2404.16811#§5-实验与数据">[2404.16811]</a><a href="/papers/2412.10079/detail.html#§2-q1-q2-q3" class="ref-link" title="2412.10079#§2-q1-q2-q3">[2412.10079]</a>.</p>
+<p>A hybrid scheduler could route <em>long/multi-hop prompts</em> to prefill machines running IN2-trained</p>
+<p>or PCD-enabled decode, and short prompts to a cheap fast path — disaggregating on <em>quality-risk</em>,</p>
+<p>not just phase.</p>
+</ul>
+
+<ol>
+<li><strong>Adaptive decode-power under intervention load.</strong> Splitwise-HHcap power-caps decode assuming it's</li>
+<p>compute-idle. A cluster controller could <em>dynamically</em> un-cap token machines when decode-time</p>
+<p>interventions (PCD's 2× forward <a href="/papers/2506.08371/detail.html#§8-serving-部署考量" class="ref-link" title="2506.08371#§8-serving-部署考量">[2506.08371]</a>, speculative decoding)</p>
+<p>are active per-request, reconciling Attack 3 — power-cap only the vanilla-decode fraction.</p>
+</ul>
+
+<ol>
+<li><strong>Disaggregation for multimodal module pools.</strong> Qwen3-Omni already splits Thinker/Talker/Code2Wav</li>
+<p>with different param/streaming profiles <a href="/papers/2509.17765/detail.html#§3-架构--方法图" class="ref-link" title="2509.17765#§3-架构--方法图">[2509.17765]</a>. Extending Splitwise's</p>
+<p>pool abstraction from {prompt, token, mixed} to {perception-encoder, Thinker-prefill,</p>
+<p>Thinker-decode, Talker, vocoder} pools — each on cost/power-matched hardware — is a natural,</p>
+<p>unbuilt generalization.</p>
+</ul>
+
+<ol>
+<li><strong>Serving-neutral safety as a free co-tenant.</strong> IH and ISE were engineered to be shape-preserving</li>
+<p><a href="/papers/2404.13208/detail.html#8-部署与工程考量" class="ref-link" title="2404.13208#8-部署与工程考量">[2404.13208]</a><a href="/papers/2410.09102/detail.html#4-作者证明" class="ref-link" title="2410.09102#4-作者证明">[2410.09102]</a>. A Splitwise pool could run an</p>
+<p>ISE-instrumented model at zero serving cost, giving priority-conflict robustness "for free" inside</p>
+<p>a disaggregated cluster — an integration nobody has demonstrated end-to-end.</p>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2309.0618.html">2309.0618</a> (tool) 
+<a href="/papers/orca-osdi22.html">orca-osdi22</a> (baseline) 
+<a href="/papers/sarathi.html">sarathi</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

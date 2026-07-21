@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>LMCache: An Efficient KV Cache Layer for Enterprise-Scale LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">LMCache: An Efficient KV Cache Layer for Enterprise-Scale LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2510.09665</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">prefix-caching</span><span class="tag">pd-disaggregation</span><span class="tag">kv-offloading</span><span class="tag">vllm-connector</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2510.09665.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2510.09665" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="lmcache-an-efficient-kv-cache-layer-for-enterprise-scale-llm-inference-—-l2">LMCache: An Efficient KV Cache Layer for Enterprise-Scale LLM Inference — L2 <a class="heading-anchor" href="#lmcache-an-efficient-kv-cache-layer-for-enterprise-scale-llm-inference-—-l2" aria-label="Link to lmcache-an-efficient-kv-cache-layer-for-enterprise-scale-llm-inference-—-l2">#</a></h1>
+
+<h2 id="§1-tl-dr">§1 TL;DR <a class="heading-anchor" href="#§1-tl-dr" aria-label="Link to §1-tl-dr">#</a></h2>
+
+<p>LMCache is an out-of-GPU KV cache layer that extracts KV cache from vLLM/SGLang and stores/shares it across a storage hierarchy (CPU, disk, Redis, remote, network) for two use cases: cross-query prefix reuse and prefill–decode disaggregation. Its core trick is moving KV at a large <strong>chunk</strong> granularity (default 256 tokens) instead of the engine's 16-token page, plus layer-wise compute–I/O overlap, yielding up to 15× throughput and ≥2× lower latency vs vLLM/commercial baselines.</p>
+
+<hr>
+
+<h2 id="§2-q1-q2-q3">§2 Q1 / Q2 / Q3 <a class="heading-anchor" href="#§2-q1-q2-q3" aria-label="Link to §2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-pain-point">Q1 — 痛点 (Pain point) <a class="heading-anchor" href="#q1-—-痛点-pain-point" aria-label="Link to q1-—-痛点-pain-point">#</a></h3>
+
+<p>Production KV cache has outgrown GPU memory and is increasingly <em>reused</em> across queries, so it must live outside the GPU. But moving it out is hard for three interlocking reasons: (1) paged-attention engines store KV in 16–64 KB non-contiguous pages, and naive per-page transfer badly underutilizes bandwidth (a transfer must reach ~16 MB to saturate a 400 Gbps NIC; sub-1 GB/s with <code>torch.save</code>); (2) inference engines evolve too fast (one prominent LLM every ~4 days in 2025) — every engine update can change the in-GPU KV layout and break any caching library glued to it; (3) there is no management API for higher-level components (routers, ops teams) to locate/pin/evict/compress caches in a KV-aware way.</p>
+
+<h3 id="q2-—-方法-method">Q2 — 方法 (Method) <a class="heading-anchor" href="#q2-—-方法-method" aria-label="Link to q2-—-方法-method">#</a></h3>
+
+<p>A KV caching layer sitting between the engine and heterogeneous storage, with three matching design pillars:</p>
+<ol>
+<li><strong>Performance</strong> — batched chunk-level I/O (contiguous streaming GPU buffer + custom CUDA scatter/gather kernels), layer-wise compute–I/O pipelining on separate CUDA streams, asynchronous prefetch during queue wait, and zero-copy multi-destination writes via reference counting.</li>
+<li><strong>Standardized connector API</strong> — a 7-function interface split across vLLM's scheduler (3 fns) and model runner (4 fns), co-designed and co-maintained with the vLLM team, so LMCache tracks engine evolution without ad-hoc patches.</li>
+<li><strong>Controller API</strong> — a centralized manager + per-instance workers exposing <code>lookup / move / clear / pin / compress</code> (external) and <code>batched_admit / batched_evict / batched_p2p_lookup</code> (internal) for cache-aware routing, migration, and P2P sharing.</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>: the chunk-vs-page transfer redesign — grouping scattered pages across multiple layers into a contiguous streaming buffer with a custom CUDA kernel, then DMA-ing at chunk granularity, while keeping only a <em>single-layer-sized</em> GPU buffer alive via layer-wise pipelining. This is what turns 88 Gbps (vLLM native, per-page) into 400 Gbps (Table 5), and it is co-tied to the connector's layerwise <code>start_load_kv / wait_load_kv</code> hooks — hard to replicate without owning both the data-movement kernels <em>and</em> the engine-side hook contract.</p>
+
+<h3 id="q3-—-结果-results">Q3 — 结果 (Results) <a class="heading-anchor" href="#q3-—-结果-results" aria-label="Link to q3-—-结果-results">#</a></h3>
+
+<p>Up to <strong>15×</strong> throughput over baselines. CPU-offload scenario: 1.9–8.1× smaller TTFT, 2.3–14× higher throughput at equal TTFT, 7–92% lower ITL (§8.2). Real-trace: TTFT down 3.7–6.8×, ITL down 19–58% at high QPS (§8.3). Central remote storage: 1.3–3× throughput (§8.4). PD disaggregation: mean TTFT 1.53–1.84× lower, mean ITL 1.12–1.66× lower (§8.5). Component isolation: CPU-load bandwidth 400 vs 88 Gbps (Table 5); async overlap gives 1.46× end-to-end reduction (§8.6). Portable to SGLang (§8.8).</p>
+
+<hr>
+
+<h2 id="§3-架构-方法图">§3 架构 / 方法图 <a class="heading-anchor" href="#§3-架构-方法图" aria-label="Link to §3-架构-方法图">#</a></h2>
+
+<p>LMCache positions itself as a distinct layer between engines and storage/network backends.</p>
+
+<p><img src="/assets/2510.09665/fig5.png" alt="Figure 5: LMCache sits between inference engines and heterogeneous storage"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "LMCACHE sits between LLM inference engines and heterogeneous storage/network devices.").</em> The three-tier stack — engine on top (vLLM/SGLang), LMCache in the middle owning the KV cache abstraction, and swappable storage backends (Mooncake, Redis, InfiniStore, …) at the bottom — is the whole thesis: KV cache becomes a first-class, engine-independent data structure with its own movement/management substrate.</p>
+
+<p>The end-to-end component graph shows where scheduling and memory management actually live:</p>
+
+<p><img src="/assets/2510.09665/fig6.png" alt="Figure 6: End-to-end LMCache system workflow"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "End-to-end system workflow for LMCACHE.").</em> Note the separation the framework enforces: the <strong>KV Connector</strong> is the only touch point with the engine's scheduler + model runner; inside a LMCache instance the <strong>Token Processor</strong> (decides how many tokens are new / prefix-matched), <strong>Event Manager</strong> (tracks query IDs, launches async layer-wise load events), and <strong>Storage Manager</strong> (looks up backend addresses, drives transfers) are distinct; the <strong>Transfer Channel + Memory Allocator</strong> feed four backends (PD / P2P / Remote / Local) over NVLink / RDMA / TCP; and the <strong>Cache Controller + LMCache Worker</strong> form a <em>separate control plane</em> used by the Router. Scheduling decisions (batching) remain in the vLLM scheduler — LMCache only feeds it extra "matched tokens" so cache hits change how many tokens need prefill.</p>
+
+<p>The two supported deployment modes — cross-query offloading vs cross-engine transfer — are one abstraction with two data paths:</p>
+
+<p><img src="/assets/2510.09665/fig2.png" alt="Figure 2: Context caching (a) vs PD disaggregation (b)"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "LMCACHE supports both context caching (KV cache offloading and sharing across queries) and PD disaggregation (cross-engine transfer of KV caches").</em> (a) One engine reuses KV across requests via CPU/disk offload; (b) prefiller engines hand KV to decoder engines cross-engine. The reader should notice the same connector/storage-manager machinery serves both — the difference is only the backend chosen (Local vs PD/P2P).</p>
+
+<p>Request lifecycle through the connector hooks (the scheduler→runner path the framework owns):</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Q as Query
+    participant S as vLLM Scheduler
+    participant C as KV Connector
+    participant R as Model Runner
+    participant B as LMCache Backend
+    Q->>S: arrives
+    S->>C: get_num_new_matched_tokens(query)
+    C->>B: lookup matched prefix tokens
+    C-->>S: matched_tokens (or None → requeue, overlap I/O)
+    S->>C: update_state_after_alloc(query, blocks)
+    C->>C: build_connector_meta(scheduler_output)
+    Note over R,B: model runner phase (layerwise)
+    R->>C: start_load_kv(layer 0)
+    loop each layer l
+        R->>C: wait_load_kv(l)  // sync layer l, prefetch l+1
+        R->>R: compute layer l
+        R->>C: wait_store_kv(l-1); start_store_kv(l)
+    end
+    C->>B: chunked store of new KV
+</div>
+
+<p>Scheduler discipline: the framework delegates batching (FCFS-style continuous batching) to vLLM; its only scheduling lever is returning <code>None</code> from <code>get_num_new_matched_tokens</code> to push a request back to the waiting queue so its I/O overlaps others' compute. Memory-manager allocation unit: the <strong>chunk</strong> (default 256 tokens = 16 pages of 16 tokens each), materialized in a contiguous streaming GPU buffer; the persistent buffer footprint is only one layer's KV cache (layer-wise pipelining).</p>
+
+<hr>
+
+<h2 id="§4-作者证明">§4 作者证明 <a class="heading-anchor" href="#§4-作者证明" aria-label="Link to §4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证.</strong> This is a systems/experience paper with <strong>zero numbered display equations</strong> and no analytical throughput/latency model. There is no notation table (<code>λ</code>, <code>μ</code>, <code>B</code>, <code>N_p</code>) to reproduce; all claims are empirical (§8) or field-observational (§9).</p>
+
+<p>What a formal model <em>would</em> have clarified (and is currently left to measurement):</p>
+<ol>
+<li>The <strong>crossover point</strong> between "load KV from remote" and "recompute prefill" — §8.7/Fig 15 shows it empirically as a function of context length and bandwidth (256K tokens at 32 Gbps), but there is no closed form $L^* = f(\text{BW}, \text{model FLOPs})$. A model of the form "load wins when $\frac{S_{kv}}{\text{BW}} < T_{\text{prefill}}(L)$" would predict the crossover instead of sweeping.</li>
+<li>The <strong>chunk-size sweet spot</strong>: default 256 tokens is asserted, not derived. Table 1's message-size→throughput curve is the empirical basis, but no optimization of chunk size vs per-transfer CUDA-launch overhead is given.</li>
+<li>The <strong>dynamic-offloading duplication window</strong> trade-off (§5.3) is described qualitatively (smaller window ⇒ fewer duplicated pages but more allocation stalls) with no stall-probability model as a function of window size and arrival rate.</li>
+</ul>
+
+<p>Because no equations exist, the standard 6 formal checks (notation / physical meaning / monotonicity / convexity / boundary optimum / first-order plug-in) are <strong>not applicable</strong>; the paper's rigor lives in ablations (Table 5, Fig 13/14) rather than derivations.</p>
+
+<hr>
+
+<h2 id="§5-实验与数据">§5 实验与数据 <a class="heading-anchor" href="#§5-实验与数据" aria-label="Link to §5-实验与数据">#</a></h2>
+
+<p>The headline CPU-offload result across five models:</p>
+
+<p><img src="/assets/2510.09665/fig8.png" alt="Figure 8: LMCache vs vLLM, vLLM CPU offload, and two commercial APIs"></p>
+
+<p><em>Paper's Figure 8, verbatim (caption: "Compared to basic vLLM, basic vLLM CPU offloading, and two commercial alternatives, LMCACHE has 1.9–8.1× smaller TTFT, and supports 2.3–14× higher inference throughput...").</em> Both TTFT and ITL rows show LMCache's curve staying flat while baselines blow up as QPS rises — the flatness is the point: larger CPU cache capacity ⇒ higher hit ratio ⇒ prefill work avoided. Notice <code>Basic vLLM CPU Offloading</code> disappears on Qwen3-Coder-480B (fails to run) and both commercial options can't host it at all — a completeness gap the baselines are hiding.</p>
+
+<p>Component isolation proves the chunk-vs-page mechanism is the real cause, not incidental tuning:</p>
+
+<p><img src="/assets/2510.09665/tab5.png" alt="Table 5: LMCache 400 Gbps vs vLLM native CPU offloading 88 Gbps"></p>
+
+<p><em>Paper's Table 5, verbatim (caption: "LMCACHE achieves much higher loading bandwidth when loading KV cache from CPU memory, compared to vLLM's native CPU offloading.").</em> The ~4.5× bandwidth gap (400 vs 88 Gbps) comes purely from transfer granularity: per-page copies pay CUDA-launch + metadata + completion-signal overhead on every 16-token page, whereas chunked copies amortize it. This is the single most load-bearing ablation in the paper.</p>
+
+<p>Async compute–I/O overlap, visualized as a timeline:</p>
+
+<p><img src="/assets/2510.09665/fig13.png" alt="Figure 13: async IO overlaps loading with compute vs sync IO"></p>
+
+<p><em>Paper's Figure 13, verbatim (caption: "With request asynchronization, LMCACHE overlaps KV cache loading and inference computation (either prefill or decode).").</em> Top timeline (LMCache async) packs loading bars underneath compute bars; bottom (vLLM sync) serializes them. The measured effect is a 1.46× end-to-end reduction — the mechanism behind the flat ITL curves in Fig 8.</p>
+
+<p>The regime where loading loses to prefill (the honest failure boundary):</p>
+
+<p><img src="/assets/2510.09665/fig15.png" alt="Figure 15: load-vs-prefill crossover by context length and bandwidth"></p>
+
+<p><em>Paper's Figure 15, verbatim (caption: "At network bandwidth of 32Gbps, LMCACHE's KV cache offloading only outperforms basic vLLM's prefill when input length is more than 256K tokens...").</em> At 32 Gbps, prefill is faster below 256K tokens — LMCache <em>loses</em> there and must be adaptive; at 64/128 Gbps loading wins everywhere. This directly motivates the "adaptive load-vs-compute" decision the paper flags as future work.</p>
+
+<p>PD disaggregation tail-latency win:</p>
+
+<p><img src="/assets/2510.09665/fig12.png" alt="Figure 12: PD disaggregation TTFT/ITL CDFs"></p>
+
+<p><em>Paper's Figure 12, verbatim (caption: "Compared to vLLM's native PD disaggregation, LMCACHE's PD disaggregation has significantly lower tail latency, and achieving 1.5–1.8× lower mean TTFT...").</em> The CDFs (top row zoomed to 0.96–1.00) show LMCache's tail pulled left. Root cause per §8.5: vLLM's native path uses NIXL page-by-page copy of scattered prefiller pages (bandwidth underutilized), while LMCache stages each chunk into a contiguous GPU buffer before transfer — again the chunk-vs-page theme.</p>
+
+<hr>
+
+<h2 id="§6-论证链">§6 论证链 <a class="heading-anchor" href="#§6-论证链" aria-label="Link to §6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim (paper-internal)</th><th>Support</th></tr>
+<tr><td>1</td><td>KV cache now exceeds GPU memory and is reused across queries at growing rates</td><td>Real usage telemetry: Fig 1 (users ↑23×, stored size ↑5.6×), Fig 3 (non-GPU KV portion grows), Fig 4 (>19% users reuse tokens >1.5×)</td></tr>
+<tr><td>2</td><td>Therefore KV must move out of GPU, but paged (16–64 KB) memory makes per-page transfer bandwidth-starved</td><td>§3.1.1 + Table 1: must reach ~16 MB to saturate 400 Gbps; sub-1 GB/s with torch serialization</td></tr>
+<tr><td>3</td><td>So move KV at large chunk granularity with contiguous staging + custom CUDA kernels</td><td>§5.1 design; validated by Table 5 (400 vs 88 Gbps) and Fig 14 (PD transmit time 3.68 vs 4.47 s)</td></tr>
+<tr><td>4</td><td>Overlap the (now-efficient) transfer with compute via per-layer CUDA-stream pipelining + async prefetch</td><td>§5.2 design; validated by Fig 13 (1.46× end-to-end reduction)</td></tr>
+<tr><td>5</td><td>Decouple from fast-evolving engines via a co-maintained 7-fn scheduler/runner connector so the above survives engine churn</td><td>§6 design + Table 2; validated by 6-month upstream adoption (Dynamo, llm-d, AIBrix, production-stack)</td></tr>
+<tr><td>6</td><td>Expose a control-plane API so routers/ops can act cache-aware (locate/move/pin/compress)</td><td>§7 design + Table 3; enables cache-aware routing / migration / P2P</td></tr>
+<tr><td>7</td><td>End-to-end this yields up to 15× throughput and ≥2× latency across offload / remote / PD scenarios</td><td>§8.2–§8.8 across 6 models and 3 scenarios</td></tr>
+</table>
+
+<hr>
+
+<h2 id="§7-实现-cross-reference">§7 实现 cross-reference <a class="heading-anchor" href="#§7-实现-cross-reference" aria-label="Link to §7-实现-cross-reference">#</a></h2>
+
+<p>Source is open at <code>https://github.com/LMCache/LMCache</code> but no <code>file:line</code> anchors are given in the paper; treat concrete internals as <strong>[实现未公开]</strong> at the citation level. The connector API is upstreamed into vLLM (co-maintained), so the 7 functions in Table 2 are the reproducible contract:</p>
+
+<p><img src="/assets/2510.09665/tab2.png" alt="Table 2: LMCache connector functions"></p>
+
+<p><em>Paper's Table 2, verbatim (caption: "Functions in LMCACHE's connector.").</em> Scheduler side: <code>get_num_new_matched_tokens</code> (returns matched-token count, or <code>None</code> to requeue for I/O overlap), <code>update_state_after_alloc</code>, <code>build_connector_meta</code>. Model-runner side: <code>start_load_kv / wait_load_kv / start_store_kv / wait_store_kv</code> — the layerwise pairing is exactly what the §3 mermaid sequence encodes.</p>
+
+<p><strong>核心技术壁垒 (detail).</strong> The hardest-to-replicate insight is not any single function but the <em>co-design</em> of two things that must agree: (i) the chunk-staging data path — a custom CUDA kernel gathers scattered paged KV from multiple layers into one contiguous streaming buffer, DMA-offloads at chunk granularity, and on load DMA-fetches then scatters back into pages; and (ii) the layerwise hook contract where <code>wait_load_kv(l)</code> synchronizes layer <em>l</em> while kicking off layer <em>l+1</em>'s prefetch, so only a single-layer-sized GPU buffer is ever pinned. Owning only one half (fast kernels <em>or</em> engine hooks) reproduces neither the 400 Gbps bandwidth nor the fixed-buffer memory bound. Anyone lacking the upstreamed vLLM hooks must fork the scheduler/runner — the exact ad-hoc maintenance burden §3.1.2 warns against.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks).</strong></p>
+<ol>
+<li><strong><code>get_num_new_matched_tokens</code> returning <code>None</code></strong> is not an error path — it is a deliberate admission-control lever that pushes a cache-hit request back to the waiting queue precisely so its (slow) KV load overlaps other requests' compute. Miss this and you serialize I/O.</li>
+<li><strong>Zero-copy via reference counting</strong> (§5.3): a multi-destination write (CPU→disk + CPU→remote simultaneously) increments a single refcount on the shared source instead of duplicating; the buffer frees at count 0 (the paper's PCB-counter analogy). Combined with <strong>dynamic offloading</strong>'s three-pointer (start/current/end) window, which duplicates only a <em>subset</em> of free GPU pages to cap duplication ratio at the cost of possible allocation stalls.</li>
+</ul>
+
+<hr>
+
+<h2 id="§8-部署上下文-deployment-context">§8 部署上下文 (Deployment context) <a class="heading-anchor" href="#§8-部署上下文-deployment-context" aria-label="Link to §8-部署上下文-deployment-context">#</a></h2>
+
+<ul>
+<li><strong>Serving stage</strong>: both prefill (prefix reuse lowers TTFT) and decode (delayed chunk-based storing of generated KV), plus a cross-engine orchestration mode (PD). It is a caching/movement layer, not a scheduler — batching stays in the host engine.</li>
+<li><strong>Concurrency regime</strong>: shines at mid-to-high QPS where GPU-only prefix cache thrashes and CPU/remote capacity buys hit-ratio (Fig 8 gains widen with QPS). At low QPS / short contexts on slow links it can <em>lose</em> to plain prefill (Fig 15, 32 Gbps < 256K tokens).</li>
+<li><strong>Hardware affinity</strong>: benefits scale with the transfer link — full-duplex PCIe / NVLink / RDMA let chunked parallel store+load run concurrently; low-bandwidth remote (≤32 Gbps) narrows the win. Supports NVIDIA/AMD/Ascend/TPU processors and NVLink/RDMA/TCP transports.</li>
+<li><strong>Ecosystem integration</strong>: plugs into <strong>vLLM</strong> (primary, connector co-maintained upstream) and <strong>SGLang</strong> (§8.8, comparable to native offload but adds hierarchical storage); embedded in Dynamo, llm-d, AIBrix, vLLM production stack, KServe. Integration cost is a connector implementation, not an engine fork.</li>
+<li><strong>Migration path</strong>: a shop on vLLM adopts LMCache by enabling the KV connector and pointing it at a backend (CPU / disk / Redis / Mooncake / S3 / InfiniStore / NIXL) — config-level, no custom attention ops, typically via the official Docker image (§9: most users never read the source).</li>
+</ul>
+
+<p><strong>Workload regime table (where it wins / loses):</strong></p>
+
+<table>
+<tr><th>Workload regime</th><th>LMCache</th><th>Baseline (vLLM)</th><th>Why</th></tr>
+<tr><td>short prompts, low concurrency, slow remote link</td><td>can lose</td><td>competitive</td><td>prefill faster than remote load below crossover (Fig 15, 32 Gbps)</td></tr>
+<tr><td>long prompts, high concurrency</td><td>large win (up to 15×)</td><td>thrashes GPU cache</td><td>CPU/remote capacity ⇒ high hit ratio; chunked load saturates BW (Fig 8)</td></tr>
+<tr><td>mixed prefill–decode (PD disagg)</td><td>1.5–1.8× lower mean TTFT</td><td>page-by-page NIXL copy underutilizes BW</td><td>contiguous chunk staging before cross-engine transfer (Fig 12/14)</td></tr>
+</table>
+
+<p><strong>Software→hardware reverse implication</strong>: LMCache is hardware-proximal (KV physical layout control, DMA chunk staging, interconnect-aware parallel store/load). Its complexity argues for hardware/ISA primitives that make <em>scattered-gather DMA of paged tensors</em> cheap — e.g. a gather-DMA engine that reads a page-index list into a contiguous descriptor without a custom CUDA kernel, or cache/interconnect support to transfer non-contiguous KV pages at large-message efficiency. That would eliminate the streaming-buffer copy that the whole §5.1 chunk design exists to work around.</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

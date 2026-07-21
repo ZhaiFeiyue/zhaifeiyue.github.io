@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Qwen3 Technical Report — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Qwen3 Technical Report</h1>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2505.09388</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">post-training</span><span class="tag">reinforcement-learning</span><span class="tag">distillation</span><span class="tag">reasoning</span><span class="tag">moe</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2505.09388.html">← Synthesis</a>
+<a href="/overview/algorithm.html">← algorithm Survey</a>
+<a href="https://arxiv.org/abs/2505.09388" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="qwen3-technical-report-—-l2">Qwen3 Technical Report — L2 <a class="heading-anchor" href="#qwen3-technical-report-—-l2" aria-label="Link to qwen3-technical-report-—-l2">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Qwen3 fuses a reasoning model and a chat model into <strong>one</strong> checkpoint via a 4-stage post-training pipeline (Long-CoT cold start → Reasoning RL → Thinking-Mode Fusion → General RL), adds a user-controllable <strong>thinking budget</strong>, and builds its 6 small models by <strong>on-policy distillation</strong> that beats RL at ~1/10 the GPU hours.</p>
+
+<h2 id="2-q1-q2-q3">2. Q1/Q2/Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<p><strong>Q1 — 痛点 (problem).</strong> Frontier deployments needed two separate model families: a chat-optimized model (fast, GPT-4o-style) and a dedicated reasoning model (slow, deliberate, QwQ/o1-style). Users had to switch endpoints per query, doubling serving cost and eliminating any fine-grained control over how much reasoning effort a single query gets. Separately, training a full family of small models from scratch with the same reasoning quality as the flagship is prohibitively expensive.</p>
+
+<p><strong>Q2 — 方法 (method).</strong> A single model is trained to operate in both <strong>thinking mode</strong> (emits a <code><think>...</think></code> block before answering) and <strong>non-thinking mode</strong> (empty think block, immediate answer), selectable at inference via <code>/think</code> / <code>/no_think</code> chat-template flags. The flagship (Qwen3-235B-A22B, an MoE) is trained through four sequential post-training stages; the two "thinking" stages install reasoning, the two "non-thinking" stages fuse in chat behavior without destroying it. Six lightweight models are then produced by <strong>strong-to-weak distillation</strong> rather than repeating the 4-stage pipeline.</p>
+
+<p>The <strong>核心技术壁垒</strong> (the single hardest thing to replicate): making thinking and non-thinking coexist in one weight set <em>and</em> letting the user smoothly interpolate between them via a token budget — where the intermediate "answer-on-incomplete-thought" behavior <strong>emerges without being explicitly trained</strong>. The whole value proposition (one model, dial-a-reasoning-budget) hinges on this emergent property surviving the fusion stage; getting the stage ordering and data mix right so that fusion does not catastrophically degrade the RL-installed reasoning is the moat.</p>
+
+<p><strong>Q3 — 结果 (result).</strong> The flagship hits AIME'24 85.7, AIME'25 81.5, LiveCodeBench v5 70.7, CodeForces 2056, BFCL v3 70.8 in thinking mode — competitive with DeepSeek-R1 (671B/37B-activated) and closed models, at 235B total / 22B activated. On-policy distillation lifts Qwen3-8B far above RL (AIME'24 67.6→74.4) while using <strong>1,800 vs 17,920</strong> GPU-hours. Base models reach comparable quality to Qwen2.5 models 1 tier larger; MoE base matches dense base at ~1/5 activated params.</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2505.09388/fig1.png" alt="Figure 1: Qwen3 4-stage post-training pipeline with parallel strong-to-weak distillation"></p>
+
+<p><em>Paper's Figure 1 (p9), verbatim (caption: "Post-training pipeline of the Qwen3 series models.").</em></p>
+
+<p>Figure 1 is the load-bearing diagram of the whole recipe. The flagship path runs left-to-right through four stages: <strong>§4.1 Long-CoT Cold Start</strong> (SFT to install reasoning format) → <strong>§4.2 Reasoning RL</strong> (GRPO on hard verifiable queries) → <strong>§4.3 Thinking Mode Fusion</strong> (continual SFT that grafts non-thinking behavior onto the RL model) → <strong>§4.4 General RL</strong> (broad reward system over 20+ tasks). A parallel <strong>Strong-to-Weak Distillation</strong> path (off-policy → on-policy) branches off to produce the 5 dense + 1 MoE lightweight models, bypassing the expensive 4-stage pipeline entirely. The reader should notice the asymmetry: the flagship earns its capabilities through RL, while the small models <em>inherit</em> them through distillation — this split is the report's core cost-saving thesis.</p>
+
+<p>The pipeline <code>before</code> vs <code>after</code> versus the prior Qwen2.5+QwQ world:</p>
+
+<table>
+<tr><th></th><th>before (Qwen2.5 + QwQ)</th><th>after (Qwen3)</th></tr>
+<tr><td>Reasoning vs chat</td><td>two separate checkpoints</td><td>one checkpoint, mode-switched</td></tr>
+<tr><td>Effort control</td><td>none (fixed per model)</td><td>user-set thinking budget (tokens)</td></tr>
+<tr><td>Small-model training</td><td>independent full training</td><td>distilled from flagship</td></tr>
+<tr><td>Mode selection</td><td>pick a model</td><td><code>/think</code> / <code>/no_think</code> flag</td></tr>
+</table>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证.</strong> This is an engineering technical report with <strong>0 numbered display equations</strong>; it offers no convergence theorem, sample-complexity bound, or formal loss decomposition. All claims are supported empirically (37 tables). The two symbolic objects that carry weight are stated but not analyzed:</p>
+
+<ul>
+<li><strong>On-policy distillation objective</strong>: the student generates on-policy sequences, then is fine-tuned to align its logits with a teacher (Qwen3-32B or Qwen3-235B-A22B) by minimizing KL divergence, $\min_\theta \mathrm{KL}\!\left(p_{\text{teacher}} \,\|\, p_{\text{student}}^{\theta}\right)$ over student-sampled trajectories. No formal argument is given for <em>why</em> this expands (rather than merely mimics) the student's exploration space; the claim rests entirely on the observed pass@64 improvement in Table 21.</li>
+<li><strong>Reasoning RL</strong>: GRPO (group-relative advantage, no value model) is used on $3{,}995$ query-verifier pairs. Query survival at cold-start is governed by Pass@$N$ (fraction of $N$ QwQ-32B generations passing verification); the six removal criteria are heuristic filters, not a proof.</li>
+</ul>
+
+<p><strong>Six minimum checks (applied as empirical-report sanity checks):</strong></p>
+
+<ol>
+<li><strong>Objective stated?</strong> Yes for distillation (KL to teacher logits) and RL (GRPO); no closed-form loss written for the SFT stages. <em>Partial.</em></li>
+<li><strong>Assumptions?</strong> Verifiability of queries (rule/test-case checkable) is the key implicit assumption for RL; distillation assumes teacher > student. Both stated in prose, not formalized.</li>
+<li><strong>Inputs/outputs of one step?</strong> Reasoning RL: (group of rollouts per query + scalar verifier reward) → policy update. On-policy distillation: (student rollout + teacher logits) → student update. Clear.</li>
+<li><strong>Guarantee type?</strong> None formal; only monotone-improvement observations (AIME'24 235B 70.1→85.1 over 170 steps).</li>
+<li><strong>Where would it break?</strong> RL depends on entropy staying stable ("controlling the model's entropy to increase steadily or remain stable"); the paper flags this as the fragile knob. Fusion degrades AIME'24/LiveCodeBench (admitted regression).</li>
+<li><strong>Tightness/optimality?</strong> Not claimed. Data mixture optimized empirically at instance-level via small proxy models; scaling laws used only to <em>predict</em> optimal LR/batch, not proven optimal.</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p>The base-model headline is that Qwen3-235B-A22B-Base beats far larger MoE baselines on 14/15 benchmarks with ~1/3 the total params of DeepSeek-V3.</p>
+
+<p><img src="/assets/2505.09388/tab3.png" alt="Table 3: Qwen3-235B-A22B-Base vs strong open-source base models"></p>
+
+<p><em>Paper's Table 3.</em> Reading across the last column, Qwen3-235B-A22B-Base is bold (highest) on nearly every row despite 235B total / 22B activated vs DeepSeek-V3's 671B/37B — the efficiency claim (comparable quality at ~1/2 the activated params, ~1/3 the total) is carried by this table. The only loss is INCLUDE (73.46 vs DeepSeek-V3 75.17).</p>
+
+<p>The single most important ablation in the paper is Table 21: on-policy distillation vs RL from the <em>same</em> off-policy-distilled 8B checkpoint.</p>
+
+<p><img src="/assets/2505.09388/tab21.png" alt="Table 21: RL vs on-policy distillation on Qwen3-8B (GPU hours in last column)"></p>
+
+<p><em>Paper's Table 21 (<code>tab:distillation</code>).</em> On-policy distillation reaches AIME'24 74.4 / AIME'25 65.5 / LiveCodeBench 60.3 at <strong>1,800 GPU-hours</strong>, while RL reaches only 67.6 / 55.5 / 52.9 at <strong>17,920 GPU-hours</strong> — ~10× the compute for worse results. The subtle, load-bearing detail is the pass@64 column (in parentheses): distillation raises AIME'24 pass@64 to 93.3 and AIME'25 to 86.7, whereas RL leaves both <strong>unchanged</strong> (90.0 / 83.3). This is the empirical basis for the "distillation expands exploration, RL only exploits" claim.</p>
+
+<p><img src="/assets/2505.09388/tab22.png" alt="Table 22: Qwen3-32B stage ablation across Reasoning RL / Thinking Mode Fusion / General RL"></p>
+
+<p><em>Paper's Table 22 (<code>tab:stage_ablation</code>).</em> This stage-by-stage ablation shows the trade-off the authors chose to accept: general/instruction/agent capabilities climb steeply (ToolUse +7.1 then +15.1; ThinkFollow 88.7→98.9; CounterFactQA +10.9), but hard reasoning <strong>regresses</strong> in thinking mode (AIME'24 83.8→81.4, LiveCodeBench 68.4→65.7). The reader should notice the deltas are positive almost everywhere except the two hardest reasoning rows — this is the cost of fusing versatility into a reasoning model.</p>
+
+<p><img src="/assets/2505.09388/tab11.png" alt="Table 11: Qwen3-235B-A22B (Thinking) vs OpenAI-o1 / DeepSeek-R1 / Gemini2.5-Pro"></p>
+
+<p><em>Paper's Table 11 (<code>tab:instruct-235A22</code>).</em> The flagship-thinking comparison against reasoning baselines. Qwen3-235B-A22B leads on agent/coding (BFCL v3 70.8, CodeForces 2056/98.2%, LiveCodeBench 70.7) and multilingual math (MT-AIME 80.8, PolyMath 54.7), but visibly loses on GPQA-Diamond (71.1 vs Gemini2.5-Pro 84.0) and INCLUDE (78.7 vs o1 84.6) — an honest picture, not a clean sweep.</p>
+
+<p><img src="/assets/2505.09388/fig2.png" alt="Figure 2: Qwen3-235B-A22B accuracy vs allocated thinking budget"></p>
+
+<p><em>Paper's Figure 2 (p20), verbatim (caption: "Performance of Qwen3-235B-A22B with respect to the thinking budget.").</em> Accuracy rises smoothly and monotonically with the allocated thinking budget across four Math/Coding/STEM benchmarks. The point is that the budget knob is a <em>usable</em> dial — performance degrades gracefully as the budget shrinks, rather than collapsing — which is what makes the emergent early-halt behavior practically valuable.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>A single model can hold both thinking and non-thinking modes if fusion is done <em>after</em> reasoning is installed by RL.</td><td>§4.3 Thinking Mode Fusion: continual SFT on the Reasoning-RL model; chat template with <code>/think</code>/<code>/no_think</code> + empty think block for non-thinking.</td></tr>
+<tr><td>2</td><td>Given (1), an intermediate "answer on incomplete thought" behavior appears for free, enabling a user thinking budget.</td><td>§4.3: early-halt by inserting a fixed stop-thinking string once thinking length hits the threshold; "not explicitly trained but emerges naturally."</td></tr>
+<tr><td>3</td><td>Given (2), the budget dial yields smooth, monotone accuracy scaling.</td><td>§4.7 + Figure 2: accuracy rises smoothly with budget on 4 benchmarks.</td></tr>
+<tr><td>4</td><td>Small models need not repeat the 4-stage pipeline; distilling flagship logits is enough.</td><td>§4.5 + §4.7: on-policy distillation Qwen3-8B beats RL at 1/10 GPU-hours (Table 21).</td></tr>
+<tr><td>5</td><td>Distillation is not mere mimicry — it raises the exploration ceiling.</td><td>Table 21: distillation raises pass@64; RL does not.</td></tr>
+<tr><td>6</td><td>The fusion in (1) costs some peak reasoning, but the authors accept it for versatility.</td><td>§4.7 + Table 22: thinking-mode AIME'24/LiveCodeBench decline after Stage 3/4; explicit "we choose to accept this trade-off."</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> — the training pipeline, data pipeline, and RL/distillation code are not released; only model weights (Apache 2.0) and the chat template are public. The one directly reproducible implementation artifact is the <strong>chat template</strong> that encodes the mode-switch mechanism, referenced by the paper at <code>Qwen/Qwen3-32B/blob/main/tokenizer_config.json</code> on Hugging Face — this file implements the <code><think></think></code> block handling and the <code>enable_thinking=False</code> toggle (Table 9).</p>
+
+<p><strong>核心技术壁垒 (§7 dedicated paragraph).</strong> The hardest-to-replicate insight is not any single algorithm (GRPO, KL distillation, and cold-start SFT are all off-the-shelf) but the <strong>stage-ordering discipline</strong> that lets thinking-mode fusion graft chat behavior onto an RL-hardened reasoning model while (a) preserving mode-switch fidelity (ThinkFollow rises to 98.9) and (b) letting the graded early-halt budget behavior emerge unsupervised. The empty-think-block convention plus the "response adheres to the <em>last</em> flag" multi-turn rule (§4.3) is the mechanically simple but experimentally delicate trick: too little non-thinking data and the model refuses to stop thinking; too much and RL reasoning collapses. The report shows the balance point exists (Table 22) but discloses none of the mixture ratios that hit it.</p>
+
+<p><strong>关键实现细节 (1–2 easy-to-miss tricks).</strong></p>
+<ol>
+<li><strong>Empty-think-block for non-thinking data</strong> (§4.3, Table 9): non-thinking samples still carry a <code><think>\n\n</think></code> block (empty), so the model always sees the same structural scaffold — this is what makes budget-based early-halt (inject <code></think></code> mid-stream) coherent rather than out-of-distribution.</li>
+<li><strong>Entropy control during Reasoning RL</strong> (§4.2): the authors call out keeping model entropy "steadily increasing or stable" as crucial for stable training, combined with large batch + high rollouts-per-query + off-policy reuse for sample efficiency — a small note that governs whether the 170-step 70.1→85.1 jump reproduces.</li>
+</ul>
+
+<p><strong>Reproducibility & ecosystem.</strong> Training code closed; closest open references for the recipe are <code>verl</code> / <code>OpenRLHF</code> / <code>TRL</code> for GRPO-style RL, and standard KL-distillation loops for the on-policy stage. The data-mixture novelty (instance-level optimization via small proxy models, contrasted with DoReMi/DoGE/RegMix which work at source/domain level) is described but not released. Qwen3 weights are widely deployed and the <code>/think</code>–<code>/no_think</code> template is natively supported by the HF tokenizer, so the <em>inference-time</em> behavior is fully reproducible even though the <em>training</em> is not.</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
