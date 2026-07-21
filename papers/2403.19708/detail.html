@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Cost-Efficient Large Language Model Serving for Multi-turn Conversations with CachedAttention — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Cost-Efficient Large Language Model Serving for Multi-turn Conversations with CachedAttention</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2403.19708</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-reuse</span><span class="tag">multi-turn-serving</span><span class="tag">hierarchical-storage</span><span class="tag">scheduler-aware-caching</span><span class="tag">positional-encoding-decoupling</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2403.19708.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2403.19708" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="cachedattention-attentionstore-—-l2">CachedAttention / AttentionStore — L2 <a class="heading-anchor" href="#cachedattention-attentionstore-—-l2" aria-label="Link to cachedattention-attentionstore-—-l2">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Multi-turn LLM serving discards each session's KV cache when idle, then recomputes it on the next turn — up to 99% of prefill cost is this wasted recompute. CachedAttention keeps KV in a tiered DRAM+SSD store (AttentionStore), overlaps load/save with compute, prefetches/evicts using the scheduler's job queue, and decouples RoPE so truncated caches stay valid. Result: TTFT ↓ up to 87%, prefill throughput ↑ up to 7.8×, cost ↓ up to 70%.</p>
+
+<hr>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-the-pain">Q1 — 痛点 (the pain) <a class="heading-anchor" href="#q1-—-痛点-the-pain" aria-label="Link to q1-—-痛点-the-pain">#</a></h3>
+
+<p>In a multi-turn conversation, turn $N{+}1$ must attend over the full history $q_1 a_1 q_2 a_2 \dots q_N a_N q_{N+1}$. Current engines store KV only in HBM during an active turn, then <strong>discard it</strong> when the session goes idle to free HBM for other sessions. When the user replies, the engine <strong>recomputes the entire historical KV from scratch</strong>. The waste grows linearly with turn count:</p>
+
+<ul>
+<li>ShareGPT: <strong>73%</strong> of conversations are multi-turn; <strong>30%</strong> exceed 4K tokens (§2.3).</li>
+<li>As turns accumulate, historical tokens become <strong>>99%</strong> of a new turn's prompt, so <strong>up to 99% of prefill time (= TTFT) is pure recompute</strong> (§2.3, Fig 4).</li>
+</ul>
+
+<p>The naive fix — keep KV in HBM — fails on capacity. On 4×A100 running LLaMA-65B, KV generates at ~13.9 GB/s and fills the 190 GB of free HBM in <strong>14 seconds</strong>; spilling to 512 GB host memory buys <strong><1 minute</strong> (§2.4). So the KV <em>must</em> live on slower, larger tiers, which reintroduces access latency on the inference critical path.</p>
+
+<p><strong>System scope (framework §1 pin-down):</strong></p>
+<ul>
+<li><strong>Stage coverage</strong>: primarily the <strong>prefill</strong> stage of <em>reactivated</em> sessions (it turns full-history prefill into new-token-only prefill); it also indirectly shortens decode under continuous batching because a shorter prefill unblocks queued decode jobs sooner.</li>
+<li><strong>Serving, not training</strong>; <strong>continuous batching</strong> enabled (Orca-style, [57]).</li>
+<li><strong>Parallelism axes</strong>: TP only (LLaMA-13B on 2 GPUs, 65B/70B/Falcon-40B on 4 GPUs). No PP/EP/DP/SP claimed — it owns the KV-cache lifecycle, delegates model execution to a HF-Transformers executor.</li>
+<li><strong>Deployment mode</strong>: single-node, GPU + host DRAM + local SSD; prefill and decode co-located (not disaggregated).</li>
+</ul>
+
+<h3 id="q2-—-方法-the-method">Q2 — 方法 (the method) <a class="heading-anchor" href="#q2-—-方法-the-method" aria-label="Link to q2-—-方法-the-method">#</a></h3>
+
+<p>CachedAttention = a KV-reuse attention mechanism + <strong>AttentionStore</strong>, a hierarchical KV caching system spanning HBM ↔ DRAM ↔ SSD. Four sub-techniques, each answering one challenge:</p>
+
+<ol>
+<li><strong>Overlapped access</strong> (Challenge 1: load/save latency on critical path):</li>
+<li><em>Layer-wise pre-loading</em> — while the GPU computes layer $i$, the read stream loads layer $i{+}1$'s KV; a sized read buffer lets pre-loading start before the previous job frees its execution buffer (§3.2.1).</li>
+<li><em>Asynchronous saving</em> — write KV back layer-by-layer, overlapping prefill-phase KV saving with the decode phase; a write buffer absorbs KV not yet flushed when decode ends (§3.2.2).</li>
+<li><strong>Hierarchical placement</strong> (Challenges 2&3: capacity + slow disks):</li>
+<li><em>Scheduler-aware fetching</em> — a look-ahead window over the job queue pre-fetches soon-to-be-used KV from SSD→DRAM (§3.3.1).</li>
+<li><em>Scheduler-aware eviction</em> — evicts by <strong>future</strong> access info from the job queue, not LRU/FIFO history; session-granular (§3.3.2).</li>
+<li><strong>Decoupled truncation</strong> (Challenge 4: context-overflow invalidation):</li>
+<li>Cache KV <strong>before</strong> RoPE is applied; re-embed positions on load, so truncated KV stays reusable (§3.4).</li>
+</ul>
+
+<p><strong>核心技术壁垒 (the single hardest-to-replicate insight):</strong> the <strong>scheduler-aware placement</strong>, i.e. converting the inference job scheduler's queue into an <em>oracle of future KV accesses</em> and driving both prefetch (SSD→DRAM) and eviction (protect items inside the look-ahead window) from it. This is what makes tiered offloading actually win: it moves <strong>>99.6% of cache hits into DRAM</strong> while LRU/FIFO leave essentially all hits on slow disk (~0.5% DRAM). Belady-style future knowledge is normally unavailable to a cache — CachedAttention manufactures it from the serving scheduler, which is a system-integration trick, not a standalone algorithm. Everything else (layer-wise overlap, RoPE decoupling) is individually replicable; the scheduler-cache coupling is the differentiator.</p>
+
+<h3 id="q3-—-结果-the-result">Q3 — 结果 (the result) <a class="heading-anchor" href="#q3-—-结果-the-result" aria-label="Link to q3-—-结果-the-result">#</a></h3>
+
+<p>Vs. recomputation (RE) baseline on 9K ShareGPT conversations (~52K turns), 4×A100:</p>
+<ul>
+<li><strong>TTFT</strong> ↓ 85% / 61% / 87% / 86% (LLaMA-13B / 65B / 70B / Falcon-40B).</li>
+<li><strong>Prefill throughput</strong> ↑ 6.8× / 2.6× / 7.8× / 7.2×.</li>
+<li><strong>End-to-end GPU time</strong> ↓ (speedup) 4.0× / 1.9× / 3.3× / 3.4×.</li>
+<li><strong>Cost</strong> ↓ 70% / 43% / 66% / 68%; storage is only 9–16.4% of total cost.</li>
+<li><strong>Hit rate</strong> 86% / 71% / 89% / 90%, with <strong>>99.6% of hits in DRAM</strong>.</li>
+<li><strong>Quality</strong>: decoupled truncation matches token-truncation within <strong>PPL <0.02</strong> and within ~1% accuracy; naive coupled truncation (NKVT) collapses to <strong>PPL >10³</strong>.</li>
+</ul>
+
+<hr>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<h3 id="system-architecture">System architecture <a class="heading-anchor" href="#system-architecture" aria-label="Link to system-architecture">#</a></h3>
+
+<p><img src="/assets/2403.19708/fig5.png" alt="Figure 5: CachedAttention system architecture — AttentionStore tiers plus scheduler-driven KV movement"></p>
+
+<p><em>Paper's Figure 5 (caption: "The system architecture of CachedAttention").</em> This is the load-bearing diagram: it shows the LLM inference engine on the GPU, the <strong>AttentionStore</strong> spanning host DRAM and SSDs, and the data paths in/out of HBM. The read/write streams (layer-wise preload, async save) sit on the HBM↔DRAM edge; the fetch/evict logic sits on the DRAM↔SSD edge; the job scheduler feeds hints to both. Note the <strong>KV manager is a first-class box separate from the scheduler</strong> — the scheduler decides <em>what runs next</em>, the KV manager decides <em>where each session's KV physically lives</em>.</p>
+
+<h3 id="the-core-mechanism-reuse-vs-recompute">The core mechanism: reuse vs recompute <a class="heading-anchor" href="#the-core-mechanism-reuse-vs-recompute" aria-label="Link to the-core-mechanism-reuse-vs-recompute">#</a></h3>
+
+<p><img src="/assets/2403.19708/fig3.png" alt="Figure 3: recomputation vs CachedAttention — only new tokens are prefilled"></p>
+
+<p><em>Paper's Figure 3 (caption: "Comparison of recomputation and CachedAttention").</em> Conventional attention re-prefills the whole prompt each turn; CachedAttention prefills only $q_3$ (the new turn) and loads the cached KV of $q_1 a_1 q_2 a_2$. This is the entire economic argument in one picture — the reused fraction is exactly the >99% historical-token fraction from Q1.</p>
+
+<h3 id="request-kv-lifecycle">Request / KV lifecycle <a class="heading-anchor" href="#request-kv-lifecycle" aria-label="Link to request-kv-lifecycle">#</a></h3>
+
+<p>The scheduler → KV-manager → executor interaction is a sequence, so a redraw adds structural clarity the raster diagrams do not:</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant Sched as Job Scheduler (queue)
+    participant KVM as KV Manager (AttentionStore)
+    participant SSD as SSD tier
+    participant DRAM as DRAM tier
+    participant GPU as GPU (HBM + exec)
+    Sched->>KVM: look-ahead window: jobs 2..k coming
+    KVM->>SSD: prefetch KV of hit-in-disk jobs
+    SSD-->>DRAM: migrate session KV (IO threads)
+    Sched->>GPU: dispatch job (its KV now in DRAM)
+    DRAM-->>GPU: layer-wise pre-load KV -> HBM read buffer
+    GPU->>GPU: prefill new tokens (overlaps with load)
+    GPU-->>DRAM: async save new KV (write buffer)
+    KVM->>KVM: evict tail-of-window session DRAM->SSD if low free space
+</div>
+
+<p>The queue is scanned two ways: a short <strong>prefetch window</strong> ($L_{pw}$ jobs, bounded by DRAM) drags KV up; a long <strong>eviction window</strong> ($L_{ew}$ jobs, bounded by DRAM+SSD) protects imminent sessions from being evicted, prioritizing the tail for eviction.</p>
+
+<h3 id="kv-memory-manager-details">KV / memory manager details <a class="heading-anchor" href="#kv-memory-manager-details" aria-label="Link to kv-memory-manager-details">#</a></h3>
+
+<ul>
+<li><strong>Allocation unit</strong>: block-based storage for both DRAM and SSD, like vLLM's paged KV [21]; an internal allocator does on-demand alloc/dealloc.</li>
+<li><strong>Fetch/evict granularity</strong>: <strong>one conversation session = one item</strong> — "the KV cache in the same session is either all used or none of it" (§3.3.2). So there is no intra-session fragmentation at the reuse layer.</li>
+<li><strong>Cross-tier transport</strong>: HBM↔DRAM over <strong>PCIe Gen4 ×16 (~26 GB/s effective)</strong>; DRAM↔SSD via separate IO threads. No cross-node collective — this is a single-node system.</li>
+</ul>
+
+<hr>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无统一形式化模型 — 局部工程模型 + 实证为主.</strong> The paper has no single throughput/latency optimization model; instead it provides several <em>local sizing formulas</em> (buffer size, window lengths, capacity) plus a capacity model, and validates behavior empirically. Below is the notation table and the load-bearing equations, followed by the 6 minimum checks.</p>
+
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$X=[x_1,\dots,x_s]$</td><td>input token list, seq length $s$</td></tr>
+<tr><td>$W_Q,W_K,W_V$</td><td>per-layer QKV projection weights</td></tr>
+<tr><td>$Q,K,V$</td><td>query / key / value tensors (K,V become the cache)</td></tr>
+<tr><td>$d_K$</td><td>key-vector dimension (attention scaling)</td></tr>
+<tr><td>$T_{load}$</td><td>per-token KV access (transfer) time</td></tr>
+<tr><td>$T_{pref}$</td><td>per-token prefill compute time</td></tr>
+<tr><td>$L_{hist}$</td><td># historical tokens in a session</td></tr>
+<tr><td>$L_{new}$</td><td># new input tokens in the turn</td></tr>
+<tr><td>$B$</td><td>PCIe bandwidth</td></tr>
+<tr><td>$S_{buf}$</td><td>read-buffer size (bytes)</td></tr>
+<tr><td>$C_{mem}$</td><td>host-memory capacity available for prefetch</td></tr>
+<tr><td>$C_{disk}$</td><td>total available disk capacity</td></tr>
+<tr><td>$S_{kv}$</td><td>average per-session KV size</td></tr>
+<tr><td>$L_{pw}$</td><td>look-ahead prefetch window length (jobs)</td></tr>
+<tr><td>$L_{ew}$</td><td>look-ahead eviction window length (jobs)</td></tr>
+<tr><td>$DSpUT$</td><td>distinct sessions served per unit time</td></tr>
+<tr><td>$CCpS$</td><td>max KV capacity per session (= max context × per-token KV)</td></tr>
+<tr><td>$CCpUT$</td><td>required max cache capacity per unit time</td></tr>
+</table>
+
+<h3 id="load-bearing-equations-physical-meaning">Load-bearing equations + physical meaning <a class="heading-anchor" href="#load-bearing-equations-physical-meaning" aria-label="Link to load-bearing-equations-physical-meaning">#</a></h3>
+
+<p><strong>QKV projection & attention</strong> (why a cache exists at all):</p>
+
+<p>$$Q=W_{Q}X,\quad K=W_{K}X,\quad V=W_{V}X$$</p>
+
+<p>$$\mathrm{Attention}(Q,K,V)=\mathrm{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_{K}}}\right)V$$</p>
+
+<p>Every token attends over <strong>all</strong> prior tokens' $K,V$; that dependency is exactly why the full historical KV must be present, hence caching is worthwhile.</p>
+
+<p><strong>Imperfect-overlap condition</strong> — overlap fails when transfer of the historical KV outruns the partial (new-token) prefill compute:</p>
+
+<p>$$T_{load}\,L_{hist} > T_{pref}\,L_{new}$$</p>
+
+<p>Physical meaning: the LHS is total bytes-time to fetch history, the RHS is the compute time available to hide it. It uses $L_{new}$ (not $L_{hist}$) on the RHS because CachedAttention only <em>computes</em> the new tokens — that asymmetry is precisely why long history + short new turn is the hard regime.</p>
+
+<p><strong>Read-buffer size</strong> — bytes that arrive during the un-hideable gap:</p>
+
+<p>$$S_{buf}=B\left(T_{load}\,L_{hist}-T_{pref}\,L_{new}\right)$$</p>
+
+<p>The parenthesized term is the time gap; multiplying by bandwidth $B$ converts it to the bytes the buffer must pre-stage so loading can start early.</p>
+
+<p><strong>Prefetch window</strong> (bounded by DRAM) and <strong>eviction window</strong> (bounded by DRAM+SSD):</p>
+
+<p>$$L_{pw}=\frac{C_{mem}}{S_{kv}} \qquad L_{ew}=\frac{C_{mem}+C_{disk}}{S_{kv}}$$</p>
+
+<p>Both divide capacity by per-session KV size to convert <em>bytes</em> into <em>number of look-ahead jobs</em>. $L_{ew}>L_{pw}$ because eviction reasons about the whole store (DRAM+SSD), while prefetch only stages into DRAM.</p>
+
+<p><strong>Capacity sizing:</strong></p>
+
+<p>$$CCpUT = DSpUT \cdot CCpS$$</p>
+
+<p>Physical meaning: to guarantee a hit for every distinct session within a TTL window, hold (sessions-per-unit-time) × (per-session full-window KV). Configuring $CCpUT$ gives ~100% hit ignoring new arrivals.</p>
+
+<h3 id="6-minimum-checks">6 minimum checks <a class="heading-anchor" href="#6-minimum-checks" aria-label="Link to 6-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Denominator/exclusion check</strong> — Eq. 3/4 put $L_{new}$ (not $L_{hist}$) on the compute side because reuse means only new tokens are prefilled; this is internally consistent with the reuse premise. ✔</li>
+<li><strong>Monotonicity / boundary</strong> — $S_{buf}$ is increasing in $L_{hist}$ and decreasing in $L_{new}$; the optimum buffer is at the boundary where $S_{buf}=0$ (perfect overlap when $T_{load}L_{hist}\le T_{pref}L_{new}$). Beyond that, buffer grows linearly — no interior optimum. ✔</li>
+<li><strong>First-order plug-in (overlap)</strong> — §2.4 gives $T_{load}$: 2K-token KV = 5 GB / 26 GB/s ≈ 192 ms; $T_{pref}$ for 2K ≈ 360 ms. For a <em>reactivated</em> turn with $L_{hist}\gg L_{new}$, $T_{load}L_{hist}$ dominates → Eq. 3 predicts imperfect overlap → a read buffer is required. The §4.3.2 ablation confirms: PL-B0 gives 35% reduction, PF-B15 gives 61% (perfect overlap). ✔</li>
+<li><strong>First-order plug-in (capacity)</strong> — RCC/CCpUT = 0.25 → 98% hit (§4.3.6). Sub-linear: you need only ¼ of the "ideal" capacity because item hotness is skewed. The formula's 100% claim is the <em>upper</em> bound, matching the measured saturation. ✔</li>
+<li><strong>Window ordering</strong> — $L_{ew} \ge L_{pw}$ always (since $C_{disk}\ge 0$); the worked example uses $L_{pw}=2$, $L_{ew}=6$ (§3.3.1/§3.3.2), consistent with DRAM ⊂ DRAM+SSD. ✔</li>
+<li><strong>Unit sanity</strong> — $L_{pw},L_{ew}$ are (bytes)/(bytes/session) = sessions ✔; $S_{buf}$ = (bytes/s)·(s) = bytes ✔; $CCpUT$ = (sessions/time)·(bytes/session) = bytes/time ✔.</li>
+</ul>
+
+<p><em>What a unified model would have clarified</em>: there is no closed-form for end-to-end throughput as a function of (hit rate, tier bandwidths, arrival rate). The reported speedups are measured, not derived — so the sensitivity to PCIe/SSD bandwidth or to arrival rate (§4.3.8) is shown only by sweep, not predicted.</p>
+
+<hr>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>Setup</strong>: 4×A100-80GB, 128 GB DRAM, 10 TB SSD, PCIe Gen4; FP16 activations; continuous batching; ShareGPT with Poisson arrivals ($\lambda=1.0$); baseline = recomputation (RE) with 0.5 truncation ratio.</p>
+
+<h3 id="motivation-evidence">Motivation evidence <a class="heading-anchor" href="#motivation-evidence" aria-label="Link to motivation-evidence">#</a></h3>
+
+<p><img src="/assets/2403.19708/fig4.png" alt="Figure 4: recomputation inefficiency — historical vs new tokens and their GPU cost"></p>
+
+<p><em>Paper's Figure 4 (caption: "Recomputation inefficiencies. (a) Average numbers of historical and new tokens ... (b) GPU time for prefilling all tokens and only new input tokens ... Mistral-7B on 1 A100").</em> This quantifies the premise: as turns grow, historical tokens dominate (>99%), and prefilling all tokens vs new-only diverges sharply — the gap is exactly the recompute CachedAttention deletes.</p>
+
+<h3 id="overlapped-access-ablation">Overlapped-access ablation <a class="heading-anchor" href="#overlapped-access-ablation" aria-label="Link to overlapped-access-ablation">#</a></h3>
+
+<p><img src="/assets/2403.19708/fig7.png" alt="Figure 7: perfect vs imperfect layer-wise overlap with buffer sizing"></p>
+
+<p><em>Paper's Figure 7 (caption: "(a) Layer-wise pre-loading with imperfect overlapping. (b) Perfect pre-loading with a customized larger buffer").</em> When per-layer KV load time exceeds per-layer compute (the $T_{load}L_{hist}>T_{pref}L_{new}$ regime), gaps appear between layers (a); a larger read buffer lets pre-loading run ahead and close them (b). This is the visual justification for Eq. 4.</p>
+
+<p><img src="/assets/2403.19708/fig19.png" alt="Figure 19: prefill time with no pre-loading vs pre-loading across read-buffer sizes"></p>
+
+<p><em>Paper's Figure 19 (caption: "CA with no pre-loading v.s. CA pre-loading with various buffer sizes").</em> PL-B0 (no buffer) already cuts prefill time 35% vs NO-PL; PF-B15 reaches 61% (perfect overlap). The reader should notice diminishing returns after the buffer covers the gap — beyond B15 there is nothing left to hide.</p>
+
+<h3 id="scheduler-aware-placement-ablation-the-load-bearing-result">Scheduler-aware placement ablation (the load-bearing result) <a class="heading-anchor" href="#scheduler-aware-placement-ablation-the-load-bearing-result" aria-label="Link to scheduler-aware-placement-ablation-the-load-bearing-result">#</a></h3>
+
+<p><img src="/assets/2403.19708/fig21.png" alt="Figure 21: scheduler-aware eviction vs LRU/FIFO on hit rate and GPU time"></p>
+
+<p><em>Paper's Figure 21 (caption: "Comparison of the eviction algorithms under various storage settings. (a) Impact on hit rate. (b) Impact on GPU time").</em> At 128G/10T, CA hits <strong>86%</strong> vs LRU <strong>58%</strong> / FIFO <strong>48%</strong>, up to <strong>2.7× GPU-time speedup</strong>. The decisive detail is the breakdown: CA lands >99.6% of hits in DRAM while LRU/FIFO get ~0.5% — future-awareness doesn't just raise the hit rate, it relocates hits off the slow tier. This is the core 技术壁垒 made empirical.</p>
+
+<h3 id="storage-tier-ablation">Storage-tier ablation <a class="heading-anchor" href="#storage-tier-ablation" aria-label="Link to storage-tier-ablation">#</a></h3>
+
+<p><img src="/assets/2403.19708/fig24.png" alt="Figure 24: hit rate and GPU time under HBM-only vs +DRAM vs +SSD"></p>
+
+<p><em>Paper's Figure 24 (caption: "Performance under various caching configurations").</em> HBM-only ≈ <strong>0%</strong> hit (capacity-starved); HBM+DRAM only 1.7–19.1%; adding SSD jumps to <strong>71–90%</strong>. This refutes prior HBM-only multi-turn caching (LMDeploy/RadixAttention-style) directly — the capacity, not the bandwidth, is the binding constraint at scale.</p>
+
+<h3 id="quality-of-decoupled-truncation">Quality of decoupled truncation <a class="heading-anchor" href="#quality-of-decoupled-truncation" aria-label="Link to quality-of-decoupled-truncation">#</a></h3>
+
+<p>Decoupled truncation is essentially <strong>lossless</strong>:</p>
+
+<table>
+<tr><th>Dataset</th><th>Model</th><th>CA</th><th>TT</th><th>NKVT</th></tr>
+<tr><td>WikiText-2</td><td>LLaMA-7B</td><td>5.47</td><td>5.48</td><td>2198.7</td></tr>
+<tr><td>WikiText-2</td><td>LLaMA-13B</td><td>4.91</td><td>4.90</td><td>1647.7</td></tr>
+<tr><td>PTB</td><td>LLaMA-13B</td><td>7.61</td><td>7.60</td><td>1865.8</td></tr>
+<tr><td>C4</td><td>LLaMA-13B</td><td>6.44</td><td>6.45</td><td>1745.6</td></tr>
+</table>
+
+<p>CA tracks token-truncation (TT) within 0.02 PPL; naive coupled truncation (NKVT) explodes to >10³, confirming the position-coupling problem is real, not hypothetical. Accuracy (Table 2): MMLU/LongEval/PIQA CA≈TT within ~1%, NKVT far below (e.g. LongEval LLaMA-7B: CA 66.0% vs NKVT 12.0%).</p>
+
+<h3 id="workload-characterization-framework-§6-—-where-it-wins-loses">Workload characterization (framework §6 — where it wins/loses) <a class="heading-anchor" href="#workload-characterization-framework-§6-—-where-it-wins-loses" aria-label="Link to workload-characterization-framework-§6-—-where-it-wins-loses">#</a></h3>
+
+<table>
+<tr><th>Workload regime</th><th>CachedAttention</th><th>RE baseline</th><th>Why</th></tr>
+<tr><td>Short prompts, low concurrency (1st turn, cold)</td><td>≈ RE (no history to reuse)</td><td>≈ RE</td><td>nothing cached yet; benefit needs a prior turn</td></tr>
+<tr><td>Long history, later turns</td><td>huge win (TTFT ↓ up to 87%)</td><td>recomputes all history</td><td>reuse deletes >99% of prefill</td></tr>
+<tr><td>Mixed prefill-decode (continuous batching)</td><td>win — short prefill unblocks queued decode</td><td>prefill blocks decode</td><td>reduced prefill time propagates to decode</td></tr>
+<tr><td>High DSpUT / capacity-starved (small SSD, e.g. LLaMA-65B)</td><td>weakest (hit 71%, cost ↓ only 43%)</td><td>—</td><td>large per-token KV (2.5 MB) exhausts store; also LLaMA-65B's 2K window forces overflow after turn 1</td></tr>
+<tr><td>Rising arrival rate 0.5→2.0/s</td><td>mild degradation (hit 82→77%, GPU 6.25→7.01 H)</td><td>—</td><td>higher DSpUT needs more capacity for same hit</td></tr>
+</table>
+
+<p>The regime where CachedAttention <strong>loses its edge</strong> is explicit: LLaMA-65B (largest per-token KV <em>and</em> smallest 2K context) — 43% cost saving vs 66–70% elsewhere. The paper surfaces this rather than hiding it.</p>
+
+<hr>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>Claim</th><th>Internal support</th></tr>
+<tr><td>1</td><td>Multi-turn recompute wastes up to 99% of prefill cost.</td><td>ShareGPT: 73% multi-turn, history >99% of new-turn tokens → 99% of TTFT is recompute (§2.3, Fig 4).</td></tr>
+<tr><td>2</td><td>Therefore KV must be reused, but cannot fit in HBM.</td><td>KV fills 190 GB free HBM in 14 s at 13.9 GB/s; host memory <1 min (§2.4). ⇒ need slower/larger tiers.</td></tr>
+<tr><td>3</td><td>Slower tiers add latency on the critical path.</td><td>Loading 2K-token KV (5 GB) over PCIe = 192 ms vs 360 ms prefill — non-negligible (§2.4 Ch.1).</td></tr>
+<tr><td>4</td><td>Layer-wise preload + async save hide that latency.</td><td>Eq. 3 predicts imperfect overlap for long history; read buffer (Eq. 4) closes gaps → 61% prefill-time cut at PF-B15 (§3.2, §4.3.2).</td></tr>
+<tr><td>5</td><td>Most KV lives on SSD, so placement determines effective speed.</td><td>Disks tens of TB but <5 GB/s; random arrivals ⇒ likely disk hits (§2.4 Ch.3).</td></tr>
+<tr><td>6</td><td>Scheduler-aware fetch/evict moves hits to DRAM.</td><td>Job-queue look-ahead ($L_{pw},L_{ew}$) beats LRU/FIFO; >99.6% of CA hits in DRAM vs ~0.5% (§3.3, §4.3.3).</td></tr>
+<tr><td>7</td><td>Context overflow would invalidate cached KV.</td><td>Token truncation shifts positions; 30% (LLaMA-2 4K) / 47% (OPT 2K) of sessions overflow (§2.4 Ch.4).</td></tr>
+<tr><td>8</td><td>Decoupling RoPE keeps truncated KV valid & lossless.</td><td>Cache before position-embed, re-embed on load; PPL within 0.02 of TT, NKVT >10³ (§3.4, §4.3.5).</td></tr>
+<tr><td>9</td><td>Net effect: large TTFT/throughput/cost wins.</td><td>End-to-end: TTFT ↓87%, prefill ↑7.8×, cost ↓70% vs RE (§4.2).</td></tr>
+</table>
+
+<hr>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> — no public code repository is cited in the paper; it states only that CachedAttention is implemented "in Pytorch and Python" over HuggingFace Transformers [51], with block-based storage similar to vLLM [21], dedicated CUDA streams for HBM↔DRAM movement, and separate IO threads for DRAM↔SSD (§4.1). No file:line citations are possible.</p>
+
+<p><strong>核心技术壁垒 (§7 deep dive):</strong> the reproduction-critical piece is not any single kernel but the <strong>coupling between the serving job scheduler and the KV tier manager</strong>. To rebuild it you must (a) expose the scheduler's waiting-job queue to the cache layer, (b) key the cache by <em>session id</em> (session-granular items, since a session's KV is all-or-nothing), and (c) run two look-ahead scans over the same queue — a short one bounded by DRAM ($L_{pw}=C_{mem}/S_{kv}$) that drives SSD→DRAM prefetch, and a long one bounded by DRAM+SSD ($L_{ew}=(C_{mem}+C_{disk})/S_{kv}$) that vetoes eviction of imminent sessions and prioritizes the tail. Getting the tail-priority eviction right (evict the furthest-future session, not the least-recently-used) is what produces the >99.6% DRAM-hit inversion; a straightforward LRU port will silently regress to disk-bound hits.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
+<ol>
+<li><strong>Save is per-phase, not uniform.</strong> Prefill-phase KV (produced in bulk) is overlapped with the <em>decode</em> phase; decode-phase KV is written layer-by-layer during decode, with a <strong>write buffer</strong> catching whatever isn't flushed when decode ends — otherwise the next job blocks on the write (§3.2.2). Missing this makes the async-save gains (13–15%) disappear.</li>
+<li>*<em>RoPE decoupling requires caching KV </em>before<em> the positional rotation</em>* and re-applying it on load; it only works with relative/rotary PE, not absolute PE (§3.4). Truncation then operates directly on stored KV (e.g. keep KV[0:1536]), and it composes with a token-discarding list for KV compression — but silently assumes an RPE model.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
