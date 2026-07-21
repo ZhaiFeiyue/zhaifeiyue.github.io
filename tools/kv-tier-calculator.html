@@ -147,11 +147,13 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
       <div class="sld"><div class="top"><span class="lab">TOPS_peak</span><span class="val" id="v_tops">5.0 P</span></div><input type="range" id="tops" min="0.5" max="20" step="0.5" value="5" oninput="calc()"><div class="sub">PFLOPS</div></div>
       <div class="sld"><div class="top"><span class="lab">η_compute (MFU)</span><span class="val" id="v_etac">0.60</span></div><input type="range" id="etac" min="0.1" max="1" step="0.05" value="0.6" oninput="calc()"><div class="sub">有效 TOPS = peak·η</div></div>
       <div class="sld"><div class="top"><span class="lab">P_active 激活参数</span><span class="val" id="v_pact">32 B</span></div><input type="range" id="pact" min="1" max="700" step="1" value="32" oninput="calc()"><div class="sub">recompute FLOPs=2·P·W</div></div>
-      <div class="sld"><div class="top"><span class="lab">load-back BW</span><span class="val" id="v_bw">260 GB/s</span></div><input type="range" id="bwlb" min="20" max="1200" step="10" value="260" oninput="calc()"><div class="sub">L2/L3→L1</div></div>
+      <div class="sld"><div class="top"><span class="lab">L2→L1 BW</span><span class="val" id="v_bw">260 GB/s</span></div><input type="range" id="bwlb" min="20" max="1200" step="10" value="260" oninput="calc()"><div class="sub">host→device(可 overlap)</div></div>
+      <div class="sld"><div class="top"><span class="lab">L3→L2 BW</span><span class="val" id="v_bwl3">80 GB/s</span></div><input type="range" id="bwl3" min="5" max="600" step="5" value="80" oninput="calc()"><div class="sub">store→host(wait_complete 时阻塞)</div></div>
       <div class="sld"><div class="top"><span class="lab">η_bw</span><span class="val" id="v_etab">0.80</span></div><input type="range" id="etab" min="0.1" max="1" step="0.05" value="0.8" oninput="calc()"><div class="sub">有效 BW = BW·η</div></div>
       <div class="sld"><div class="top"><span class="lab">HBM BW(decode)</span><span class="val" id="v_bwh">8000 GB/s</span></div><input type="range" id="bwhbm" min="500" max="16000" step="500" value="8000" oninput="calc()"><div class="sub">decode 显存带宽界</div></div>
       <div class="numrow"><label>bytes/param</label><input id="bpp" value="0.5" oninput="calc()"></div>
-      <div class="numrow"><label>prefetch 可与 fwd 重合</label><input type="checkbox" id="ovl" checked onchange="calc()"></div>
+      <div class="numrow"><label>L2→L1 overlap compute</label><input type="checkbox" id="ovl" checked onchange="calc()"></div>
+      <div class="numrow"><label>L3 wait_complete(阻塞)</label><input type="checkbox" id="wc" checked onchange="calc()"></div>
     </div>
   </div>
 
@@ -198,12 +200,12 @@ details summary{cursor:pointer;font-weight:600;font-size:.84rem;color:var(--acce
     </div>
 
     <div class="card">
-      <h3>Prefetch vs Recompute(命中后取更快)</h3>
+      <h3>命中后有效延迟(按层,critical-path)</h3>
       <div class="metrics">
-        <div class="metric"><div class="k">T_recompute</div><div class="v" id="o_trec">—</div><div class="s">2·P·W/(TOPS·η)</div></div>
-        <div class="metric"><div class="k">T_prefetch</div><div class="v" id="o_tpf">—</div><div class="s">W·b/(BW·η)</div></div>
-        <div class="metric"><div class="k">决策</div><div class="v" id="o_dec" style="font-size:1rem">—</div><div class="s" id="o_decwhy"></div></div>
-        <div class="metric"><div class="k">有效延迟</div><div class="v" id="o_teff">—</div><div class="s">overlap 后</div></div>
+        <div class="metric"><div class="k">L2 命中</div><div class="v" id="o_tl2" style="color:var(--l2)">—</div><div class="s">L2→L1 overlap</div></div>
+        <div class="metric"><div class="k">L3 命中</div><div class="v" id="o_tl3" style="color:var(--l3)">—</div><div class="s">L3→L2 wait_complete</div></div>
+        <div class="metric"><div class="k">miss(recompute)</div><div class="v" id="o_trec" style="color:var(--miss)">—</div><div class="s">2·P·W/(TOPS·η)</div></div>
+        <div class="metric"><div class="k">L3 vs recompute</div><div class="v" id="o_dec" style="font-size:1rem">—</div><div class="s" id="o_decwhy"></div></div>
       </div>
       <div class="note" id="o_prnote" style="margin-top:8px"></div>
     </div>
@@ -387,24 +389,26 @@ function calc(){
   $('o_win').textContent=winLo.toFixed(0)+'–'+winHi.toFixed(0)+'s';
   $('o_win').style.color=(Tgap>=winLo&&Tgap<=winHi)?'var(--l3)':'var(--mt)';
 
-  // prefetch vs recompute
+  // per-tier effective latency (critical path): L2 overlap≈0; L3 = L3→L2 (wait_complete) + L2→L1(overlap)
+  const bwl3=num('bwl3')*1e9;
   $('v_tops').textContent=num('tops').toFixed(1)+' P';$('v_etac').textContent=etac.toFixed(2);
   $('v_pact').textContent=num('pact')+' B';$('v_bw').textContent=num('bwlb')+' GB/s';$('v_etab').textContent=etab.toFixed(2);
-  $('v_bwh').textContent=num('bwhbm')+' GB/s';
-  const Trec=(2*pact*W)/(tops*etac);      // s
-  const Tpf=(W*bBytes)/(bw*etab);         // s
-  const ovl=$('ovl').checked;
-  const fmtMs=t=>t<1?(t*1000).toFixed(1)+'ms':t.toFixed(2)+'s';
-  $('o_trec').textContent=fmtMs(Trec);$('o_tpf').textContent=fmtMs(Tpf);
-  const cheaper=Tpf<Trec?'prefetch':'recompute';
-  const dec=ovl?'prefetch':cheaper;
-  const teff=(dec==='prefetch')?(ovl?0:Tpf):Trec;
-  $('o_dec').textContent=dec;$('o_dec').style.color=dec==='prefetch'?'var(--l3)':'var(--miss)';
-  $('o_decwhy').textContent=ovl?'overlap→免费':(Tpf<Trec?'pf 更快':'recompute 更快');
-  $('o_teff').textContent=teff===0?'≈0(隐藏)':fmtMs(teff);
-  $('o_prnote').innerHTML=ovl
-    ?'prefetch 能和其它请求的 fwd 重合 → 有效延迟≈0 → <b>总是 prefetch</b>(load-back 被算力掩盖,§13 的 r≪1)。'
-    :'不重合(争同一通路):T_prefetch '+fmtMs(Tpf)+' vs T_recompute '+fmtMs(Trec)+' → 取更快 = <b>'+cheaper+'</b>。小模型/低 P_active 或巨 KV/低带宽时 recompute 反而可能更快。';
+  $('v_bwh').textContent=num('bwhbm')+' GB/s';$('v_bwl3').textContent=num('bwl3')+' GB/s';
+  const ovl=$('ovl').checked, wc=$('wc').checked;
+  const fmtMs=t=>t<=0?'≈0':(t<1?(t*1000).toFixed(1)+'ms':t.toFixed(2)+'s');
+  const Trec=(2*pact*W)/(tops*etac);            // recompute (critical path)
+  const Tl2raw=(W*bBytes)/(bw*etab);            // L2→L1 transfer time
+  const Tl3raw=(W*bBytes)/(bwl3*etab);          // L3→L2 transfer time
+  const Tl2=ovl?0:Tl2raw;                        // L2 hit: overlap hides it
+  const Tl3=(wc?Tl3raw:0)+Tl2;                   // L3 hit: L3→L2 blocks if wait_complete, + L2→L1(overlap)
+  $('o_tl2').textContent=fmtMs(Tl2);$('o_tl3').textContent=fmtMs(Tl3);$('o_trec').textContent=fmtMs(Trec);
+  const dec=Tl3<Trec?'prefetch L3':'recompute';
+  $('o_dec').textContent=dec;$('o_dec').style.color=Tl3<Trec?'var(--l3)':'var(--miss)';
+  $('o_decwhy').textContent=Tl3<Trec?'L3 取回更快':'重算更快';
+  $('o_prnote').innerHTML='<b>L2 命中</b> '+(ovl?'overlap→≈0(纯降延迟,免费层)':'不 overlap→+'+fmtMs(Tl2raw))+
+    '。<b>L3 命中</b> '+(wc?'wait_complete 阻塞 → 关键路径 +'+fmtMs(Tl3raw):'异步→可 overlap→≈0')+
+    '。<b>L3 vs 重算</b>:'+fmtMs(Tl3)+' vs '+fmtMs(Trec)+' → '+dec+'。'+
+    (wc?' L3 命中仍加 ttft(不像 L2 免费)——把 wait_complete 关成异步预取才能让 L3 也≈免费。':'');
 
   // diagnostics
   const hT=1-nw/W, hF=1-chunk/C1, Ls=nw*C1/chunk, Ns=(C1+C2)/W;
