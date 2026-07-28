@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kimi-K3 KDA 数据流演示</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --border:#30363d;
+    --txt:#e6edf3; --muted:#9aa5b1; --accent:#58a6ff; --accent2:#bc8cff;
+    --bf16:#3fb950; --fp32:#f0883e; --int:#e3b341;
+    --active:#f778ba; --activeGlow:rgba(247,120,186,.55);
+    --cache:#39d0d8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px;line-height:1.5}
+  code,.mono{font-family:"SF Mono", Menlo,Consolas,"Liberation Mono",monospace}
+  header{padding:16px 24px;border-bottom:1px solid var(--border);
+    display:flex;flex-wrap:wrap;gap:6px 20px;align-items:baseline;background:linear-gradient(180deg,#12171f,#0d1117)}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  header h1 .k{color:var(--accent2)}
+  header .sub{color:var(--muted);font-size:12px}
+  .wrap{display:grid;grid-template-columns:230px 1fr 300px;gap:0;min-height:calc(100vh - 58px)}
+  .side{background:var(--panel);border-right:1px solid var(--border);padding:16px;overflow:auto}
+  .side.right{border-right:none;border-left:1px solid var(--border)}
+  .stage-col{padding:24px 18px;overflow:auto;position:relative}
+  h2.sec{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+    margin:0 0 10px;font-weight:600}
+  /* config */
+  .cfg-row{display:flex;justify-content:space-between;align-items:center;margin:8px 0;gap:8px}
+  .cfg-row label{color:var(--muted);font-size:12px}
+  .cfg-row input,.cfg-row select{background:var(--panel2);color:var(--txt);border:1px solid var(--border);
+    border-radius:6px;padding:4px 6px;width:82px;font-family:inherit;font-size:12px}
+  .warn{color:var(--fp32);font-size:11px;margin-top:6px;min-height:14px}
+  .derived{margin-top:14px;font-size:11.5px;color:var(--muted)}
+  .derived div{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px dashed #21262d}
+  .derived b{color:var(--txt);font-weight:600}
+  /* paths */
+  .paths{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+  .paths label{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);
+    border-radius:8px;cursor:pointer;background:var(--panel2);font-size:12.5px;transition:.15s}
+  .paths label:hover{border-color:var(--accent)}
+  .paths label.sel{border-color:var(--active);box-shadow:0 0 0 1px var(--active) inset}
+  .paths input{accent-color:var(--active)}
+  .paths small{display:block;color:var(--muted);font-size:10.5px}
+  /* controls */
+  .controls{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
+  button{background:var(--panel2);color:var(--txt);border:1px solid var(--border);
+    border-radius:8px;padding:8px 14px;cursor:pointer;font-family:inherit;font-size:13px;transition:.15s}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:var(--accent);color:#04101f;border-color:var(--accent);font-weight:600}
+  button.primary:hover{filter:brightness(1.1);color:#04101f}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .speed{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}
+  .speed input{accent-color:var(--accent)}
+  /* stages */
+  .rail{position:absolute;left:8px;top:0;bottom:0;width:2px;background:#21262d}
+  #dot{position:absolute;left:2px;width:14px;height:14px;border-radius:50%;
+    background:var(--active);box-shadow:0 0 12px 4px var(--activeGlow);transition:top .5s cubic-bezier(.4,0,.2,1);z-index:5}
+  .flow{display:flex;flex-direction:column;gap:0;margin-left:26px;max-width:760px}
+  .node{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;
+    position:relative;transition:.25s}
+  .node.active{border-color:var(--active);box-shadow:0 0 0 1px var(--active) inset,0 6px 22px -8px var(--activeGlow);
+    transform:translateX(3px)}
+  .node.done{border-color:#2c4a34}
+  .node .title{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:8px}
+  .node .op{color:var(--muted);font-size:11.5px;margin-top:2px}
+  .node .op code{color:var(--accent)}
+  .arrow{align-self:center;color:#3d444d;font-size:16px;line-height:1;margin:3px 0}
+  .arrow.active{color:var(--active)}
+  /* tensor badge */
+  .tensors{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+  .tz{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--border);
+    border-radius:6px;padding:3px 8px;font-size:11.5px}
+  .tz .nm{color:var(--muted)}
+  .tz .sh{font-family:"SF Mono",Menlo,Consolas,monospace;color:var(--txt)}
+  .dt{font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:700;letter-spacing:.03em}
+  .dt.bf16{background:rgba(63,185,80,.16);color:var(--bf16)}
+  .dt.fp32{background:rgba(240,136,62,.16);color:var(--fp32)}
+  /* branch box */
+  .branches{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .br{border:1px dashed var(--border);border-radius:8px;padding:8px 10px;opacity:.35;transition:.25s}
+  .br .bt{font-weight:600;font-size:12px}
+  .br .bd{color:var(--muted);font-size:10.5px;margin-top:2px}
+  .br.on{opacity:1;border-style:solid;border-color:var(--active);background:rgba(247,120,186,.06)}
+  .br.dim{opacity:.2}
+  /* right: caches + log */
+  .cache{background:var(--panel2);border:1px solid var(--border);border-left:3px solid var(--cache);
+    border-radius:8px;padding:10px 12px;margin-bottom:10px;transition:.25s}
+  .cache.hit{box-shadow:0 0 0 1px var(--cache) inset,0 0 18px -6px var(--cache)}
+  .cache .cn{font-weight:600;font-size:12.5px;color:var(--cache)}
+  .cache .cs{font-family:monospace;font-size:11.5px;margin-top:3px}
+  .cache .cd{color:var(--muted);font-size:10.5px;margin-top:3px}
+  #log{background:#0a0e14;border:1px solid var(--border);border-radius:8px;padding:10px;
+    height:230px;overflow:auto;font-family:monospace;font-size:11.5px;line-height:1.7}
+  #log .ln{padding:1px 0;color:var(--muted)}
+  #log .ln .i{color:var(--active);font-weight:700}
+  #log .ln.cur{color:var(--txt)}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+  .hud{position:sticky;top:0;z-index:6;background:linear-gradient(180deg,#0d1117,rgba(13,17,23,.85));
+    padding-bottom:10px;margin-bottom:6px}
+  .hud .big{font-size:13px;color:var(--muted)}
+  .hud .cur{font-family:monospace;font-size:16px;color:var(--active);font-weight:700}
+</style>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+<header>
+  <h1>Kimi-<span class="k">K3</span> KDA 数据流演示 <span style="color:var(--muted);font-weight:400;font-size:13px">(Kimi Delta Attention)</span></h1>
+  <span class="sub mono" id="pathTag"></span>
+</header>
+
+<div class="wrap">
+  <!-- LEFT: config + paths -->
+  <div class="side">
+    <h2 class="sec">配置 Config</h2>
+    <div class="cfg-row"><label>num_heads (Hf)</label>
+      <select id="cHf"><option>12</option><option>24</option><option selected>48</option><option>96</option></select></div>
+    <div class="cfg-row"><label>head_dim (D)</label><input id="cD" type="number" value="128"></div>
+    <div class="cfg-row"><label>hidden_size</label><input id="cHid" type="number" value="4096"></div>
+    <div class="cfg-row"><label>TP size</label>
+      <select id="cTP"><option selected>1</option><option>2</option><option>4</option></select></div>
+    <div class="cfg-row"><label>conv W</label><input id="cW" type="number" value="4"></div>
+    <div class="cfg-row"><label>tokens (T)</label><input id="cT" type="number" value="8"></div>
+    <div class="cfg-row"><label>Nslot</label><input id="cN" type="number" value="256"></div>
+    <div class="warn" id="warn"></div>
+
+    <div class="derived" id="derived"></div>
+
+    <h2 class="sec" style="margin-top:20px">执行路径 Path</h2>
+    <div class="paths" id="paths">
+      <label class="sel"><input type="radio" name="path" value="prefill" checked>
+        <span>Prefill<small>chunk_kda / flashkda 并行</small></span></label>
+      <label><input type="radio" name="path" value="decode">
+        <span>Decode<small>fused_recurrent_kda 逐token</small></span></label>
+      <label><input type="radio" name="path" value="fused">
+        <span>Fused Decode<small>fused_kda_decode 单CUDA核</small></span></label>
+      <label><input type="radio" name="path" value="spec">
+        <span>Spec Decode<small>多query 投机</small></span></label>
+    </div>
+    <div class="legend">
+      <span><i class="sw dt bf16" style="width:12px;height:12px"></i>bf16</span>
+      <span><i class="sw" style="background:var(--fp32)"></i>fp32</span>
+      <span><i class="sw" style="background:var(--cache)"></i>cache</span>
+    </div>
+  </div>
+
+  <!-- CENTER: flow -->
+  <div class="stage-col">
+    <div class="hud">
+      <div class="controls">
+        <button class="primary" id="play">▶ 播放</button>
+        <button id="step">⏭ 单步</button>
+        <button id="reset">↺ 重置</button>
+        <span class="speed">速度 <input type="range" id="spd" min="300" max="2200" value="1100" step="100"></span>
+      </div>
+      <div class="big">当前张量 <span class="cur mono" id="hudShape">—</span></div>
+    </div>
+    <div class="rail"></div>
+    <div id="dot"></div>
+    <div class="flow" id="flow"></div>
+  </div>
+
+  <!-- RIGHT: caches + log -->
+  <div class="side right">
+    <h2 class="sec">状态缓存 State Cache</h2>
+    <div class="cache" id="cacheConv">
+      <div class="cn">conv_state</div>
+      <div class="cs" id="convShape"></div>
+      <div class="cd">q/k/v 三路卷积滑窗 · bf16</div>
+    </div>
+    <div class="cache" id="cacheRec">
+      <div class="cn">recurrent_state</div>
+      <div class="cs" id="recShape"></div>
+      <div class="cd">每头一个 D×D 的 delta 状态矩阵 · fp32</div>
+    </div>
+    <div class="cache" style="border-left-color:var(--fp32)">
+      <div class="cn" style="color:var(--fp32)">参数 Params</div>
+      <div class="cs" id="paramShape"></div>
+      <div class="cd">逐头门控标量 · fp32</div>
+    </div>
+
+    <h2 class="sec" style="margin-top:18px">执行日志 Log</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (t,c)=>{const e=document.createElement(t);if(c)e.className=c;return e;};
+
+// ---------- shape computation ----------
+function cfg(){
+  const Hf=+$('#cHf').value, D=+$('#cD').value, hidden=+$('#cHid').value,
+        TP=+$('#cTP').value, W=+$('#cW').value, T=+$('#cT').value, N=+$('#cN').value;
+  const H=Hf/TP, P=Hf*D, Pl=P/TP;
+  const padBase=4*Pl+D+H;
+  const pad=(16-(padBase%16))%16;
+  const outLocal=padBase+pad;
+  return {Hf,D,hidden,TP,W,T,N,H,P,Pl,pad,outLocal,convLocal:3*Pl};
+}
+function validate(c){
+  const msgs=[];
+  if(c.Hf%c.TP!==0) msgs.push(`✗ num_heads(${c.Hf}) 不能被 TP(${c.TP}) 整除`);
+  const fusedOK = [12,24,48,96].includes(c.H) && c.D===128 && c.W===4;
+  return {ok:msgs.length===0, msgs, fusedOK};
+}
+
+// dtype helper
+const BF="bf16", FP="fp32";
+function tz(name,shape,dt){return {name,shape,dt};}
+
+// ---------- pipeline definition ----------
+// returns {nodes:[...], steps:[...]} for a given path
+function build(c, path){
+  const S = s=>`[${s}]`;
+  const T=c.T, H=c.H, D=c.D, Pl=c.Pl, hidden=c.hidden, N=c.N, W=c.W;
+
+  // node templates (id, title, op)
+  const N_input   = {id:'input', title:'输入 hidden_states', op:'上游 RMSNorm 后的隐状态 (KDA 无 RoPE, positions 不用)',
+      tensors:[tz('hidden_states',`${T}, ${hidden}`,BF)]};
+  const N_inproj  = {id:'inproj', title:'融合输入投影 in_proj_qkvgfab', op:'单次 GEMM · <code>ColumnParallel</code> · 融合 q|k|v|g|f_a|β',
+      tensors:[tz('out',`${T}, ${c.outLocal}`,BF)], note:`out_local = 4·Pl + D + H + pad = ${4*Pl}+${D}+${H}+${c.pad}`};
+  const N_split   = {id:'split', title:'split 拆分', op:'一分为四',
+      tensors:[tz('mixed_qkv',`${T}, ${3*Pl}`,BF),tz('g2_raw',`${T}, ${Pl}`,BF),tz('f_a',`${T}, ${D}`,BF),tz('beta',`${T}, ${H}`,BF)]};
+  const N_gates   = {id:'gates', title:'门控构造 gates', op:'<code>f_b_proj(f_a)</code>→g1 · β→sigmoid · g2 输出门',
+      tensors:[tz('g1',`1, ${T}, ${H}, ${D}`,BF),tz('beta',`1, ${T}, ${H}`,BF),tz('g2',`${T}, ${H}, ${D}`,BF),
+               tz('A_log',`${H}`,FP),tz('dt_bias',`${Pl}`,FP)]};
+  const N_conv    = {id:'conv', title:'因果卷积 conv1d (silu)', op: path==='prefill'
+        ? 'q/k/v 各自 <code>causal_conv1d_fn</code>'
+        : '整包 <code>causal_conv1d_update</code>',
+      tensors:[tz('q',`1, ${T}, ${H}, ${D}`,BF),tz('k',`1, ${T}, ${H}, ${D}`,BF),tz('v',`1, ${T}, ${H}, ${D}`,BF)],
+      cache:'conv'};
+  // core op per path
+  let core;
+  if(path==='prefill') core={id:'core', title:'核心算子 · chunk_kda_with_fused_gate / flashkda_prefill',
+      op:'分块并行 delta-rule · qk_l2norm · 有界门',
+      tensors:[tz('core_attn_out',`1, ${T}, ${H}, ${D}`,BF),tz('last_recurrent_state',`Nseq, ${H}, ${D}, ${D}`,FP)],cache:'rec'};
+  else if(path==='decode') core={id:'core', title:'核心算子 · fused_recurrent_kda',
+      op:'逐 token 递推 · 原地更新 recurrent_state',
+      tensors:[tz('g(gate)',`1, ${T}, ${H}, ${D}`,BF),tz('core_attn_out',`1, ${T}, ${H}, ${D}`,BF)],cache:'rec'};
+  else if(path==='fused') core={id:'core', title:'核心算子 · fused_kda_decode (单 CUDA kernel)',
+      op:'conv更新 + recurrent + sigmoid门 + RMSNorm <b>全融</b>',
+      tensors:[tz('core_attn_out',`1, ${T}, ${H}, ${D}`,BF)],cache:'rec',fused:true};
+  else core={id:'core', title:'核心算子 · fused_recurrent_kda_fwd (spec)',
+      op:'多 query · 按 num_accepted_tokens 回滚状态',
+      tensors:[tz('core_attn_out_spec',`1, ${T}, ${H}, ${D}`,BF)],cache:'rec'};
+
+  const N_onorm   = {id:'onorm', title:'输出门归一 o_norm', op:'<code>FusedRMSNormGated</code> · RMSNorm(沿D) × sigmoid(g2)',
+      tensors:[tz('core_attn_out',`1, ${T}, ${H}, ${D}`,BF)]};
+  const N_rear    = {id:'rear', title:'rearrange', op:'1,T,H,D → T,(H·D)',
+      tensors:[tz('x',`${T}, ${Pl}`,BF)]};
+  const N_oproj   = {id:'oproj', title:'输出投影 o_proj', op:'<code>RowParallel</code> · 跨 TP all-reduce',
+      tensors:[tz('output',`${T}, ${hidden}`,BF)]};
+  const N_output  = {id:'output', title:'输出 output', op:'原地写回',
+      tensors:[tz('output',`${T}, ${hidden}`,BF)]};
+
+  const seq=[N_input,N_inproj,N_split,N_gates,N_conv,core];
+  if(path!=='fused') seq.push(N_onorm);   // fused decode 在 kernel 内已做 norm
+  seq.push(N_rear,N_oproj,N_output);
+  return seq;
+}
+
+// ---------- render ----------
+let STATE={seq:[],idx:-1,timer:null,playing:false};
+
+function renderDerived(c,v){
+  $('#derived').innerHTML = [
+    ['H = Hf/TP', c.H],['P = Hf·D', c.P],['Pl = P/TP', c.Pl],
+    ['out_local', c.outLocal],['conv_local = 3·Pl', c.convLocal],
+    ['fused decode 可用', v.fusedOK?'✔ 是':'✘ 否(回退Triton)']
+  ].map(([k,val])=>`<div><span>${k}</span><b>${val}</b></div>`).join('');
+  $('#warn').textContent = v.msgs.join('  ');
+  $('#convShape').textContent=`[${c.N}, ${3*c.Pl}, ${c.W-1}]`;
+  $('#recShape').textContent=`[${c.N}, ${c.H}, ${c.D}, ${c.D}]`;
+  $('#paramShape').textContent=`A_log[${c.H}] · dt_bias[${c.Pl}] · o_norm.w[${c.D}]`;
+}
+
+function dtBadge(dt){return `<span class="dt ${dt}">${dt}</span>`;}
+function tensorsHTML(ts){
+  return `<div class="tensors">`+ts.map(t=>
+    `<span class="tz"><span class="nm">${t.name}</span><span class="sh">[${t.shape}]</span>${dtBadge(t.dt)}</span>`
+  ).join('')+`</div>`;
+}
+
+function renderFlow(){
+  const flow=$('#flow'); flow.innerHTML='';
+  STATE.seq.forEach((n,i)=>{
+    const node=el('div','node'); node.id='n_'+i; node.dataset.cache=n.cache||'';
+    let inner=`<div class="title">${i+1}. ${n.title}</div><div class="op">${n.op||''}</div>`;
+    if(n.note) inner+=`<div class="op" style="color:var(--accent2)">${n.note}</div>`;
+    inner+=tensorsHTML(n.tensors);
+    if(n.id==='core'){
+      const path=curPath();
+      const brs=[
+        ['prefill','Prefill','chunk_kda / flashkda'],
+        ['decode','Decode','fused_recurrent_kda'],
+        ['fused','Fused','fused_kda_decode (全融)'],
+        ['spec','Spec','fused_recurrent_kda_fwd'],
+      ];
+      inner+=`<div class="branches">`+brs.map(([p,t,d])=>
+        `<div class="br ${p===path?'on':'dim'}"><div class="bt">${t}</div><div class="bd">${d}</div></div>`
+      ).join('')+`</div>`;
+    }
+    node.innerHTML=inner;
+    flow.appendChild(node);
+    if(i<STATE.seq.length-1){const a=el('div','arrow');a.id='a_'+i;a.textContent='▼';flow.appendChild(a);}
+  });
+}
+
+function curPath(){return document.querySelector('input[name=path]:checked').value;}
+
+function log(msg,cur){
+  const l=$('#log');const ln=el('div','ln'+(cur?' cur':''));
+  ln.innerHTML=msg;l.appendChild(ln);l.scrollTop=l.scrollHeight;
+}
+
+function highlight(i){
+  document.querySelectorAll('.node').forEach((n,j)=>{
+    n.classList.toggle('active',j===i);
+    n.classList.toggle('done',j<i);
+  });
+  document.querySelectorAll('.arrow').forEach((a,j)=>a.classList.toggle('active',j<i));
+  // move dot
+  const node=$('#n_'+i);
+  if(node){
+    const col=$('.stage-col');
+    const top=node.offsetTop+node.offsetHeight/2-7;
+    $('#dot').style.top=top+'px';
+    node.scrollIntoView({behavior:'smooth',block:'center'});
+  }
+  // caches
+  const cache=node?node.dataset.cache:'';
+  $('#cacheConv').classList.toggle('hit',cache==='conv');
+  $('#cacheRec').classList.toggle('hit',cache==='rec');
+  // HUD
+  const n=STATE.seq[i];
+  $('#hudShape').textContent = n.tensors.map(t=>`${t.name}[${t.shape}]`).join('  ·  ');
+}
+
+function stepTo(i){
+  if(i<0||i>=STATE.seq.length) return false;
+  STATE.idx=i;
+  const n=STATE.seq[i];
+  highlight(i);
+  const shapes=n.tensors.map(t=>`<span style="color:var(--txt)">${t.name}</span>[${t.shape}]`).join('  ');
+  log(`<span class="i">${i+1}.</span> ${n.title.split('·')[0].trim()} → ${shapes}`,true);
+  if(n.cache==='conv') log(`&nbsp;&nbsp;&nbsp;↳ 读/写 conv_state cache`);
+  if(n.cache==='rec') log(`&nbsp;&nbsp;&nbsp;↳ 读/写 recurrent_state cache`);
+  return true;
+}
+
+function next(){
+  if(STATE.idx>=STATE.seq.length-1){stop();return;}
+  stepTo(STATE.idx+1);
+}
+
+function play(){
+  if(STATE.playing){stop();return;}
+  if(STATE.idx>=STATE.seq.length-1) reset(false);
+  STATE.playing=true;$('#play').textContent='⏸ 暂停';
+  const tick=()=>{
+    if(!STATE.playing) return;
+    if(STATE.idx>=STATE.seq.length-1){stop();return;}
+    next();
+    STATE.timer=setTimeout(tick,+$('#spd').value);
+  };
+  if(STATE.idx<0) next();
+  STATE.timer=setTimeout(tick,+$('#spd').value);
+}
+function stop(){STATE.playing=false;$('#play').textContent='▶ 播放';clearTimeout(STATE.timer);}
+function reset(clearLog=true){
+  stop();STATE.idx=-1;
+  document.querySelectorAll('.node').forEach(n=>n.classList.remove('active','done'));
+  document.querySelectorAll('.arrow').forEach(a=>a.classList.remove('active'));
+  $('#cacheConv').classList.remove('hit');$('#cacheRec').classList.remove('hit');
+  $('#hudShape').textContent='—';$('#dot').style.top='-20px';
+  if(clearLog){$('#log').innerHTML='';log(`<span class="i">路径:</span> ${curPath()} · 就绪`);}
+}
+
+function rebuild(){
+  const c=cfg(),v=validate(c);
+  renderDerived(c,v);
+  $('#pathTag').textContent = `Hf=${c.Hf} D=${c.D} hidden=${c.hidden} TP=${c.TP} T=${c.T} · path=${curPath()}`;
+  STATE.seq=build(c,curPath());
+  renderFlow();
+  reset();
+}
+
+// ---------- events ----------
+['cHf','cD','cHid','cTP','cW','cT','cN'].forEach(id=>$('#'+id).addEventListener('input',rebuild));
+document.querySelectorAll('input[name=path]').forEach(r=>r.addEventListener('change',e=>{
+  document.querySelectorAll('.paths label').forEach(l=>l.classList.remove('sel'));
+  e.target.closest('label').classList.add('sel');
+  rebuild();
+}));
+$('#play').addEventListener('click',play);
+$('#step').addEventListener('click',()=>{stop();next();});
+$('#reset').addEventListener('click',()=>reset());
+
+rebuild();
+</script>
+</body>
+</html>
