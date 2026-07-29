@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Marconi: Prefix Caching for the Era of Hybrid LLMs — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Marconi: Prefix Caching for the Era of Hybrid LLMs</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2411.19379</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">prefix-caching</span><span class="tag">hybrid-ssm</span><span class="tag">kv-cache</span><span class="tag">radix-tree</span><span class="tag">eviction-policy</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2411.19379.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2411.19379" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="marconi-prefix-caching-for-the-era-of-hybrid-llms">Marconi: Prefix Caching for the Era of Hybrid LLMs <a class="heading-anchor" href="#marconi-prefix-caching-for-the-era-of-hybrid-llms" aria-label="Link to marconi-prefix-caching-for-the-era-of-hybrid-llms">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Hybrid (Attention+SSM) LLMs break prefix caching because in-place SSM state updates forbid prefix roll-back — only exact-match hits work, so naive checkpointing floods the cache with huge, rarely-reused entries. Marconi admits SSM states judiciously (≤2 per sequence, chosen by a reuse taxonomy) and evicts by FLOP-per-byte, not recency, yielding up to 34.4× higher token hit rate and 71.1% (617 ms) lower P95 TTFT.</p>
+
+<hr>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-the-problem">Q1 — 痛点 (the problem) <a class="heading-anchor" href="#q1-—-痛点-the-problem" aria-label="Link to q1-—-痛点-the-problem">#</a></h3>
+
+<p>Prefix caching reuses model states of common prefixes across requests to cut TTFT, tail TPT, and raise prefill throughput. It is a proven win for Transformers because KVs carry a <strong>sequence dimension</strong>: to keep the prefix $1{\dots}p$ of a cached sequence $1{\dots}q$ ($p<q$), you just tensor-slice the sequence axis. Hybrid LLMs interleave a few Attention layers with many SSM layers, and SSM states have three properties (§3) that jointly poison this:</p>
+
+<ol>
+<li>SSM states are <strong>constant-sized</strong> regardless of token count.</li>
+<li>SSM states are <strong>updated in place</strong> — a sequence's end state cannot be rolled back to represent any of its prefixes.</li>
+<li>SSM states are <strong>10–100× larger</strong> than a single token's KVs.</li>
+</ul>
+
+<p>The consequence is "<strong>all-or-nothing</strong>" reusability: a hit needs <em>all</em> prefix-token KVs for every Attention layer AND one SSM state that exactly matches the whole prefix for every SSM layer; the layer with the least reuse bottlenecks everything. To capture arbitrary future prefixes you must checkpoint SSM states at fine intervals (e.g. every 32–256 tokens), but each such entry is large and almost never hit. Measured: at block size 32, 25.0% of KV blocks are reused vs <strong>0.4% of SSM states — a 65.3× gap</strong> (Fig. 3a); a single 10K-token sequence on a 7B model costs <strong>17.4 GB, 3.3× a same-size Transformer</strong> (Fig. 3b). Result: cache thrashing on low-utility entries.</p>
+
+<h3 id="q2-—-方法-the-method">Q2 — 方法 (the method) <a class="heading-anchor" href="#q2-—-方法-the-method" aria-label="Link to q2-—-方法-the-method">#</a></h3>
+
+<p>Marconi is the <strong>first prefix-caching system for Hybrid LLMs</strong>, managing SSM states and KVs <em>holistically in one radix tree</em> (each node = a sequence's SSM state + KVs) rather than disaggregating by layer type. Two policies:</p>
+
+<ul>
+<li><strong>Judicious admission (§4.1)</strong>: instead of admitting every token block, classify reuse into a two-type taxonomy — <em>purely-input</em> prefixes (system prompts, few-shot, long-doc QA; shared across many requests) and <em>input-and-output</em> prefixes (conversation history, agent trajectories; appended to, not branched from). Marconi caches only (a) the SSM state at the <strong>last decoded token</strong> (always, for input-and-output resume) and (b) the SSM state at a <strong>branch point</strong> discovered by a <strong>speculative insertion</strong> of the incoming prompt into the radix tree before prefill (for purely-input reuse). At most <strong>two SSM states per sequence</strong> are admitted.</li>
+<li><strong>FLOP-aware eviction (§4.2)</strong>: because SSM state size is <em>decoupled</em> from compute savings (a fixed-size state can represent a 100-token or 10K-token prefix), size is a broken eviction proxy. Marconi scores each node by a blend of recency and <em>FLOP-per-byte</em>, iteratively evicting the lowest-utility nodes.</li>
+</ul>
+
+<p><strong>核心技术壁垒 (the single hardest-to-replicate insight)</strong>: the <em>speculative-insertion + taxonomy</em> admission mechanism. Everyone can compute FLOP-per-byte; the non-obvious, hard part is realizing that reuse likelihood — despite no knowledge of future requests — is <em>predictable offline from the radix-tree topology of past requests</em>: a node that just became a branch point signals a purely-input hot prefix, and a last-decoded token signals a conversation resume point. Encoding this as a cheap speculative insertion <em>before</em> prefill (so you know what to checkpoint during that same prefill pass) is the load-bearing design idea; without it, you either checkpoint everything (thrash) or checkpoint nothing (no reuse).</p>
+
+<h3 id="q3-—-结果-the-results">Q3 — 结果 (the results) <a class="heading-anchor" href="#q3-—-结果-the-results" aria-label="Link to q3-—-结果-the-results">#</a></h3>
+
+<ul>
+<li>Token hit rate: <strong>4.5× / 7.3× / 34.4×</strong> over vLLM+ on LMSys / ShareGPT / SWEBench (Fig. 7).</li>
+<li>vs SGLang+ (same admission, LRU eviction): FLOP-aware eviction adds <strong>45.6% / 19.0% / 219.7%</strong> P95 hit-rate win (Fig. 8) — largest where sequences are longest (SWEBench).</li>
+<li>P95 TTFT: up to <strong>36.9% / 73.2% / 46.8% (281.4 / 106.3 / 617.0 ms)</strong> vs vanilla; <strong>36.1% / 71.1% / 46.8%</strong> vs vLLM+ (Fig. 9).</li>
+<li>Gains grow with SSM-layer ratio (1:2→1:8 lifts win to 2.6×) and state dimension (16→128 lifts win 5.7×→35.4×) — trends aligned with newer models.</li>
+</ul>
+
+<hr>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p>The end-to-end request lifecycle Marconi imposes: on request arrival, tokenize, <strong>speculatively insert</strong> the input into the radix tree to detect whether a new intermediate (branch) node appears; schedule prefill; during prefill materialize the SSM state at the branch point (via chunked state passing or two-pass) and, after decode, checkpoint the last-token state; on the next matching request, look up the longest exact-match prefix and skip its prefill.</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant R as Request
+    participant T as Radix Tree (bookkeeper)
+    participant S as Scheduler
+    participant P as Prefill (GPU)
+    participant C as Holistic Cache (SSM+KV per node)
+    R->>T: speculative insert(input tokens)
+    T-->>S: branch node created? (purely-input signal)
+    S->>C: lookup longest exact-match prefix
+    C-->>P: fetch cached KVs + SSM state (on hit)
+    S->>P: prefill remaining tokens
+    P->>C: checkpoint SSM state @ branch point (if any)
+    P->>C: checkpoint SSM state @ last decoded token (always)
+    Note over C: FLOP-aware eviction if full<br/>(evict lowest recency+α·flop_eff)
+</div>
+
+<p>The paper's own overview of the reuse mechanism and the fine-grained-checkpointing pathology:</p>
+
+<p><img src="/assets/2411.19379/fig2.png" alt="Figure 2: prefix caching reuses common-prefix states; fine-grained checkpointing yields sparsely-hit entries"></p>
+
+<p><em>Paper's Figure 2 (caption: "Prefix caching reuses model states of common prefixes (green) across requests, accelerating inference. Fine-grained checkpointing results in many sparsely-hit entries (blue).").</em> Green shows the profitable shared prefix; the blue entries are the low-utility SSM states that flood a naive cache — the whole design exists to stop admitting them.</p>
+
+<p><img src="/assets/2411.19379/fig4.png" alt="Figure 4: speculative insertion checkpoints SSM state at the branch point and last decoded token"></p>
+
+<p><em>Paper's Figure 4 (caption: "Marconi performs a speculative insertion to check if inserting the prefill segment of a sequence results in an intermediate node. If so, the SSM states at the branch point are checkpointed. States at the last decoded token are checkpointed in any case.").</em> This is the load-bearing architecture figure: it shows the radix tree as the unified bookkeeper and how the speculative insertion decides <em>which</em> of the (at most two) SSM states to materialize. Note states are drawn on nodes for clarity but conceptually attach to edges — each edge holds KVs of its tokens plus the SSM state for all tokens prior to the edge's last token.</p>
+
+<hr>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>The paper has a lightweight but load-bearing analytical model (the FLOP-efficiency metric + per-layer memory/FLOP formulas in Appendix A / Table 1). It is not a full queueing/throughput model, so this is <em>partially formal</em>.</p>
+
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$L$</td><td>Sequence length (tokens)</td></tr>
+<tr><td>$D$</td><td>Model dimension ($d_{model}$)</td></tr>
+<tr><td>$N$</td><td>SSM state / feature dimension ($d_{state}$)</td></tr>
+<tr><td>$\mathit{flop\_efficiency}$</td><td>Redundant FLOPs avoided by reuse per byte of cached state</td></tr>
+<tr><td>$S(n)$</td><td>Utility score of radix node $n$ (eviction key)</td></tr>
+<tr><td>$\mathit{recency}(n)$</td><td>Normalized last-access timestamp of $n$, in $(0,1)$</td></tr>
+<tr><td>$\alpha$</td><td>Tunable weight trading recency vs FLOP efficiency ($\alpha=0 \Rightarrow$ LRU)</td></tr>
+</table>
+
+<h3 id="equations-physical-meaning">Equations & physical meaning <a class="heading-anchor" href="#equations-physical-meaning" aria-label="Link to equations-physical-meaning">#</a></h3>
+
+<p>FLOP-per-byte of a cache entry (Eq. 1):</p>
+
+<p>$$\mathit{flop\_efficiency}=\frac{\text{Total FLOPs across layers}}{\text{Memory consumption of all states}}$$</p>
+
+<p>Numerator = redundant FLOPs across Attention + SSM + MLP layers skipped by reusing this entry; denominator = memory of all stateful (Attention + SSM) states. Why <strong>divide</strong> rather than subtract: it normalizes compute savings against the cache space consumed, so a short KV-heavy entry and a long SSM-heavy entry become comparable on a common per-byte basis.</p>
+
+<p>Eviction utility (Eq. 2):</p>
+
+<p>$$S(n)=\mathit{recency}(n)+\alpha\cdot\mathit{flop\_efficiency}(n)$$</p>
+
+<p>A <strong>linear blend</strong> (sum, not min/product) so one factor can compensate for the other; $\alpha=0$ recovers pure LRU, larger $\alpha$ favors compute-dense long-sequence entries. Both terms are normalized to $(0,1)$ across all tree nodes; child FLOP savings are computed <em>relative to the parent's</em> so ancestors are not double-counted.</p>
+
+<p>Per-layer scaling (Table 1, 7B model with $D=4096$, $N=128$):</p>
+
+<p>$$\text{Attention FLOPs/byte} = L+2D = L+8192, \qquad \text{SSM FLOPs/byte} = L\cdot(6D/N+8+5/DN)\approx 200L$$</p>
+
+<h3 id="six-minimum-checks">Six minimum checks <a class="heading-anchor" href="#six-minimum-checks" aria-label="Link to six-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Units</strong>: numerator FLOPs, denominator bytes → FLOPs/byte. Consistent; Eq. 2 normalizes both terms to dimensionless $(0,1)$ before summing — internally consistent.</li>
+<li><strong>Boundary $\alpha=0$</strong>: $S(n)=\mathit{recency}(n)$ → pure LRU, matching the stated fallback and the SGLang+ baseline. ✓</li>
+<li><strong>Boundary short $L$</strong>: Attention $L+8192$ is offset-dominated (≈constant), so KV FLOP-efficiency is "near-constant" — exactly why Transformer systems can ignore it. ✓</li>
+<li><strong>Boundary long $L$</strong>: SSM term $\approx 200L$ grows <em>linearly and unbounded</em> while its state size $2DN$ is <em>fixed</em> → FLOP-per-byte of SSM entries diverges upward with $L$; hence long sequences dominate eviction value. Matches Fig. 5's steeper slope for higher SSM ratio. ✓</li>
+<li><strong>Monotonicity/optimum</strong>: $S$ is monotone increasing in both recency and flop_efficiency; there is no interior optimum — eviction is a greedy boundary rule (drop the argmin until space frees). The "optimum" is the $\alpha$ that maximizes measured hit rate, found by grid search, not by closed-form. ✓ (implicit)</li>
+<li><strong>First-order sanity vs reported numbers</strong>: block-size-32 KV-vs-SSM reuse (25.0% vs 0.4% = 65.3×) and the 17.4 GB / 3.3× memory blowup are consistent with property 3 ($2DN$ SSM state ≫ per-token $4D$ KV once $N$ is large): SSM/KV size ratio $= 2DN / (2\cdot 4D \cdot \text{block}) = N/(4\cdot\text{block})$, i.e. $128/(4\cdot16)=2$× per block, compounding across many SSM layers vs few Attention layers. ✓</li>
+</ul>
+
+<p><strong>What a fuller model would clarify</strong>: the paper gives no closed-form expression relating $\alpha$, workload skew, and hit rate — hence the empirical grid search. A queueing/hit-rate model would predict the "moderate-contention sweet spot" (Fig. 11) analytically instead of by sweep.</p>
+
+<hr>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p>Setup: p4d.24xlarge (8×A100-40GB), FP16; main model a 7B Hybrid with {4,24,28} {Attn,SSM,MLP} layers; TTFT measured on Jamba-1.5-Mini (state dim 128) via vLLM on 4×A100-40GB. Workloads: LMSys (long outputs), ShareGPT (short outputs), SWE-Bench/SWE-Agent (agentic, widest length distribution). Baselines: vanilla (no caching), vLLM+ (fine-grained block-32 checkpointing), SGLang+ (Marconi's admission but LRU eviction). Metric: token hit rate = tokens skipping prefill / total input tokens (a good proxy for FLOP saved since prefill is compute-bound); no downstream-quality metric because reuse is exact.</p>
+
+<p><img src="/assets/2411.19379/fig7.png" alt="Figure 7: token hit rate vs vLLM+ across LMSys, ShareGPT, SWEBench"></p>
+
+<p><em>Paper's Figure 7 (caption: "Comparison with vLLM+. With judicious cache admission, Marconi utilizes the limited cache space to retain states with higher utility, improving the token hit rate significantly over vLLM+.").</em> This isolates the <strong>admission</strong> win (4.5× / 7.3× / 34.4×): rejecting low-utility SSM states frees capacity for high-utility ones. The SWEBench blow-up (34.4×) reflects its long agent trajectories, where each admitted-then-never-reused block was maximally wasteful under vLLM+.</p>
+
+<p><img src="/assets/2411.19379/fig8.png" alt="Figure 8: token hit rate vs SGLang+ (LRU eviction)"></p>
+
+<p><em>Paper's Figure 8 (caption: "Comparison with SGLang+, which uses LRU as its eviction policy. Marconi balances recency and FLOPs efficiency, improving the token hit rate significantly, especially for workloads with longer context.").</em> Because SGLang+ shares Marconi's admission, this figure isolates the <strong>eviction</strong> win alone: 45.6% / 19.0% / 219.7% P95. The gap tracks sequence-length spread — SWEBench (hundreds→tens-of-thousands of tokens) benefits most, ShareGPT (<2K) least, exactly the regime where FLOP-per-byte discrimination matters.</p>
+
+<p><img src="/assets/2411.19379/fig10.png" alt="Figure 10: FLOP-aware eviction trades short-sequence hit rate for long-sequence hit rate"></p>
+
+<p><em>Paper's Figure 10 (caption: "Marconi achieves a higher hit rate for longer sequences while sacrificing the hit rate for some shorter sequences (a), although the degradation in TTFT for shorter sequences is minimal (b).").</em> The honest trade-off: on one SWEBench trace Marconi hits 32.7% vs SGLang+ 16.4% (+99.4%, +90.3% FLOP saved), but <em>loses</em> up to −3.0% for <7K-token sequences and is 6.3% worse on P5 TTFT — a mere 2.1 ms in absolute terms because Hybrid models prefill short sequences fast. This is the rare paper that plots and defends where it loses.</p>
+
+<p><img src="/assets/2411.19379/fig12.png" alt="Figure 12: gains grow with SSM-layer ratio and state dimension"></p>
+
+<p><em>Paper's Figure 12 (caption: "Marconi performs better for models with higher ratios of SSM layers and larger SSM state dimensions.").</em> Layer ratio 1:2→1:8 lifts the win over vLLM+/SGLang+ to 2.6×/59.7%; state dim 16 (Mamba1)→128 (Mamba2) lifts the vLLM+ win 5.7×→35.4×. Since newer Hybrids trend toward more SSM layers and larger states, Marconi's advantage is forecast to grow, not shrink.</p>
+
+<h3 id="§6-required-workload-regime-breakdown-where-it-wins-loses">§6-required workload-regime breakdown (where it wins / loses) <a class="heading-anchor" href="#§6-required-workload-regime-breakdown-where-it-wins-loses" aria-label="Link to §6-required-workload-regime-breakdown-where-it-wins-loses">#</a></h3>
+
+<table>
+<tr><th>Workload regime</th><th>Marconi</th><th>Baseline</th><th>Why</th></tr>
+<tr><td>Short prompts, low concurrency (ShareGPT, <2K tok)</td><td>small win (7.3× vs vLLM+; only 19.0% vs SGLang+)</td><td>vLLM+/SGLang+ competitive</td><td>FLOP-per-byte spread is small; recency alone nearly suffices</td></tr>
+<tr><td>Long prompts, high concurrency (SWEBench, up to tens of K tok)</td><td>largest win (34.4× vs vLLM+; 219.7% vs SGLang+)</td><td>thrashes / evicts high-FLOP entries</td><td>long SSM entries have huge FLOP-per-byte; admission + FLOP eviction both fire</td></tr>
+<tr><td>Short sequences (<7K tok) <em>within</em> a long-tailed trace</td><td><strong>loses</strong> up to −3.0% hit rate, P5 TTFT +6.3% (2.1 ms)</td><td>SGLang+ (LRU) slightly better</td><td>deliberately sacrificed to keep long high-FLOP entries</td></tr>
+<tr><td>Pure Transformer</td><td>tie</td><td>identical</td><td>KV FLOP-efficiency near-constant → nothing to exploit</td></tr>
+<tr><td>High contention (60 GB cache)</td><td>modest 24.3% win</td><td>—</td><td>too little capacity to cache useful prefixes at all</td></tr>
+<tr><td>Moderate contention (~100 GB)</td><td>peak 68.3% win</td><td>—</td><td>eviction decisions are most consequential here</td></tr>
+</table>
+
+<hr>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim (paper-internal)</th><th>Support</th></tr>
+<tr><td>1</td><td>SSM states update in place, are constant-sized, and are 10–100× a single token's KVs (§3 properties 1–3)</td><td>§2.1 mechanism + Appendix A memory formulas ($2DN$ vs $4D$/token); Table 1</td></tr>
+<tr><td>2</td><td>Therefore Hybrid prefix reuse is "all-or-nothing" — only exact whole-prefix matches hit, forcing fine-grained checkpointing to catch arbitrary prefixes</td><td>derivation from step 1 (roll-back impossible for SSM, so bottleneck layer = SSM)</td></tr>
+<tr><td>3</td><td>Fine-grained checkpointing floods the cache with large, sparsely-hit entries (0.4% SSM reuse vs 25.0% KV; 17.4 GB/seq)</td><td>Fig. 3(a), Fig. 3(b) measurements</td></tr>
+<tr><td>4</td><td>Reuse likelihood is nonetheless predictable offline from radix-tree topology (branch node ⇒ purely-input; last-decoded token ⇒ input-and-output) → admit ≤2 SSM states/seq via speculative insertion</td><td>§4.1 taxonomy + Fig. 4 mechanism</td></tr>
+<tr><td>5</td><td>Admission alone (holding eviction at LRU) already lifts hit rate massively (Marconi vs vLLM+)</td><td>Fig. 7: 4.5×/7.3×/34.4×</td></tr>
+<tr><td>6</td><td>SSM state size is decoupled from compute savings, so LRU/size-based eviction mis-ranks entries; FLOP-per-byte (Eq. 1–2) ranks correctly</td><td>§4.2 argument + Fig. 5 (FLOP-efficiency slope by SSM ratio)</td></tr>
+<tr><td>7</td><td>FLOP-aware eviction adds further gains, concentrated on long-sequence workloads, at a small deliberate cost to short sequences</td><td>Fig. 8 (45.6/19.0/219.7%) + Fig. 10 (long win, short −3.0%)</td></tr>
+<tr><td>8</td><td>Net effect scales up with SSM ratio and state dimension → advantage grows for future models</td><td>Fig. 12 sweeps</td></tr>
+</table>
+
+<hr>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>Marconi is open-sourced (<a href="https://github.com/ruipeterpan/marconi">github.com/ruipeterpan/marconi</a>; Zenodo DOI 10.5281/zenodo.14970139), and the artifact appendix maps the design to concrete files:</p>
+
+<ul>
+<li>Core cache + eviction policies: <code>radix_cache_hybrid.py</code> — new eviction variants are added via an <code>evict_policy_version</code> hook (Appendix B.7). Policy V1 = SGLang+ (LRU), V2 = Marconi (FLOP-aware), V3 = offline-optimal static-$\alpha$ oracle (present in code, results excluded from paper).</li>
+<li>Experiment driver / default model config (NVIDIA Attention-Mamba2 7B Hybrid): <code>policy_exploration.py</code>, invoked by <code>run_all_experiments.sh</code> (Appendix B.5).</li>
+<li>Trace generation: <code>utils/generate_trace.py</code>; per-figure plotters under <code>/plotting</code> (e.g. Fig. 7 <code>token_hit_rate.py</code>, Fig. 8 <code>sglang_comparison.py</code>, Fig. 9 <code>ttft.py</code>, Fig. 10 <code>fine_grained_analysis.py</code>) (Appendix B.6).</li>
+</ul>
+
+<p><strong>核心技术壁垒 (dedicated paragraph)</strong>: The reproducibility bottleneck is <em>not</em> the FLOP-efficiency arithmetic — it is the <strong>speculative-insertion-before-prefill</strong> step that couples the radix-tree bookkeeper to the prefill scheduler. To checkpoint the <em>right</em> SSM state during a prefill pass, the system must, before that pass runs, insert the incoming input into the tree, detect whether it creates a branch node, and — if so — arrange to materialize the SSM state at the branch offset. Materializing that mid-sequence SSM state itself needs one of two model-dependent mechanisms (§4.1 "Obtaining states during prefill"): for chunked-state-passing SSMs (e.g. Mamba2/SSD), cache the second-to-last chunk's state (checkpoint token 64 to approximate token 80 at chunk size 32); for others, a <strong>two-pass prefill</strong> (pass 1 → prefix state, pass 2 → remainder). Getting this offset/chunk bookkeeping right, and integrating it into the scheduler without stalling, is the hardest-to-replicate part.</p>
+
+<p><strong>关键实现细节 (easy-to-miss tricks)</strong>:</p>
+<ol>
+<li><strong>Only $\leq 1$-child nodes are evictable</strong> (§4.3-1): multi-child nodes are hot purely-input prefixes and are protected; when an intermediate single-child node is evicted, its SSM state is <em>released</em> but its KVs are <em>absorbed by the child</em>, so no KV coverage is lost.</li>
+<li><strong>On a hit, only the accessed node's timestamp updates</strong> — <em>not</em> all ancestors (§4.3-2), unlike vLLM/SGLang. This is safe precisely because ancestors' SSM states are never reused and their KVs get subsumed by children on eviction; it keeps recency bookkeeping cheap and correct. Combined with the <strong>asynchronous CPU-parallel grid search</strong> that tunes $\alpha$ during a bootstrap window of 5–15× the pre-first-eviction request count (finishing in "a few seconds," often faster than one request's prefill+decode).</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
