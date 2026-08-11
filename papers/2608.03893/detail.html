@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Cross-Model KV Cache Transfer in LLM Families: A Closed-Form Linear Mapping for Prefill Reuse — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">Cross-Model KV Cache Transfer in LLM Families: A Closed-Form Linear Mapping for Prefill Reuse</h1>
+<div class="card-meta"><span class="badge badge-algorithm">algorithm</span> 2608.03893</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">cross-model-transfer</span><span class="tag">prefill-reuse</span><span class="tag">ridge-regression</span><span class="tag">rope</span><span class="tag">model-routing</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2608.03893.html">← Synthesis</a>
+<a href="/overview/algorithm.html">← algorithm Survey</a>
+<a href="https://arxiv.org/abs/2608.03893" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="cross-model-kv-cache-transfer-in-llm-families-—-l2">Cross-Model KV Cache Transfer in LLM Families — L2 <a class="heading-anchor" href="#cross-model-kv-cache-transfer-in-llm-families-—-l2" aria-label="Link to cross-model-kv-cache-transfer-in-llm-families-—-l2">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>同族不同尺寸 LLM 的 KV cache 之间存在大量线性结构：用 500 条 FineWeb-Edu 序列、按 target 的每个 (layer, head) 做闭式 ridge，就能让接收方直接从发送方的 KV 解码、完全跳过 prefill。六对中四对保住 target 自身 73–98% 精度、比 re-prefill 快 2.7–25$\times$；另两对崩到 42–44%。成败由残差落在 attention 敏感子空间的位置决定，而非残差大小。</p>
+
+<hr>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点：换模型就得重付一次-prefill">Q1 — 痛点：换模型就得重付一次 prefill <a class="heading-anchor" href="#q1-—-痛点：换模型就得重付一次-prefill" aria-label="Link to q1-—-痛点：换模型就得重付一次-prefill">#</a></h3>
+
+<p>生产 serving 同时被两个趋势挤压：agentic 会话让 prompt 随轮次累积；cost-quality cascading / 会话中途切换 / routing 让请求在同一模型家族的不同尺寸之间跳转。两者相乘的结果是——每次换模型，接收方都要把已累积的全部上下文重新 prefill 一遍，而 prefill 成本同时随模型规模和 prompt 长度增长。prefix caching 只在单模型内部有效，跨模型完全不复用。</p>
+
+<p>论文把这件事化归成一个表示问题：既然 prefill 的产物就是 KV cache，那么跨模型复用就等价于「把 A 模型的 KV 变换成 B 模型期待的格式」。难点在于 source 与 target 的层数、hidden dim、KV head 配置都可能不同。已有的跨模型 KV 复用路线全都要么需要梯度训练、要么要求架构完全相同：</p>
+
+<p><img src="/assets/2608.03893/tab6.png" alt="Table 6: 跨模型 KV cache transfer 方法的四准则对比"></p>
+
+<p><em>论文 Table 6（Appendix A），原表：C2C 训练 per-pair neural fuser；LatentAlign 学 per-model 的共享潜空间 adapter；IAM 替换的是小模型的 attention pattern 而不是 KV 值；DroidSpeak 只在架构完全一致的模型之间共享 KV。</em></p>
+
+<p>这张表是全文的立论起点：四个准则（gradient-free / cross-scale / 传的是 KV 值 / 闭式）中，本文声称自己是唯一同时满足四项的。真正的空白不是「没人做过跨模型 KV 复用」，而是<strong>没人检验过这个关系是否简单到根本不需要训练</strong>。注意 DroidSpeak 那两个 "—" 按脚注是「不适用」而非「不具备」，所以这张表的信息量集中在 gradient-free 与 closed-form 两列。</p>
+
+<h3 id="q2-—-方法：三个部件拼出的闭式-per-head-映射">Q2 — 方法：三个部件拼出的闭式 per-head 映射 <a class="heading-anchor" href="#q2-—-方法：三个部件拼出的闭式-per-head-映射" aria-label="Link to q2-—-方法：三个部件拼出的闭式-per-head-映射">#</a></h3>
+
+<ol>
+<li><strong>Per-head ridge</strong>：对 target 每个 (layer $l$, head $h$) 独立拟合一个仿射映射，K 与 V 各一套、不共享任何参数；用 $\lambda=0.01$ 的 Tikhonov 项做数值条件化，一次矩阵求逆出解，无反向传播。</li>
+<li><strong>Cross-layer source selection</strong>：每个 target 层按 head-averaged $R^{2}$ 挑 top-$k$ 个 source 层，把这些层的<strong>全部</strong> KV head 横向拼成设计矩阵。同一 target 层内所有 head 共享同一组 source 层——这既让信息跨 head 流动，也让 Gram 矩阵 $\mathbf{X}^{\top}\mathbf{X}$ 每层只算一次、被该层所有 head 复用。</li>
+<li><strong>Content-space mapping</strong>：先用 source 的 RoPE 逆旋转把 key 剥回位置无关的 content 空间，在该空间做线性映射，再用 target 的 RoPE 重新旋转回去。V 不带位置编码，直接映射、跳过整条 RoPE 通路。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>——不是 ridge 求解本身（那是几十行代码），而是<strong>知道该用哪个标量来筛选一对模型能不能转</strong>：把 mapper 的 K 残差投影到 target 每个 head 的 query 矩阵 $\mathbf{Q}_h$ 的右奇异向量上、按对应奇异值平方加权，得到 K-concentration；把 V 残差按 ground-truth attention 权重平方加权，得到 V-concentration。这套诊断要求同时拿到 target 的 per-head query 与真值 attention 权重，并且必须在<strong>评测域</strong>而非校准域的 token 上计算——同一个 mapper 在校准域 $R^{2}_{K}{=}0.84$、在 HellaSwag token 上却是 $-7.81$，用错域会把结论完全颠倒。</p>
+
+<h3 id="q3-—-结果：两级分化-一个被推翻的诊断量">Q3 — 结果：两级分化 + 一个被推翻的诊断量 <a class="heading-anchor" href="#q3-—-结果：两级分化-一个被推翻的诊断量" aria-label="Link to q3-—-结果：两级分化-一个被推翻的诊断量">#</a></h3>
+
+<ul>
+<li>六对 matched-KV pair 里四对（Qwen3 14B→32B、Qwen3 8B→32B、Llama 3.1 8B→70B、Ministral 3B→8B）保住 target standalone 的 73–98%（五 benchmark 平均），两对（Ministral 3B→14B、8B→14B）掉到 42–44%、floor-normalized 后只剩 11–15%。</li>
+<li>把 ridge 换成同数据训练的 per-head MLP，在两个失败对上把 HellaSwag retention 拉回 $+24.3$ / $+36.8$ pp；但在两个成功对上 MLP 反而输给 ridge（$-0.3$ / $-1.5$ pp）。</li>
+<li>校准域 $R^{2}_{K}$ 与 HellaSwag retention 的 Pearson 相关是 $-0.20$（符号是反的），attention-output cosine 是 $+0.57$（12 个 pair-direction 评测）。</li>
+<li>Qwen3 14B$\leftrightarrow$32B 上，mapper 比 re-prefill 快 4–25$\times$（S→L）/ 3–7$\times$（L→S）；七对全量测量下界 2.7$\times$。CoQA 十轮交替切换的漂移在两个方向上都很小（S→L 十轮共 1.7 pp，L→S 线性 0.33 pp/turn）。</li>
+</ul>
+
+<hr>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2608.03893/fig1.png" alt="Figure 1: 跨模型 KV cache transfer 的整体流水线"></p>
+
+<p><em>论文 Figure 1，原图（caption: "Cross-model KV cache transfer pipeline. A per-head linear map converts the source's prefilled KV cache into the target's expected format, so the target decodes without re-prefilling."）。</em></p>
+
+<p>要看的是这条流水线上<strong>被删掉的东西</strong>：target 的整个 transformer body 前向被一组 per-layer 批量 matmul 替代，target 从映射后的 cache 直接进 decode。这也解释了后面延迟表的量级——省下的不是常数开销，而是接收方一次完整 prefill。</p>
+
+<p><img src="/assets/2608.03893/fig3.png" alt="Figure 3: per-head 线性 mapper 的内部结构"></p>
+
+<p><em>论文 Figure 3，原图（caption: "Per-head linear mapper. For each target $(l,h)$, the top-$k$ source layers (selected per target layer by head-averaged $R^{2}$) are concatenated. Independent ridge regressions $\mathbf{W}_{K}^{l,h}$ and $\mathbf{W}_{V}^{l,h}$ project to the target's K and V spaces. No parameters are shared across heads or between K and V."）。</em></p>
+
+<p>caption 里那句显式的否定最关键：<strong>head 之间、K 与 V 之间都不共享任何参数</strong>。参数量因此是 $2\,L_{t}\,n_{\text{kv}}^{t}\,(k\,n_{\text{kv}}^{s}\,d_{h}^{s})\,d_{h}^{t}$，实测 1.01–3.36 B、落盘 4–12 GB——比很多小模型本身还大。另一处容易看漏的是：设计矩阵的输入宽度是 $k \cdot n_{\text{kv}}^{s} \cdot d_{h}^{s}$，即选中层的<strong>所有</strong> head，不是同序号 head 的那一片。</p>
+
+<p>K 与 V 走的是两条不同长度的通路，图 3 没有把 RoPE 的往返画出来：</p>
+
+<div class="mermaid">
+flowchart LR
+  S["source prefilled cache"] --> K1["keys K_rope"]
+  S --> V1["values V"]
+  K1 --> K2["strip source RoPE by R_s inverse"]
+  K2 --> K3["concat top-k layers, all heads: X_K"]
+  K3 --> K4["ridge W_K per target head"]
+  K4 --> K5["re-encode with target RoPE R_t"]
+  V1 --> V3["concat top-k layers, all heads: X_V"]
+  V3 --> V4["ridge W_V per target head"]
+  K5 --> T["target decodes, no prefill"]
+  V4 --> T
+</div>
+
+<p>三段式夹心（逆旋转 → content 空间线性映射 → 重旋转）之所以代价可忽略，是因为 $\mathbf{R}_{\Theta}$ 正交，$\mathbf{R}_{\Theta}^{-1}=\mathbf{R}_{\Theta}^{\top}$，逆变换精确且几乎免费。source 与 target 的 RoPE 配置允许不同，这是「同一份权重跨上下文长度复用」这一主张的形式基础。</p>
+
+<hr>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p><strong>无形式化作者证明 — 仅实证。</strong> 全文没有定理、命题或收敛性/样本复杂度界；Eq 1 里的 $\approx$ 从未被量化。以下是符号表、方程的物理含义，以及六项可自查的一致性检验。</p>
+
+<h3 id="符号表">符号表 <a class="heading-anchor" href="#符号表" aria-label="Link to 符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$\mathcal{S},\mathcal{T}$</td><td>source / target 模型，层数 $L_{s}$ / $L_{t}$</td></tr>
+<tr><td>$n_{\text{kv}}^{s},n_{\text{kv}}^{t}$</td><td>source / target 的 KV head 数</td></tr>
+<tr><td>$d_{h}^{s},d_{h}^{t}$</td><td>source / target 的 per-head 维度</td></tr>
+<tr><td>$\mathbf{K}_{s}^{l,h},\mathbf{V}_{s}^{l,h}\in\mathbb{R}^{T\times d_{h}^{s}}$</td><td>source 第 $l$ 层第 $h$ 头的 key / value</td></tr>
+<tr><td>$\mathcal{C}_{\mathcal{S}},\mathcal{C}_{\mathcal{T}},\hat{\mathcal{C}}_{\mathcal{T}}$</td><td>source 全量 cache / target 真值 cache / 映射得到的 cache</td></tr>
+<tr><td>$\mathbf{X}_{K}^{l},\mathbf{X}_{V}^{l}$</td><td>target 第 $l$ 层的 K / V 设计矩阵，宽度 $d_{s}=k\,n_{\text{kv}}^{s}\,d_{h}^{s}$</td></tr>
+<tr><td>$\mathbf{W}_{K}^{l,h},\mathbf{b}_{K}^{l,h}$</td><td>per-head ridge 权重与偏置</td></tr>
+<tr><td>$\lambda=0.01$</td><td>Tikhonov 强度</td></tr>
+<tr><td>$N\approx128\text{K}$</td><td>每个 target head 的 token 级观测数</td></tr>
+<tr><td>$\mathbf{R}_{\Theta}(t)$</td><td>位置 $t$ 的 RoPE 旋转（正交）</td></tr>
+<tr><td>$k$</td><td>每个 target 层选用的 source 层数</td></tr>
+</table>
+
+<h3 id="方程与物理含义">方程与物理含义 <a class="heading-anchor" href="#方程与物理含义" aria-label="Link to 方程与物理含义">#</a></h3>
+
+<p><strong>成功判据（Eq 1）</strong></p>
+
+<p>$$m\bigl(\mathcal{T}(\mathbf{x};\hat{\mathcal{C}}_{\mathcal{T}})\bigr)\;\approx\;m\bigl(\mathcal{T}(\mathbf{x};\mathcal{C}_{\mathcal{T}})\bigr)$$</p>
+
+<p>判据下在<strong>指标层</strong>而非张量层——论文刻意不要求 $\hat{\mathcal{C}}_{\mathcal{T}}$ 逐元素接近 $\mathcal{C}_{\mathcal{T}}$。这一步是后来「$R^{2}$ 是错的标量」那条论证的形式种子：如果一开始就把重构误差写进目标，$R^{2}$ 失效就会变成自相矛盾。</p>
+
+<p><strong>探针（Eq 2）</strong></p>
+
+<p>$$\hat{C}_{t}^{l,h}=C_{s}^{l^{\prime},h}\,\mathbf{W}+\mathbf{b},\qquad\mathbf{W}\in\mathbb{R}^{d_{h}^{s}\times d_{h}^{t}},\ \mathbf{b}\in\mathbb{R}^{d_{h}^{t}}$$</p>
+
+<p>单 source 层、单 head、单 cache 类型、无正则的最简 OLS。故意做得这么弱，是为了让高 $R^{2}$ 不能被归因于模型容量。</p>
+
+<p><strong>生产映射与其闭式解（Eq 3–4）</strong></p>
+
+<p>$$\hat{\mathbf{K}}_{t}^{l,h}=\mathbf{X}_{K}^{l}\mathbf{W}_{K}^{l,h}+\mathbf{b}_{K}^{l,h},\qquad\hat{\mathbf{V}}_{t}^{l,h}=\mathbf{X}_{V}^{l}\mathbf{W}_{V}^{l,h}+\mathbf{b}_{V}^{l,h},\qquad\mathbf{W}^{*}=(\mathbf{X}^{\top}\mathbf{X}+\lambda\mathbf{I})^{-1}\mathbf{X}^{\top}\mathbf{Y}$$</p>
+
+<p>ridge 在这里的定位是<strong>条件化而不是容量控制</strong>：top-$k$ 选出的 source 层按构造互相高度相关（它们是因为各自都能预测同一个 target 才被选中的），$\mathbf{X}^{\top}\mathbf{X}$ 因此接近奇异。求解前对 $\mathbf{X},\mathbf{Y}$ 中心化，偏置事后还原为 $\mathbf{b}=\bar{\mathbf{Y}}-\bar{\mathbf{X}}\mathbf{W}^{*}$，使 $\lambda$ 不会惩罚截距。</p>
+
+<p><strong>RoPE 往返</strong></p>
+
+<p>$$\hat{\mathbf{K}}_{t}=\bigl(\mathbf{K}_{s}\,\mathbf{R}_{\Theta_{s}}^{-1}(t)\,\mathbf{W}_{K}+\mathbf{b}_{K}\bigr)\,\mathbf{R}_{\Theta_{t}}(t),\qquad \mathbf{R}_{\Theta}^{-1}=\mathbf{R}_{\Theta}^{\top}$$</p>
+
+<p>校准时的回归目标 $\mathbf{Y}$ 也是从 target 真值 key 里剥掉 target RoPE 得来的，所以 $\mathbf{W}_{K}$ 全程在位置无关空间里拟合。剥离必须在拟合与推理两端<strong>对称</strong>施加。</p>
+
+<p><strong>参数量、拟合主项、车队规模</strong></p>
+
+<p>$$\text{params}=2\,L_{t}\,n_{\text{kv}}^{t}\,(k\,n_{\text{kv}}^{s}\,d_{h}^{s})\,d_{h}^{t},\qquad \text{fit}=\mathcal{O}(N d_{s}^{2}),\qquad \text{ordered pairs}=P(P-1)$$</p>
+
+<p>前两式说明一件对 serving 很关键的事：mapper 体积与拟合成本都<strong>不随序列长度或 cache 大小增长</strong>，只由 target 深度/head 数与 $k$ 决定。</p>
+
+<h3 id="六项一致性检验">六项一致性检验 <a class="heading-anchor" href="#六项一致性检验" aria-label="Link to 六项一致性检验">#</a></h3>
+
+<ol>
+<li><strong>维度与参数量自洽（通过，并反推出未披露的量）</strong>。把 Qwen3 32B 的 $L_{t}=64$、$n_{\text{kv}}=8$、$d_h=128$、$k=8$ 代入参数量公式得 $2\cdot64\cdot8\cdot8192\cdot128=1.074\times10^{9}$，与 Table 12 的 1.07 B 精确吻合；Llama 70B 取 $L_{t}=80,k=20$ 得 $3.355\times10^{9}$，对上 3.36 B。反向解 Ministral 3 14B 得 $L_{t}=40$。再用「参数量 × 4 B」换算落盘体积：1.07 B→4.0 GiB、1.61 B→6.0 GiB、3.36 B→12.5 GiB，与表中 4 / 6 / 12 GB 全部对齐——也就是说 <strong>mapper 是 fp32 存储的</strong>，尽管前向是 bf16。这一点论文没写，却直接决定 Appendix D 那个 80–480 ms 的 host-to-device 换页估计（若改存 bf16，体积与换页时间都减半）。</li>
+<li><strong>恒等极限（通过）</strong>。当 source 与 target 是同一个模型、$\Theta_s=\Theta_t$ 时，$\mathbf{W}=\mathbf{I},\mathbf{b}=0$ 落在假设类内，映射精确还原真值 cache。评测侧也有对应锚点：Table 14 里 target 自己的 ground-truth cache 走同一套评测管线得 99.9/99.9，说明管线本身没有系统性偏置。</li>
+<li><strong>$k$ 的单调极限（通过，但收益递减）</strong>。in-sample $R^{2}$ 随 $k$ 单调升：K 0.5572 ($k{=}1$) → 0.7914 ($k{=}8$) → 0.8451 (all)，V 0.3249 → 0.6541 → 0.7645。$k{=}6$ 已达 $k{=}$all 的 92.3% (K) / 87.7% (V)。参数量与落盘却线性于 $k$，所以 $k$ 是精度-存储的直接旋钮。</li>
+<li><strong>正交性与信息守恒（通过）</strong>。$\mathbf{R}_{\Theta}$ 正交 ⇒ 剥离与重旋转不丢信息、逆等于转置。这使 content-space 变换是<strong>零成本可选项</strong>——即使它不带来精度收益，也不带来精度损失，只增加一次转置。这一点在评估第 4 条论证时很重要。</li>
+<li><strong>超定程度（部分通过，暴露一个未扫的区域）</strong>。每个 target head 有 $N\approx128$K 个观测（500 序列 × 1024 token，stride-4 = 128K，自洽）。$k{=}8$ 时 $d_{s}=8\cdot8\cdot128=8192$，超定比约 15.6$\times$——这正是论文所说 $\lambda$ 与 $N$ 有宽平坦区的原因。但 $k{=}$all 时（Qwen3 8B 源 36 层）$d_{s}\approx36{,}864$，超定比掉到约 3.5$\times$；Ministral 3B→8B 的生产配置恰好就是 $k{=}$all。<strong>论文的全部校准敏感性扫描（Table 8）都在 $k{=}8$ 做的</strong>，也就是在条件数最好的那一档；条件数最差的生产配置没有对应的 $\lambda$ 扫描。</li>
+<li><strong>成本核算（通过，量级合理）</strong>。Gram 矩阵每 target 层算一次、层内所有 head 共享，故拟合时间对 target head 数呈亚线性。$k{=}8$ 时单层 $\mathcal{O}(Nd_{s}^{2})\approx1.28\times10^{5}\times6.7\times10^{7}\approx8.6\times10^{12}$ MAC，64 层约 $5.5\times10^{14}$；实测 8$\times$H100 上 47–87 min/pair，考虑到协方差用 fp32、分析用 fp64，量级自洽。换页估计也对得上：4 GB / 50 GB/s = 80 ms，12 GB / 25 GB/s = 480 ms。车队规模 $\sim$6.5 GB $\times P(P-1)$ 给出 $P=3,4,5$ 时 39 / 78 / 130 GB，与论文的 39 / 79 / 131 一致。</li>
+</ul>
+
+<h3 id="缺了什么保证">缺了什么保证 <a class="heading-anchor" href="#缺了什么保证" aria-label="Link to 缺了什么保证">#</a></h3>
+
+<p>最想要而全文没有的，是把重构侧标量与下游指标连起来的界：给定 attention-output cosine $c$，target 的任务指标退化至多多少？论文自己证明了 $R^{2}$ 做不到这件事，然后用一个 $n{=}12$ 的相关系数把 cosine 顶上去——这是把一个失败的代理换成一个更好的代理，而不是给出保证。其次缺的是可辨识性讨论：top-$k$ 层按构造共线，$\mathbf{W}^{*}$ 在共线方向上并不唯一确定，而 mapper 的输出恰恰要喂进对方向敏感的 attention。</p>
+
+<hr>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<h3 id="5-1-线性结构：证据本身比标题弱一档">5.1 线性结构：证据本身比标题弱一档 <a class="heading-anchor" href="#5-1-线性结构：证据本身比标题弱一档" aria-label="Link to 5-1-线性结构：证据本身比标题弱一档">#</a></h3>
+
+<p><img src="/assets/2608.03893/fig2.png" alt="Figure 2: 逐层 R^2 热图，K_rope / K_stripped / V 三个面板"></p>
+
+<p><em>论文 Figure 2，原图（caption: "Cross-model KV exhibits substantial linear structure. Each heatmap cell shows head-averaged $R^{2}$ from a single-source linear regression mapping source layer $l^{\prime}$ (row) to target layer $l$ (column), for raw keys ($K_{\text{rope}}$), RoPE-stripped keys ($K_{\text{stripped}}$), and values ($V$)."）。行=source 层，列=target 层，格值=head-averaged $R^{2}$。</em></p>
+
+<p>四个定性结论都能从图上直接读出：对角线明显高于零；模型越近对角线越锐（架构与深度差距会把对应关系「摊开」）；剥掉 RoPE 后对角线普遍变锐；K 比 V 好预测约 0.2 个 $R^{2}$。</p>
+
+<p>但要注意三个数字是不同的量，论文自己在 Appendix B 里把它们对齐过：热图<strong>单格峰值</strong> $K_{\text{stripped}}$ $R^{2}{=}0.81$（Qwen3 14B→32B）挑的是最好预测的那个 (source, target) 层对；<strong>逐 target 层取最优单源再跨层平均</strong>只有 0.56；$k{=}8$ 聚合才回到 0.79。摘要里「one source layer explains 56%」用的是第二个量，$\S2.3$ 展示的却是第一个量。此外这些 $R^{2}$ 全是 in-sample 的。</p>
+
+<p>还有一处方法论落差论文明确披露了：Figure 5 的多源证据用的是 <strong>greedy forward selection</strong>（逐步加入使联合 $R^{2}$ 增益最大的层），而出厂 mapper 用的是<strong>固定 top-$k$、按单源 head-averaged $R^{2}$ 排序</strong>。两者只被声称在定性结论上一致，没有量化对比。</p>
+
+<h3 id="5-2-主结果：两级分化，且-floor-normalization-才看得清">5.2 主结果：两级分化，且 floor normalization 才看得清 <a class="heading-anchor" href="#5-2-主结果：两级分化，且-floor-normalization-才看得清" aria-label="Link to 5-2-主结果：两级分化，且-floor-normalization-才看得清">#</a></h3>
+
+<p><img src="/assets/2608.03893/tab1.png" alt="Table 1: 六对 matched-KV pair 在各自选定 k 下的 retention"></p>
+
+<p><em>论文 Table 1，原表：per-benchmark 列是 retention（= transfer accuracy / target standalone accuracy），Avg 与 Avg$_{\text{fn}}$ 分别是 retention 与 floor-normalized retention 的均值。</em></p>
+
+<p>Tier 1 四对 73–98%，Tier 2 两对 42–44%——但真正的分化在 floor-normalized 列：Tier 2 掉到 14.7% / 11.1%。原因是 Ministral 两个失败对在 MMLU 上的绝对准确率是 25.25 与 24.73，而 MMLU 的随机基线就是 25%；3B→14B 的 floor-normalized MMLU retention 是 $-0.5$%。<strong>在那个 benchmark 上，转移过来的 cache 携带的可用任务信息不多于「没有信息」</strong>。raw retention 之所以还能给出 32% 这种数字，纯粹是因为它拿 25% 的随机地板去除以 77% 的 target 分数。论文报了 Avg$_{\text{fn}}$、也用 Table 14 的双锚点校准过这个度量（被削弱的 $k{=}1$ mapper 得 35.1 / $-0.5$），这一点是可信的做法；但 Tier 2 的正确读法是「失败」而不是「保住四成」。</p>
+
+<p>另一头也要压住。Qwen3 14B→32B 在 ARC-C 上 101.0%、在留出的 BoolQ 上 101.9%，绝对值是 61.60 vs 32B standalone 的 61.01。ARC-Challenge 约 1,172 题，0.59 pp 相当于 7 题，落在配对二项噪声内；Table 14 的 ground-truth 锚点在 ARC-C 上也正好是 100.0。所以该读作<strong>与 target 自己的 cache 打平</strong>，不是「近似重构打败了精确计算」。把它当作胜利来叙述会掩盖真正该问的问题——见下一段。</p>
+
+<h3 id="5-3-被忽略的基线：为什么不干脆继续用小模型？">5.3 被忽略的基线：为什么不干脆继续用小模型？ <a class="heading-anchor" href="#5-3-被忽略的基线：为什么不干脆继续用小模型？" aria-label="Link to 5-3-被忽略的基线：为什么不干脆继续用小模型？">#</a></h3>
+
+<p>论文的 retention 全部以 target standalone 为分母。但 cascading / routing 场景里真实的对照是「不切换，继续用手上的小模型」。Table 13 同时印了 source standalone，把差值算出来（Tier 1 四对，transfer − source standalone，单位 pp）：</p>
+
+<table>
+<tr><th>Pair</th><th>ARC-C</th><th>HellaSwag</th><th>WinoGrande</th><th>MMLU (5-shot)</th><th>GSM8K (8-shot CoT)</th><th>五项均值</th></tr>
+<tr><td>Qwen3 14B→32B</td><td>$+1.11$</td><td>$+1.83$</td><td>$-0.32$</td><td>$-0.77$</td><td>$-4.02$</td><td>$-0.43$</td></tr>
+<tr><td>Qwen3 8B→32B</td><td>$+0.51$</td><td>$+3.67$</td><td>$-1.19$</td><td>$-2.68$</td><td>$-26.16$</td><td>$-5.17$</td></tr>
+<tr><td>Llama 3.1 8B→70B</td><td>$+1.11$</td><td>$+1.71$</td><td>$0.00$</td><td>$-7.19$</td><td>$-41.32$</td><td>$-9.14$</td></tr>
+<tr><td>Ministral 3B→8B</td><td>$+0.85$</td><td>$+2.68$</td><td>$+0.87$</td><td>$-13.76$</td><td>$-50.26$</td><td>$-11.92$</td></tr>
+</table>
+
+<p>模式非常整齐：零样本分类类 benchmark 上升级确实有小幅正收益（$+0.5$ 到 $+3.7$ pp），而 <strong>5-shot MMLU 与 8-shot CoT GSM8K 上四对全部大幅倒退</strong>，倒退幅度随对子变远而放大，以致四对的五项均值全为负。Llama 8B→70B 的 GSM8K 转移后只有 14.78，而 8B 自己就有 56.10。也就是说，按论文自己的附录数据，「小转大以提升质量」这个动机在需要长 few-shot prompt 或多步生成的任务上不成立。</p>
+
+<p>一个反向证据值得同时记住：perplexity 显示映射后的 cache 确实带进了 target 的信息。Llama 8B→70B 转移 PPL 4.37 介于 8B 的 5.58 与 70B 的 2.47 之间；Qwen3 14B→32B 是 7.33，介于 7.63 与 6.79 之间。所以失败不是「cache 什么都没转过来」，而是退化集中在长 prompt 与长生成——正好对应论文自己列出的第一条 limitation：校准只用 1,024-token 的 FineWeb-Edu 散文。顺带一处可疑的巧合：Llama 8B→70B 的 WinoGrande 转移值与 8B standalone 完全相同（都是 63.14）。</p>
+
+<h3 id="5-4-组件消融：三个部件里只有一个有实测正贡献">5.4 组件消融：三个部件里只有一个有实测正贡献 <a class="heading-anchor" href="#5-4-组件消融：三个部件里只有一个有实测正贡献" aria-label="Link to 5-4-组件消融：三个部件里只有一个有实测正贡献">#</a></h3>
+
+<p><img src="/assets/2608.03893/tab2.png" alt="Table 2: Qwen3 14B→32B 上的组件消融"></p>
+
+<p><em>论文 Table 2，原表：Full 为 $k{=}8$ + ridge + content-space；"$-$ inference RoPE" 只在推理端不重旋转，制造拟合-评测不匹配；"$-$ all RoPE" 是拟合与推理都保留 RoPE 的全耦合变体；最后两行再叠加去掉 cross-layer selection ($k{=}1$) 与 ridge。</em></p>
+
+<p>三条内部张力必须一起读：</p>
+
+<p><strong>(a) RoPE 解耦的实测收益是零。</strong> "$-$ all RoPE" 行与 Full 行在每一列都在噪声内（ARC-C 61.09 vs 61.60、HellaSwag 80.73 vs 80.70、GSM8K 90.98 vs 90.98、PPL 7.35 vs 7.33）。论文对此完全坦诚，理由改为「泛化」：解耦后的权重在位置无关空间里，因此跨 RoPE 配置、跨上下文长度按构造可用。<strong>这个理由被支持到什么程度？</strong> 建设性的一半成立：$\mathbf{R}_{\Theta}$ 正交、逆变换精确，所以在 1,024-token 上拟合的 content-space 权重形式上确实在任何 target RoPE 支持的位置有定义。但实证的一半完全缺失——没有任何实验在 1,024 token 上拟合、再在 8k/32k 上测<strong>精度</strong>；$\S4.7$ 的 32k 只测延迟。「耦合变体会被绑死在 1,024-token 位置分布上」这句话是断言，不是观测。结论：该部件是<strong>成本为零的保险</strong>（第 4 节检验 4：正交变换不丢信息），把它放进流水线是合理工程决策；但把它列为摘要三步法中的第二步，与「它在任何被测量的轴上都没有贡献」这一事实之间有真实落差。另外要注意 "$-$ inference RoPE" 行（MMLU 25.79、GSM8K 4.17）是<strong>拟合-推理不匹配的伪影</strong>，论文 caption 自己这么写；Figure 7 的叙述（「去掉推理端 RoPE 处理在 WinoGrande/MMLU/GSM8K 上代价最大」）读起来却像是在衡量该部件的价值，这两种读法不能混用。</p>
+
+<p><strong>(b) 消融是非单调的：在 $k{=}1$ 基础上再去掉 ridge，每一列都变好。</strong> 第 5 行 vs 第 4 行：ARC-C 36.43 vs 27.65、HellaSwag 62.26 vs 44.81、MMLU 51.26 vs 26.07、GSM8K 1.44 vs 0.38、PPL 9.86 vs 22.73。论文未置评。用论文自己给 ridge 的理由去推，能得到一个自洽的解释：ridge 存在的目的是在大 $k$ 下条件化近奇异的 $\mathbf{X}^{\top}\mathbf{X}$，那么在 $k{=}1$（$d_{s}=1024$，超定比约 125$\times$、条件数良好）它至多应当<strong>无害</strong>。表里它却大幅有害。这说明 $\lambda{=}0.01$ 不是尺度无关的：它是隐式地按生产 $k$ 的 Gram 尺度定的，$k{=}1$ 时同一个 $\lambda$ 过度收缩，把 key/value 的范数压小、attention logit 变平（PPL 22.73 正是这种症状）。而 Table 8 的 $\lambda$ 扫描只在 $k{=}8$ 做过，$k{=}1$ 没有对应扫描。两个推论：第一，第 4 行的崩塌里有一部分是 $\lambda$ 失配而非 cross-layer 信息丢失，<strong>Table 2 因此高估了 cross-layer 部件的贡献幅度</strong>；第二，即便用条件更公平的第 5 行做对照（ARC-C 36.43 vs Full 61.60），cross-layer selection 依然是三个部件里唯一有大幅实测正贡献的那个——定性结论站得住，量化幅度不可直接引用。</p>
+
+<p><strong>(c) ridge 自身的实测贡献也接近零。</strong> Table 8 在 $k{=}8$ 下 $\lambda{=}0$（纯 OLS）给 80.86，比生产的 80.73 还高 0.13 pp；崩塌只出现在 $\lambda{=}1$（$-15.79$ pp）。所以在生产配置上 ridge 可有可无。把 (a)(b)(c) 合起来：摘要列出的三个部件中，<strong>只有 cross-layer source selection 有被测量到的正贡献</strong>，另两个分别是零收益的构造性保险与零收益的数值稳妥措施。校准协议的其余部分很稳健：$N$ 在 200 序列后基本平坦（$N{=}50$ 也只差约 1.6 pp），域是唯一有真实代价的轴（CodeAlpaca $-5.24$ pp / HellaSwag，跨七个 benchmark 平均 95.9%，Wikipedia 99.4%）。</p>
+
+<h3 id="5-5-机制：r2-被自己的证据链推翻">5.5 机制：$R^{2}$ 被自己的证据链推翻 <a class="heading-anchor" href="#5-5-机制：r2-被自己的证据链推翻" aria-label="Link to 5-5-机制：r2-被自己的证据链推翻">#</a></h3>
+
+<p><img src="/assets/2608.03893/tab4.png" alt="Table 4: ridge 换成 MLP 后的 per-pair 变化（全部在 HellaSwag token 上测量）"></p>
+
+<p><em>论文 Table 4，原表：$\Delta=\text{MLP}-\text{ridge}$。失败对上 ridge 的 $R^{2}_{K}$ 深度为负，MLP 把它拉回近零、压低 K-concentration、抬高 attention-output cosine、并恢复 HellaSwag retention。</em></p>
+
+<p>配套的 Table 3（ridge vs MLP 的 HellaSwag retention）：</p>
+
+<table>
+<tr><th>Pair</th><th>Ridge</th><th>MLP</th><th>$\Delta$</th></tr>
+<tr><td>Qwen3 14B→32B</td><td>97.6%</td><td>97.3%</td><td>$-0.3$ pp</td></tr>
+<tr><td>Ministral 3B→8B</td><td>93.3%</td><td>91.8%</td><td>$-1.5$ pp</td></tr>
+<tr><td>Ministral 3B→14B</td><td>68.0%</td><td>92.3%</td><td>$+24.3$ pp</td></tr>
+<tr><td>Ministral 8B→14B</td><td>58.7%</td><td>95.5%</td><td>$+36.8$ pp</td></tr>
+</table>
+
+<p>论文的机制主张是：MLP 的收益来自把残差<strong>重新分布</strong>到 attention 读不到的方向（K-concentration 平均降约 2.5、cosine 平均升约 0.45），而不是把残差变小。支撑这一主张的两个跨对相关系数是 attention-output cosine $r{=}{+}0.57$、校准域 $R^{2}_{K}$ $r{=}{-}0.20$（$n{=}12$）。</p>
+
+<p>这条链上有三处需要如实记录：</p>
+
+<ol>
+<li><strong>符号方向的问题。</strong> $R^{2}$ 与 retention 的相关是<strong>负</strong>的——拟合得更好，跨对来看反而略微对应转移更差。麻烦在于 $\S2.3$ 那个「跨模型 KV 有大量线性结构」的头条证据本身就是用 $R^{2}$ 表述的。论文的调和方式是区分作用域：$R^{2}$ 在<strong>对内</strong>（选 source 层）有效、<strong>跨对</strong>无效，并且明说了这一立场，但没有给出为什么同一标量会有这种作用域切换的理由。它带来的实质后果是：线性结构的证据说明的是<strong>可重构性</strong>，而不是<strong>可转移性</strong>——Table 4 里 $R^{2}_{K}{=}-7.81$ 的 mapper 保住 68% HellaSwag，而 $\S4.5$ 提到 $R^{2}_{K}{=}0.84$ 的 Llama 反向只保住 37%，$R^{2}$ 既非必要也非充分。「线性结构 ⇒ ridge 够用」这条设计论证因此比它看起来的弱，尽管最终结论靠下游指标独立成立。</li>
+<li><strong>统计功效。</strong> $n{=}12$、$df{=}10$ 时双侧 $\alpha{=}0.05$ 的临界相关系数约为 0.576，$r{=}{+}0.57$ 恰好压在线上；论文未报置信区间。而且 12 个点是 6 对 × 2 个方向，同一对的两个方向并非独立样本。cosine 优于 $R^{2}$ 的<strong>排序</strong>证据是清楚的，但「cosine 可作为部署前筛选标量」的强度被这两点限制住了。</li>
+<li><strong>论文自己表里的反例。</strong> Ministral 3B→8B 在两个机制变量上都改善（K-conc $-0.45$、cosine $+0.07$），HellaSwag 却掉了 1.5 pp。论文明确承认「重分布本身不充分，只有当错放的误差大到起约束作用时才会改变下游」。这个补丁使机制陈述变成条件性的，同时也意味着该机制目前不能用作预测工具。另外 MLP 在两个 Tier 1 对上都输给 ridge，所以「非线性扩展」是<strong>修复手段</strong>而非普遍升级。</li>
+</ul>
+
+<p>最后一处仍然开放：$R^{2}_{K}{=}-7.81$（比预测均值还差）的 mapper 依然保住 68% HellaSwag retention。这既说明 HellaSwag 的 log-likelihood 打分对 cache 退化相当宽容，也说明「误差落点」这个解释框架还没有把这个量级的落差说透。</p>
+
+<h3 id="5-6-多轮切换与延迟">5.6 多轮切换与延迟 <a class="heading-anchor" href="#5-6-多轮切换与延迟" aria-label="Link to 5-6-多轮切换与延迟">#</a></h3>
+
+<p><img src="/assets/2608.03893/fig4.png" alt="Figure 4: Qwen3 14B↔32B 在 CoQA 上十轮交替切换的 F1"></p>
+
+<p><em>论文 Figure 4，原图：实线=target standalone，虚线=单轮选定 $k$ 下的 mapper（S→L $k{=}8$、L→S $k{=}20$），点线=多轮扫描会选出的 $k$。100 段对话、每段约 15 轮、五个领域。</em></p>
+
+<p>S→L 的差距从第 1 轮到第 10 轮只扩大 1.7 pp，且扩大的原因是 32B 的天花板在上升而 mapper 持平；L→S 是线性漂移 0.33 pp/turn。论文自己压住了这个结论的适用范围：十轮内不会级联失效，但线性的 L→S 漂移在很长会话里仍会累积；而且这是<strong>单对</strong>评测。</p>
+
+<p><img src="/assets/2608.03893/fig9.png" alt="Figure 9: mapper 应用（实线）vs target re-prefill（虚线）随序列长度变化"></p>
+
+<p><em>论文 Figure 9，原图：8$\times$H100、bf16。mapper 在短序列近乎水平（固定 dispatch 成本主导），之后线性上升；re-prefill 在每一对、每一个序列长度上都高于 mapper。</em></p>
+
+<p>Qwen3 14B$\leftrightarrow$32B 的具体值：S→L 在 64 / 8K / 32K token 上是 14.0 / 67.8 / 277.6 ms，对应 re-prefill 61.7 / 1154.8 / 6975.3 ms（4$\times$ / 17$\times$ / 25$\times$）；L→S 是 3$\times$ / 5$\times$ / 7$\times$。七对全量测量下 70 个格子里 mapper 全部更快，摘要的 2.7–25$\times$ 正是各对区间的并集（下界来自 Ministral 3B→8B，上界来自 Qwen3 14B→32B）。</p>
+
+<p>三处口径需要记住：延迟对比<strong>不含</strong>把映射后的 cache 送到 target 进程的开销；Ministral 的 re-prefill 只计语言模型解码体、不含 vision tower；mapper 跑在 eager 模式、没有 torch.compile 或 CUDA graph（这一条对 mapper 不利，短序列 14.0 ms 的地板里有 Python dispatch 与跨 GPU 传输）。此外这只是<strong>计算</strong>侧的账，服务侧还要背 1.01–3.36 B / 4–12 GB 的 mapper，且方向性使车队需要 $P(P-1)$ 个有序对（5 模型约 131 GB），换页的 80–480 ms 是按体积与带宽算出来的、不是测出来的。</p>
+
+<h3 id="5-7-超参选择的诚实度">5.7 超参选择的诚实度 <a class="heading-anchor" href="#5-7-超参选择的诚实度" aria-label="Link to 5-7-超参选择的诚实度">#</a></h3>
+
+<p>$k$ 是在也用于报告结果的 log-likelihood benchmark 上选的。论文用留一 benchmark 重选来界定这种乐观：18 折里 12 折 $k$ 不变，被留出 benchmark 的准确率最多移动 2.49 pp（均值 0.30 pp，且移动时总是向下），最大那个 2.49 pp 出现在 Tier 2 的 Ministral 8B→14B，四个 Tier 1 对最多 1.45 pp。另外在三个从未参与选择的 benchmark（PIQA / BoolQ / ARC-Easy）上，Tier 1 四对均值 $\geq$ 96.8%、Tier 2 两对 63.7% / 59.3%，层级结构复现。</p>
+
+<p>两处披露与正文口径的落差要记下：正文说选择准则覆盖四个 benchmark，但 Appendix H 说 WinoGrande 在这六对的多数 $k$ 上缺失，实际 argmax 只在 ARC-C / HellaSwag / MMLU 三项上做；Ministral 3B→8B 表中的 "(all)" 是对数据驱动 argmax（$k{=}20$，差 0.38 pp）的<strong>人工覆盖</strong>，这一点在附录披露、Table 1 里没有标记。留出集 retention「对每一对都不低于 in-sample retention」这个方向与通常的选择偏差方向相反，论文归因于 PIQA/ARC-Easy 本身更容易，这个解释合理但未被单独验证。</p>
+
+<hr>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>论点</th><th>依据</th><th>内部张力 / 成立程度</th></tr>
+<tr><td>1</td><td>换模型的代价可归约为一个表示映射问题</td><td>prefill 的产物就是 KV cache（$\S1$）；成功判据下在指标层而非张量层（Eq 1）</td><td>成立。把判据放在指标层是后续「$R^{2}$ 是错标量」不自相矛盾的前提</td></tr>
+<tr><td>2</td><td>该关系有大量线性结构，故闭式拟合足够</td><td>单源 OLS 探针，$K_{\text{stripped}}$ 单格峰值 $R^{2}{=}0.81$（Fig 2）；$k{=}8$ 层平均 0.79</td><td>三个不同的 $R^{2}$ 量（单格峰值 0.81 / 逐层最优单源均值 0.56 / $k{=}8$ 聚合 0.79）在不同位置被引用；全为 in-sample。更根本的是第 6 步会证明 $R^{2}$ 不预测转移质量，使这一步支撑的是「可重构」而非「可转移」</td></tr>
+<tr><td>3</td><td>单个 source 层不够，需 top-$k$ 跨层聚合</td><td>greedy forward selection 曲线（Fig 5）；$k{=}1$→$k{=}8$ 使 K $R^{2}$ 0.5572→0.7914；$k{=}1$ 下游普遍崩塌（Fig 6, Table 2）</td><td>成立，且是三个部件里唯一有大幅实测正贡献者。但证据用 greedy joint 选择、出厂用固定 top-$k$ 单源排序，两算法只被声称定性一致；且 Table 2 第 4 行的崩塌幅度被 $\lambda$ 失配放大（见第 4 步）</td></tr>
+<tr><td>4</td><td>RoPE 污染拟合，应在 content 空间映射</td><td>Fig 2 中 $K_{\text{stripped}}$ 对角线比 $K_{\text{rope}}$ 更锐；$\mathbf{R}_{\Theta}$ 正交故往返精确</td><td><strong>实测收益为零</strong>：Table 2 "$-$ all RoPE" 每列都在 Full 的噪声内。泛化理由的建设性部分成立（正交、位置无关），实证部分完全缺失（无「1k 拟合、32k 测精度」实验；$\S4.7$ 的 32k 只测延迟）。净评价：零成本保险，作为摘要三步之一被列出与其零实测贡献之间有落差</td></tr>
+<tr><td>5</td><td>消融显示各部件贡献可分离</td><td>Table 2 五行顺序移除</td><td><strong>非单调</strong>：在 $k{=}1$ 上再去掉 ridge，五列全部变好（PPL 22.73→9.86）。与论文给 ridge 的理由（条件化大 $k$ 下的近奇异 Gram）相冲突，最自洽的解释是 $\lambda{=}0.01$ 隐式按生产 $k$ 定标、$k{=}1$ 下过度收缩；$\lambda$ 扫描只在 $k{=}8$ 做过。后果：cross-layer 部件的量化幅度被高估，且 $\lambda{=}0$ 在 $k{=}8$ 比生产还好 0.13 pp 意味着 ridge 本身实测贡献也约为零</td></tr>
+<tr><td>6</td><td>六对结果两极 ⇒ matched-KV 必要不充分，需要别的解释变量</td><td>Tier 1 73–98% vs Tier 2 42–44%（Table 1）；参数比 8.8$\times$ 的 Llama 进 Tier 1、1.8$\times$ 的 Ministral 8B→14B 崩掉（Table 10）</td><td>成立且重要：架构距离不排序结果。但 Tier 2 在 MMLU 上是 25.25 / 24.73 对 25% 地板、floor-normalized 到 11–15%（MMLU 甚至 $-0.5$%），正确读法是失败而非「保住四成」</td></tr>
+<tr><td>7</td><td>决定成败的是残差落点而非大小；cosine 优于 $R^{2}$</td><td>K/V-concentration 定义；MLP 使 K-conc $-2.5$、cosine $+0.45$、HS $+24.3/+36.8$ pp（Table 4）；$r{=}{+}0.57$ vs $r{=}{-}0.20$（$n{=}12$）</td><td>排序证据清楚，但：$R^{2}$ 相关<strong>符号为负</strong>且它正是第 2 步的证据货币；$n{=}12$ 时 0.05 临界值约 0.576，$+0.57$ 恰在线上且 12 点由 6 对 × 2 方向构成、非独立；论文自己表里有反例（Ministral 3B→8B 两个机制量都改善却掉 1.5 pp），故机制被降级为条件性陈述；$R^{2}_{K}{=}-7.81$ 仍保住 68% retention 这一落差仍未解释</td></tr>
+<tr><td>8</td><td>非线性 MLP 可修复失败对</td><td>Table 3 的 $+24.3$ / $+36.8$ pp</td><td>是修复而非普遍升级：MLP 在两个 Tier 1 对上分别输 0.3 / 1.5 pp。且 MLP 需要梯度训练，等于放弃了本文相对 C2C/LatentAlign 的 gradient-free 差异点——在最需要它的两对上，四准则表里的第一列不再成立</td></tr>
+<tr><td>9</td><td>因此跨模型 KV 转移在生产上可用</td><td>2.7–25$\times$ 加速（70/70 格全胜）；十轮 CoQA 漂移小；mapper 不必常驻 GPU</td><td>计算侧成立，服务侧账未结清：不含 cache 搬运、Ministral 排除 vision tower、mapper 跑 eager（不利于自己）；$P(P-1)$ 有序对使 5 模型车队约 131 GB，80–480 ms 换页是算出来的不是测的（且第 4 节检验 1 表明权重按 fp32 存，若改 bf16 可减半）；L→S 的 0.33 pp/turn 是线性漂移，长会话仍会累积</td></tr>
+<tr><td>10</td><td>结论：应把跨模型 mapper 的评价标准从重构指标转向子空间感知诊断</td><td>$\S6$</td><td>方法论层面这是本文最站得住的贡献，且它是<strong>自我削弱</strong>的——它同时说明本文自己用来立论的 $R^{2}$ 证据不足以支撑可转移性。另一条论文未展开的账：以 source standalone 为基线时（$\S5.3$ 的推导），四个 Tier 1 对的五项均值全为负（$-0.43$ 到 $-11.92$ pp），退化集中在 5-shot 与 CoT 生成，与「校准只用 1k-token 散文」这条 limitation 一致</td></tr>
+</table>
+
+<hr>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> —— 论文未给出代码仓库、脚本或权重发布地址。以下是从 $\S3$、$\S4.1$、Appendix D/E/G 拼出的复现清单，按「照抄即可」与「容易漏」分开。</p>
+
+<h3 id="可直接照抄的常数">可直接照抄的常数 <a class="heading-anchor" href="#可直接照抄的常数" aria-label="Link to 可直接照抄的常数">#</a></h3>
+
+<table>
+<tr><th>项</th><th>值</th></tr>
+<tr><td>校准数据</td><td>FineWeb-Edu，500 序列 × 1,024 token，stride 4 ⇒ 每个 target head 约 128K 个 token 级观测</td></tr>
+<tr><td>ridge</td><td>$\lambda=0.01$；$\lambda{=}0$ 与 $10^{-4}$ 同样可用，$\lambda{=}1$ 崩（$-15.79$ pp）</td></tr>
+<tr><td>精度</td><td>前向 bf16、协方差 fp32、分析 fp64；权重落盘按 fp32（由参数量与 GB 反推）</td></tr>
+<tr><td>源特征维度</td><td>$d_{s}=k\cdot n_{\text{kv}}^{s}\cdot d_{h}^{s}$（跨 head 拼接）</td></tr>
+<tr><td>$k$ 扫描</td><td>$\{1,2,4,6,8,10,12,16,20,24,\text{all}\}$，按 ARC-C / HellaSwag / MMLU 的算术平均取 argmax，近似并列时偏向大 $k$</td></tr>
+<tr><td>MLP 对照</td><td>每 (target layer, head, K$\</td><td>$V)：Linear($d_{s}$,1024) → ReLU → Linear(1024,1024) → ReLU → Linear(1024,$d_{h}^{t}$)；Adam，lr $10^{-3}$，20 epoch，MSE，batch 4,096</td></tr>
+<tr><td>拟合成本</td><td>单 8$\times$H100 节点，47–87 min/pair（Qwen3 8B→32B 47、14B→32B 52、Llama 8B→70B 50、Ministral 3B→8B 75、3B→14B 84、8B→14B 87）</td></tr>
+<tr><td>评测口径</td><td>lm-evaluation-harness 默认；ARC-C / HellaSwag 用 acc_norm，WinoGrande / MMLU / GSM8K 用 acc；MMLU 5-shot、GSM8K 8-shot CoT，其余 zero-shot；HellaSwag/MMLU 16 路分片、ARC-C 4 路</td></tr>
+<tr><td>延迟测量</td><td>8$\times$H100 + NVLink，bf16，50 warmup / 30 计时；re-prefill 用 flash_attention_2 且不含 LM head；mapper 跑 eager，无 torch.compile / CUDA graph</td></tr>
+<tr><td>perplexity 协议</td><td>WikiText-2 切成不重叠的 2,048-token 块，用前 1,024 token 的 prefix KV（自身前向或经 mapper）去打后 1,024 token 的分</td></tr>
+</table>
+
+<h3 id="关键实现细节（最容易漏的两处）">关键实现细节（最容易漏的两处） <a class="heading-anchor" href="#关键实现细节（最容易漏的两处）" aria-label="Link to 关键实现细节（最容易漏的两处）">#</a></h3>
+
+<ol>
+<li><strong>RoPE 剥离必须在拟合与推理两端对称施加。</strong> 回归目标 $\mathbf{Y}$ 是从 target 真值 key 里剥掉 <strong>target</strong> 的 RoPE 得到的；推理时则要在线性映射之后重新用 target RoPE 旋转回去。只做一端就是 Table 2 的 "$-$ inference RoPE" 行：MMLU 掉到 25.79、GSM8K 掉到 4.17（近乎随机），而 HellaSwag 只掉约 5 pp——也就是说这个 bug <strong>在最常用的那个 benchmark 上几乎看不出来</strong>，只有 5-shot 与 CoT 任务会暴露它。</li>
+<li><strong>设计矩阵拼的是选中层的全部 head，且 top-$k$ 层集合按 target 层共享。</strong> $\mathbf{X}_{K}^{l}=[\bar{\mathbf{K}}_{s}^{l_{1}}\|\cdots\|\bar{\mathbf{K}}_{s}^{l_{k}}]$，其中每个 $\bar{\mathbf{K}}_{s}^{l_{i}}\in\mathbb{R}^{T\times(n_{\text{kv}}^{s}\cdot d_{h}^{s})}$ 是该层<strong>所有</strong> Key head 的拼接——不是同序号 head 的那一片。这既是跨 head 信息流的来源，也是 $\mathbf{X}^{\top}\mathbf{X}$ 能「每 target 层算一次、层内所有 head 共享」的前提；按 head 各自选层会同时损失精度并把拟合时间放大约 $n_{\text{kv}}$ 倍。另外别忘了求解前中心化、事后用 $\mathbf{b}=\bar{\mathbf{Y}}-\bar{\mathbf{X}}\mathbf{W}^{*}$ 还原截距，否则 $\lambda$ 会连截距一起惩罚。</li>
+</ul>
+
+<h3 id="核心技术壁垒">核心技术壁垒 <a class="heading-anchor" href="#核心技术壁垒" aria-label="Link to 核心技术壁垒">#</a></h3>
+
+<p>真正难复制的不是闭式解——$(\mathbf{X}^{\top}\mathbf{X}+\lambda\mathbf{I})^{-1}\mathbf{X}^{\top}\mathbf{Y}$ 谁都写得出来，而且论文自己的消融表明三个部件里两个的实测贡献约为零。难复制的是<strong>诊断量的构造与它的适用域</strong>：把 K 残差投到 target per-head query 矩阵 $\mathbf{Q}_h$ 的右奇异向量上、按对应奇异值平方加权，再除以全分量平均误差，得到 K-concentration（$>1$ 表示误差落在 attention 会读的方向上）；V 侧按真值 attention 权重平方加权同理。要算它就必须能拿到 target 的 per-head query 与真值 attention 权重，还必须在<strong>评测域</strong> token 上算——同一个 mapper 的校准域 $R^{2}_{K}$ 是 0.84、评测域是 $-7.81$，域选错会把结论整个翻过来。这套诊断是本文唯一无法靠工程直觉绕过、且能迁移到其他跨模型映射工作上的东西；论文对它的定位（跨对预测有效、$n{=}12$ 下 $r{=}{+}0.57$）目前也只到「比 $R^{2}$ 好」，而不是一个可依赖的部署前筛选器——它需要先把 mapper 拟合出来才能计算，这一点论文在 future work 里自己点明了。</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
