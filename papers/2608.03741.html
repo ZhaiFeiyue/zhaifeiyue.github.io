@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: When Does Disaggregation Pay? Simulating Prefill–Decode–Attention–FFN Specialization for Agentic LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">When Does Disaggregation Pay? Simulating Prefill–Decode–Attention–FFN Specialization for Agentic LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2608.03741 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2608.03741/detail.html">→ Detail (L2)</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="heteropanacea-pdaf-2608-03741-—-l3-相关论文综合">HeteroPanacea / PDAF (2608.03741) — L3 相关论文综合 <a class="heading-anchor" href="#heteropanacea-pdaf-2608-03741-—-l3-相关论文综合" aria-label="Link to heteropanacea-pdaf-2608-03741-—-l3-相关论文综合">#</a></h1>
+
+<blockquote>
+注：orchestrator 给出的 related id <code>2310.0677</code> 在 KB 中的实际条目是 <code>2310.06770</code>（SWE-bench），本文按后者引用。
+</blockquote>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>本篇 <a href="/papers/2608.03741/detail.html#1-tl-dr" class="ref-link" title="2608.03741#1-tl-dr">[2608.03741]</a> 是这一 cluster 里<strong>唯一站在器件层</strong>的工作：它不改调度、不改缓存、不改 agent 逻辑，而是问"给定 agentic 负载形状，硬件目录本身应该长什么样"。八个 peer 按它们与这个问题的接触面分成三层。</p>
+
+<p><strong>同层——为 agentic 负载重排资源的服务系统（最紧密，三篇）：</strong></p>
+
+<ul>
+<li><strong>Autellix (2502.13965)</strong> —— 把 OS 的 Least Attained Service 提升到 program 级别，用 PLAS/ATLAS 消除 program-level HoL blocking，同延迟下 4–15× 吞吐 <a href="/papers/2502.13965/detail.html#§1-tl-dr" class="ref-link" title="2502.13965#§1-tl-dr">[2502.13965]</a>。它与本篇攻击的是同一个物理现象（agentic program 把长短请求混在一个引擎里互相干扰），但 Autellix 的手术刀是<strong>时间维</strong>（谁先跑），本篇的手术刀是<strong>空间维</strong>（谁跑在什么器件上）。二者在同一张 roofline 上互不可见：Autellix 的收益全部落在 wait time <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>，而本篇的模拟器<strong>明确不建模排队</strong> <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。</li>
+<li><strong>Halo (2509.02121)</strong> —— 把一批同模板 agentic workflow 合并成 consolidated DAG，用 makespan 最小化的 beam-search worker placement 求解，批量最高 18.6×、在线 4.7× <a href="/papers/2509.02121/detail.html#1-tl-dr" class="ref-link" title="2509.02121#1-tl-dr">[2509.02121]</a>。这是全部 peer 中<strong>结构上最接近</strong>本篇的一篇：都把"算子/阶段 → 器件"的分配当作一个带成本模型的搜索问题，都用剪枝启发式绕开组合爆炸 <a href="/papers/2509.02121/detail.html#4-作者证明" class="ref-link" title="2509.02121#4-作者证明">[2509.02121]</a>。差别在于 Halo 在<strong>给定的同构 GPU 集合</strong>上放置 operator，本篇在<strong>可自由定型的器件目录</strong>上放置 stage —— 而本篇的核心结论恰恰是：当器件目录同构时（GPU），四路拆分基本无利可图 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。</li>
+<li><strong>KVCOMM (2510.12872)</strong> —— 训练无关的跨上下文 KV 复用，RoPE 去/重旋转对齐 + anchor 池偏移近似，多 agent TTFT 最高 ~7.8× <a href="/papers/2510.12872/detail.html#1-tl-dr" class="ref-link" title="2510.12872#1-tl-dr">[2510.12872]</a>。它是本篇最危险的 peer：本篇的全部收益来自 prefill 重、$I/O\ge10$；KVCOMM 的全部收益来自把重复 prefill 削掉 <a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a>。两者在同一个自变量上反向拉扯（详见 §2、§3）。</li>
+</ul>
+
+<p><strong>邻层——用"分配"换成本的另一种范式（一篇）：</strong></p>
+
+<ul>
+<li><strong>RouteLLM (2406.18665)</strong> —— 用 Chatbot Arena 偏好数据训练 query→强/弱模型路由器，单阈值 $\alpha$ 作为成本-质量旋钮，>2× 成本节省、95% GPT-4 质量 <a href="/papers/2406.18665/detail.html#§1-tl-dr" class="ref-link" title="2406.18665#§1-tl-dr">[2406.18665]</a>。它与本篇共享同一个抽象骨架：<strong>先给请求/阶段打一个分数，再按预算阈值分派到不同能力档的资源</strong>。本篇的 $\sigma(\mathrm{hw})$ 容量分数与按功耗预算剪枝 <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a> 在形式上就是 RouteLLM 的 $P_\theta(\mathrm{win}_s\mid q)$ 与 $\alpha$ 的硬件版本。RouteLLM 沿<strong>模型能力</strong>轴分配，本篇沿<strong>器件规格与位宽</strong>轴分配。</li>
+</ul>
+
+<p><strong>下游/上游——决定 $I/O$ 比的那一层（四篇）：</strong></p>
+
+<ul>
+<li><strong>AutoGen (2308.08155)</strong> —— 多 agent 对话框架，控制流由 auto-reply 循环隐式涌现，六个异构应用共用一套原语 <a href="/papers/2308.08155/detail.html#2-q1-q2-q3" class="ref-link" title="2308.08155#2-q1-q2-q3">[2308.08155]</a>。它是本篇痛点的<strong>生产者</strong>：每个 agent 维护自己的对话历史、消息在 agent 间广播 <a href="/papers/2308.08155/detail.html#3-架构-方法图" class="ref-link" title="2308.08155#3-架构-方法图">[2308.08155]</a>，这正是"每轮把上下文重新塞回 prompt"的机制来源。</li>
+<li><strong>Reflexion (2303.11366)</strong> —— 把稀疏 reward 放大成 verbal self-reflection 存入 episodic memory，跨 trial 迭代改进 <a href="/papers/2303.11366/detail.html#§2-q1-q2-q3" class="ref-link" title="2303.11366#§2-q1-q2-q3">[2303.11366]</a>。它给出了一个<strong>反向证据</strong>：memory 被刻意限制在 $\Omega\in[1,3]$ 条反思、老的直接丢弃 <a href="/papers/2303.11366/detail.html#§7-实现-cross-reference" class="ref-link" title="2303.11366#§7-实现-cross-reference">[2303.11366]</a> —— 即"agent 上下文必然单调膨胀"并非普遍规律，而是设计选择。</li>
+<li><strong>SWE-bench (2310.06770)</strong> —— 2294 个真实 GitHub issue→PR 任务，平均 3010 个非测试文件 / 438K 行的仓库，oracle 检索下 SOTA 仅 4.8% <a href="/papers/2310.06770/detail.html#1-tl-dr" class="ref-link" title="2310.06770#1-tl-dr">[2310.06770]</a>。它同时提供本篇 $I/O$ 假设的<strong>最强支持</strong>（真实 coding agent 的上下文确实以万 token 计）与<strong>最强反例</strong>（把 oracle context 收窄到 ±15 行反而把 Claude 2 从 4.8% 推到 5.9% <a href="/papers/2310.06770/detail.html#5-实验与数据" class="ref-link" title="2310.06770#5-实验与数据">[2310.06770]</a> —— 上下文长度是可压缩的自变量，不是给定的）。</li>
+<li><strong>Agent Interoperability Survey (2505.02279)</strong> —— MCP/ACP/A2A/ANP 四协议对比，结论是协议互补而非竞争 <a href="/papers/2505.02279/detail.html#§1-tl-dr" class="ref-link" title="2505.02279#§1-tl-dr">[2505.02279]</a>。与本篇技术重叠最小，但提供了一个本篇未建模的量：协议层的 agent 间消息（A2A Task/Artifact、ACP MIME multipart <a href="/papers/2505.02279/detail.html#§5-实验与数据" class="ref-link" title="2505.02279#§5-实验与数据">[2505.02279]</a>）在物理上就是本篇 N2N 带宽域上的流量，而本篇只把 KV cache 与激活算进 N2N <a href="/papers/2608.03741/detail.html#3-架构-方法图" class="ref-link" title="2608.03741#3-架构-方法图">[2608.03741]</a>。</li>
+</ul>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="2-1-真正新的三件事">2.1 真正新的三件事 <a class="heading-anchor" href="#2-1-真正新的三件事" aria-label="Link to 2-1-真正新的三件事">#</a></h3>
+
+<p><strong>其一 —— 把"该不该解耦"从架构信仰变成带穿越点的条件命题。</strong> peer 里凡是做解耦/放置的（Halo 的 worker placement <a href="/papers/2509.02121/detail.html#4-作者证明" class="ref-link" title="2509.02121#4-作者证明">[2509.02121]</a>、Autellix 的 program 优先级 <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>）都<strong>默认自己的机制永远有正收益</strong>，实验只回答"收益多大"。本篇是这批论文里唯一给出"什么时候收益为负"的：$I/O=1$ 时 PDAF 只有 $0.48\times$ ND、八个模型无一越线 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。这个否定结果比它的肯定结果更稀缺。</p>
+
+<p><strong>其二 —— 结论被证明是器件目录的属性而非算法的属性。</strong> 同一模拟器、同一负载、同一模型集合，换 NPU 目录与 GPU 目录得到<strong>相反排名</strong>：NPU 上 $I/O=100$ 时 PDAF 6/8 最优，GPU 上同一点 PD 在 6/8 模型上追平或胜过 PDAF <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。机制在 Table V 里可见 —— GPU 的 32 个阶段分配中 31 个是同一款 H100 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。所有 peer 的结论都锚在具体硬件上（Autellix 在 A100-80GB <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>、Halo 在 2×H100 NVL <a href="/papers/2509.02121/detail.html#5-实验与数据" class="ref-link" title="2509.02121#5-实验与数据">[2509.02121]</a>），但没有一篇做过"换硬件目录会不会翻转结论"的对照。这是本篇方法论上的独有贡献。</p>
+
+<p><strong>其三 —— 精度容忍度是工作负载属性而非模型属性。</strong> 降 FFN 阶段位宽重创 GSM8K（78%→15%）而 BFCL 不动；降 attention 阶段则把 BFCL 腰斩（18%→11%）而 GSM8K 不降 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。这个<strong>按阶段类别分裂</strong>的结论在 peer 中无对应物：KVCOMM 的精度-复用折中是单一标量旋钮 $\gamma$ <a href="/papers/2510.12872/detail.html#5-实验与数据" class="ref-link" title="2510.12872#5-实验与数据">[2510.12872]</a>，RouteLLM 的质量旋钮 $\alpha$ 也是单一标量 <a href="/papers/2406.18665/detail.html#§4-作者证明" class="ref-link" title="2406.18665#§4-作者证明">[2406.18665]</a>。</p>
+
+<h3 id="2-2-incremental-的部分">2.2 Incremental 的部分 <a class="heading-anchor" href="#2-2-incremental-的部分" aria-label="Link to 2-2-incremental-的部分">#</a></h3>
+
+<ul>
+<li>PD 解耦本身是继承的（DistServe/Splitwise 谱系），本篇自陈 <a href="/papers/2608.03741/detail.html#6-论证链" class="ref-link" title="2608.03741#6-论证链">[2608.03741]</a>。</li>
+<li>两阶段搜索（解析分数剪枝 → top-$K$ 端到端模拟）<a href="/papers/2608.03741/detail.html#2-q1-q2-q3" class="ref-link" title="2608.03741#2-q1-q2-q3">[2608.03741]</a> 与 Halo 的"admissible 剩余下界 + beam 剪枝"<a href="/papers/2509.02121/detail.html#4-作者证明" class="ref-link" title="2509.02121#4-作者证明">[2509.02121]</a> 是同一套 A\*-flavored 配方。差别是 Halo 至少测了 placement optimality（1.00 vs 启发式的 0.20–0.40 <a href="/papers/2509.02121/detail.html#5-实验与数据" class="ref-link" title="2509.02121#5-实验与数据">[2509.02121]</a>），本篇对自己贪心启发式与全局最优的差距<strong>一个字都没说</strong>，$K$ 的取值也未给出 <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。</li>
+<li>"roofline 决定阶段该配什么硬件"是教科书内容，本篇自己也这么说 <a href="/papers/2608.03741/detail.html#2-q1-q2-q3" class="ref-link" title="2608.03741#2-q1-q2-q3">[2608.03741]</a>。</li>
+</ul>
+
+<h3 id="2-3-矛盾点（三处，均需标注根源）">2.3 矛盾点（三处，均需标注根源） <a class="heading-anchor" href="#2-3-矛盾点（三处，均需标注根源）" aria-label="Link to 2-3-矛盾点（三处，均需标注根源）">#</a></h3>
+
+<p><strong>矛盾 A —— prefill 重是前提还是待消除的浪费？</strong></p>
+
+<p>本篇把"agentic 每轮对不断变长的上下文重新 prefill"当作<strong>给定的负载形状</strong>，并据此论证 $I/O\ge10$ 因而 PDAF 成立 <a href="/papers/2608.03741/detail.html#2-q1-q2-q3" class="ref-link" title="2608.03741#2-q1-q2-q3">[2608.03741]</a>。KVCOMM 的整个立论则是：多 agent 通信中的重复 prefill 是<strong>可消除的冗余</strong>，跨上下文 KV 复用能把后续 agent 的 TTFT 压缩到约 1/6–1/7.8 <a href="/papers/2510.12872/detail.html#2-q1-q2-q3" class="ref-link" title="2510.12872#2-q1-q2-q3">[2510.12872]</a>（见 <a href="/papers/2510.12872/detail.html#5-实验与数据" class="ref-link" title="2510.12872#5-实验与数据">[2510.12872]</a> 的逐 agent TTFT 分解）。Halo 独立给出同方向证据：consolidated DAG + 共享 prefix cache 后，关闭 cache reuse 会让延迟劣化 51% <a href="/papers/2509.02121/detail.html#5-实验与数据" class="ref-link" title="2509.02121#5-实验与数据">[2509.02121]</a>。</p>
+
+<p><strong>矛盾根源</strong>：本篇的 roofline 里，prefill FLOP 是由输入长度<strong>解析导出</strong>的，没有任何 prefix-cache 项 <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>；而 KVCOMM/Halo 测的是<strong>有复用层之后</strong>的实际 prefill 量。两者不是对同一个量给出不同数值，而是对<strong>不同的量</strong>各自正确。真正的后果是：在部署了 prefix cache 或 KV 复用的栈上，有效 $I/O$ 会显著低于名义 $I/O$，而本篇自己的曲线在 $I/O=1\to10$ 这一个十倍程内从 $0.48\times$ 摆到 $2.10\times$ <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a> —— 一个复用层就足以把系统从穿越点右边推到左边。本篇未讨论这一点。</p>
+
+<p><strong>矛盾 B —— 端到端延迟由什么主导？</strong></p>
+
+<p>本篇的唯一决策量是模拟 tok/s，模型自陈不含排队、kernel launch、occupancy <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。Autellix 的 Fig. 5/6 则直接测出：中等负载下 program 的等待时间已超过执行时间数倍，且 MLFQ 在 program 级别退化到 ≈ FCFS 甚至更差 <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>。</p>
+
+<p><strong>矛盾根源</strong>：<strong>metric 层级不同</strong> —— 本篇量的是稳态器件吞吐（供给侧），Autellix 量的是 program 端到端延迟（需求侧）。二者不冲突，但推论会冲突：如果 wait 占端到端的一半以上，那么把器件吞吐做到 $1.92\times$ 在用户可见延迟上远达不到 $1.92\times$。本篇固定 125 req/s、模拟 500 请求 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>，唯一显式建模的排队点是 decode 侧受 KV 容量约束的 FIFO 准入 <a href="/papers/2608.03741/detail.html#3-架构-方法图" class="ref-link" title="2608.03741#3-架构-方法图">[2608.03741]</a> —— 这恰好是 Autellix 证明<strong>最不够用</strong>的那种调度策略。</p>
+
+<p><strong>矛盾 C —— 上下文长度是自变量还是因变量？</strong></p>
+
+<p>本篇引 OSWorld 平均 38K / 峰值 100K token 作为 $I/O$ 假设的依据 <a href="/papers/2608.03741/detail.html#2-q1-q2-q3" class="ref-link" title="2608.03741#2-q1-q2-q3">[2608.03741]</a>。SWE-bench 给出反向证据：把 oracle 上下文压缩到编辑行 ±15 行，Claude 2 的 resolve rate 从 4.8% <strong>升到</strong> 5.9%、GPT-4 从 1.3% 升到 3.4%，而扩大 BM25 上下文到 50k 反而把 Claude 2 从 1.96% 拉到 1.22% <a href="/papers/2310.06770/detail.html#5-实验与数据" class="ref-link" title="2310.06770#5-实验与数据">[2310.06770]</a>。Reflexion 则用 $\Omega\in[1,3]$ 的滑窗记忆达成 SOTA <a href="/papers/2303.11366/detail.html#§7-实现-cross-reference" class="ref-link" title="2303.11366#§7-实现-cross-reference">[2303.11366]</a>。</p>
+
+<p><strong>矛盾根源</strong>：<strong>优化目标不同</strong> —— 本篇观测的是当下部署（把能塞的都塞进 prompt）的经验分布，SWE-bench/Reflexion 观测的是<strong>任务成功率对上下文长度的响应</strong>，而后者是<strong>下降</strong>的。也就是说，本篇赖以成立的长上下文，同时是 agent 质量研究正在努力消除的东西。若上下文工程按 SWE-bench 的方向演进，$I/O$ 会朝穿越点左侧移动。</p>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<p><strong>攻击 1（最致命）—— 论文实测过的两个真实工作负载都落在它自己的穿越点以下。</strong> Table VII 报告 BFCL 平均 11,174 prefill / 1,472 decode token，GSM8K 995 / 313 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。换算成本文自己的 $I/O$ 定义分别约 <strong>7.6</strong> 与 <strong>3.2</strong> —— 前者略低于穿越点 10，后者深在 $I/O=1$（$0.48\times$）与 $I/O=10$（$2.10\times$）之间那段最陡的下坡上 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。也就是说，全文唯二有真实模型跑过的负载，按本文自己的曲线读，PDAF 都<strong>不该赢</strong>。支撑 $I/O\ge10$ 的只有引用的 OSWorld 统计，而 OSWorld 既不在八模型吞吐集合也不在量化集合里。论文没有把这两个数放在同一张图上对照。</p>
+
+<p><strong>攻击 2 —— 穿越点的陡峭度使整个结论对负载估计误差极不鲁棒。</strong> 4.4 倍的收益摆幅压缩在一个十倍程内 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。任何真实部署的 $I/O$ 都不是一个标量：AutoGen 的六个应用从两 agent 往返到 <code>GroupChatManager</code> 动态群聊，形状差异极大 <a href="/papers/2308.08155/detail.html#5-实验与数据" class="ref-link" title="2308.08155#5-实验与数据">[2308.08155]</a>；Autellix 明确指出 agentic 负载的 decode steps 与 calls-per-program 都是重尾分布 <a href="/papers/2502.13965/detail.html#§8-evaluation" class="ref-link" title="2502.13965#§8-evaluation">[2502.13965]</a>。在重尾分布下用<strong>分布中心</strong>去读一条在中心附近有 4.4 倍摆幅的曲线，是本篇方法论上最脆的一环。正确做法应是对 $I/O$ 的分布取期望收益，而非对期望 $I/O$ 取收益 —— 由于曲线在穿越点附近强烈非线性，这两者不相等。</p>
+
+<p><strong>攻击 3 —— 模拟器的误差结构对 MoE decode-FFN 恰好最不利。</strong> PP 点对点随规模从 $0.82\times$ 收敛到 $1.00\times$，而 EP all-to-all 反向发散到 $1.21\times$，且两个原语共用一套带宽模型（模拟值完全相同）<a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。本篇八个模型里绝大多数是 MoE，而 DF 阶段正是 EP 流量的所在。误差方向未被讨论。对照 Halo：它同样依赖 profiled 成本模型，但至少给出了 placement optimality 的独立测量 <a href="/papers/2509.02121/detail.html#5-实验与数据" class="ref-link" title="2509.02121#5-实验与数据">[2509.02121]</a>；本篇没有任何等价的端到端校准 —— Fig. 2 只验证了<strong>算子级</strong> TFLOPS <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。</p>
+
+<p><strong>攻击 4 —— 量化结论的效应量在自陈噪声之内，且证据基座与吞吐结论无交集。</strong> 8-bit 均匀量化在 BFCL 上（21%）<strong>高于</strong>未量化基线（18%），4/8/8/8 与 8/8/4/8 在 GSM8K 上也高于未量化基线 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>；论文自陈量化研究只有一个模型、两个任务、无重复实验。既然基线本身能被"量化"抬高 3 个点，那么所有 BFCL 上 6–7 个点的差值都不可判读。更麻烦的是 Qwen3.5-32B 既不在八模型吞吐集合也不在三模型消融集合中 —— <strong>精度轴与吞吐轴没有共同模型</strong>，因此 §V-B 描述的"量化搜索产出 $\mathbf{q}^\star$ 喂给硬件搜索"这条流水线在全文从未被端到端执行过 <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。</p>
+
+<p><strong>攻击 5 —— 多处未调和的内部数字。</strong> 摘要 75%、§I Fig. 1(b) $1.82\times$、§I 贡献三 $2.06\times$ 三个头条增益并存且后者在 §VI 再未出现；Vera Rubin 的阶段分配在 §I 与 §VI-B 中互为反向；Table II 标题称 2–5 个点、正文称七类技术、表中只列五类 <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。对一篇<strong>唯一产物是数字</strong>的模拟论文，这类不一致直接侵蚀可信度。</p>
+
+<p><strong>攻击 6 —— 没有任何任务成功率指标，而它自己的方法引入了质量风险。</strong> 本篇的四路精度自由度会把 BFCL 从 18% 打到 11% <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。Autellix 至少明确界定了 scope（serving 层不改变输出质量 <a href="/papers/2502.13965/detail.html#§4-作者证明" class="ref-link" title="2502.13965#§4-作者证明">[2502.13965]</a>），Halo 明确以 exact-answer 与 perplexity 守住质量（10.01 vs 10.57 <a href="/papers/2509.02121/detail.html#5-实验与数据" class="ref-link" title="2509.02121#5-实验与数据">[2509.02121]</a>），KVCOMM 用回退 dense prefill 兜底 <a href="/papers/2510.12872/detail.html#3-架构-方法图" class="ref-link" title="2510.12872#3-架构-方法图">[2510.12872]</a>。本篇提出了会损质量的旋钮，却把质量证据放在一个与吞吐实验不相交的模型上，且没有回退机制。</p>
+
+<p><strong>攻击 7 —— <code>PhaseAutoSwitch</code> 用 $L>1$ 判 prefill 相，与现代 agentic 调度器不兼容。</strong> 任何 $L>1$ 的 decode 路径（推测解码、chunked prefill 与 decode 混批、MTP）都会被误判为 prefill 并套用 prefill 精度 <a href="/papers/2608.03741/detail.html#7-实现-cross-reference" class="ref-link" title="2608.03741#7-实现-cross-reference">[2608.03741]</a>。而 chunked prefill/混批恰恰是 Autellix、Halo 这类 agentic serving 系统赖以工作的机制 <a href="/papers/2509.02121/detail.html#3-架构-方法图" class="ref-link" title="2509.02121#3-架构-方法图">[2509.02121]</a>。这不只是实现瑕疵：如果 prefill 与 decode 在时间上不可分，"按相位分配硬件"这个前提本身就要被重新论证。</p>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<p><strong>范式定位：从"给定硬件优化软件"翻转为"给定负载定型硬件"。</strong> 这个 cluster 的软件侧三篇 —— Autellix 调度、Halo 放置、KVCOMM 复用 —— 共享一个隐含前提：<strong>硬件是外生给定的</strong>（A100-80GB、2×H100 NVL）<a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a><a href="/papers/2509.02121/detail.html#5-实验与数据" class="ref-link" title="2509.02121#5-实验与数据">[2509.02121]</a>。本篇把这个前提变成决策变量，并给出了一个软件侧看不见的结论：在同构商用目录上，attention/FFN 拆分<strong>没有东西可分</strong>，因为搜索给 32 个阶段中的 31 个选了同一款卡 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。这为软件侧三篇提供了一个边界说明 —— 它们之所以只能在时间维和缓存维找收益，部分是因为空间维在商用目录上已经退化。</p>
+
+<p><strong>这不是 paradigm shift，而是 paradigm 的成立条件研究。</strong> PDAF 没有提出新机制（PD 已有、AF 是自然推论），它提出的是<strong>判据</strong>。这类工作的学术生态位类似 RouteLLM 之于模型路由：路由本身不新，RouteLLM 的价值在于把它变成可用偏好数据学习、可用单阈值控制、并证明能跨模型对迁移的东西 <a href="/papers/2406.18665/detail.html#§5-实验与数据" class="ref-link" title="2406.18665#§5-实验与数据">[2406.18665]</a>。本篇的对应物是把"何时该拆"还原成 DA 与 DF 两个 roofline 位置之间的间隙宽度，并证明三类外生变量（负载形状、器件目录自由度、模型架构参数）各自独立地开合这个间隙 <a href="/papers/2608.03741/detail.html#2-q1-q2-q3" class="ref-link" title="2608.03741#2-q1-q2-q3">[2608.03741]</a>。</p>
+
+<p><strong>采纳证据：这个 cluster 里最弱的一档。</strong> 本篇代码<strong>未公开</strong>，只承诺 acceptance 后开源 <a href="/papers/2608.03741/detail.html#7-实现-cross-reference" class="ref-link" title="2608.03741#7-实现-cross-reference">[2608.03741]</a>，且依赖三个外部组件（MASE 量化 pass、PLENA NPU 基底、MemExplorer 功耗模型）才能复现。对照：</p>
+
+<table>
+<tr><th>论文</th><th>代码</th><th>采纳证据</th></tr>
+<tr><td>Reflexion</td><td>开源 <a href="/papers/2303.11366/detail.html#§7-实现-cross-reference" class="ref-link" title="2303.11366#§7-实现-cross-reference">[2303.11366]</a></td><td>已成为 agent 自我改进的标准基线</td></tr>
+<tr><td>AutoGen</td><td>开源 <a href="/papers/2308.08155/detail.html#7-实现-cross-reference" class="ref-link" title="2308.08155#7-实现-cross-reference">[2308.08155]</a></td><td>六应用 + 生态框架</td></tr>
+<tr><td>SWE-bench</td><td>开源含 harness/leaderboard <a href="/papers/2310.06770/detail.html#7-实现-cross-reference" class="ref-link" title="2310.06770#7-实现-cross-reference">[2310.06770]</a></td><td>事实标准评测</td></tr>
+<tr><td>RouteLLM</td><td>开源 <a href="/papers/2406.18665/detail.html#§7-实现-cross-reference" class="ref-link" title="2406.18665#§7-实现-cross-reference">[2406.18665]</a></td><td>与 Martian / Unify AI 商用系统对比 <a href="/papers/2406.18665/detail.html#§5-实验与数据" class="ref-link" title="2406.18665#§5-实验与数据">[2406.18665]</a></td></tr>
+<tr><td>Halo</td><td>demo 仓库 <a href="/papers/2509.02121/detail.html#7-实现-cross-reference" class="ref-link" title="2509.02121#7-实现-cross-reference">[2509.02121]</a></td><td>真实 H100 实测</td></tr>
+<tr><td>Autellix</td><td>未公开 <a href="/papers/2502.13965/detail.html#§7-实现-cross-reference" class="ref-link" title="2502.13965#§7-实现-cross-reference">[2502.13965]</a></td><td>真实 A100 实测</td></tr>
+<tr><td>KVCOMM</td><td>未公开 <a href="/papers/2510.12872/detail.html#7-实现-cross-reference" class="ref-link" title="2510.12872#7-实现-cross-reference">[2510.12872]</a></td><td>真实多 agent 实测</td></tr>
+<tr><td><strong>本篇</strong></td><td><strong>未公开</strong> <a href="/papers/2608.03741/detail.html#7-实现-cross-reference" class="ref-link" title="2608.03741#7-实现-cross-reference">[2608.03741]</a></td><td><strong>无真机端到端；仅算子级 roofline 校准</strong></td></tr>
+</table>
+
+<p>它是这张表里唯一<strong>既无代码又无端到端真机结果</strong>的一篇。这不必然否定结论 —— 一个尚不存在的 NPU 目录本来就只能靠模拟 —— 但它意味着本篇的正确定位是<strong>设计空间探索报告</strong>，而非可直接指导采购的结论。把 §VI 的 $\times$ND 数字当作硬件选型依据是误用。</p>
+
+<p><strong>与协议层的关系。</strong> 2505.02279 描述的 A2A/ACP/MCP 消息在物理上是跨节点流量 <a href="/papers/2505.02279/detail.html#§5-实验与数据" class="ref-link" title="2505.02279#§5-实验与数据">[2505.02279]</a>，而本篇的 N2N 域只装了 KV cache 与激活 <a href="/papers/2608.03741/detail.html#3-架构-方法图" class="ref-link" title="2608.03741#3-架构-方法图">[2608.03741]</a>，D2D 与 N2N 在其假设下相差 72 倍。多 agent 部署下协议层流量落在哪个域、是否与 KV 传输争带宽，是本篇模型的一个结构性空白。</p>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<p><strong>方向 1 —— 有效 $I/O$：把 KV 复用折扣接进 roofline，重算穿越点。</strong> Halo 的成本模型已经有现成的复用折扣系数 $\gamma_v$（KV）、$\sigma_v$（权重）、$\lambda_v$（检索），且是离线 profile 得到的 <a href="/papers/2509.02121/detail.html#4-作者证明" class="ref-link" title="2509.02121#4-作者证明">[2509.02121]</a>；KVCOMM 给出了这些折扣在多 agent 下的实测复用率与精度代价 <a href="/papers/2510.12872/detail.html#5-实验与数据" class="ref-link" title="2510.12872#5-实验与数据">[2510.12872]</a>。把 $\gamma$ 乘进本篇 prefill 阶段的 $\Phi$ 与 $\beta$，可以直接得到"复用层存在时穿越点移到哪里"。这是本 cluster 里<strong>收益最高、技术上最现成</strong>的组合，且能一次性化解 §2.3 的矛盾 A。</p>
+
+<p><strong>方向 2 —— 阶段解耦 × program 级调度的联合设计。</strong> Autellix 的 PLAS/ATLAS 目前把整条 program 的累计服务时间映射到单一优先级 <a href="/papers/2502.13965/detail.html#§4-作者证明" class="ref-link" title="2502.13965#§4-作者证明">[2502.13965]</a>。在 PDAF 拓扑下有四个独立资源池，每个池可以有自己的队列 —— 一个自然的问题是：program 优先级该在四个池里同步（保持 program 语义）还是各自独立（最大化各池利用率）？Autellix 的 ATLAS 已经证明多线程 program 必须用 critical-path max 而非 sum <a href="/papers/2502.13965/detail.html#§4-作者证明" class="ref-link" title="2502.13965#§4-作者证明">[2502.13965]</a>，PA→PF→DA↔DF 的流水线正是一条固定 critical path，二者可以直接对接。这也顺带补上本篇 $I/O=1000$ 时收益回落到 $1.27\times$（decode 硬件闲置 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>）的调度侧解法：闲置的 decode 池可以被跨 program over-commit。</p>
+
+<p><strong>方向 3 —— 按请求路由精度画像。</strong> 本篇证明了精度容忍度是工作负载属性：BFCL 类（长上下文、工具调用）不能降 attention 位宽，GSM8K 类（短上下文、算术推理）不能降 FFN 位宽 <a href="/papers/2608.03741/detail.html#5-实验与数据" class="ref-link" title="2608.03741#5-实验与数据">[2608.03741]</a>。RouteLLM 已经证明<strong>从 query 文本就能预测它的难度类别</strong>，且路由器能跨模型对迁移、开销 <0.4% <a href="/papers/2406.18665/detail.html#§5-实验与数据" class="ref-link" title="2406.18665#§5-实验与数据">[2406.18665]</a>。把 RouteLLM 的分类器输出从"强/弱模型"换成"四阶段精度画像 $\mathbf{q}$"，就得到一个 per-request 的精度路由器 —— 这正好绕开本篇"单一全局精度必牺牲其一"的困境 <a href="/papers/2608.03741/detail.html#6-论证链" class="ref-link" title="2608.03741#6-论证链">[2608.03741]</a>，而本篇把 $\mathbf{q}$ 当作部署期常量。</p>
+
+<p><strong>方向 4 —— 用真实 agent trace 的 $I/O$ 分布替代标量扫描。</strong> SWE-bench 提供 2294 个真实仓库任务及其上下文统计 <a href="/papers/2310.06770/detail.html#1-tl-dr" class="ref-link" title="2310.06770#1-tl-dr">[2310.06770]</a>，AutoGen 六应用提供多 agent 拓扑下的调用模式 <a href="/papers/2308.08155/detail.html#5-实验与数据" class="ref-link" title="2308.08155#5-实验与数据">[2308.08155]</a>。用它们导出 $I/O$ 的<strong>经验分布</strong>，再对本篇的收益曲线求期望，可以直接检验 §3 攻击 2。由于曲线在穿越点强非线性，期望收益很可能显著低于按均值 $I/O$ 读出的值 —— 这是一个能被现有数据立即证伪或证实的定量预测。</p>
+
+<p><strong>方向 5 —— 上下文压缩与硬件解耦的对抗性联合优化。</strong> SWE-bench 的收窄上下文提升成功率 <a href="/papers/2310.06770/detail.html#5-实验与数据" class="ref-link" title="2310.06770#5-实验与数据">[2310.06770]</a> 与 Reflexion 的 $\Omega\le3$ 滑窗 <a href="/papers/2303.11366/detail.html#§7-实现-cross-reference" class="ref-link" title="2303.11366#§7-实现-cross-reference">[2303.11366]</a> 指向同一个趋势：agent 质量研究在<strong>压缩</strong>上下文，而本篇的收益依赖上下文<strong>膨胀</strong>。一个诚实的联合研究应该同时优化 (成功率, tok/s)，而不是各自单目标 —— 目前没有任何一篇做这件事，因为 serving 侧论文普遍不测成功率（Autellix 明确不测 <a href="/papers/2502.13965/detail.html#§8-evaluation" class="ref-link" title="2502.13965#§8-evaluation">[2502.13965]</a>，Halo 用 exact-answer 约束把质量固定 <a href="/papers/2509.02121/detail.html#4-作者证明" class="ref-link" title="2509.02121#4-作者证明">[2509.02121]</a>）。</p>
+
+<p><strong>方向 6 —— 补上论文自己指出却未做的闭式界。</strong> 本篇在 §VII 自陈"PDAF 的收益很大程度上可由 decode-attention 算术强度与激活 FFN 计算量预测"，却把它留作未来工作 <a href="/papers/2608.03741/detail.html#4-作者证明" class="ref-link" title="2608.03741#4-作者证明">[2608.03741]</a>。给定 DA 与 DF 的算术强度比与功耗预算，PDAF 相对 PD 的收益上界应当是可闭式写出的。有了这个界，Table V 那种"扫 8 模型 × 9 比值 × 4 模式"的暴力扫描可以被替换成一次代数判据 —— 对本篇最强的解释性结论而言，这是从 correlation 走向 mechanism 的关键一步。</p>
+
+<p><strong>方向 7 —— 把协议层流量纳入 N2N 预算。</strong> MCP/A2A/ACP 的消息、Agent Card 发现、SSE 流式推送都占用与 KV 传输相同的网络域 <a href="/papers/2505.02279/detail.html#§5-实验与数据" class="ref-link" title="2505.02279#§5-实验与数据">[2505.02279]</a>。在四路解耦下 N2N 已承载跨边界 KV 与激活 <a href="/papers/2608.03741/detail.html#3-架构-方法图" class="ref-link" title="2608.03741#3-架构-方法图">[2608.03741]</a>，多 agent 部署时协议流量是否成为第二瓶颈，是一个没人建模过的量。</p>
+
+<h2 id="参考">参考 <a class="heading-anchor" href="#参考" aria-label="Link to 参考">#</a></h2>
+
+<ul>
+<li>本篇：<a href="/papers/2608.03741/detail.html#1-tl-dr" class="ref-link" title="2608.03741#1-tl-dr">[2608.03741]</a></li>
+<li>Autellix (2502.13965)：<a href="/papers/2502.13965/detail.html#§1-tl-dr" class="ref-link" title="2502.13965#§1-tl-dr">[2502.13965]</a></li>
+<li>Halo (2509.02121)：<a href="/papers/2509.02121/detail.html#1-tl-dr" class="ref-link" title="2509.02121#1-tl-dr">[2509.02121]</a></li>
+<li>KVCOMM (2510.12872)：<a href="/papers/2510.12872/detail.html#1-tl-dr" class="ref-link" title="2510.12872#1-tl-dr">[2510.12872]</a></li>
+<li>RouteLLM (2406.18665)：<a href="/papers/2406.18665/detail.html#§1-tl-dr" class="ref-link" title="2406.18665#§1-tl-dr">[2406.18665]</a></li>
+<li>AutoGen (2308.08155)：<a href="/papers/2308.08155/detail.html#1-tl-dr" class="ref-link" title="2308.08155#1-tl-dr">[2308.08155]</a></li>
+<li>Reflexion (2303.11366)：<a href="/papers/2303.11366/detail.html#§1-tl-dr" class="ref-link" title="2303.11366#§1-tl-dr">[2303.11366]</a></li>
+<li>SWE-bench (2310.06770)：<a href="/papers/2310.06770/detail.html#1-tl-dr" class="ref-link" title="2310.06770#1-tl-dr">[2310.06770]</a></li>
+<li>Agent Interoperability Survey (2505.02279)：<a href="/papers/2505.02279/detail.html#§1-tl-dr" class="ref-link" title="2505.02279#§1-tl-dr">[2505.02279]</a></li>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2412.19437.html">2412.19437</a> (related) 
+<a href="/papers/2503.20215.html">2503.20215</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>When Does Disaggregation Pay? Simulating Prefill–Decode–Attention–FFN Specialization for Agentic LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">When Does Disaggregation Pay? Simulating Prefill–Decode–Attention–FFN Specialization for Agentic LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-agent">agent</span> 2608.03741</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agentic-serving</span><span class="tag">disaggregation</span><span class="tag">pdaf</span><span class="tag">npu-design-space</span><span class="tag">roofline-simulation</span><span class="tag">mixed-precision</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2608.03741.html">← Synthesis</a>
+<a href="/overview/agent.html">← agent Survey</a>
+<a href="https://arxiv.org/abs/2608.03741" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="when-does-disaggregation-pay-—-pdaf-四路解耦的成立条件">When Does Disaggregation Pay? — PDAF 四路解耦的成立条件 <a class="heading-anchor" href="#when-does-disaggregation-pay-—-pdaf-四路解耦的成立条件" aria-label="Link to when-does-disaggregation-pay-—-pdaf-四路解耦的成立条件">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>HeteroPanacea 用 roofline + 离散事件模拟扫描 PD/AF/PDAF 解耦。结论是条件性的：只有 $I/O\ge10$ 的 prefill-heavy agentic 负载才越过不解耦基线，且四路拆分只在硬件目录能给 attention 与 FFN 真正不同的器件时才赢 —— 商用 GPU 做不到。</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-痛点：agentic-循环把-阶段不匹配-从跨相推到了相内">Q1 痛点：agentic 循环把"阶段不匹配"从跨相推到了相内 <a class="heading-anchor" href="#q1-痛点：agentic-循环把-阶段不匹配-从跨相推到了相内" aria-label="Link to q1-痛点：agentic-循环把-阶段不匹配-从跨相推到了相内">#</a></h3>
+
+<p>Agentic 工作负载（computer-use、coding、web agent）每一轮都把截图、网页内容、代码上下文、工具调用结果重新塞回 prompt，于是几乎每一轮都要对一个不断变长的上下文重新 prefill。OSWorld 上下文平均 38K token、峰值可达 100K，比 chatbot 会话高出一个数量级以上。</p>
+
+<p><img src="/assets/2608.03741/fig1.png" alt="Figure 1: agentic token usage, serving-system throughput split, and stage-configuration comparison"></p>
+
+<p><em>Paper's Figure 1, verbatim (caption: "Motivation of HeteroPanacea, a heterogeneous NPU serving system for agentic LLM workloads." (a) Agentic workloads have larger token usage. (b) System performance comparison of different serving systems, split into prefill and decode throughput. (c) Feature comparison of standard serving, homogeneous PD-disaggregated serving, and HeteroPanacea NPU serving with stage-optimized configurations, indicated by different colors.).</em></p>
+
+<p>子图 (a) 给出 agentic 与标准负载的 token 用量对比，(b) 在同等功耗预算与请求率下显示 PD 解耦在 agentic 负载上带来 $1.82\times$ 吞吐、而在 chatbot 负载上只有 $1.29\times$ —— 读者要注意的是这个差值本身，它说明解耦的收益是被工作负载形状放大出来的，而不是模型固有的。(c) 则预告了本文真正的主张：每个阶段可以拿到不同的器件配置。</p>
+
+<p>痛点的第二层比第一层更关键。PD 解耦只是流水线上最粗的一刀，它把 prefill 和 decode 各自当成整体。但每一相内部都还有 attention 和 FFN 两个计算子层，二者的资源画像分歧得和 prefill/decode 之间一样尖锐：</p>
+
+<ul>
+<li>decode 侧：decode-attention 的成本由读取随上下文增长的 KV cache 主导，是带宽受限、容量饥渴的子阶段；decode-FFN 的成本则由流式读取权重矩阵主导，且 MoE 每 token 只激活少量专家，要打满 FFN 利用率就必须把 batch 聚合到每个激活专家都看到足够 token 的程度，路由越稀疏所需 batch 越大。在任何固定服务 batch 下，稀疏度上升会拉低 FFN 的有效算术强度，把它推到 roofline 上和 attention 不同的位置。</li>
+<li>prefill 侧：两个子层都是计算受限，但强度仍然分岔 —— attention 的计算随序列长度二次增长（$QK^{\top}$ 与 $\mathrm{softmax}(\cdot)V$ 两项），FFN 则是随 token 数（MoE 还随路由）线性增长的稠密 GEMM。</li>
+</ul>
+
+<p>于是在 PD 之下，"decode 节点"仍然把 DA 和 DF 这两个理想计算/带宽比不同的子阶段按在同一块物理器件上，选出来的硬件必然对一个尺寸正确、对另一个浪费产能。而这个残余错配还在<strong>变宽</strong>：长上下文与 agentic 反复重新 prefill 抬高 KV 体积从而抬高 DA 的带宽需求，DF 的成本却由专家数与路由稀疏度支配，两股压力朝不同方向走。</p>
+
+<h3 id="q2-方法：把四个子阶段变成独立可供给的资源池，再用两阶段搜索定型">Q2 方法：把四个子阶段变成独立可供给的资源池，再用两阶段搜索定型 <a class="heading-anchor" href="#q2-方法：把四个子阶段变成独立可供给的资源池，再用两阶段搜索定型" aria-label="Link to q2-方法：把四个子阶段变成独立可供给的资源池，再用两阶段搜索定型">#</a></h3>
+
+<p>论文提出 PDAF —— 把推理分解为 prefill-attention (PA)、prefill-FFN (PF)、decode-attention (DA)、decode-FFN (DF) 四个<strong>解耦阶段</strong>，每个阶段独立分配硬件、并行度和数值精度。PDAF 在结构上包含两种粗粒度方案：在 prefill 与 decode 内部各自合并 attention/FFN 就退化成 PD，在 attention 与 FFN 内部各自合并 prefill/decode 就退化成 AF。</p>
+
+<p>要在这个空间里做决策，唯一可行的手段是模拟。HeteroPanacea 由三层构成：</p>
+
+<ol>
+<li><strong>器件模型</strong>：每个加速器用一小组峰值规格刻画 —— 峰值算力 $F$ (TFLOPS)、七类存储技术之一及其配对的容量 $C$ (GB) 与带宽 $B$ (GB/s) —— 之上跑 roofline 执行模型。功耗按 $P=P_{\mathrm{compute}}+P_{\mathrm{mem}}$ 建模，计算项服从锚定 H100 数据手册的次线性幂律。</li>
+<li><strong>互连模型</strong>：同样的 roofline 哲学，字节数除以带宽，但暴露两个带宽域 —— D2D（TP/EP 集合通信、节点内 PP 交接）与 N2N（跨解耦边界的 KV cache 与激活传输）。</li>
+<li><strong>两阶段搜索</strong>：Phase 1 用解析容量分数对每阶段硬件候选排序并按功耗预算与权重驻留能力剪枝，Phase 2 把预算切给各阶段、取瓶颈分数排名，只有 top-$K$ 才真正端到端模拟。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：真正难以复制的不是 roofline 本身（那是教科书内容），而是<strong>把"何时该拆"这个二元决策还原成 DA 与 DF 两个 roofline 位置之间的间隙宽度，并证明这个间隙可以被三类完全不同的外生变量独立地打开或关上</strong>：工作负载形状（$I/O$ 比）、硬件目录的自由度（算力与带宽能否解耦调节）、模型架构参数（<code>kv_lora_rank</code> / <code>num_active_experts</code> / <code>dtype_bytes</code>）。论文的五因子受控消融把这三类变量拉到同一个可比的 $\times$ND 标尺上，从而得到一个统一解释：PDAF 的收益严格正比于 DA 与 DF 的资源画像差距，每个因子都只按它加宽还是收窄这个差距来估值。这套"用一个几何量统一解释三类异质变量"的还原，是任何单纯复现模拟器的人拿不到的东西。</p>
+
+<h3 id="q3-结果：收益存在，但被三重条件夹住">Q3 结果：收益存在，但被三重条件夹住 <a class="heading-anchor" href="#q3-结果：收益存在，但被三重条件夹住" aria-label="Link to q3-结果：收益存在，但被三重条件夹住">#</a></h3>
+
+<ul>
+<li><strong>NPU 设计空间</strong>：在 $I/O=0.01$ 与 $I/O=1$，八个模型<strong>无一例外</strong>是 ND 最强，PD/AF/PDAF 全部低于 $1.00\times$（最好的是 GPT-OSS 在 $I/O=1$ 的 PD，$0.89\times$，仍未过线）。到 $I/O=100$ 排名翻转：PDAF 八个模型全部越过 ND（$1.05$–$1.92\times$），PD 八中有七，PDAF 在六个模型上是最优模式。</li>
+<li><strong>穿越点极窄</strong>：模型平均的 PDAF 收益在 $I/O=1$ 时是 $0.48\times$，到 $I/O=10$ 已经是 $2.10\times$ —— 4.4 倍的摆幅压缩在一个十倍程内。此后并非单调：在 $I/O=10$ 到 $500$ 之间维持 $1.5$–$1.8\times$ 的平台，到 $I/O=1000$ 回落到 $1.27\times$。</li>
+<li><strong>GPU 上结论反转</strong>：换成商用 GPU 目录后，PD 在 $I/O=0.01$ 就已八个模型全部超过 ND（$1.18$–$2.50\times$），但在 $I/O=100$ 时 PD 在六个模型上追平或胜过 PDAF —— 与 NPU 上的排名恰好相反。</li>
+<li><strong>AF 单独用永远不行</strong>：在两个设计空间、所有比值、所有模型上，AF 从未超过 ND（NPU 上 $0.20$–$0.65\times$，GPU 上最好 $0.96\times$）。</li>
+<li><strong>量化敏感性是工作负载属性</strong>：Qwen3.5-32B 上，把任一 FFN 阶段降到 4 bit 会重创 GSM8K（47% / 15%）而 BFCL 基本不动；把任一 attention 阶段降到 4 bit 则反过来把 BFCL 腰斩（11–12%）而 GSM8K 不降反升。</li>
+</ul>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2608.03741/fig4.png" alt="Figure 4: HeteroPanacea system overview"></p>
+
+<p><em>Paper's Figure 4, verbatim (caption: "Overview of HeteroPanacea. TP - Tensor Parallelism, PP - Pipeline Parallelism, DP - Data parallelism, D2D - Device to device, N2N - Network to network").</em></p>
+
+<p>这张总览图给出模拟器的三层组织：模型/工作负载规格进入，经过并行度与解耦模式的配置，落到器件与互连的 roofline 求值上。读者应当注意 D2D 与 N2N 被显式区分为两条独立带宽路径 —— 这正是解耦开销的建模入口，因为跨阶段的 KV 与激活传输走 N2N，而阶段内的 TP/EP 集合通信走 D2D，二者在 §VI-B 的假设下相差 72 倍（NVSwitch 3600 GB/s 对 Infiniband 50 GB/s）。</p>
+
+<p>四路解耦下一个请求的生命周期与状态回退如下：</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> Arrival
+    Arrival --> PrefillBatch: greedy accumulation + timeout flush
+    PrefillBatch --> PA: prefill-attention pool
+    PA --> PF: activations over D2D/N2N
+    PF --> KVTransfer: KV cache crosses disaggregation boundary
+    KVTransfer --> DecodeAdmit: FIFO admission
+    DecodeAdmit --> DA: bounded by free KV-cache capacity
+    DecodeAdmit --> Backpressure: KV capacity exhausted
+    Backpressure --> DecodeAdmit: retry when capacity frees
+    DA --> DF: hidden states cross every layer
+    DF --> DA: next layer
+    DF --> TokenEmit: layer stack complete
+    TokenEmit --> DA: next decode step
+    TokenEmit --> [*]: output length reached
+</div>
+
+<p>图中三处是本文特有的：(i) PA→PF 与 DA→DF 之间的传输在合并模式下退化为零成本本地调用，这就是 PD/AF/PDAF 四种拓扑共用一套引擎的方式；(ii) <code>Backpressure</code> 分支对应 decode 侧"受可用 KV 容量约束的 FIFO 准入"，是唯一显式建模的排队点；(iii) DA↔DF 每层往返一次，这正是 §II-A 指出的 AF 代价 —— 更小更频繁的网络流量，且两侧每阶段时延必须近乎精确匹配，否则流水线停顿。</p>
+
+<p>方法侧的四个可调轴，逐阶段独立：</p>
+
+<table>
+<tr><th>轴</th><th>每阶段自由度</th><th>约束</th></tr>
+<tr><td>硬件</td><td>$(F, C, B)$，6 个算力档 × 13 个存储工作点</td><td>总功耗 $\le P_{\mathrm{budget}}$；须能驻留权重</td></tr>
+<tr><td>并行</td><td>$(t, p, d, e)$</td><td>$t\cdot p\cdot d\le N_{\text{pool}}$</td></tr>
+<tr><td>精度</td><td>$q_s\in\mathcal{Q}$，如 $\{4,8,16\}$</td><td>仅当基准无精度损失才降位宽</td></tr>
+<tr><td>副本</td><td>数据并行度 $d$</td><td>计入上式乘积</td></tr>
+</table>
+
+<p>注意 $e$ 不进入乘积约束 —— 专家并行是把专家切到已被其他并行度计数的器件上，不额外占用器件预算。</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>本文<strong>无形式化收敛或最优性证明 —— 结论为实证</strong>。它没有定理，没有界，没有关于两阶段搜索能否找到全局最优的任何陈述。但它确实建立了一套解析代价模型，下面对其符号、物理意义与自洽性逐项检查。</p>
+
+<h3 id="4-1-符号表">4.1 符号表 <a class="heading-anchor" href="#4-1-符号表" aria-label="Link to 4-1-符号表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th><th>出处</th></tr>
+<tr><td>$F$</td><td>器件峰值算力（TFLOPS，精度无关）</td><td>§IV-B</td></tr>
+<tr><td>$C, B$</td><td>单器件存储容量 (GB) 与带宽 (GB/s)</td><td>§IV-B</td></tr>
+<tr><td>$\Phi, \beta$</td><td>某阶段的 FLOP 数与字节数，由模型结构解析导出</td><td>Eq. (1)</td></tr>
+<tr><td>$F_{\mathrm{eff}}, B_{\mathrm{eff}}$</td><td>经 TP/PP 缩放后的有效算力与带宽</td><td>Eq. (1)</td></tr>
+<tr><td>$\alpha$</td><td>计算功耗幂律的次线性指数（数值未披露）</td><td>§IV-B</td></tr>
+<tr><td>$t, p, d, e$</td><td>TP / PP / DP / EP 度</td><td>§IV-D</td></tr>
+<tr><td>$E, k$</td><td>MoE 总专家数、每 token 激活专家数</td><td>§IV-D</td></tr>
+<tr><td>$\lambda, O$</td><td>请求到达率、输出长度</td><td>§V-B</td></tr>
+<tr><td>$\Lambda_s$</td><td>阶段需求率：prefill 为 $\lambda$，decode 为 $\lambda O$</td><td>Eq. (2)</td></tr>
+<tr><td>$\sigma(\mathrm{hw})$</td><td>硬件候选的容量分数</td><td>Eq. (2)</td></tr>
+<tr><td>$\mathbf{q}$</td><td>四阶段精度分配 $(q_{\mathrm{PA}},q_{\mathrm{PF}},q_{\mathrm{DA}},q_{\mathrm{DF}})$</td><td>§V-A</td></tr>
+<tr><td>$\mathrm{ex}$</td><td><code>ffn_expansion</code></td><td>§VI-E</td></tr>
+</table>
+
+<h3 id="4-2-方程的物理意义">4.2 方程的物理意义 <a class="heading-anchor" href="#4-2-方程的物理意义" aria-label="Link to 4-2-方程的物理意义">#</a></h3>
+
+<p><strong>Eq. (1) roofline 时延</strong>：$t=\max\!\left(\frac{\Phi}{F_{\mathrm{eff}}},\;\frac{\beta}{B_{\mathrm{eff}}}\right)$</p>
+
+<p>取 $\max$ 而非求和，编码的是计算与访存<strong>完全重叠</strong>的假设：阶段被更稀缺的那种资源限制，永不被二者之和限制。代价是模型对重叠是构造性乐观的，无法表达部分重叠区。论文自陈此粒度以下不建模排队、kernel launch、occupancy。这是整个模拟器唯一的时延原语，§VI 每一个吞吐数字都是它的复合。</p>
+
+<p><strong>功耗分解</strong>：$P=P_{\mathrm{compute}}+P_{\mathrm{mem}}$，其中 $P_{\mathrm{compute}}=P_{\mathrm{ref}}\,(F/F_{\mathrm{ref}})^{\alpha}$</p>
+
+<p>这里用加法而非 $\max$，因为两个子系统同时耗电；与 Eq. (1) 的 $\max$ 形成刻意对照。$\alpha<1$ 使算力翻倍的功耗代价不足两倍，编码工艺与架构进步。它直接决定 20k TFLOPS 档相对 25 TFLOPS 档有多贵，从而决定 Table V 中哪些逐阶段分配是负担得起的。</p>
+
+<p><strong>并行约束</strong>：$t\cdot p\cdot d\leq N_{\text{pool}}$。TP 线性放大 $F_{\mathrm{eff}}$ 与 $B_{\mathrm{eff}}$，代价是每个 attention 输出投影与 FFN 下投影后的一次 ring all-reduce；PP 不降低单请求计算，其吞吐收益完全来自微批重叠；DP 完全在 roofline 之外，是调度层的独立副本，无通信项。</p>
+
+<p><strong>EP 流量分数</strong>：$\frac{e-1}{e}$ —— 与给定 token 不共址的专家比例，即 dispatch/combine 体积中真正要过网的部分。它随 $e$ 增长饱和到 1，所以 all-to-all 体积有硬上界而非无限增长。</p>
+
+<p><strong>容量分数</strong>：$\sigma(\mathrm{hw})=d\cdot\frac{\mathrm{tput}(B)}{\Lambda_{s}}$ —— 供给除以需求，$\sigma\ge1$ 表示该候选跟得上该阶段的负载。$\Lambda_s$ 中 prefill 用 $\lambda$、decode 用 $\lambda O$ 的不对称，恰是 decode 工作量被 $O$ 倍放大的解析形式：每请求一次 prefill、$O$ 步 decode。</p>
+
+<p><strong>联合质量</strong>：$\sigma_{\mathrm{joint}}=\min_{i=1,\dots,k}\sigma_{i}$ —— 取 $\min$ 而非和或均值，因为解耦流水线以最慢阶段的速率运行。这是 §II-A 对 AF 提出的流水线平衡要求的形式化编码。</p>
+
+<p><strong>最终选择</strong>：$\mathrm{cfg}_{\mathcal{M}}^{\star}=\operatorname*{arg\,max}_{\mathrm{cfg}\,\in\,\mathrm{top}\text{-}K}\mathrm{tok/s}(\mathrm{cfg})$ —— 解析分数只做<strong>过滤</strong>，决策落在模拟 tok/s 上。</p>
+
+<h3 id="4-3-六项最低检查">4.3 六项最低检查 <a class="heading-anchor" href="#4-3-六项最低检查" aria-label="Link to 4-3-六项最低检查">#</a></h3>
+
+<p><strong>检查 1 · 量纲一致性</strong>。Eq. (1) 两项分别是 FLOP/(FLOP·s⁻¹) 与 byte/(byte·s⁻¹)，均为秒，$\max$ 合法。Eq. (2) 中 $\mathrm{tput}(B)$ 单位是 token/s、$\Lambda_s$ 是 token/s（prefill 为 req/s × 输入长度，decode 为 req/s × $O$），$\sigma$ 无量纲，与"$\sigma\ge1$ 即跟得上"的判据自洽。通过。</p>
+
+<p><strong>检查 2 · 边界行为</strong>。$k=1$ 时 $\sigma_{\mathrm{joint}}=\sigma_1$，Eq. (3) 正确退化到 ND；$e=1$ 时 EP 流量分数为 0，正确表示单器件持有全部专家时无 all-to-all；$e\to\infty$ 时趋于 1 而非发散。$\Phi\to0$ 时 Eq. (1) 退化为纯带宽界，与 decode 单 token 的直觉一致。通过。</p>
+
+<p><strong>检查 3 · 单调性</strong>。沿 $F$ 增大，Eq. (1) 的计算项单调下降而带宽项不变，故 $t$ 非增 —— 加算力不会变慢，符合 roofline。沿 $\Lambda_s$ 增大 $\sigma$ 单调下降。但<strong>实测吞吐并不单调于 $I/O$</strong>：Fig. 5 在 $I/O=10$ 达峰 $2.10\times$，随后落入 $1.5$–$1.8\times$ 平台，$I/O=1000$ 时降到 $1.27\times$。论文给出的机制是 prefill 大到成为瓶颈后，为 decode 单独供给的硬件越来越闲。这与模型结构一致（Eq. 3 取 $\min$，瓶颈转移即联合质量下降），非矛盾。通过，但需注意"prefill 越重越该解耦"是错的。</p>
+
+<p><strong>检查 4 · 与实测的校准误差</strong>。Table III 中 TP/PP 的 Sim/Real 落在 $0.67\times$–$1.06\times$；Table IV 中 PP 点对点随规模从 $0.82\times$ 收敛到 $1.00\times$，而 EP all-to-all 反向发散到 $1.21\times$。且两个原语在每个 token 数上的模拟值完全相同（55 / 437 / 3,495 μs），说明二者共用一套带宽模型，该模型拟合了 PP 而没有拟合 EP。这对重度依赖 EP 的 MoE decode-FFN 结论构成系统性偏差来源，论文未讨论。<strong>部分通过 —— 存在未论证的误差不对称</strong>。</p>
+
+<p><img src="/assets/2608.03741/fig2.png" alt="Figure 2: roofline-predicted achieved TFLOPS vs measured"></p>
+
+<p><em>Paper's Figure 2, verbatim (caption: "Comparison of achieved TFLOPS of the roofline model compared with experimental data").</em></p>
+
+<p>这是 Eq. (1) 的唯一直接验证：把 roofline 预测的达成 TFLOPS 与 8×B200 上 cuBLAS/<code>torch._scaled_mm</code> 的实测值并置。读者应注意它验证的是<strong>算子级</strong>吞吐，不覆盖调度与批处理 —— 论文在 §VII 明确承认端到端行为未验证。</p>
+
+<p><img src="/assets/2608.03741/fig3.png" alt="Figure 3: simulated device power vs datasheet TDP"></p>
+
+<p><em>Paper's Figure 3, verbatim (caption: "Comparison of simulated power of GPUs with datasheet TDP").</em></p>
+
+<p>功耗模型是整个 NPU 搜索的<strong>约束</strong>而非目标，因此它的误差直接决定哪些逐阶段配置被判为可行。这张图是 $P=P_{\mathrm{compute}}+P_{\mathrm{mem}}$ 与次线性指数 $\alpha$ 的全部经验支撑，而 $\alpha$ 仅由三代三款真实加速器拟合得到，数值未披露。</p>
+
+<p><strong>检查 5 · 内部数字自洽性</strong>。论文在三处给出三个不同的头条增益且未调和：摘要的 <strong>75%</strong>（GPU）、§I Fig. 1(b) 的 <strong>$1.82\times$</strong>、§I 贡献三的 <strong>$2.06\times$</strong>。其中 $2.06\times$ 在 §VI 中再未出现。此外 Vera Rubin 的阶段分配在 §I（Rubin 做 prefill + decode-attention，Groq LPU 做 decode-FFN）与 §VI-B（"Groq LPU for prefill and Rubin GPU for decode"）中互为反向。Table II 标题称每种存储技术贡献 2–5 个点、正文称七类技术，而表中只列出五类。<strong>不通过 —— 存在多处未调和的内部不一致</strong>。</p>
+
+<p><strong>检查 6 · 假设审计（模型能表达什么、不能表达什么）</strong>。不能表达：排队、kernel launch、occupancy、部分重叠、端到端调度与批处理效应。DP 被完全移出 roofline，作为调度层纯乘数，因此副本间的负载不均无法体现。$\sigma$ 的两阶段搜索是贪心的（每片选达到 $\sigma\ge1$ 的最便宜候选，余额补给最弱阶段），没有任何关于该启发式与全局最优差距的论证，$K$ 的取值也未给出。最关键的是：§VI-A 明确说 §VI-B/§VI-C 的吞吐扫描全部在<strong>全精度</strong>下运行，因为量化 MoE 模型的计算成本过高 —— 所以 §V-B 描述的"量化搜索产出 $\mathbf{q}^{\star}$ 喂给硬件搜索"这条组合流水线，在全文任何地方都没有被端到端执行过。通过（限制均被识别，其中第三条为论文自陈之外的推论）。</p>
+
+<p><strong>本可以被界定却没有的量</strong>：给定 DA 与 DF 的 roofline 位置（算术强度 $\Phi/\beta$），PDAF 相对 PD 的收益上界完全可以写成一个关于二者算术强度比值与功耗预算的闭式表达。论文在 §VII 自己指出了这个方向（"PDAF 的收益很大程度上可由模型的 decode-attention 算术强度与激活 FFN 计算量预测"），却把它留作未来工作。</p>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<h3 id="5-1-设置">5.1 设置 <a class="heading-anchor" href="#5-1-设置" aria-label="Link to 5-1-设置">#</a></h3>
+
+<p>八个模型（DeepSeek-V4-Pro / -Flash、Llama-3.1-405B、Llama-4-Maverick / -Scout、GLM-4.6、GPT-OSS、Qwen3-235B-A22B），输出长度固定 1000 token，输入长度按目标 $I/O$ 缩放，逐请求长度取以目标为中心的正态分布。每个配置模拟 500 请求，固定速率 125 req/s。输出长度由在真实模型上跑 BFCL 与 GSM8K 标定。NPU 扫描以功耗为预算，GPU 扫描以 USD/hr 为预算 —— 两次扫描并非同一种货币约束，这一点在对比时必须记住。</p>
+
+<h3 id="5-2-穿越点在哪里">5.2 穿越点在哪里 <a class="heading-anchor" href="#5-2-穿越点在哪里" aria-label="Link to 5-2-穿越点在哪里">#</a></h3>
+
+<p><img src="/assets/2608.03741/fig5.png" alt="Figure 5: PDAF throughput relative to ND across nine prefill/output ratios"></p>
+
+<p><em>Paper's Figure 5, verbatim (caption: "PDAF throughput relative to ND, averaged across all models in the NPU sweep, over nine prefill/output ratios ($O{=}1000$ tokens fixed). ND is $1.00\times$ by definition. The shaded decade brackets the crossover: PDAF is below parity at $I/O=1$ and well above it at $I/O=10$. Markers are drawn at all nine swept ratios; the axis labels decades only.").</em></p>
+
+<p>这是全文最有信息量的一张图。读者应注意三件事：曲线在 $I/O=1$ 与 $I/O=10$ 之间从 $0.48\times$ 跳到 $2.10\times$，穿越被压缩在<strong>一个十倍程</strong>内；峰值出现在穿越点<strong>紧后</strong>而非 prefill 最重处；$I/O=1000$ 回落到 $1.27\times$，因为 prefill 已成瓶颈、单独供给的 decode 硬件闲置。Agentic 负载恰好落在这个区间中部，而不是两端 —— 这是论文把 agentic 作为目标场景的量化依据。</p>
+
+<table>
+<tr><th>$I/O$</th><th>PDAF ($\times$ND，模型平均)</th></tr>
+<tr><td>1</td><td>0.48</td></tr>
+<tr><td>10</td><td>2.10</td></tr>
+<tr><td>10 → 500</td><td>平台 1.5 – 1.8</td></tr>
+<tr><td>1000</td><td>1.27</td></tr>
+</table>
+
+<h3 id="5-3-npu-设计空间：pdaf-在-prefill-heavy-区胜出">5.3 NPU 设计空间：PDAF 在 prefill-heavy 区胜出 <a class="heading-anchor" href="#5-3-npu-设计空间：pdaf-在-prefill-heavy-区胜出" aria-label="Link to 5-3-npu-设计空间：pdaf-在-prefill-heavy-区胜出">#</a></h3>
+
+<p><img src="/assets/2608.03741/fig6.png" alt="Figure 6: NPU throughput relative to ND per disaggregation mode across 8 models and 3 workload profiles"></p>
+
+<p><em>Paper's Figure 6, verbatim (caption: "NPU throughput relative to No Disaggregation ND ($\times$ND) for each disaggregation mode across models and workload profiles ($O{=}1000$ tokens fixed; $I/O$ varies the prefill length). The dashed line marks ND parity, which is $1.00\times$ by definition; bars above it beat non-disaggregated serving. All three panels share a common $y$-axis. Models, left to right: DeepSeek-V4-Pro, DeepSeek-V4-Flash, Llama-3.1-405B, Llama-4-Maverick, Llama-4-Scout, GLM-4.6, GPT-OSS, Qwen3-235B-A22B." Panels: (a) Decode-dominated. (b) Balanced. (c) Prefill-dominated.).</em></p>
+
+<p>面板 (a) 与 (b) 里所有柱子都在虚线下方 —— 在 decode 主导与均衡负载下，八个模型没有任何一个解耦模式打得过不解耦。只有面板 (c)（$I/O=100$）柱子才越线。</p>
+
+<table>
+<tr><th>模式</th><th>超过 ND 的模型数</th><th>范围 ($\times$ND)</th></tr>
+<tr><td>PDAF</td><td>8/8</td><td>1.05 – 1.92</td></tr>
+<tr><td>PD</td><td>7/8（DeepSeek-V4-Pro 为 $0.95\times$）</td><td>未给出范围</td></tr>
+<tr><td>AF</td><td>0/8</td><td>0.20 – 0.65</td></tr>
+</table>
+
+<p>AF 单独用从未越线，但包含 AF 拆分的 PDAF 却在 6/8 模型上最优 —— 这意味着 AF 拆分的价值<strong>条件于 PD 拆分已经存在</strong>。</p>
+
+<h3 id="5-4-gpu-目录：同一模拟器，相反结论">5.4 GPU 目录：同一模拟器，相反结论 <a class="heading-anchor" href="#5-4-gpu-目录：同一模拟器，相反结论" aria-label="Link to 5-4-gpu-目录：同一模拟器，相反结论">#</a></h3>
+
+<p><img src="/assets/2608.03741/fig7.png" alt="Figure 7: GPU throughput relative to ND, axes matched to Figure 6"></p>
+
+<p><em>Paper's Figure 7, verbatim (caption: "GPU throughput relative to No Disaggregation ND ($\times$ND) for each disaggregation mode across models and workload profiles ($O{=}1000$ tokens fixed; $I/O$ varies the prefill length). Axes match Figure 6 so the two design spaces can be compared directly. Models are ordered as in Figure 6." Panels: (a) Decode-dominated. (b) Balanced. (c) Prefill-dominated.).</em></p>
+
+<p>坐标轴与 Fig. 6 完全对齐，所以两张图可以直接叠看。两处反转：穿越点<strong>提前</strong>了 —— 在 $I/O=0.01$ 时 PD 就已八个模型全部超过 ND（$1.18$–$2.50\times$）并全部胜出，而同一比值下 NPU 空间里 ND 领先一切；在 $I/O=100$ 时 <strong>PD 在 6/8 模型上追平或胜过 PDAF</strong>，与 NPU 排名相反。同时 GPU 结果远不均匀：PD 在 $I/O=1$ 只有 4/8 越线，跨模型跨度从 $0.01\times$ 到 $2.64\times$。</p>
+
+<table>
+<tr><th>模式</th><th>$I/O=0.01$</th><th>$I/O=1$</th><th>$I/O=100$</th></tr>
+<tr><td>PD</td><td>8/8（1.18 – 2.50$\times$）</td><td>4/8（0.01 – 2.64$\times$）</td><td>7/8</td></tr>
+<tr><td>PDAF</td><td>6/8</td><td>2/8</td><td>4/8</td></tr>
+<tr><td>AF</td><td>0/8（最好 0.96$\times$）</td><td>0/8</td><td>0/8</td></tr>
+</table>
+
+<h3 id="5-5-逐阶段硬件分配：反转的机制">5.5 逐阶段硬件分配：反转的机制 <a class="heading-anchor" href="#5-5-逐阶段硬件分配：反转的机制" aria-label="Link to 5-5-逐阶段硬件分配：反转的机制">#</a></h3>
+
+<p>Table V（$I/O=100$，$I=100$k，$O=1$k）给出搜索为每个阶段选中的器件，这是解释上述反转的关键证据：</p>
+
+<table>
+<tr><th>阶段</th><th>NPU 搜索选中的存储档</th><th>NPU 搜索选中的算力档</th></tr>
+<tr><td>PA</td><td>最小容量（如 HBM 16/1.0k、LPDDR 32/200）</td><td>20k TFLOPS（最高）</td></tr>
+<tr><td>PF</td><td>最小容量（少数例外）</td><td>20k TFLOPS（最高）</td></tr>
+<tr><td>DA</td><td>HBM 190/8.0k（容量与带宽最高档）</td><td>25 – 250 TFLOPS（最低）</td></tr>
+<tr><td>DF</td><td>HBM 190/8.0k（同上）</td><td>2.5k TFLOPS</td></tr>
+</table>
+
+<p>DA 与 DF 拿到<strong>相同的存储档</strong>却相差 <strong>10–100 倍的算力档</strong> —— 这是 §III 论证（PD 把两个理想计算/带宽比不同的子阶段按在同一器件上）的直接实证确认。</p>
+
+<p>反观 GPU：32 个 PDAF 阶段分配中 <strong>31 个是 H100-80/3.4k @ 989 TFLOPS</strong>，唯一例外是 GPT-OSS 的 PF 阶段（A100-40/1.6k @ 312 TFLOPS）。GPU 把算力与带宽绑死，搜索无从再平衡，每个阶段拿到几乎相同的计算/带宽比，无论它是 attention 受限还是 FFN 受限。这就是四路拆分在 GPU 上不划算的原因：拆开 attention 与 FFN 只有在能给它们真正不同的硬件时才有意义，而这正是 NPU 空间允许、商用目录不允许的。</p>
+
+<h3 id="5-6-架构消融：pdaf-收益由什么驱动">5.6 架构消融：PDAF 收益由什么驱动 <a class="heading-anchor" href="#5-6-架构消融：pdaf-收益由什么驱动" aria-label="Link to 5-6-架构消融：pdaf-收益由什么驱动">#</a></h3>
+
+<p>三个 MoE 基线（跨低/中/高 decode-attention 算术强度）× 五个因子 × 四个取值，全部在 $I/O=100$、同一硬件搜索与功耗预算下评估。四个发现：</p>
+
+<ol>
+<li><strong>PDAF 收益随 decode-attention KV 流量单调上升</strong>。<code>kv_lora_rank</code> 从 128 扫到 4096，三个模型的收益分别 +100%（GPT-OSS，$0.93\to1.85\times$）、+147%（GLM-4.6，$0.81\to2.00\times$）、+67%（DS-V4-Flash，$1.17\to1.96\times$）。注意这个方向上 DA 算术强度是<strong>下降</strong>的（从 10.7 降到 1.8），因为 FLOP 与 rank 无关而 KV 字节随 rank 增长。机制：rank=128 时 KV 项太小，DA 是权重读主导，结构上与 DF 无法区分，AF 拆分无物可分，PDAF 在两个模型上跌破 ND。</li>
+<li><strong>容量增长基本免费</strong>。固定激活专家数而扩大总专家数，只增加驻留权重的容量需求。四倍专家数只让 GLM-4.6 动 +3%、DS-V4-Flash 不到 0.5%（四个点全平在 $1.41\times$）。</li>
+<li><strong>激活计算增长是唯一削弱 PDAF 的因子</strong>。<code>num_active_experts</code> 增至 4× 时 DS-V4-Flash 损失 69%（$1.41\to0.43\times$）、8× 时 73%（$0.38\times$）；GLM-4.6 在 8× 时崩 60%（$0.78\times$）。同一 $\mathrm{ex}\cdot k$ 计算代理的另一杠杆 <code>ffn_expansion</code> 复现了排序但没复现量级（−31% / −19% / −10%），比激活专家杠杆温和一个数量级 —— 这在量级上<strong>证伪</strong>了严格的 $\mathrm{ex}\cdot k$ 等价预测。</li>
+<li><strong>降精度不是一致有益</strong>。从 4 字节/元素降到 0.5，GPT-OSS +57%（$1.54\to2.43\times$），GLM-4.6 −41%（$2.20\to1.29\times$），DS-V4-Flash −42%（$1.47\to0.85\times$，跌破 ND）。机制：精度同时缩放所有阶段的权重字节项，是否有利取决于它加宽还是收窄 DA 与 DF 之间的差距。</li>
+</ul>
+
+<h3 id="5-7-量化敏感性（qwen3-5-32b，table-vii）">5.7 量化敏感性（Qwen3.5-32B，Table VII） <a class="heading-anchor" href="#5-7-量化敏感性（qwen3-5-32b，table-vii）" aria-label="Link to 5-7-量化敏感性（qwen3-5-32b，table-vii）">#</a></h3>
+
+<p>配置串按 $(q_{\mathrm{PA}},q_{\mathrm{PF}},q_{\mathrm{DA}},q_{\mathrm{DF}})$ 读：</p>
+
+<table>
+<tr><th>配置</th><th>降位宽的阶段</th><th>BFCL</th><th>GSM8k (20%)</th></tr>
+<tr><td>Baseline</td><td>—</td><td>18%</td><td>78%</td></tr>
+<tr><td>8/8/8/8</td><td>—</td><td>21%</td><td>75%</td></tr>
+<tr><td>4/4/4/4</td><td>全部</td><td>6%</td><td>11%</td></tr>
+<tr><td>4/8/8/8</td><td>PA</td><td>12%</td><td>80%</td></tr>
+<tr><td>8/4/8/8</td><td>PF</td><td>20%</td><td>47%</td></tr>
+<tr><td>8/8/4/8</td><td>DA</td><td>11%</td><td>79%</td></tr>
+<tr><td>8/8/8/4</td><td>DF</td><td>20%</td><td>15%</td></tr>
+</table>
+
+<p>两个阶段类之间存在明显不对称：降 FFN 阶段（PF / DF）重创 GSM8K 而 BFCL 不动；降 attention 阶段（PA / DA）腰斩 BFCL 而 GSM8K 反而高于 8-bit 基线甚至高于未量化基线。BFCL 平均 11,174 prefill / 1,472 decode token，GSM8K 为 995 / 313 —— 约 11 倍上下文差。结论是<strong>哪个阶段容忍低精度是工作负载的属性而非模型的属性</strong>，单一全局精度必然牺牲其中之一。</p>
+
+<p>两点需要保留的怀疑：8-bit 均匀量化在 BFCL 上（21%）<strong>高于</strong>未量化基线（18%），而 4/8/8/8（80%）与 8/8/4/8（79%）在 GSM8K 上高于未量化的 78% —— 论文对此未置一词；且 §VII 自陈量化研究只有一个模型、两个任务、无重复实验，故所有 BFCL 差值的量级都在这些摆动的噪声范围内。此外该模型不在八模型吞吐集合、也不在三模型消融集合中，精度轴与吞吐轴没有共同模型。</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>步骤</th><th>依据（论文内部）</th><th>推出</th></tr>
+<tr><td>1</td><td>Agentic 循环每轮把工具调用与观测重新累积进 prompt，上下文长度远超 chatbot</td><td>§I：OSWorld 平均 38K、峰值 100K token；Fig. 1(a)</td><td>服务系统承受的内存与计算压力量级性上升</td></tr>
+<tr><td>2</td><td>Prefill 计算受限、decode 带宽受限，二者放在同一器件上互相干扰</td><td>§II-A；DistServe / Splitwise 的既有结论</td><td>PD 解耦成立，Fig. 1(b) 显示 agentic 上 $1.82\times$ 对 chatbot 上 $1.29\times$</td></tr>
+<tr><td>3</td><td>但 attention 与 FFN 在<strong>每一相内部</strong>的资源画像分歧同样尖锐：decode 侧 DA 由 KV 带宽主导、DF 由权重流与专家稀疏度主导</td><td>§III；批大小对二者作用方向相反（attention 增流量无复用，FFN 增复用）</td><td>PD 之下仍有残余相内错配，且随上下文增长而变宽</td></tr>
+<tr><td>4</td><td>四个子阶段 × 硬件 × 并行 × 副本数在共享预算下组合爆炸，真实集群上无法穷举</td><td>§III</td><td>需要解析支撑的快速模拟器；HeteroPanacea 以 Eq. (1) 为唯一时延原语，Eq. (2)(3) 为剪枝与排序，Eq. (4) 为决策</td></tr>
+<tr><td>5</td><td>在 NPU 空间扫描：$I/O\le1$ 时八模型全部 ND 最优；$I/O=100$ 时 PDAF 八模型全部越线、6/8 最优</td><td>§VI-B，Fig. 6；Fig. 5 定位穿越点在 $I/O=1\to10$ 一个十倍程内</td><td>解耦收益是<strong>条件性</strong>的，条件是负载 prefill-heavy</td></tr>
+<tr><td>6</td><td>在商用 GPU 目录上重跑同一扫描：$I/O=100$ 时 PD 在 6/8 模型上 ≥ PDAF，排名相对 NPU 反转</td><td>§VI-C，Fig. 7</td><td>同一模拟器、同一负载给出相反的架构结论，故结论是<strong>器件目录</strong>的属性</td></tr>
+<tr><td>7</td><td>检查逐阶段分配：NPU 下 DA 与 DF 同取最高存储档但算力档相差 10–100 倍；GPU 下 32 个分配中 31 个是 H100</td><td>§VI-D，Table V</td><td>反转的机制是 GPU 把算力与带宽绑死，AF 拆分无物可分</td></tr>
+<tr><td>8</td><td>变换模型架构而非硬件：<code>kv_lora_rank</code> 上升使收益单调上升（DA 从权重读主导转为 KV 主导）；<code>num_active_experts</code> 上升使收益崩塌；降精度分裂三个模型</td><td>§VI-E Findings 1/3/4，Table VI</td><td>统一解释：PDAF 收益正比于 DA 与 DF 的 roofline 位置差距，三类外生变量各自独立地开合这个差距</td></tr>
+<tr><td>9</td><td>逐阶段降精度的可容忍性在 BFCL 与 GSM8K 上完全相反</td><td>§VI-F，Table VII</td><td>精度选择也必须逐阶段且随工作负载定，单一全局精度必牺牲其一</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> —— 论文承诺"will open-source the framework in full – simulator, configurations, and evaluation scripts – upon acceptance"（§I），截至 L1 摄入时尚无可引用的代码仓库、文件或行号。以下为从论文文本可确定的实现约束，供复现时对照。</p>
+
+<h3 id="7-1-复现所需的外部依赖">7.1 复现所需的外部依赖 <a class="heading-anchor" href="#7-1-复现所需的外部依赖" aria-label="Link to 7-1-复现所需的外部依赖">#</a></h3>
+
+<table>
+<tr><th>组件</th><th>论文指定</th><th>可替代性</th></tr>
+<tr><td>量化 pass</td><td>MASE [28]，按匹配的 layer pattern 施加不同 config</td><td>任何支持按层类型分派 config 的框架</td></tr>
+<tr><td>数值格式</td><td>MXint（微缩放整数，一个 block 共享指数），逐 tensor role（权重/激活/KV）与 attention 内逐子操作（$QK^{\top}$、$AV$）独立设置</td><td>Microscaling 规范 [20]</td></tr>
+<tr><td>NPU 基底</td><td>PLENA [24]，因其可参数化而非因其是最优点设计</td><td>任何暴露 $(F,C,B)$ 的参数化 NPU 模型</td></tr>
+<tr><td>存储功耗模型</td><td>改编自 MemExplorer [23]：片上用片上功耗估计器，片外用 per-bit 读写能量 × 带宽 + 空闲功耗密度 × 容量</td><td>—</td></tr>
+<tr><td>验证平台</td><td>8×B200、Xeon 6960P、CUDA 12.8、PyTorch 2.10.0+cu128、NCCL 2.27.5、Python 3.12.13；BF16 走 <code>torch.matmul</code>，FP8 E4M3 走 <code>torch._scaled_mm</code></td><td>—</td></tr>
+</table>
+
+<h3 id="7-2-关键实现细节（两处易被忽略）">7.2 关键实现细节（两处易被忽略） <a class="heading-anchor" href="#7-2-关键实现细节（两处易被忽略）" aria-label="Link to 7-2-关键实现细节（两处易被忽略）">#</a></h3>
+
+<p><strong>其一 —— <code>PhaseAutoSwitch</code> 的序列长度判别</strong>。要把 $\mathbf{q}$ 落地，必须沿两个轴区分量化：按层类型（attention vs FFN）和按推理相（prefill vs decode）。前者 MASE 原生支持，后者不支持 —— MASE 没有 prefill/decode 的概念。论文的做法是给每个被量化的层挂一个 <code>PhaseAutoSwitch</code> hook，检查流经该层的张量的序列长度 $L$：$L>1\Rightarrow$ 用 prefill config，$L=1\Rightarrow$ 用 decode config，运行时切换到对应的逐相位宽。这个判别器极其朴素，但它有一个直接后果：任何 $L>1$ 的 decode 路径（推测解码、chunked prefill 与 decode 混批、多 token 预测）都会被误判为 prefill 相并套用 prefill 精度。复现时若要接入现代调度器，这个 hook 是第一个会失效的地方。</p>
+
+<p><strong>其二 —— 功耗预算的贪心再分配</strong>。Phase 2 的分配启发式是：为每个切片选取达到 $\sigma\ge1$ 的<strong>最便宜</strong>候选，然后把<strong>未花完的预算重新分配给最弱的阶段</strong>。这两步顺序不可交换，且它决定了 Table V 里 DA 为什么能同时拿到最高存储档和最低算力档 —— 最便宜的达标候选在带宽受限的 DA 上自然落在算力最低档，省下的功耗再被推给别处。若把启发式改成按 $\sigma$ 均衡分配，逐阶段特化的签名会显著弱化，从而改变全部 $\times$ND 数字。论文既未给出该启发式与全局最优的差距，也未给出 top-$K$ 中 $K$ 的取值。</p>
+
+<h3 id="7-3-核心技术壁垒的实现落点">7.3 核心技术壁垒的实现落点 <a class="heading-anchor" href="#7-3-核心技术壁垒的实现落点" aria-label="Link to 7-3-核心技术壁垒的实现落点">#</a></h3>
+
+<p>Q2 中指出的壁垒 —— 把"何时该拆"还原为 DA 与 DF 两个 roofline 位置之间的间隙宽度 —— 在实现上落在一个看似不起眼的地方：decode-attention 的每步字节数必须被拆成<strong>随上下文长度线性增长的 KV 项</strong>与<strong>与 batch 无关的权重项</strong>两部分，且二者的比值必须能被单独查询。只有当字节数模型保持这个分解结构，<code>kv_lora_rank</code> 的扫描才能揭示 Finding 1 的机制（rank=128 时权重项主导，DA 与 DF 结构上不可区分）；如果实现里把 decode-attention 的字节数聚合成一个标量，整篇论文最强的解释性结论就消失了，只剩下一堆无法归因的 $\times$ND 柱状图。同理，$\mathrm{ex}\cdot k$ 计算代理要求 <code>ffn_expansion</code> 与 <code>num_active_experts</code> 在 FFN roofline 里以乘积形式进入活跃项、却在容量项里以不同方式进入 —— 正是这个结构差异让 Finding 3 的量级证伪（同一乘积、相差一个数量级的效应）成为可检测的现象而非数值噪声。复现者若只对齐吞吐数字而不对齐这两处分解结构，能得到相同的图，却得不到相同的知识。</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
