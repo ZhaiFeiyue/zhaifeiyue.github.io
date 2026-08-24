@@ -457,6 +457,52 @@ sequenceDiagram
 
 <p><strong>Mismatch with docs</strong>: The README says "7x higher throughput per GPU" for DeepSeek R1 on GB200 NVL72, but this combines disaggregated serving + KV routing + NVLink topology awareness — the 7x is a system-level number, not attributable to any single component.</p>
 
+<h2 id="§6-1-解耦下的并行度约束与-kv-layout-映射（2026-08-增补）">§6.1 解耦下的并行度约束与 KV layout 映射（2026-08 增补） <a class="heading-anchor" href="#§6-1-解耦下的并行度约束与-kv-layout-映射（2026-08-增补）" aria-label="Link to §6-1-解耦下的并行度约束与-kv-layout-映射（2026-08-增补）">#</a></h2>
+
+<p><strong>出处说明</strong>：本节不来自 2026-05-26 的仓库快照，而是为回答"xPyD 里 P 和 D 能否用不同并行策略"另行核实。标注「设计文档」的来自 Dynamo 官方 design-docs；「vLLM 源码」的来自 vllm-project/vllm main 分支，2026-08 读取；「未核实」的来自第三方博客。</p>
+
+<p><strong>约束的归属不在 Dynamo。</strong> Dynamo 只把 backend flag（TP / PP / batch size）透传给 vLLM / SGLang / TRT-LLM（见 §4），per-role 并行度的可行性由 backend 的 KV connector 决定。所以"Dynamo 支不支持异构并行"这个问法本身错位——要问的是 connector 支不支持。</p>
+
+<p><strong>设计意图就是异构，而且方向反直觉。</strong> 官方 design-doc 把异构并行列为解耦的首要动机："using a larger TP for the memory-bound decoding phase while a smaller TP for the computation-bound prefill phase allows both phases to be computed efficiently."（设计文档）xPyD 本身运行时可重配：worker 注册时发布 <code>RuntimeConfig</code>（含 KV 容量），可在线增删，退出前 drain 在飞请求。</p>
+
+<p>维护者在 <a href="https://github.com/ai-dynamo/dynamo/issues/2295">issue #2295</a> 给出的论证与"prefill 算得重所以给大 TP"的直觉相反，值得记住：</p>
+
+<ul>
+<li><strong>prefill</strong>：确实 compute-bound，但其中很大一部分是通信开销，用更多 DP 实例而非更大 TP 可以降低它——2 个 TP=2 实例的吞吐好于 1 个 TP=4 实例。</li>
+<li><strong>decode</strong>：小 BS 下是 memory-bound，要抬 BS 就得压低单卡模型显存占用，所以要更大 TP 来摊开权重与 KV cache（MHA 情况）。</li>
+</ul>
+
+<p><strong>历史约束已解除，但关闭方式有误导性。</strong> 2025-08 时 dynamo-vllm 在 P_TP=4 / D_TP=2 下会抛 <code>AssertionError: Decode TP cannot be smaller than prefill TP</code>。该 issue 于 2025-08-22 由<strong>报告者自行关闭</strong>（留言"I'll proceed to implement it myself"），不是上游实现后关闭的——GitHub 的 <code>state_reason: completed</code> 在这里会误导读者。</p>
+
+<p>当前 vLLM main 已有专门的 <code>nixl/tp_mapping.py</code>，两个方向都支持（vLLM 源码）：</p>
+
+<table>
+<tr><th>关系</th><th>映射方式</th></tr>
+<tr><td>$D_{TP} \ge P_{TP}$</td><td>多个 D rank 从<strong>同一个</strong> P rank 读不同 KV head 分片：<code>attn_ranks = [tp_rank * remote_tp_size // tp_size]</code></td></tr>
+<tr><td>$P_{TP} > D_{TP}$</td><td>一个 D rank 从<strong>多个</strong> P rank 读；GQA 下多个 P rank 可能持有同一 KV head，用 <code>np.unique</code> 去重，每个唯一 head 只发一次读</td></tr>
+<tr><td>MLA</td><td>KV 在各 rank 上是复制的，只需一个 remote rank，不做 head 切分</td></tr>
+</table>
+
+<p>映射在<strong>握手时按 remote engine 算一次</strong>（<code>compute_tp_mapping</code>），不是每请求算，代价被摊掉。<code>rank_offset_factor</code> 处理 $D_{TP} > P_{TP}$ 时的 FA head 偏移，并对 <code>tp_size > total_num_kv_heads</code>（TP 比 KV head 还多）单独分支。</p>
+
+<p><strong>残留约束</strong>（均在 <code>nixl/base_worker.py</code>，vLLM 源码）：</p>
+
+<table>
+<tr><th>约束</th><th>说明</th></tr>
+<tr><td>布局</td><td>异构 TP 需按 head 切分，只在 block-contiguous 布局（如 LBHNC）下可行；MLA 与 replicated-KV 不切 head</td></tr>
+<tr><td>Mamba / SSM</td><td>不支持异构 TP；Mamba hybrid 下 <code>physical_blocks_per_logical</code> 异构时拒绝开 prefix caching</td></tr>
+<tr><td>复制 KV × 方向</td><td>非 mamba 情况下 <code>num_kv_heads > tp_size</code> 且 $P_{TP} > D_{TP}$ 不支持</td></tr>
+<tr><td>异构 block size</td><td>不能与 $P_{TP} > D_{TP}$ 的 head-sharded 读同时用；也不支持 host buffer</td></tr>
+<tr><td>整除性</td><td><code>tp_ratio</code> 是带符号整数比，配置被限制在整数比上</td></tr>
+<tr><td>生命周期</td><td>异构 TP 下 P 必须等<strong>所有</strong>被分配的 D rank 读完才能安全释放 block（<code>consumer_notification_counts_by_req</code> 做 fan-out 计数）</td></tr>
+</table>
+
+<p>最后一条是最容易被忽略的真实代价：异构 TP 把 P 侧的 block 释放从一对一通知变成扇出计数，P 的显存回收因此被最慢的那个 D rank 拖住。</p>
+
+<p><strong>push / pull 已一等公民化。</strong> vLLM 现在有独立的 <code>pull_scheduler.py</code> / <code>pull_worker.py</code> 与 <code>push_scheduler.py</code> / <code>push_worker.py</code>。有第三方报告称异构配置必须用 push connector 否则退化到 TCP（未核实，官方文档未见此说法）。</p>
+
+<p><strong>与 serving-simulation-digital-twin 的接点。</strong> L1 roadmap 里的 "Mocker becomes AIConfigurator-backed latency predictor with offline agg/disagg replay" 表明 Dynamo 正把 AIConfigurator 接进 Mocker 做离线 agg/disagg 回放，使 Dynamo 成为该主题"真正成熟的产物是仿真器本体"这一判断的上游实例。TRT-LLM 侧对同一问题的陈述是：给解耦画性能曲线需穷举 TP/EP/DP/PP，且 context 与 generation 必须<strong>分别</strong>评估，配置数随 CTX/GEN server 数指数增长——这正是 AIConfigurator 存在的理由。</p>
+
 <h2 id="§7-n-a-not-a-pr">§7 N/A (not a PR) <a class="heading-anchor" href="#§7-n-a-not-a-pr" aria-label="Link to §7-n-a-not-a-pr">#</a></h2>
 
 <h2 id="§8-n-a-not-an-issue">§8 N/A (not an issue) <a class="heading-anchor" href="#§8-n-a-not-an-issue" aria-label="Link to §8-n-a-not-an-issue">#</a></h2>
@@ -619,6 +665,9 @@ sequenceDiagram
 <tr><td>Python bindings</td><td><code>lib/bindings/python/</code> — PyO3/maturin</td></tr>
 <tr><td>K8s operator</td><td><code>deploy/operator/</code> — Go controller-runtime</td></tr>
 <tr><td>CUDA copy kernels</td><td><code>lib/kvbm-kernels/</code></td></tr>
+<tr><td>异构 TP 映射（backend 侧）</td><td>vLLM <code>vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py</code> — <code>compute_tp_mapping()</code>, <code>TPMapping</code></td></tr>
+<tr><td>异构 TP 残留约束（backend 侧）</td><td>vLLM <code>.../v1/nixl/base_worker.py</code> — 布局/Mamba/block-size 断言与 <code>consumer_notification_counts_by_req</code></td></tr>
+<tr><td>push / pull connector（backend 侧）</td><td>vLLM <code>.../v1/nixl/{push,pull}_{scheduler,worker}.py</code></td></tr>
 </table>
 
 </div>
