@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: SafeKV: Selective KV-Cache Sharing to Mitigate Timing Side-Channels in LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">SafeKV: Selective KV-Cache Sharing to Mitigate Timing Side-Channels in LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2508.08438 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2508.08438/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="safekv-2508-08438-·-l3-per-paper-synthesis">SafeKV (2508.08438) · L3 Per-Paper Synthesis <a class="heading-anchor" href="#safekv-2508-08438-·-l3-per-paper-synthesis" aria-label="Link to safekv-2508-08438-·-l3-per-paper-synthesis">#</a></h1>
+
+<blockquote>
+Target: SafeKV — Selective KV-Cache Sharing to Mitigate Timing Side-Channels
+in LLM Inference <a href="/papers/2508.08438/detail.html#1-tl-dr" class="ref-link" title="2508.08438#1-tl-dr">[2508.08438]</a>.
+Mode A: one entity vs 8 related framework peers.
+</blockquote>
+
+<hr>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>SafeKV is a <strong>prefix-caching serving framework</strong> whose novelty is a <em>security</em></p>
+<p>overlay on top of an existing radix-tree KV cache. The related set falls into</p>
+<p>three concentric rings by how directly they touch SafeKV's mechanism.</p>
+
+<p><strong>Ring 1 — the substrate SafeKV literally extends / inherits.</strong></p>
+
+<ul>
+<li><strong>SGLang / RadixAttention (2312.07104)</strong> — SafeKV is implemented as an SGLang</li>
+<p>extension <a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>, adding a <code>private_tag</code></p>
+<p>and <code>creator_id</code> to the exact radix-tree prefix cache whose</p>
+<p>longest-shared-prefix-first scheduler and per-node   reference-counter eviction</p>
+<p>SGLang introduced <a href="/papers/2312.07104/detail.html#1-tl-dr" class="ref-link" title="2312.07104#1-tl-dr">[2312.07104]</a><a href="/papers/2312.07104/detail.html#7-实现-cross-reference" class="ref-link" title="2312.07104#7-实现-cross-reference">[2312.07104]</a>.</p>
+<p>This is the single most load-bearing relationship: SafeKV's whole enforcement</p>
+<p>layer is "SGLang's tree node + one visibility bit."</p>
+<li><strong>vLLM / PagedAttention (2309.06180)</strong> — the paged, non-contiguous KV memory</li>
+<p>and copy-on-write cross-request <em>sharing</em> primitive that SafeKV's threat model</p>
+<p>treats as the attack surface. vLLM's copy-on-write is <em>intra</em>-request sharing</p>
+<p>(beam/parallel sampling) <a href="/papers/2309.06180/detail.html#q2-方法" class="ref-link" title="2309.06180#q2-方法">[2309.06180]</a>; SafeKV worries about the</p>
+<p><em>cross-tenant</em> prefix reuse that vLLM-style block sharing enables. vLLM is</p>
+<p>also one of the seven vendors SafeKV lists as shipping prefix caching</p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>.</p>
+</ul>
+
+<p>**Ring 2 — KV-reuse frameworks that share SafeKV's "reuse is the win, but the</p>
+<p>reused KV lives somewhere costly" premise.**</p>
+
+<ul>
+<li><strong>CachedAttention / AttentionStore (2403.19708)</strong> — multi-turn KV reuse across</li>
+<p>DRAM+SSD tiers; makes the same argument that discarding/recomputing history is</p>
+<p>the dominant cost <a href="/papers/2403.19708/detail.html#1-tl-dr" class="ref-link" title="2403.19708#1-tl-dr">[2403.19708]</a>. SafeKV inherits the same</p>
+<p>radix/prefix reuse economics but adds a <em>privacy</em> axis CachedAttention never</p>
+<p>considers (its reuse is single-tenant multi-turn, so cross-tenant leakage</p>
+<p>never arises) <a href="/papers/2403.19708/detail.html#q1-—-痛点-the-pain" class="ref-link" title="2403.19708#q1-—-痛点-the-pain">[2403.19708]</a>.</p>
+<li><strong>CacheGen (2310.07240)</strong> — compresses/streams reused KV over ordinary</li>
+<p>networks; also treats the reused KV as a first-class managed object with its</p>
+<p>own lifecycle <a href="/papers/2310.07240/detail.html#1-tl-dr" class="ref-link" title="2310.07240#1-tl-dr">[2310.07240]</a>. Orthogonal mechanism, same reuse</p>
+<p>motivation.</p>
+</ul>
+
+<p>**Ring 3 — serving-architecture peers whose scheduling / disaggregation ideas</p>
+<p>contrast with SafeKV's "classification off the critical path" design.**</p>
+
+<ul>
+<li><strong>FastServe (2305.05920)</strong> — skip-join MLFQ scheduler + proactive KV swap;</li>
+<p>the canonical example of <em>scheduling</em> on the critical path to fix latency</p>
+<p><a href="/papers/2305.05920/detail.html#q2-方法" class="ref-link" title="2305.05920#q2-方法">[2305.05920]</a>. SafeKV's async detector is the <em>opposite</em> stance:</p>
+<p>keep everything security-related off the path.</p>
+<li><strong>DistServe (2401.09670)</strong> — prefill/decode disaggregation with a formal</li>
+<p>goodput model <a href="/papers/2401.09670/detail.html#2-q1-q2-q3" class="ref-link" title="2401.09670#2-q1-q2-q3">[2401.09670]</a>; relevant because SafeKV's defended</p>
+<p>signal is TTFT (prefill-dominated), the exact quantity DistServe optimizes.</p>
+<li><strong>FastDecode (2403.11421)</strong> — heterogeneous CPU/GPU decode offload</li>
+<p><a href="/papers/2403.11421/detail.html#q2-方法" class="ref-link" title="2403.11421#q2-方法">[2403.11421]</a>; a different "move the KV work elsewhere" answer.</p>
+<li><strong>FlexRLHF (2312.11819)</strong> — RLHF <em>training</em> placement framework</li>
+<p><a href="/papers/2312.11819/detail.html#core-contribution" class="ref-link" title="2312.11819#core-contribution">[2312.11819]</a>. The weakest link: shares only the</p>
+<p>generic "co-design placement to break a fixed layout" flavor and the</p>
+<p>category tag; no KV-cache-serving overlap. Included for taxonomy completeness</p>
+<p>but contributes little to SafeKV's delta.</p>
+</ul>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<p><strong>What is genuinely new in SafeKV.</strong> Every Ring-1/Ring-2 peer optimizes KV reuse</p>
+<p>for <em>throughput/latency/cost</em>; none treats reuse as a <em>security-controlled</em></p>
+<p>resource. SafeKV's delta is a **visibility bit turned into a revocable,</p>
+<p>default-deny access-control state on each radix node**</p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>. Concretely:</p>
+
+<ul>
+<li><strong>vs SGLang (2312.07104):</strong> SGLang's radix node carries a reference counter</li>
+<p>for eviction safety <a href="/papers/2312.07104/detail.html#7-实现-cross-reference" class="ref-link" title="2312.07104#7-实现-cross-reference">[2312.07104]</a>; SafeKV adds a</p>
+<p><em>second</em> orthogonal per-node field (<code>private_tag</code>) checked per hop and flipped</p>
+<p>by an async classifier <a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>. SGLang's</p>
+<p>scheduler maximizes hit rate assuming all prefixes are shareable; SafeKV</p>
+<p><em>restricts</em> the shareable set. This is a strict superset of SGLang's data</p>
+<p>structure with an added enforcement invariant.</p>
+<li><strong>vs CachedAttention (2403.19708):</strong> both couple the cache to a scheduler-like</li>
+<p>control loop. CachedAttention's loop is a <em>Belady-style prefetch oracle</em> built</p>
+<p>from the job queue <a href="/papers/2403.19708/detail.html#q2-—-方法-the-method" class="ref-link" title="2403.19708#q2-—-方法-the-method">[2403.19708]</a>; SafeKV's loop is a</p>
+<p><em>demotion oracle</em> (RDR) built from access-dispersion telemetry</p>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>. Same architectural move (drive cache decisions</p>
+<p>from a runtime signal), opposite objective (maximize DRAM hits vs minimize</p>
+<p>cross-tenant hits).</p>
+<li><strong>Incremental, not novel:</strong> the three-tier detector itself (rule → small model</li>
+<p>→ big model) is a standard cascade; SafeKV's contribution there is the</p>
+<p><em>composition math</em> $P_{\text{leak}} = \alpha_1\alpha_{2|1}\alpha_{3|12}$</p>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a> and the insight that it can be off-path because</p>
+<p>of Private-by-default — not the cascade design.</p>
+<li><strong>Contradictory framing vs the reuse-maximizers:</strong> SGLang proves greedy</li>
+<p>longest-shared-prefix scheduling reaches 96% of the theoretical-optimal hit</p>
+<p>rate <a href="/papers/2312.07104/detail.html#q3-—-结果-results" class="ref-link" title="2312.07104#q3-—-结果-results">[2312.07104]</a>; SafeKV <em>deliberately forgoes</em> some of that</p>
+<p>optimal hit rate (any block classified private, or demoted, is excluded from</p>
+<p>cross-tenant reuse). SafeKV never quantifies the hit-rate it sacrifices vs the</p>
+<p>SGLang optimum — it only reports throughput recovery vs <em>full isolation</em></p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>, a much weaker baseline. This is a</p>
+<p>measurement-framing delta worth flagging (see §3).</p>
+</ul>
+
+<p><strong>Formal-model delta.</strong> DistServe carries a real analytic performance model</p>
+<p>(M/D/1 queue + latency GEMM model) <a href="/papers/2401.09670/detail.html#4-作者证明" class="ref-link" title="2401.09670#4-作者证明">[2401.09670]</a>; SafeKV has</p>
+<p><em>no</em> performance model — its formalism is a <em>security</em> bound, not a throughput</p>
+<p>model <a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>. So on the "reproduce the cost model" axis,</p>
+<p>SafeKV is closer to vLLM/SGLang/CacheGen (empirical-only performance) than to</p>
+<p>DistServe.</p>
+
+<hr>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<p>Targeted rebuttals against SafeKV's specific claims, cross-checked against peers.</p>
+
+<ol>
+<li><strong>The Sybil evasion is under-addressed.</strong> SafeKV's RDR safeguard triggers on</li>
+<p>low dispersion ($u\_cnt/hit\_cur$ small), i.e. many hits from few accounts</p>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>. But the threat model explicitly grants the</p>
+<p>adversary "arbitrary accounts" (§3 threat model, distilled in</p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>). An attacker spreading one probe per</p>
+<p>account keeps $u\_cnt$ high and</p>
+<p>RDR near 1, evading demotion. The paper's own L1 surprise list flags this;</p>
+<p>the history-gate ($u\_pre\approx1$) only partially mitigates</p>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>. <strong>Severity: high</strong> — the safeguard is</p>
+<p>contribution #3 and the security headline (AUC→0.5) rests on it.</p>
+</ul>
+
+<ol>
+<li><strong>Baseline is charitable; the real opportunity cost is hidden.</strong> SafeKV</li>
+<p>reports throughput 1.36–2.66× <em>over Cache-Partition (full isolation)</em></p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>. But the relevant "what did privacy</p>
+<p>cost me" baseline is global SGLang sharing, which SafeKV also runs</p>
+<p><a href="/papers/2508.08438/detail.html#5-实验与数据" class="ref-link" title="2508.08438#5-实验与数据">[2508.08438]</a>. Against the reuse-optimal SGLang line</p>
+<p>(which SGLang shows is ~96% of theoretical optimum</p>
+<p><a href="/papers/2312.07104/detail.html#q3-—-结果-results" class="ref-link" title="2312.07104#q3-—-结果-results">[2312.07104]</a>), SafeKV must lose some hit rate for every private</p>
+<p>block. The paper never reports the <em>gap to SGLang</em>, only the *gain over</p>
+<p>isolation* — a favorable-baseline framing.</p>
+</ul>
+
+<ol>
+<li><strong>The Tier-1 recall vs accuracy numbers do not reconcile.</strong> SafeKV claims</li>
+<p>Tier-1 "flags 60–70% of private blocks" in production yet Figure 9 shows</p>
+<p>Tier-1 accuracy ~37–39% on the multilingual test set</p>
+<p><a href="/papers/2508.08438/detail.html#5-实验与数据" class="ref-link" title="2508.08438#5-实验与数据">[2508.08438]</a>. These appear to be different metrics on</p>
+<p>different data with no bridge. The $P_{\text{leak}}$ bound depends on the</p>
+<p>$\alpha_1$ FN rate, so this ambiguity propagates into the headline security</p>
+<p>guarantee <a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>.</p>
+</ul>
+
+<ol>
+<li>**The defended signal is exactly the one that scheduling noise already</li>
+<p>perturbs.** SafeKV defends TTFT distinguishability</p>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>. But FastServe shows queuing delay can be 90%+</p>
+<p>of TTFT under load and is highly variable <a href="/papers/2305.05920/detail.html#q1-痛点" class="ref-link" title="2305.05920#q1-痛点">[2305.05920]</a>, and</p>
+<p>DistServe shows colocated prefill/decode interference inflates TTFT</p>
+<p>unpredictably <a href="/papers/2401.09670/detail.html#2-q1-q2-q3" class="ref-link" title="2401.09670#2-q1-q2-q3">[2401.09670]</a>. On a busy multi-tenant</p>
+<p>node the hit/miss gap may already be buried under scheduling variance,</p>
+<p>which both weakens the <em>attack</em> (good for SafeKV) and muddies SafeKV's</p>
+<p><em>measurement</em> of "defense success" (bad for the claim's cleanliness). SafeKV</p>
+<p>evaluates on a single 8×H20 node <a href="/papers/2508.08438/detail.html#5-实验与数据" class="ref-link" title="2508.08438#5-实验与数据">[2508.08438]</a> and does</p>
+<p>not isolate scheduling-induced TTFT variance from cache-hit variance.</p>
+</ul>
+
+<ol>
+<li><strong>Single-node scope hides cross-node reuse leakage.</strong> SafeKV is a single-node</li>
+<p>prototype <a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>. DistServe demonstrates</p>
+<p>production serving disaggregates KV across nodes</p>
+<p><a href="/papers/2401.09670/detail.html#2-q1-q2-q3" class="ref-link" title="2401.09670#2-q1-q2-q3">[2401.09670]</a>; CachedAttention/CacheGen move KV across</p>
+<p>DRAM/SSD/network tiers <a href="/papers/2403.19708/detail.html#1-tl-dr" class="ref-link" title="2403.19708#1-tl-dr">[2403.19708]</a><a href="/papers/2310.07240/detail.html#1-tl-dr" class="ref-link" title="2310.07240#1-tl-dr">[2310.07240]</a>.</p>
+<p>The <code>creator_id</code>/<code>private_tag</code> invariant is only shown to hold within one</p>
+<p>radix tree on one GPU; whether it survives KV migration/transfer is untested.</p>
+</ul>
+
+<hr>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<p><strong>Paradigm positioning.</strong> SafeKV sits at the intersection of two mature</p>
+<p>paradigms and opens a third:</p>
+
+<ul>
+<li>The <strong>prefix-cache-reuse paradigm</strong> (vLLM → SGLang → CachedAttention →</li>
+<p>CacheGen) established that reused KV is <em>the</em> throughput lever</p>
+<p><a href="/papers/2309.06180/detail.html#§1-tl-dr" class="ref-link" title="2309.06180#§1-tl-dr">[2309.06180]</a><a href="/papers/2312.07104/detail.html#1-tl-dr" class="ref-link" title="2312.07104#1-tl-dr">[2312.07104]</a>. This paradigm is</p>
+<p>effectively settled — SGLang's Theorem 3.1 gives it an optimality anchor</p>
+<p><a href="/papers/2312.07104/detail.html#4-作者证明" class="ref-link" title="2312.07104#4-作者证明">[2312.07104]</a> and vLLM is the de-facto standard</p>
+<p><a href="/papers/2309.06180/detail.html#§7-实现-cross-reference" class="ref-link" title="2309.06180#§7-实现-cross-reference">[2309.06180]</a>.</p>
+<li>The <strong>serving-architecture paradigm</strong> (FastServe scheduling, DistServe</li>
+<p>disaggregation, FastDecode heterogeneity) reshapes <em>where/when</em> KV work</p>
+<p>happens <a href="/papers/2305.05920/detail.html#q2-方法" class="ref-link" title="2305.05920#q2-方法">[2305.05920]</a><a href="/papers/2401.09670/detail.html#2-q1-q2-q3" class="ref-link" title="2401.09670#2-q1-q2-q3">[2401.09670]</a><a href="/papers/2403.11421/detail.html#q2-方法" class="ref-link" title="2403.11421#q2-方法">[2403.11421]</a>.</p>
+<li>SafeKV opens a <strong>"reuse-as-controlled-resource" niche</strong>: it is the first in</li>
+<p>this KB cluster to treat the shared cache as a <em>security</em> object, not just a</p>
+<p>performance object <a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>. Its closest</p>
+<p>intellectual sibling is CachedAttention's scheduler-cache coupling</p>
+<p><a href="/papers/2403.19708/detail.html#q2-—-方法-the-method" class="ref-link" title="2403.19708#q2-—-方法-the-method">[2403.19708]</a>, but repurposed for access</p>
+<p>control rather than tiering.</p>
+</ul>
+
+<p><strong>Adoption evidence & barrier.</strong> SafeKV's adoption story is strong <em>in principle</em></p>
+<p>because it piggybacks on SGLang, the runtime it extends</p>
+<p><a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>, and it claims a config-flag toggle</p>
+<p>with unchanged request API. But like most of the cluster</p>
+<p>(FastServe, CachedAttention, CacheGen partial, FastDecode, FlexRLHF all</p>
+<p><code>[实现未公开]</code> or unreleased <a href="/papers/2305.05920/detail.html#§7-实现-cross-reference" class="ref-link" title="2305.05920#§7-实现-cross-reference">[2305.05920]</a><a href="/papers/2403.19708/detail.html#7-实现-cross-reference" class="ref-link" title="2403.19708#7-实现-cross-reference">[2403.19708]</a><a href="/papers/2403.11421/detail.html#§7-实现-cross-reference" class="ref-link" title="2403.11421#§7-实现-cross-reference">[2403.11421]</a><a href="/papers/2312.11819/detail.html#10-adoption-maturity" class="ref-link" title="2312.11819#10-adoption-maturity">[2312.11819]</a>),</p>
+<p>SafeKV's own repository is not cited <a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>.</p>
+<p>Only vLLM and SGLang in this set are genuinely upstreamed/standard</p>
+<p><a href="/papers/2309.06180/detail.html#§7-实现-cross-reference" class="ref-link" title="2309.06180#§7-实现-cross-reference">[2309.06180]</a><a href="/papers/2312.07104/detail.html#7-实现-cross-reference" class="ref-link" title="2312.07104#7-实现-cross-reference">[2312.07104]</a>,</p>
+<p>so SafeKV's realistic path is upstreaming the <code>private_tag</code> into SGLang's radix</p>
+<p>cache rather than shipping a fork.</p>
+
+<hr>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<p>Hybrid / adaptive directions surfaced by pairing SafeKV with the cluster.</p>
+
+<ol>
+<li><strong>Privacy-aware scheduling (SafeKV × SGLang × FastServe).</strong> SGLang schedules</li>
+<p>longest-shared-prefix-first for hit rate <a href="/papers/2312.07104/detail.html#4-作者证明" class="ref-link" title="2312.07104#4-作者证明">[2312.07104]</a>;</p>
+<p>FastServe skip-join MLFQ schedules for latency <a href="/papers/2305.05920/detail.html#q2-方法" class="ref-link" title="2305.05920#q2-方法">[2305.05920]</a>.</p>
+<p>Neither is <em>sensitivity-aware</em>. A scheduler that co-optimizes hit-rate and</p>
+<p><em>exposure risk</em> (e.g. deprioritize scheduling that would batch a probe-like</p>
+<p>burst against a freshly-promoted block) would fuse SafeKV's RDR signal into</p>
+<p>the scheduler instead of a separate demotion loop — closing the gap the</p>
+<p>attack surface §3.4 opened.</p>
+</ul>
+
+<ol>
+<li>**Extending enforcement across KV tiers/nodes (SafeKV × CachedAttention ×</li>
+<p>DistServe).** SafeKV's <code>creator_id</code> invariant is single-tree</p>
+<p><a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>. CachedAttention moves KV DRAM↔SSD</p>
+<p><a href="/papers/2403.19708/detail.html#q2-—-方法-the-method" class="ref-link" title="2403.19708#q2-—-方法-the-method">[2403.19708]</a> and DistServe transfers KV cross-node over</p>
+<p>NVLINK/NCCL <a href="/papers/2401.09670/detail.html#7-实现-cross-reference" class="ref-link" title="2401.09670#7-实现-cross-reference">[2401.09670]</a>. An unexplored</p>
+<p>combination: carry <code>private_tag</code>/<code>creator_id</code> through tiered eviction and</p>
+<p>cross-node KV transfer, so isolation survives migration — a technically</p>
+<p>tractable extension since both peers already key KV by</p>
+<p>session/stage.</p>
+</ul>
+
+<ol>
+<li><strong>Compressed private paths (SafeKV × CacheGen).</strong> SafeKV path-compresses long</li>
+<p><em>private</em> chains into a <code>pri_root</code> address vector for traversal speed</p>
+<p><a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>. CacheGen shows private, rarely-</p>
+<p>shared KV is exactly the case where <em>size</em> compression (3.5–4.3×) pays off</p>
+<p>with no cross-tenant quality concern <a href="/papers/2310.07240/detail.html#q3-—-结果" class="ref-link" title="2310.07240#q3-—-结果">[2310.07240]</a>. Combining</p>
+<p>them — byte-compress the private branches that by definition never benefit</p>
+<p>from cross-tenant reuse — is an untried, technically-clean win.</p>
+</ul>
+
+<ol>
+<li><strong>Adaptive tier for detector, not just promotion (SafeKV × FastDecode).</strong></li>
+<p>SafeKV's Tier-3 uses the <em>in-service</em> GPU LLM, whose long tail delays</p>
+<p>promotion <a href="/papers/2508.08438/detail.html#5-实验与数据" class="ref-link" title="2508.08438#5-实验与数据">[2508.08438]</a>. FastDecode's CPU-side</p>
+<p>compute-near-data insight <a href="/papers/2403.11421/detail.html#q1-痛点" class="ref-link" title="2403.11421#q1-痛点">[2403.11421]</a> suggests running the</p>
+<p>cheap Tier-1/Tier-2 detectors on idle CPU sockets, freeing GPU entirely for</p>
+<p>inference and widening the async budget — a placement idea the paper's</p>
+<p>single-node prototype never explores.</p>
+</ul>
+
+<ol>
+<li><strong>Quantify the reuse sacrificed (SafeKV × SGLang optimality).</strong> The most</li>
+<p>valuable <em>measurement</em> gap: instrument SafeKV against SGLang's</p>
+<p>theoretical-optimal hit rate <a href="/papers/2312.07104/detail.html#4-作者证明" class="ref-link" title="2312.07104#4-作者证明">[2312.07104]</a> to report the</p>
+<p>exact hit-rate lost per unit of privacy enforced, turning "privacy vs</p>
+<p>performance" from a qualitative claim into the kind of quantified trade-off</p>
+<p>curve DistServe produces for goodput <a href="/papers/2401.09670/detail.html#4-作者证明" class="ref-link" title="2401.09670#4-作者证明">[2401.09670]</a>.</p>
+</ul>
+
+<hr>
+
+<h2 id="参考-cited-entities">参考 (cited entities) <a class="heading-anchor" href="#参考-cited-entities" aria-label="Link to 参考-cited-entities">#</a></h2>
+
+<ul>
+<li><a href="/papers/2508.08438/detail.html#1-tl-dr" class="ref-link" title="2508.08438#1-tl-dr">[2508.08438]</a> · <a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a> ·</li>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a> · <a href="/papers/2508.08438/detail.html#5-实验与数据" class="ref-link" title="2508.08438#5-实验与数据">[2508.08438]</a> ·</p>
+<p><a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a> — SafeKV (target)</p>
+<li><a href="/papers/2312.07104/detail.html#1-tl-dr" class="ref-link" title="2312.07104#1-tl-dr">[2312.07104]</a> · <a href="/papers/2312.07104/detail.html#q3-—-结果-results" class="ref-link" title="2312.07104#q3-—-结果-results">[2312.07104]</a> ·</li>
+<p><a href="/papers/2312.07104/detail.html#4-作者证明" class="ref-link" title="2312.07104#4-作者证明">[2312.07104]</a> · <a href="/papers/2312.07104/detail.html#7-实现-cross-reference" class="ref-link" title="2312.07104#7-实现-cross-reference">[2312.07104]</a> — SGLang/RadixAttention</p>
+<li><a href="/papers/2309.06180/detail.html#§1-tl-dr" class="ref-link" title="2309.06180#§1-tl-dr">[2309.06180]</a> · <a href="/papers/2309.06180/detail.html#q2-方法" class="ref-link" title="2309.06180#q2-方法">[2309.06180]</a> ·</li>
+<p><a href="/papers/2309.06180/detail.html#§7-实现-cross-reference" class="ref-link" title="2309.06180#§7-实现-cross-reference">[2309.06180]</a> — vLLM/PagedAttention</p>
+<li><a href="/papers/2403.19708/detail.html#1-tl-dr" class="ref-link" title="2403.19708#1-tl-dr">[2403.19708]</a> · <a href="/papers/2403.19708/detail.html#q1-—-痛点-the-pain" class="ref-link" title="2403.19708#q1-—-痛点-the-pain">[2403.19708]</a> ·</li>
+<p><a href="/papers/2403.19708/detail.html#q2-—-方法-the-method" class="ref-link" title="2403.19708#q2-—-方法-the-method">[2403.19708]</a> ·</p>
+<p><a href="/papers/2403.19708/detail.html#7-实现-cross-reference" class="ref-link" title="2403.19708#7-实现-cross-reference">[2403.19708]</a> — CachedAttention/AttentionStore</p>
+<li><a href="/papers/2310.07240/detail.html#1-tl-dr" class="ref-link" title="2310.07240#1-tl-dr">[2310.07240]</a> · <a href="/papers/2310.07240/detail.html#q3-—-结果" class="ref-link" title="2310.07240#q3-—-结果">[2310.07240]</a> — CacheGen</li>
+<li><a href="/papers/2305.05920/detail.html#q1-痛点" class="ref-link" title="2305.05920#q1-痛点">[2305.05920]</a> · <a href="/papers/2305.05920/detail.html#q2-方法" class="ref-link" title="2305.05920#q2-方法">[2305.05920]</a> ·</li>
+<p><a href="/papers/2305.05920/detail.html#§7-实现-cross-reference" class="ref-link" title="2305.05920#§7-实现-cross-reference">[2305.05920]</a> — FastServe</p>
+<li><a href="/papers/2401.09670/detail.html#2-q1-q2-q3" class="ref-link" title="2401.09670#2-q1-q2-q3">[2401.09670]</a> · <a href="/papers/2401.09670/detail.html#4-作者证明" class="ref-link" title="2401.09670#4-作者证明">[2401.09670]</a> ·</li>
+<p><a href="/papers/2401.09670/detail.html#7-实现-cross-reference" class="ref-link" title="2401.09670#7-实现-cross-reference">[2401.09670]</a> — DistServe</p>
+<li><a href="/papers/2403.11421/detail.html#q1-痛点" class="ref-link" title="2403.11421#q1-痛点">[2403.11421]</a> · <a href="/papers/2403.11421/detail.html#q2-方法" class="ref-link" title="2403.11421#q2-方法">[2403.11421]</a> ·</li>
+<p><a href="/papers/2403.11421/detail.html#§7-实现-cross-reference" class="ref-link" title="2403.11421#§7-实现-cross-reference">[2403.11421]</a> — FastDecode</p>
+<li><a href="/papers/2312.11819/detail.html#core-contribution" class="ref-link" title="2312.11819#core-contribution">[2312.11819]</a> · <a href="/papers/2312.11819/detail.html#10-adoption-maturity" class="ref-link" title="2312.11819#10-adoption-maturity">[2312.11819]</a> — FlexRLHF</li>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/cache-partition-pang2024.html">cache-partition-pang2024</a> (baseline) 
+<a href="/papers/sglang.html">sglang</a> (builds-on) 
+<a href="/papers/promptpeek-ndss2025.html">promptpeek-ndss2025</a> (attack-defended) 
+<a href="/papers/earlybird-2409.20002.html">earlybird-2409.20002</a> (attack-defended) 
+<a href="/papers/inputsnatch-2411.18191.html">inputsnatch-2411.18191</a> (attack-defended) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

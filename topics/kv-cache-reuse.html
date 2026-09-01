@@ -196,7 +196,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <div class="w">
 <h1 id="kv-cache-reuse">kv-cache-reuse</h1>
-<div class="card-meta">Cross-category topic | 25 sources</div>
+<div class="card-meta">Cross-category topic | 26 sources</div>
 <div class="link-area" style="border-top:none;margin-top:8px">
 <a href="/topics/">← All Topics</a>
 </div>
@@ -207,7 +207,8 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <blockquote>
 范围：<strong>复用已经算过的 KV / 状态</strong>——前缀缓存与 radix/trie 索引、准入与淘汰策略、
 跨轮次 / 跨请求 / 跨模型 / 跨上下文复用、以最大化命中率为目标的路由与调度、
-不可回滚状态下的复用、复用状态的出处与保真度语义、以及真实负载的复用画像。
+不可回滚状态下的复用、复用状态的出处与保真度语义、跨租户共享的可见性与隔离、
+以及真实负载的复用画像。
 存储层级本身（CPU/SSD 带宽与介质）只在它改变复用经济性时出现。
 </blockquote>
 
@@ -256,9 +257,20 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <p>管驱逐安全的引用计数、没有任何"这份 KV 由谁产生、保真度如何"的字段</p>
 <p><a href="/papers/2608.03893/detail.html#攻击五：近似缓存写回前缀树，会污染精确复用（本篇与底座论文都没讨论）" class="ref-link" title="2608.03893#攻击五：近似缓存写回前缀树，会污染精确复用（本篇与底座论文都没讨论）">[2608.03893]</a>。</p>
 
-<p>因此这个主题的真正内容不是"怎么做前缀缓存"，而是四个问题的叠加：**在复用变成主导项、真实命中率</p>
-<p>又低于预期、状态代数本身可能不允许切片、而且一份缓存的出处与保真度不再唯一的情况下，谁来决定</p>
-<p>复用什么、以什么效用排序、在哪一层决定、以及凭什么相信命中的那份 KV 是可以被命中的。**</p>
+<p><strong>第五条是隔离债，它把"共享"本身的安全后果第一次摆上台面。</strong> 前四条债的隐含前提都是"能共享就</p>
+<p>应该共享"，命中率越高越好。可跨租户前缀共享同时打开了一个纯软件、只用一个普通 API 账号就能利用</p>
+<p>的<strong>计时侧信道</strong>：命中比未命中快，攻击者用构造前缀去探测 TTFT，就能反推出别的租户是否用过某段</p>
+<p>前缀，已有攻击在约 10² 次请求/token 下把 prompt 重建成功率做到 89–99%</p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。两个"显然"的补救都在性能轴上失败：计时混淆要把命中延迟推向</p>
+<p>未命中分布的重尾才能骗过双样本检验，等于抹掉了缓存本身的收益；而按用户整体隔离会放弃跨租户复用，</p>
+<p>在 Llama-2-70B 上实测 TTFT 抬高 8.3–38.9% <a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。于是复用第一次</p>
+<p>有了一根与命中率、容量、保真度并列的新轴：<strong>可见性</strong>——一份缓存该不该被别的租户命中，本身就是</p>
+<p>一个需要被决策、被强制、还要能被撤销的属性。</p>
+
+<p>因此这个主题的真正内容不是"怎么做前缀缓存"，而是五个问题的叠加：**在复用变成主导项、真实命中率</p>
+<p>又低于预期、状态代数本身可能不允许切片、一份缓存的出处与保真度不再唯一、而且"该不该让别人命中"</p>
+<p>本身也成了安全决策的情况下，谁来决定复用什么、以什么效用排序、在哪一层决定、凭什么相信命中的那份</p>
+<p>KV 是可以被命中的、以及凭什么允许它被别人命中。**</p>
 
 <p>在第三条之上还叠了一个模型架构层面的意外，它是第一次真正的公理作废：Attention+SSM 混合模型的</p>
 <p>SSM 状态是<strong>原地更新</strong>的，不能回滚成自己的任意前缀，于是"命中"要求整段前缀精确匹配，块级</p>
@@ -272,7 +284,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 
 <table>
 <tr><th>category</th><th>数量</th><th>代表</th></tr>
-<tr><td>framework</td><td>16</td><td>RadixAttention 的 radix 树 + 最优性证明 <a href="/papers/2312.07104/detail.html#1-tl-dr" class="ref-link" title="2312.07104#1-tl-dr">[2312.07104]</a>；混合模型下的准入/淘汰重设计 <a href="/papers/2411.19379/detail.html#1-tl-dr" class="ref-link" title="2411.19379#1-tl-dr">[2411.19379]</a>；引擎无关的外置缓存层 <a href="/papers/2510.09665/detail.html#§1-tl-dr" class="ref-link" title="2510.09665#§1-tl-dr">[2510.09665]</a>；生产 trace 画像与 workload-aware 淘汰 <a href="/papers/2506.02634/detail.html#1-tl-dr" class="ref-link" title="2506.02634#1-tl-dr">[2506.02634]</a>；工作流拓扑驱动的淘汰与预取 <a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="2507.07400#core-contribution">[2507.07400]</a>；agent 边界即缓存优先级边界 <a href="/papers/2511.01633/detail.html#core-contribution" class="ref-link" title="2511.01633#core-contribution">[2511.01633]</a>；前缀路由与 true-FLOPs 计价 <a href="/papers/2605.02960/detail.html#§1-core-contribution" class="ref-link" title="2605.02960#§1-core-contribution">[2605.02960]</a>；单树同管 KV 页与 SSM 状态的引擎 <a href="/papers/tokenspeed/detail.html#核心三问" class="ref-link" title="tokenspeed#核心三问">[tokenspeed]</a></td></tr>
+<tr><td>framework</td><td>17</td><td>RadixAttention 的 radix 树 + 最优性证明 <a href="/papers/2312.07104/detail.html#1-tl-dr" class="ref-link" title="2312.07104#1-tl-dr">[2312.07104]</a>；混合模型下的准入/淘汰重设计 <a href="/papers/2411.19379/detail.html#1-tl-dr" class="ref-link" title="2411.19379#1-tl-dr">[2411.19379]</a>；引擎无关的外置缓存层 <a href="/papers/2510.09665/detail.html#§1-tl-dr" class="ref-link" title="2510.09665#§1-tl-dr">[2510.09665]</a>；生产 trace 画像与 workload-aware 淘汰 <a href="/papers/2506.02634/detail.html#1-tl-dr" class="ref-link" title="2506.02634#1-tl-dr">[2506.02634]</a>；工作流拓扑驱动的淘汰与预取 <a href="/papers/2507.07400/detail.html#core-contribution" class="ref-link" title="2507.07400#core-contribution">[2507.07400]</a>；agent 边界即缓存优先级边界 <a href="/papers/2511.01633/detail.html#core-contribution" class="ref-link" title="2511.01633#core-contribution">[2511.01633]</a>；前缀路由与 true-FLOPs 计价 <a href="/papers/2605.02960/detail.html#§1-core-contribution" class="ref-link" title="2605.02960#§1-core-contribution">[2605.02960]</a>；单树同管 KV 页与 SSM 状态的引擎 <a href="/papers/tokenspeed/detail.html#核心三问" class="ref-link" title="tokenspeed#核心三问">[tokenspeed]</a>；把可见性做成可撤销 per-node 位的隔离感知缓存 <a href="/papers/2508.08438/detail.html#1-tl-dr" class="ref-link" title="2508.08438#1-tl-dr">[2508.08438]</a></td></tr>
 <tr><td>agent</td><td>4</td><td>批量工作流的合并查询计划 + 复用折扣代价模型 <a href="/papers/2509.02121/detail.html#1-tl-dr" class="ref-link" title="2509.02121#1-tl-dr">[2509.02121]</a>；跨上下文 KV 偏移近似 <a href="/papers/2510.12872/detail.html#1-tl-dr" class="ref-link" title="2510.12872#1-tl-dr">[2510.12872]</a>；模板化 radix 树的编译期缓存调度 <a href="/papers/2603.16104/detail.html#1-tl-dr" class="ref-link" title="2603.16104#1-tl-dr">[2603.16104]</a>；与前缀复用兼容的跨轮剪枝 <a href="/papers/2606.09916/detail.html#1-tl-dr" class="ref-link" title="2606.09916#1-tl-dr">[2606.09916]</a></td></tr>
 <tr><td>code</td><td>3</td><td>RadixAttention 与分层缓存的生产实现 <a href="/papers/sgl-project-sglang/detail.html#§1-tl-dr" class="ref-link" title="sgl-project-sglang#§1-tl-dr">[sgl-project-sglang]</a>；前缀缓存感知的调度/路由器 <a href="/papers/ZhaiFeiyue-mori-scheduler/detail.html#§1-tl-dr" class="ref-link" title="ZhaiFeiyue-mori-scheduler#§1-tl-dr">[ZhaiFeiyue-mori-scheduler]</a>；Rust 并发 radix 树 cache-affinity 路由 <a href="/papers/vllm-project-router/detail.html#§1-tl-dr" class="ref-link" title="vllm-project-router#§1-tl-dr">[vllm-project-router]</a></td></tr>
 <tr><td>algorithm</td><td>2</td><td>把 prefix overlap 折算成毫秒、与网络 RTT 同量纲相加的跨区路由代价模型 <a href="/papers/2602.11688/detail.html#§1-tl-dr" class="ref-link" title="2602.11688#§1-tl-dr">[2602.11688]</a>；跨参数集的闭式 per-head 线性映射 <a href="/papers/2608.03893/detail.html#1-tl-dr" class="ref-link" title="2608.03893#1-tl-dr">[2608.03893]</a></td></tr>
@@ -320,6 +332,12 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <li><strong>2025-06 · 生产 trace 画像</strong> — 用真实云负载否定合成负载的乐观假设，同时给出一条与经典缓存</li>
 <p>智慧相反的结论：显式<strong>删掉</strong> GDFS/LFU 的 Frequency 项反而更好，因为短命高频块会污染缓存</p>
 <p><a href="/papers/2506.02634/detail.html#4-作者证明" class="ref-link" title="2506.02634#4-作者证明">[2506.02634]</a>。</p>
+<li><strong>2025-08 · SafeKV</strong> — 第一次把跨租户前缀共享当成<strong>安全对象</strong>而不是纯性能对象：给 SGLang 的</li>
+<p>radix 节点加一个可撤销、默认拒绝的 <code>private_tag</code>，用异步三层检测器（规则 / 1B 语义分类器 /</p>
+<p>在服务大模型）离线判定可见性、命中前默认私有，再用 RDR 安全阀在类探测访问下把 Shareable 撤回</p>
+<p>Private <a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。它把泄露概率写成三层假阴的乘积、把泄露时长界成</p>
+<p>"提升时间 + 一个安全窗" <a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>，相对整体隔离恢复 1.36–2.66× 吞吐、并把</p>
+<p>计时侧信道的 ROC-AUC 压回 ≈0.5 <a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。</p>
 <li><strong>2025-09 / 2026-03 · Halo 与 Helium</strong> — 把批量 agent 工作流当作一个合并的查询计划来优化，</li>
 <p>复用被写进代价模型里的折扣系数 <a href="/papers/2509.02121/detail.html#4-作者证明" class="ref-link" title="2509.02121#4-作者证明">[2509.02121]</a>，或者被写进一棵同时编码前缀</p>
 <p>层级与算子依赖的模板化 radix 树 <a href="/papers/2603.16104/detail.html#2-q1-q2-q3" class="ref-link" title="2603.16104#2-q1-q2-q3">[2603.16104]</a>。</p>
@@ -370,6 +388,7 @@ flowchart TB
         PROB["按类别复用概率<br/>删 Frequency + 寿命正则<br/>2506.02634"]
         STE["工作流拓扑 → STE 优先级<br/>主动预取 + 状态感知调度<br/>2507.07400"]
         CONTRACT["resident/active 合约<br/>可行性边界 + 可观测 harm<br/>2605.24259"]
+        SAFEKV["可撤销 per-node 可见性位<br/>默认私有 + 异步分级检测 + RDR<br/>2508.08438"]
     end
 
     subgraph APP["结构信号层 · agent"]
@@ -403,6 +422,8 @@ flowchart TB
     RADIX --> CHARTREE
     RADIX --> TRT
     RADIX --> INTENT
+    RADIX --> SAFEKV
+    SAFEKV -.->|"命中率外新增可见性轴"| SGLR
     TIER --> LAYER
     TIER --> PROB
     TIER --> STE
@@ -548,6 +569,22 @@ flowchart TB
 <p><a href="/papers/2605.02960/detail.html#q2-方法：asyncep-—-按-weight-聚集，而非按-activation-路由" class="ref-link" title="2605.02960#q2-方法：asyncep-—-按-weight-聚集，而非按-activation-路由">[2605.02960]</a>——这是本主题里</p>
 <p>唯一把"复用量"这个旋钮显式拧到零的设计，也说明复用在某些 regime 下是净负债。</p>
 
+<p><strong>共享本身是一个安全决策，而"可见性"是继命中率、容量、保真度之后的第四根轴。</strong> 前面所有工作都把</p>
+<p>"能命中就命中"当默认，可跨租户前缀共享把命中/未命中的 TTFT 差做成了纯软件侧信道</p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。两个直接补救都撞在性能轴上：计时混淆要把命中延迟推向未命中</p>
+<p>分布的重尾，等于抹平缓存收益；整体隔离直接放弃跨租户复用，Llama-2-70B 上 TTFT 抬 8.3–38.9%</p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。中间地带的关键洞见是把<strong>可见性做成缓存索引里的一等元数据</strong>：</p>
+<p>在 SGLang 的每个 radix 节点上加一个默认拒绝、可原子翻转的 <code>private_tag</code>，用离线三层检测器判定可</p>
+<p>共享性、命中前一律私有，从而把"检测器精度"与"泄露概率"解耦——泄露只发生在三层假阴的乘积</p>
+<p>$\alpha_1\alpha_{2|1}\alpha_{3|12}$ 上，且被 RDR 安全阀撤回，泄露时长界成"提升时间 + 一个窗"</p>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>。它与本主题此前每一个把节点当纯性能对象的设计正交：SGLang 节点上</p>
+<p>只有管驱逐安全的引用计数 <a href="/papers/2312.07104/detail.html#7-实现-cross-reference" class="ref-link" title="2312.07104#7-实现-cross-reference">[2312.07104]</a>，SafeKV 加的是第二个、管访问</p>
+<p>控制的字段，检查发生在<strong>每一跳</strong> <a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>。它与 §5 前面的存储</p>
+<p>经济性一线也形成互补的负债：那条把"该不该复用"折成毫秒/算力，这条把它折成"该不该让别人复用"，</p>
+<p>两者都说明命中率从来不是可以无条件最大化的。代价是这条隔离<strong>必然要牺牲一部分 SGLang 最优命中率</strong></p>
+<p>（任何被判私有或被撤回的块都被排除出跨租户复用），而 SafeKV 只报了相对整体隔离的吞吐恢复、从未量化</p>
+<p>相对 SGLang 最优的命中率缺口 <a href="/papers/2508.08438/detail.html#2-本篇-vs-相关论文的-delta" class="ref-link" title="2508.08438#2-本篇-vs-相关论文的-delta">[2508.08438]</a>。</p>
+
 <hr>
 
 <h2 id="6-共识与分歧">6. 共识与分歧 <a class="heading-anchor" href="#6-共识与分歧" aria-label="Link to 6-共识与分歧">#</a></h2>
@@ -617,8 +654,10 @@ flowchart TB
 <p>保留了最多的 raw token（1104 个）但阈值化后的可用价值为 0，因为碎片没有构成前导连续前缀</p>
 <p><a href="/papers/2605.24259/detail.html#5-1-retained-tokens-vs-materialization-value" class="ref-link" title="2605.24259#5-1-retained-tokens-vs-materialization-value">[2605.24259]</a>。第三个反例来自跨参数集复用：</p>
 <p>它的复用率不低（困惑度证明信息确实转移了），但差值换算到正确基线后收益为负</p>
-<p><a href="/papers/2608.03893/detail.html#5-3-被忽略的基线：为什么不干脆继续用小模型？" class="ref-link" title="2608.03893#5-3-被忽略的基线：为什么不干脆继续用小模型？">[2608.03893]</a>。三条合起来说明命中率是一个</p>
-<p><strong>代理指标</strong>，且在跨区、高压、跨参数集三种情形下都会与真实目标脱钩。</p>
+<p><a href="/papers/2608.03893/detail.html#5-3-被忽略的基线：为什么不干脆继续用小模型？" class="ref-link" title="2608.03893#5-3-被忽略的基线：为什么不干脆继续用小模型？">[2608.03893]</a>。第四个反例来自安全侧：隔离感知</p>
+<p>缓存<strong>主动放弃</strong>一部分本可命中的跨租户前缀，因为那部分命中同时是一条计时侧信道，追逐它会泄露别的</p>
+<p>租户的 prompt <a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。四条合起来说明命中率是一个<strong>代理指标</strong>，且在</p>
+<p>跨区、高压、跨参数集、跨租户四种情形下都会与真实目标脱钩。</p>
 
 <p><strong>分歧 4 — 复用与压缩/剪枝是叠加还是互斥。</strong> 传输压缩明确声称与 token 丢弃类方法正交可叠加，</p>
 <p>并实测在其之上再降 3.3–4.2 倍 <a href="/papers/2310.07240/detail.html#5-实验与数据" class="ref-link" title="2310.07240#5-实验与数据">[2310.07240]</a>；跨轮剪枝则揭示这条叠加性</p>
@@ -680,6 +719,22 @@ flowchart TB
 <p>发生 <a href="/papers/2511.01633/detail.html#a3-四级优先级-vs-连续优先级的粒度问题" class="ref-link" title="2511.01633#a3-四级优先级-vs-连续优先级的粒度问题">[2511.01633]</a>。这条与分歧 1 交叉：结构信号</p>
 <p>给出的是<strong>序</strong>（下一步距离），统计信号给出的是<strong>概率</strong>，语义分级给出的是<strong>类别</strong>，三者都在</p>
 <p>逼近同一个连续效用，但没有一个把它写出来——见 §7 挑战 3。</p>
+
+<p><strong>分歧 9 — 跨租户共享该默认开还是默认关。这是隔离轴上第一次出现的分歧。</strong> 本主题此前每一个成员</p>
+<p>的隐含立场都是"默认全共享，命中率越高越好"——radix 调度的最优性定理直接假设所有前缀可共享</p>
+<p><a href="/papers/2312.07104/detail.html#4-作者证明" class="ref-link" title="2312.07104#4-作者证明">[2312.07104]</a>，生产画像甚至观察到客户端把相同 system prompt 硬编码以主动制造</p>
+<p>跨请求命中 <a href="/papers/2506.02634/detail.html#q3-结果：小改缓存策略即得双位数尾延迟收益，且推翻两个直觉" class="ref-link" title="2506.02634#q3-结果：小改缓存策略即得双位数尾延迟收益，且推翻两个直觉">[2506.02634]</a>。隔离</p>
+<p>感知缓存给出相反的默认：<strong>每个块插入时默认私有，只有过了离线三层检测才被提升为可共享</strong>，因为一旦</p>
+<p>共享就等于开了一条 TTFT 侧信道 <a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>。矛盾根源不是谁对谁错，而是</p>
+<p><strong>威胁模型是否包含跨租户攻击者</strong>：单租户多轮或纯 API 硬编码 system prompt 的场景里没有对手，默认</p>
+<p>全共享是对的；多租户共享池里只要有一个能发构造前缀的普通账号，默认全共享就是直接泄露。两者的</p>
+<p>可行域由部署形态划分，而非性能。这条分歧还嵌着一条更细的：安全阀 RDR 用访问离散度判定探测</p>
+<p><a href="/papers/2508.08438/detail.html#4-作者证明" class="ref-link" title="2508.08438#4-作者证明">[2508.08438]</a>，但威胁模型明确允许攻击者用任意多账号，Sybil 式每账号一次探测能把</p>
+<p>离散度顶到接近 1、绕过撤回，历史门只能部分缓解 <a href="/papers/2508.08438/detail.html#3-可攻击面" class="ref-link" title="2508.08438#3-可攻击面">[2508.08438]</a>——也就是说"默认关 +</p>
+<p>按需开"这条路线本身也还没有闭合。它同时把 §6 分歧 5 的出处问题从另一侧顶了一下：SafeKV 的</p>
+<p><code>creator_id</code> 是本主题第一个真正写进索引的<strong>出处字段</strong>，但它编码的是"谁创建"用于访问控制，不是</p>
+<p>"谁产出、保真度如何"用于数值正确性 <a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>，两种出处需求正交、</p>
+<p>互不覆盖。</p>
 
 <hr>
 
@@ -779,7 +834,16 @@ flowchart TB
 <p>公平必须靠外部网关 <a href="/papers/vllm-project-router/detail.html#usage-gotchas" class="ref-link" title="vllm-project-router#usage-gotchas">[vllm-project-router]</a>；而工作流感知的淘汰只用 client_id</p>
 <p>避免 agent 名字冲突、跨工作流共享节点一律取最保守的优先级，这保证了不误删但也意味着一个租户可以</p>
 <p>用高优先级声明拖住共享节点 <a href="/papers/2507.07400/detail.html#5-scheduling-resource-management" class="ref-link" title="2507.07400#5-scheduling-resource-management">[2507.07400]</a>。四处独立证据</p>
-<p>说明"共享"这件事的安全与公平后果被系统性地推给了别人。</p>
+<p>说明"共享"这件事的安全与公平后果被系统性地推给了别人。**这条挑战现在有了第一个正面尝试，但也</p>
+<p>因此更清楚地暴露出它的难度。** 隔离感知缓存把"该不该让别人命中"做成缓存索引里可撤销、默认拒绝的</p>
+<p>一等元数据，恢复 1.36–2.66× 吞吐的同时把计时侧信道的 ROC-AUC 压回 ≈0.5</p>
+<p><a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>，证明"选择性隔离而非全共享/全隔离"在工程上可行。但它留下三个</p>
+<p>未闭合的口子：安全阀基于访问离散度，威胁模型却允许 Sybil 式多账号探测把离散度顶高从而绕过撤回</p>
+<p><a href="/papers/2508.08438/detail.html#3-可攻击面" class="ref-link" title="2508.08438#3-可攻击面">[2508.08438]</a>；它只报相对整体隔离的吞吐恢复、从未量化相对 SGLang 最优被牺牲掉的</p>
+<p>命中率 <a href="/papers/2508.08438/detail.html#2-本篇-vs-相关论文的-delta" class="ref-link" title="2508.08438#2-本篇-vs-相关论文的-delta">[2508.08438]</a>；且 <code>creator_id</code> 不变量只在单节点单棵树上</p>
+<p>验证过，KV 一旦跨层级/跨节点迁移是否仍然守得住尚未测试 <a href="/papers/2508.08438/detail.html#5-未探索方向" class="ref-link" title="2508.08438#5-未探索方向">[2508.08438]</a>。也就是</p>
+<p>说"公平与隔离"从"无人设计"进到了"有一个默认拒绝的强制层"，但**多租户攻击下的可撤销性、隔离的</p>
+<p>性能代价量化、以及隔离不变量的跨节点保持**这三件仍是开放的。</p>
 
 <hr>
 
@@ -833,7 +897,16 @@ flowchart TB
 <p><a href="/papers/tokenspeed/detail.html#6-supported-models" class="ref-link" title="tokenspeed#6-supported-models">[tokenspeed]</a>，也就是说架构趋势正在把机制侧的投入变成必需品，即使策略</p>
 <p>侧的最优解还没定。</p>
 
-<p><strong>趋势方向：加速，重心继续上移，并且开始长出"正确性"这一维。</strong> 四个信号指向同一判断。第一，</p>
+<p><strong>隔离/安全侧：原型可用、机制清晰，但采用证据薄弱且防御自身留有缺口。</strong> 隔离感知缓存在 8×H20 上</p>
+<p>跨 6 个后端测出平均防御成功率 >94%、相对整体隔离恢复 1.36–2.66× 吞吐、把 TTFT 开销从 50.41% 压到</p>
+<p>11.74%（Qwen3-235B）<a href="/papers/2508.08438/detail.html#2-痛点-方法-结果" class="ref-link" title="2508.08438#2-痛点-方法-结果">[2508.08438]</a>，机制侧也很轻——只是在 SGLang 的 radix</p>
+<p>节点上加一个 <code>private_tag</code> + 一个离线检测器，声称配置开关即可启用、请求 API 不变</p>
+<p><a href="/papers/2508.08438/detail.html#7-实现-cross-reference" class="ref-link" title="2508.08438#7-实现-cross-reference">[2508.08438]</a>。但它是单节点原型、仓库未公开引用，现实落地路径是把</p>
+<p><code>private_tag</code> 上游进 SGLang 而不是维护 fork <a href="/papers/2508.08438/detail.html#4-生态位" class="ref-link" title="2508.08438#4-生态位">[2508.08438]</a>；且防御自身在 Sybil 式</p>
+<p>多账号探测下可能被绕过 <a href="/papers/2508.08438/detail.html#3-可攻击面" class="ref-link" title="2508.08438#3-可攻击面">[2508.08438]</a>。成熟度读法是：**"选择性隔离可行"已被证明，</p>
+<p>"隔离在多租户攻击下可靠"和"隔离能否跨节点保持"都还没有。**</p>
+
+<p><strong>趋势方向：加速，重心继续上移，并且开始长出"正确性"与"安全"两维。</strong> 五个信号指向同一判断。第一，</p>
 <p>引擎内的低垂果实已被采摘完，新工作全部在引擎之上（路由、工作流、合约）或之下（存储路径）</p>
 <p><a href="/papers/2603.16104/detail.html#4-生态位" class="ref-link" title="2603.16104#4-生态位">[2603.16104]</a>。第二，出现了"元层"工作——为复用定义合约与一致性测试而不是</p>
 <p>再提一个策略 <a href="/papers/2605.24259/detail.html#§7-实现-cross-reference" class="ref-link" title="2605.24259#§7-实现-cross-reference">[2605.24259]</a>，这通常是一个方向开始收敛的标志。</p>
@@ -844,6 +917,9 @@ flowchart TB
 <p>应对的保真度污染</p>
 <p><a href="/papers/2608.03893/detail.html#攻击五：近似缓存写回前缀树，会污染精确复用（本篇与底座论文都没讨论）" class="ref-link" title="2608.03893#攻击五：近似缓存写回前缀树，会污染精确复用（本篇与底座论文都没讨论）">[2608.03893]</a>。</p>
 <p>一个方向开始讨论"命中的东西对不对"而不只是"命中率多高"，通常意味着它已经度过了性能红利期。</p>
+<p>第五，与"正确性"同期出现的是"安全"：缓存的<strong>可见性</strong>第一次成为一等设计变量——共享不再默认开启，</p>
+<p>而是要过一道默认拒绝、可撤销的隔离强制层 <a href="/papers/2508.08438/detail.html#1-tl-dr" class="ref-link" title="2508.08438#1-tl-dr">[2508.08438]</a>。一个方向开始讨论"该不该让别人</p>
+<p>命中"而不只是"能不能命中"，同样是它从纯性能议题转向治理议题的信号。</p>
 
 <hr>
 
@@ -922,6 +998,7 @@ flowchart TB
 <tr><td><a href="/papers/2607.00466/detail.html#1-tl-dr" class="ref-link" title="2607.00466#1-tl-dr">[2607.00466]</a> · <a href="/papers/2607.00466/detail.html#4-生态位" class="ref-link" title="2607.00466#4-生态位">[2607.00466]</a></td><td>framework</td><td>竞争性局部性</td><td>证明前缀亲和不是路由层唯一目标；专家签名做成与 KV block 同索引以在前缀命中时保持精确</td></tr>
 <tr><td><a href="/papers/2605.02960/detail.html#§1-core-contribution" class="ref-link" title="2605.02960#§1-core-contribution">[2605.02960]</a> · <a href="/papers/2605.02960/detail.html#生态位" class="ref-link" title="2605.02960#生态位">[2605.02960]</a></td><td>framework</td><td>复用作为调度决策</td><td>前缀感知路由 + true-FLOPs 计价（1 次前缀 + N 次后缀），均衡成为饱和副产品；并提供本主题唯一把复用量显式设为零的配置</td></tr>
 <tr><td><a href="/papers/tokenspeed/detail.html#核心三问" class="ref-link" title="tokenspeed#核心三问">[tokenspeed]</a> · <a href="/papers/tokenspeed/detail.html#4-3-范式位置" class="ref-link" title="tokenspeed#4-3-范式位置">[tokenspeed]</a></td><td>framework</td><td>机制统一与编译期安全</td><td>单棵 radix 树同时管 KV 页与 Mamba 状态、多 cache group 区分滑窗/全历史层；13 态 FSM + RAII 把缓存资源安全提到编译期；retraction 取代重新 prefill</td></tr>
+<tr><td><a href="/papers/2508.08438/detail.html#1-tl-dr" class="ref-link" title="2508.08438#1-tl-dr">[2508.08438]</a> · <a href="/papers/2508.08438/detail.html#4-生态位" class="ref-link" title="2508.08438#4-生态位">[2508.08438]</a></td><td>framework</td><td>隔离/安全轴</td><td>把跨租户共享当安全对象：SGLang radix 节点加可撤销、默认拒绝的 <code>private_tag</code>；异步三层检测器判定可见性、命中前默认私有；RDR 安全阀在探测下撤回共享；相对整体隔离恢复 1.36–2.66× 吞吐、把计时侧信道 AUC 压回 ≈0.5</td></tr>
 <tr><td><a href="/papers/2509.02121/detail.html#1-tl-dr" class="ref-link" title="2509.02121#1-tl-dr">[2509.02121]</a> · <a href="/papers/2509.02121/detail.html#4-生态位" class="ref-link" title="2509.02121#4-生态位">[2509.02121]</a></td><td>agent</td><td>计划级复用</td><td>把整批同模板工作流合并成一个计划，复用写成代价模型里的折扣系数并求解放置</td></tr>
 <tr><td><a href="/papers/2603.16104/detail.html#1-tl-dr" class="ref-link" title="2603.16104#1-tl-dr">[2603.16104]</a> · <a href="/papers/2603.16104/detail.html#4-生态位" class="ref-link" title="2603.16104#4-生态位">[2603.16104]</a></td><td>agent</td><td>编译期精确复用</td><td>模板化 radix 树同时编码前缀层级与算子依赖；命中率比在线最长前缀匹配高 32.9 个百分点</td></tr>
 <tr><td><a href="/papers/2510.12872/detail.html#1-tl-dr" class="ref-link" title="2510.12872#1-tl-dr">[2510.12872]</a> · <a href="/papers/2510.12872/detail.html#生态位" class="ref-link" title="2510.12872#生态位">[2510.12872]</a></td><td>agent</td><td>近似跨上下文复用</td><td>RoPE 对齐 + anchor 池估计跨前缀 KV 偏移，免训练；失败即回退稠密 prefill；解码后验证再提交以防污染 anchor 池</td></tr>

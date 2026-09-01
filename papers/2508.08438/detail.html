@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SafeKV: Selective KV-Cache Sharing to Mitigate Timing Side-Channels in LLM Inference — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">SafeKV: Selective KV-Cache Sharing to Mitigate Timing Side-Channels in LLM Inference</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2508.08438</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache</span><span class="tag">prefix-caching</span><span class="tag">privacy</span><span class="tag">side-channel</span><span class="tag">radix-tree</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2508.08438.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2508.08438" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="safekv-selective-kv-cache-sharing-to-mitigate-timing-side-channels-in-llm-inference">SafeKV: Selective KV-Cache Sharing to Mitigate Timing Side-Channels in LLM Inference <a class="heading-anchor" href="#safekv-selective-kv-cache-sharing-to-mitigate-timing-side-channels-in-llm-inference" aria-label="Link to safekv-selective-kv-cache-sharing-to-mitigate-timing-side-channels-in-llm-inference">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Global prefix-cache sharing leaks user prompts via a TTFT timing channel (hit vs miss). SafeKV extends SGLang with an async 3-tier privacy classifier + a unified radix-tree that stores a per-block <code>private_tag</code>, defaulting blocks to Private and promoting to Shareable only after verification. It recovers most reuse benefit (up to 2.66× throughput vs full isolation) while an RDR safeguard revokes sharing under probe-like access.</p>
+
+<h2 id="2-痛点-方法-结果">2. 痛点 / 方法 / 结果 <a class="heading-anchor" href="#2-痛点-方法-结果" aria-label="Link to 2-痛点-方法-结果">#</a></h2>
+
+<p><strong>Q1 — 痛点.</strong> KV-cache prefix sharing is universal across vendors (OpenAI, DeepSeek, Anthropic, Gemini, vLLM, SGLang — see §5 Table 2) because it converts per-decode-step attention cost from $O(n^2)$ to $O(n)$ and slashes TTFT (context caching reportedly cuts TTFT up to 73%). But shared entries create a <em>software-visible</em> timing side channel: an attacker with only a standard API account issues crafted prefixes and measures TTFT; a cache-hit is faster than a miss, revealing whether some other tenant already used that prefix. Prior attacks (PromptPeek, EarlyBird, InputSnatch) reconstruct prompts at ~89–99% success for ~10² requests per token. The two "obvious" defenses both fail on the performance axis: (a) <strong>timing obfuscation</strong> (TTFT padding / jitter) must push hit-latency toward the heavy tail of the miss distribution to defeat two-sample tests, erasing the very TTFT savings that justified caching; (b) <strong>full per-user isolation</strong> (Cache-Partition) kills the side channel but forgoes <em>cross-tenant</em> reuse — the authors measure 8.3–38.9% TTFT inflation on Llama-2-70B. The missing middle ground: isolate only <em>sensitive</em> blocks, keep sharing everything else.</p>
+
+<p><strong>Q2 — 方法.</strong> SafeKV is a system-level co-design of privacy enforcement and cache management, built as an SGLang extension, structured around three principles: <em>Privacy-Aware Reuse</em> (visibility is first-class metadata in the cache index), <em>Latency Transparency</em> (classification is off the critical path; blocks are Private-by-default until verified), <em>Scalable Lifecycle</em> (one unified allocation/lookup/eviction policy over mixed-sensitivity blocks). Three subsystems: (1) an <strong>asynchronous three-tier hybrid detector</strong> — Tier-1 regex/blacklist rules (~0.2 ms), Tier-2 a lightweight Llama-3.2-1B semantic classifier (<125 ms), Tier-3 the <em>in-service</em> serving LLM for context-dependent hard cases (<8% of requests); (2) a <strong>runtime RDR safeguard</strong> that monitors per-block access dispersion and demotes Shareable→Private on probe-like bursts; (3) a <strong>unified radix-tree memory manager</strong> with per-node <code>private_tag</code>/<code>creator_id</code>, path compression of long private chains, and leaf-to-root progressive eviction. <strong>核心技术壁垒</strong>: the enforcement is <em>revocable and default-deny</em> — visibility is a mutable bit on each radix node atomically flippable in both directions, so a static classifier false-negative is not a leak (the block was Private on insert and can be re-privatized by the RDR safeguard before/after promotion). This decouples "detector accuracy" from "leak probability" ($P_{\text{leak}} = \alpha_1 \alpha_{2|1} \alpha_{3|12}$ and <em>bounded exposure window</em>), which is the design's hardest-to-replicate insight.</p>
+
+<p><strong>Q3 — 结果.</strong> On 8×H20, across Phi-4 / Qwen3-30B/32B/235B / Llama-3.3-70B / DeepSeek-R1: avg defense success >94% (DeepSeek-R1 96.24–96.90%); ROC-AUC of the timing channel collapses to ≈0.5 once the RDR safeguard triggers and stays there under sustained probing; throughput 1.36–2.66× over Cache-Partition; TTFT overhead vs full isolation cut from 50.41%→11.74% (Qwen3-235B) and 118%→34.28% (DeepSeek-R1). Loses only in the System-Prompt scenario (slightly behind Shared-System-Prompt, which is hand-optimized for it) and Single-Request PII (no reuse, so all methods tie).</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<p><img src="/assets/2508.08438/fig4.png" alt="Figure 4: SafeKV architecture overview — serving stack augmented with async detector and unified KV index"></p>
+
+<p><em>Paper's Figure 4 ("The Architecture Overview of SafeKV").</em> Two subsystems bolt onto a running serving stack: the <strong>Hybrid Detector</strong> (① Rule-Based Detector → General-Detector → Context-Aware Validation, fed by queues and a scheduler) runs off the serving path; the <strong>Unified KV-cache Index</strong> (③) with Cache Search Engine, Cache Allocator, Progressive Evictor and Path Compressor (④) holds the actual cache. The <strong>Access Monitor + RDR Safeguard</strong> (②) form the runtime feedback loop. Note that classification (①/②) is physically separated from the memory manager (③/④): the detector produces a visibility label, the index consumes it.</p>
+
+<p>The unified index tree is the load-bearing data structure — one radix tree holds both private and shareable prefixes rather than two separate caches (which would duplicate common prefixes and complicate eviction):</p>
+
+<p><img src="/assets/2508.08438/fig6.png" alt="Figure 6: unified privacy/shareable cache index tree with private and shareable branches"></p>
+
+<p><em>Paper's Figure 6 ("The Unified Privacy/Shareable Cache Index Tree").</em> A shareable system-prompt path ("You are a helpful assistant / Hello! / Hi!") is reused across tenants, while private branches ("My Email is …", "My IP is …") are pinned to their creator and can be individually evicted. Reader should notice the visibility check happens <em>per hop</em>, so cross-tenant access is blocked even where a private branch shares an ancestor prefix with a shareable one.</p>
+
+<p><strong>Request/label lifecycle</strong> (paper describes this in prose across §4.1–§4.2.3; redrawn as a sequence diagram for clarity the raster figures do not provide):</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as User request
+    participant S as Serving path (SGLang)
+    participant T as Radix index
+    participant Q as Async detector queue
+    participant D as 3-tier detector
+    participant M as RDR safeguard
+    U->>S: prompt
+    S->>T: insert KV block (private_tag=1, creator_id)
+    S-->>U: serve immediately (no detector wait)
+    S->>Q: enqueue block for classification
+    Q->>D: batch on GPU (Tier1→Tier2→Tier3)
+    D->>T: atomic flip private_tag=0 if Shareable
+    Note over M,T: on every lookup, Access Monitor updates hit_cur / u_cnt
+    M->>T: if RDR low & u_pre≈1 → demote to Private
+</div>
+
+<p>The scheduler here is <em>not</em> a request batcher (SGLang owns that); it is a <strong>classification scheduler</strong> with a load-aware promotion threshold: under heavy load or probe alerts it tightens the boundary and promotes fewer blocks (favoring isolation); under normal load it relaxes to recover more reuse. Allocation unit is the SGLang radix-tree prefix node; cross-node communication is out of scope (single-node prototype).</p>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>SafeKV's formalization lives in §6 Security Analysis. It is <strong>not</strong> a throughput/latency performance model (no <code>λ</code>/<code>μ</code>/<code>B</code> queueing model) — it is a <em>security</em> argument, so the framework-specific "reproduce the cost model" ask is answered by <strong>无形式化性能模型 — 性能仅实证</strong>; the formal content is the leakage bound below.</p>
+
+<p><strong>Notation table:</strong></p>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$r_v = \{t_1,\dots,t_k\}$</td><td>victim prefix (token sequence)</td></tr>
+<tr><td>$r_a$</td><td>attacker probing request with same prefix</td></tr>
+<tr><td>$C(t_1,\dots,t_k)$</td><td>shareability (visibility) state of that prefix's KV block</td></tr>
+<tr><td>$T_{\text{hit}}$ / $T_{\text{miss}}$</td><td>cache-hit / cache-miss TTFT distributions</td></tr>
+<tr><td>$S$</td><td>event that a block is privacy-sensitive</td></tr>
+<tr><td>$\alpha_1$</td><td>Tier-1 false-negative rate</td></tr>
+<tr><td>$\alpha_{2\mid 1}$</td><td>Tier-2 FN rate given passed Tier-1</td></tr>
+<tr><td>$\alpha_{3\mid 12}$</td><td>Tier-3 FN rate given passed Tiers 1&2</td></tr>
+<tr><td>$u\_cnt$ / $hit\_cur$</td><td>distinct tenants / total hits on a block in the window</td></tr>
+<tr><td>$u\_pre$</td><td>distinct tenants in the previous window</td></tr>
+</table>
+
+<p><strong>Leakage-surface property.</strong> A cross-tenant hit-timing signal can appear only when the block is Shareable:</p>
+
+<p>$$\text{TTFT}(r_a) \in \{\,T_{\text{hit}} \text{ if } C(t_1,\dots,t_k)=\text{True},\; T_{\text{miss}} \text{ otherwise}\,\}$$</p>
+
+<p>Physical meaning: forcing sensitive blocks to $C=\text{False}$ (Private) <em>removes the hit branch entirely</em> — there is no residual latency gap to pad, unlike obfuscation which only narrows it.</p>
+
+<p><strong>Leak probability.</strong> A sensitive block leaks only via a false-negative that survives <em>all three</em> tiers and gets promoted:</p>
+
+<p>$$P_{\text{leak}} \triangleq P(C=\text{True}\mid S) = \alpha_1 \cdot \alpha_{2\mid 1} \cdot \alpha_{3\mid 12}$$</p>
+
+<p>Why a <em>product</em> (not min/sum): the tiers are a serial escalation — a block reaches Tier-3 only if Tiers 1&2 both passed it, so the conditioning composes multiplicatively. This is the mathematical reason a hybrid pipeline of <em>individually imperfect</em> detectors yields a much smaller joint FN than any single tier.</p>
+
+<p><strong>Exposure control.</strong> Even a promoted false-negative is time-bounded:</p>
+
+<p>$$\text{RDR}_b = \frac{u\_cnt}{hit\_cur}$$</p>
+
+<p>Physical meaning / monotonicity: probe-heavy single-account traffic raises $hit\_cur$ faster than $u\_cnt$, driving RDR <em>down</em>; broad legitimate reuse keeps it <em>up</em>. The demotion rule is history-aware — low RDR is treated as an attack only when historical $u\_pre \approx 1$ (a block that was already broadly reused is presumed benign even if dispersion shifts). This makes the optimum a <em>boundary</em> decision (demote / keep) gated on a configurable threshold, not an interior optimum.</p>
+
+<p><strong>6-minimum checks:</strong></p>
+<ol>
+<li><strong>Dimensional sanity</strong> — RDR is a dimensionless ratio (tenants / hits ∈ (0,1]); $P_{\text{leak}}$ is a product of probabilities ∈ [0,1]. ✓</li>
+<li><strong>Boundary — perfect detector</strong> — if all $\alpha \to 0$, $P_{\text{leak}} \to 0$: no promotion, degenerates to full isolation (max privacy, min reuse). ✓</li>
+<li><strong>Boundary — no detection</strong> — if all $\alpha \to 1$, $P_{\text{leak}} \to 1$: reduces to global SGLang sharing (max reuse, no privacy). ✓ The design spans exactly the interpolation between the two evaluated extremes.</li>
+<li><strong>RDR limit under Sybil</strong> — as an attacker spreads probes across $u\_cnt$ distinct accounts, RDR rises toward 1, evading demotion; the paper's history-gate ($u\_pre\approx1$) partially mitigates but does not eliminate this (see 全篇 surprise in §7). ✓ (identified as a gap)</li>
+<li><strong>Async-safety</strong> — Private-by-default means the window between insert and promotion is <em>never</em> a leak window (block is un-shareable throughout); only a <em>promoted</em> block can leak. ✓ consistent with equation.</li>
+<li><strong>Revocability</strong> — RDR demotion re-imposes $C=\text{False}$, returning to the safe branch of the TTFT equation, so leak duration ≤ (detector promotion time + one safeguard window). ✓</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<p><strong>Motivation — the isolation penalty being paid.</strong></p>
+
+<p><img src="/assets/2508.08438/fig2.png" alt="Figure 2: normalized TTFT of SGLang global-sharing vs Cache-Partition isolation"></p>
+
+<p><em>Paper's Figure 2.</em> Full isolation (Cache-Partition) inflates TTFT by 2.3–8.9% on Llama-2-13B and 8.3–38.9% on Llama-2-70B versus global sharing, across ShareGPT / Multiturn / Multitask. This quantifies the cost SafeKV is trying to claw back and shows the penalty grows with model size (bigger prefill).</p>
+
+<p><strong>Detector accuracy — why three tiers.</strong></p>
+
+<p><img src="/assets/2508.08438/fig9.png" alt="Figure 9: accuracy of multi-tier detectors on simple vs complex prompts"></p>
+
+<p><em>Paper's Figure 9.</em> On simple PII prompts (a) the 1B Tier-2 detector is competitive with or beats large in-service models; on complex/long-context prompts (b) Tier-2 accuracy collapses (~50%) while an in-service model like DeepSeek-R1 (Tier-3) lifts it above 90%. This is the empirical justification for escalating hard, context-dependent cases to the serving LLM rather than trusting the cheap detector everywhere.</p>
+
+<p><strong>Detector cost distribution — why async is affordable.</strong></p>
+
+<p><img src="/assets/2508.08438/fig11.png" alt="Figure 11: workload ratio across the three detection tiers"></p>
+
+<p><em>Paper's Figure 11.</em> Across all backends, Tier-1 handles ~38–40% and Tier-2 ~55–58%, leaving Tier-3 with only ~1.8–7.2% (DeepSeek-R1 highest at 4.0%). Because >92% of requests never touch the expensive tier and the whole pipeline is off the critical path, Tier-3's long tail only delays <em>promotion</em>, never token generation.</p>
+
+<p><strong>Safeguard effectiveness — the security headline.</strong></p>
+
+<p><img src="/assets/2508.08438/fig12.png" alt="Figure 12: ROC-AUC of the TTFT channel over time, with and without the RDR safeguard"></p>
+
+<p><em>Paper's Figure 12 (window $W=5$s).</em> Without the safeguard, hit/miss TTFT stays separable (AUC persistently high); with it enabled, once RDR drops below threshold the block is demoted and AUC collapses to ≈0.5 (random guessing) and <em>stays</em> there under continued probing. The flat post-trigger line is the key claim: the channel is <em>closed</em>, not merely weakened.</p>
+
+<p><strong>Performance recovery — the framework headline.</strong></p>
+
+<p><img src="/assets/2508.08438/fig14.png" alt="Figure 14: TTFT of SafeKV vs SGLang, Cache-Partition, Shared-System-Prompt across scenarios"></p>
+
+<p><em>Paper's Figure 14.</em> Single-Request PII (a): reuse is scarce, all methods tie. Multi-Turn (b): SafeKV tracks near global SGLang and far below Cache-Partition (overhead 50.41%→11.74% on Qwen3-235B; 118%→34.28% on DeepSeek-R1). System Prompt (c): SafeKV is strong but slightly behind the purpose-built Shared-System-Prompt baseline. This is the win/lose breakdown — SafeKV's advantage is concentrated in cross-tenant-reuse-rich workloads.</p>
+
+<p><strong>Detector latency detail.</strong></p>
+
+<p><img src="/assets/2508.08438/fig10.png" alt="Figure 10: end-to-end PII-detection latency across backends"></p>
+
+<p><em>Paper's Figure 10.</em> Mean/P95/P99 detection latency; the tail is dominated by Tier-3 on the largest models (Figure 13 breaks this out), consistent with Table 7's Tier-1 ≈0.1 ms / Tier-2 ≈113–125 ms figures. Confirms Tier-1+2 are cheap enough to run inline in the async worker and only Tier-3 needs long-tail tolerance.</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>#</th><th>步骤</th><th>依据</th></tr>
+<tr><td>1</td><td>KV prefix sharing is universally deployed and gives large TTFT savings ($O(n^2)\to O(n)$, up to 73% TTFT cut).</td><td>§2.1, Table 2</td></tr>
+<tr><td>2</td><td>Shared entries expose an API-visible hit/miss TTFT channel that reconstructs prompts (89–99% success).</td><td>§1, Table 1</td></tr>
+<tr><td>3</td><td>Both cheap fixes fail: obfuscation erases the savings from step 1; full isolation forgoes cross-tenant reuse (up to 38.9% TTFT inflation).</td><td>§1, §2.3, Figure 2</td></tr>
+<tr><td>4</td><td>Therefore classify blocks by sensitivity and isolate <em>only</em> sensitive ones, keeping the rest shareable.</td><td>§2.3, §4 principles</td></tr>
+<tr><td>5</td><td>Do classification off the critical path, Private-by-default, so latency is untouched and a static miss is not an instant leak.</td><td>§4.1, §4.2.3, TTFT equation</td></tr>
+<tr><td>6</td><td>Compose three imperfect detectors serially so joint FN = $\alpha_1\alpha_{2\mid1}\alpha_{3\mid12}$, with the expensive tier reserved for <8% of cases.</td><td>§4.2.1, §6, Figure 11</td></tr>
+<tr><td>7</td><td>Store visibility as a mutable per-node bit in one unified radix tree, and monitor RDR to <em>revoke</em> sharing under probing, bounding the exposure window.</td><td>§4.3, §4.2.2, Figure 12</td></tr>
+<tr><td>8</td><td>Net: recover most reuse benefit (up to 2.66× throughput) while collapsing the timing channel (AUC→0.5).</td><td>§7.4, §7.2, Figures 14/15</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>Implemented as an <strong>SGLang</strong> extension (§5): the model execution path and request API are left unchanged, and privacy isolation is toggled by configuration — so a shop already running SGLang adopts it via a config flag plus the patched radix-cache manager, not a fork of the executor. Concretely (§5, §4.3):</p>
+
+<ul>
+<li>SGLang's radix-tree prefix cache is extended with per-block <code>private_tag</code> (0 shareable / 1 private) and <code>creator_id</code>; the visibility rule is checked at every lookup hop.</li>
+<li>Insert defaults <code>private_tag=1</code>; a dedicated off-path manager batches blocks through Tier-1/2/3 and atomically flips the bit on promotion.</li>
+<li>Path compression collapses a long private chain into a <code>pri_root</code> composite node holding an address vector with <code>is_compressed=true</code>; descendants stay in metadata marked <code>after_compress=true</code> linked back to <code>pri_root</code>. Progressive eviction uses a global <code>epoch_counter</code>, pruning inactive leaves first and freeing <code>pri_root</code> only after its whole address vector is released.</li>
+</ul>
+
+<p><img src="/assets/2508.08438/fig7.png" alt="Figure 7: path compression and progressive eviction of a private chain"></p>
+
+<p><em>Paper's Figure 7.</em> A private chain (nodes k, k+1, k+2 each with its own <code>kv_addr</code>) is compressed into one <code>pri_root</code> aggregating the three addresses; eviction then removes stale descendant addresses from the vector one at a time rather than tearing down the whole tenant branch. This is the <strong>关键实现细节</strong> that makes selective isolation scalable: private paths are single-tenant and tend to be long/linear, so without compression they would cause deep pointer-chasing, and without leaf-to-root eviction they would be reclaimed in coarse chunks that destroy still-useful prefix context.</p>
+
+<p><strong>Second 关键实现细节:</strong> the load-aware promotion threshold (§4.2.3) — the classification scheduler tightens the promote boundary under load or probe alerts and relaxes it under normal load, so the private/shareable split self-adjusts to the current risk/throughput trade-off rather than being a fixed policy.</p>
+
+<p>The public SafeKV repository is not cited in the paper — treat the SGLang integration points above as the reference; the exact upstream commit/patch is <strong>[实现未公开]</strong>.</p>
+
+<p><strong>Deployment context (实践上下文):</strong> serving-side, both prefill and decode (the defended signal is TTFT, i.e. prefill-dominated); single-node prototype (8×H20, no multi-node collective). It is a <em>pure software</em> framework (radix prefix cache + classifier + monitoring), so it does <strong>not</strong> trigger a software→hardware reverse implication — no persistent megakernel, cache-scope control, or interconnect-aware scheduling is involved. Easiest to adopt in stacks that already keep a structured KV index (radix-tree or block-based); the enforcement layer is model-agnostic and transferable, while the detector is the workload/policy-specific pluggable piece.</p>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
