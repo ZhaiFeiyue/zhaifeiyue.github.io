@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: PipeSwift: Revisiting Pipeline Parallelism for Large-Scale Completion-Oriented Agentic LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">PipeSwift: Revisiting Pipeline Parallelism for Large-Scale Completion-Oriented Agentic LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2609.16491 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2609.16491/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="pipeswift-—-l3-跨论文综合-per-paper">PipeSwift — L3 跨论文综合 (per-paper) <a class="heading-anchor" href="#pipeswift-—-l3-跨论文综合-per-paper" aria-label="Link to pipeswift-—-l3-跨论文综合-per-paper">#</a></h1>
+
+<blockquote>
+Target: 2609.16491 (PipeSwift) · category: agent
+相关篇 8: Autellix (2502.13965)、SWE-bench (2310.06770)、Reflexion
+(2303.11366)、MetaGPT (2308.00352)、AutoGen (2308.08155)、MAS-Survey
+(2402.01680)、MAST/Why-MAS-Fail (2503.13657)、RouteLLM (2406.18665)。
+</blockquote>
+
+<hr>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>本篇是 category <code>agent</code> 里少见的<strong>引擎侧系统论文</strong>——它不改 agent 的</p>
+<p>决策/规划，而是把 agent 轨迹当作固定的确定性 trace，专攻承载这些轨迹的</p>
+<p>LLM 推理引擎的调度与并行。因此与 8 篇相关论文的"相关"程度高度不均，</p>
+<p>必须按<strong>抽象层</strong>区分，否则会把它和一堆 agent-framework 论文错误地平行比较。</p>
+
+<p><strong>同层直接可比（引擎侧调度）——唯一强相关</strong>：</p>
+
+<ul>
+<li><strong>Autellix (2502.13965)</strong> 是唯一与本篇处在同一抽象层的论文：两者都是</li>
+<p><em>serving-engine 层</em>、都把"多次 LLM call / 多轮 turn 属于同一长程任务"</p>
+<p>当作一等公民、都以<strong>完成时间</strong>（而非 token SLO）为目标。Autellix 最小化</p>
+<p>program 累计等待时间 $\frac{1}{N}\sum W_i$</p>
+<p><a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>，PipeSwift 最小化 batch</p>
+<p>makespan JCT <a href="/papers/2609.16491/detail.html#2-q1-q2-q3" class="ref-link" title="2609.16491#2-q1-q2-q3">[2609.16491]</a>——同一"agent 感知调度"母题的</p>
+<p>两个不同切面（见 §2 delta）。</p>
+</ul>
+
+<p><strong>提供工作负载/评测底座（benchmark）</strong>：</p>
+
+<ul>
+<li><strong>SWE-bench (2310.06770)</strong> 直接是 PipeSwift 编码 agent 工作负载的来源</li>
+<p>benchmark（SWE），本篇用其确定性轨迹回放做评测</p>
+<p><a href="/papers/2609.16491/detail.html#5-实验与数据" class="ref-link" title="2609.16491#5-实验与数据">[2609.16491]</a>；SWE-bench 自身指出"定位 + 长上下文</p>
+<p>编辑"是瓶颈、单轮生成不够、需要主动收集上下文的 agent</p>
+<p><a href="/papers/2310.06770/detail.html#2-q1-q2-q3" class="ref-link" title="2310.06770#2-q1-q2-q3">[2310.06770]</a>——正是这种多轮、长上下文、高前缀复用的</p>
+<p>agent 轨迹，构成了 PipeSwift 所服务的负载特征。</p>
+</ul>
+
+<p><strong>上游产生"被服务"的多轮/多调用负载（agent 编排范式）</strong>：</p>
+
+<ul>
+<li><strong>Reflexion (2303.11366)</strong> 的 trial→reflect→retry 外循环、</li>
+<p><strong>MetaGPT (2308.00352)</strong> 的 SOP 五角色流水线、<strong>AutoGen (2308.08155)</strong></p>
+<p>的多 agent 对话，都会在引擎侧产生 PipeSwift 描述的"多轮、高前缀复用、</p>
+<p>短增量 prefill"访问模式。它们是<strong>负载生成方</strong>，PipeSwift 是<strong>负载承载方</strong>——</p>
+<p>相关但不同层。Reflexion 的 across-trial 迭代</p>
+<p><a href="/papers/2303.11366/detail.html#§2-q1-q2-q3" class="ref-link" title="2303.11366#§2-q1-q2-q3">[2303.11366]</a>、MetaGPT 的定向发布-订阅流水线</p>
+<p><a href="/papers/2308.00352/detail.html#2-q1-q2-q3" class="ref-link" title="2308.00352#2-q1-q2-q3">[2308.00352]</a>、AutoGen 的 auto-reply 循环</p>
+<p><a href="/papers/2308.08155/detail.html#2-q1-q2-q3" class="ref-link" title="2308.08155#2-q1-q2-q3">[2308.08155]</a> 都是多调用 DAG，映射到 PipeSwift 就是</p>
+<p>"many trajectories under shared serving resources"。</p>
+</ul>
+
+<p><strong>弱相关（同 category 但不同问题）</strong>：</p>
+
+<ul>
+<li><strong>MAS-Survey (2402.01680)</strong>（多 agent 分类学综述，四轴分类</li>
+<p>interface/profiling/communication/capability</p>
+<p><a href="/papers/2402.01680/detail.html#2-q1-q2-q3" class="ref-link" title="2402.01680#2-q1-q2-q3">[2402.01680]</a>）与 <strong>MAST (2503.13657)</strong>（多 agent 失败</p>
+<p>分类学）关注<em>正确性/可靠性</em>，PipeSwift 关注<em>性能/吞吐</em>——两条正交轴。</p>
+<p>它们只在"agent 系统作为一个待优化对象"这一元层次上相关。</p>
+<li><strong>RouteLLM (2406.18665)</strong> 是单轮无状态的 strong/weak 模型路由</li>
+<p><a href="/papers/2406.18665/detail.html#§2-痛点-方法-结果" class="ref-link" title="2406.18665#§2-痛点-方法-结果">[2406.18665]</a>，与 PipeSwift 的多轮有状态引擎调度</p>
+<p>几乎无技术交集；仅共享"用一个旋钮（$\alpha$ vs $I$）在成本-质量/延迟</p>
+<p>之间连续权衡"的抽象形态。</p>
+</ul>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="2-1-vs-autellix-2502-13965-——-最关键的-delta">2.1 vs Autellix (2502.13965) —— 最关键的 delta <a class="heading-anchor" href="#2-1-vs-autellix-2502-13965-——-最关键的-delta" aria-label="Link to 2-1-vs-autellix-2502-13965-——-最关键的-delta">#</a></h3>
+
+<p>两篇是 agent-serving 的<strong>姊妹篇</strong>，delta 集中在"优化哪一层、用什么杠杆"：</p>
+
+<table>
+<tr><th>维度</th><th>Autellix (2502.13965)</th><th>PipeSwift (2609.16491)</th></tr>
+<tr><td>优化单位</td><td>program（DAG，多 call）</td><td>turn / trajectory（多 turn）</td></tr>
+<tr><td>目标</td><td>最小化累计等待 $\sum W_i$</td><td>最小化 makespan JCT</td></tr>
+<tr><td>杠杆</td><td><strong>调度算法</strong>（program 级 LAS/preemption）</td><td><strong>调度 × 并行 co-design</strong>（PD orchestration + PP）</td></tr>
+<tr><td>层次</td><td>vLLM 之上的 program-aware 层</td><td>引擎内部（重写 PP runtime + MTP）</td></tr>
+<tr><td>关键洞察</td><td>新 call 继承 program 累计 service，防 program-level HoL</td><td>prefill 优先 ≠ 最优 JCT，最优在内部平衡点</td></tr>
+<tr><td>是否碰并行</td><td>否（正交于并行策略）</td><td>是（核心贡献是 PP 反超 wide-EP）</td></tr>
+</table>
+
+<p><strong>新增（PipeSwift 有而 Autellix 无）</strong>：把<strong>并行策略</strong>纳入完成时间优化的</p>
+<p>一等变量。Autellix 明确"model-agnostic、不依赖并行"</p>
+<p><a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>，而 PipeSwift 的中心论点恰是</p>
+<p>"并行策略决定 prefill–decode 成本前沿、调度只是在前沿上选点"</p>
+<p><a href="/papers/2609.16491/detail.html#6-论证链" class="ref-link" title="2609.16491#6-论证链">[2609.16491]</a>。这是 PipeSwift 相对 Autellix 的最大增量。</p>
+
+<p><strong>互补而非冲突</strong>：Autellix 在 call/program 粒度做优先级排序（谁先跑），</p>
+<p>PipeSwift 在 turn/phase 粒度做批次聚合（何时成 wave、如何分微批）。两者可</p>
+<p>叠加——Autellix 的 program-level 优先级可以坐在 PipeSwift 的 JCT-aware</p>
+<p>wave 调度之上。<strong>没有直接矛盾</strong>，因为实验设置不重叠：Autellix 用</p>
+<p>LLaMA-8B/70B 稠密模型 + A100 + 合成 workload</p>
+<p><a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>，PipeSwift 用 360B+ MoE + 64×H800 + 真实</p>
+<p>agent trace 回放 <a href="/papers/2609.16491/detail.html#5-实验与数据" class="ref-link" title="2609.16491#5-实验与数据">[2609.16491]</a>。</p>
+
+<h3 id="2-2-vs-swe-bench-2310-06770-——-负载特征的-delta">2.2 vs SWE-bench (2310.06770) —— 负载特征的 delta <a class="heading-anchor" href="#2-2-vs-swe-bench-2310-06770-——-负载特征的-delta" aria-label="Link to 2-2-vs-swe-bench-2310-06770-——-负载特征的-delta">#</a></h3>
+
+<p>SWE-bench 揭示 agent 编码任务的<strong>难点在定位+长上下文编辑</strong>、单轮不够、</p>
+<p>需要多轮 agent <a href="/papers/2310.06770/detail.html#2-q1-q2-q3" class="ref-link" title="2310.06770#2-q1-q2-q3">[2310.06770]</a>。PipeSwift 接过这一结论的</p>
+<p><strong>系统后果</strong>：多轮 agent 意味着相邻 turn 共享上下文、前缀缓存命中率 >95%、</p>
+<p>每轮只追加 <1K 新 token <a href="/papers/2609.16491/detail.html#2-q1-q2-q3" class="ref-link" title="2609.16491#2-q1-q2-q3">[2609.16491]</a>。SWE-bench 关心</p>
+<p>"模型能不能解出来"，PipeSwift 关心"给定要解，怎么把这些短增量 prefill</p>
+<p>高效摊在长缓存上"——同一负载的正确性面 vs 性能面。</p>
+
+<h3 id="2-3-vs-agent-framework-三篇-reflexion-metagpt-autogen">2.3 vs agent-framework 三篇 (Reflexion / MetaGPT / AutoGen) <a class="heading-anchor" href="#2-3-vs-agent-framework-三篇-reflexion-metagpt-autogen" aria-label="Link to 2-3-vs-agent-framework-三篇-reflexion-metagpt-autogen">#</a></h3>
+
+<p>这三篇都<strong>假设一个理想的、按需响应的推理后端</strong>，把注意力放在 agent 逻辑</p>
+<p>（反思、SOP、对话编排）。它们共同的隐含假设是"LLM call 的延迟是给定的</p>
+<p>黑盒"。PipeSwift 的 delta 是<strong>打开这个黑盒</strong>并指出：当你把这些 framework</p>
+<p>的多轮 trace 真正批量跑在共享 GPU 上时，"立即响应每个 call"（prefill 优先）</p>
+<p>反而拖慢整体完成 <a href="/papers/2609.16491/detail.html#4-作者证明" class="ref-link" title="2609.16491#4-作者证明">[2609.16491]</a>。三篇 framework 论文都以</p>
+<p>Pass@1 / 成功率为终点（MetaGPT 85.9% HumanEval</p>
+<p><a href="/papers/2308.00352/detail.html#2-q1-q2-q3" class="ref-link" title="2308.00352#2-q1-q2-q3">[2308.00352]</a>、AutoGen MATH 69.48%</p>
+<p><a href="/papers/2308.08155/detail.html#2-q1-q2-q3" class="ref-link" title="2308.08155#2-q1-q2-q3">[2308.08155]</a>、Reflexion HumanEval 91%</p>
+<p><a href="/papers/2303.11366/detail.html#§2-q1-q2-q3" class="ref-link" title="2303.11366#§2-q1-q2-q3">[2303.11366]</a>），完全不测 serving 吞吐；PipeSwift 反过来</p>
+<p>完全不测任务成功率（trace 固定、成功率被隔离）。<strong>互补</strong>：framework 决定</p>
+<p>"做什么/做对没有"，PipeSwift 决定"批量做完要多久"。</p>
+
+<h3 id="2-4-vs-mas-survey-mast-routellm">2.4 vs MAS-Survey / MAST / RouteLLM <a class="heading-anchor" href="#2-4-vs-mas-survey-mast-routellm" aria-label="Link to 2-4-vs-mas-survey-mast-routellm">#</a></h3>
+
+<ul>
+<li><strong>MAST (2503.13657)</strong>：14 种失败模式全在<em>语义/协调</em>层（step 重复、</li>
+<p>推理-行动不匹配、验证缺失）<a href="/papers/2503.13657/detail.html#2-q1-q2-q3" class="ref-link" title="2503.13657#2-q1-q2-q3">[2503.13657]</a>，与 PipeSwift</p>
+<p>的<em>系统性能</em>失败（如 2P2D 的 KV-transfer 超时崩溃</p>
+<p><a href="/papers/2609.16491/detail.html#5-实验与数据" class="ref-link" title="2609.16491#5-实验与数据">[2609.16491]</a>）是两类完全不同的 failure。delta 是</p>
+<p>failure taxonomy 的维度不重叠——一个是"agent 想错了"，一个是"引擎跑崩了"。</p>
+<li><strong>RouteLLM (2406.18665)</strong>：唯一的形态相似点是"单旋钮连续权衡"——RouteLLM</li>
+<p>的阈值 $\alpha$ 换成本-质量 <a href="/papers/2406.18665/detail.html#§2-痛点-方法-结果" class="ref-link" title="2406.18665#§2-痛点-方法-结果">[2406.18665]</a>，</p>
+<p>PipeSwift 的 orchestration interval $I$ 换 prefill-decode 平衡</p>
+<p><a href="/papers/2609.16491/detail.html#2-q1-q2-q3" class="ref-link" title="2609.16491#2-q1-q2-q3">[2609.16491]</a>。但 RouteLLM 是无状态单轮分类器、PipeSwift</p>
+<p>是有状态多轮引擎，实质上无可比性。</p>
+</ul>
+
+<hr>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<p>针对 PipeSwift 具体主张的对抗性质疑：</p>
+
+<ol>
+<li>**"PP 反超 wide-EP"的可推广性存疑——高度绑定 MoE + 有限带宽 + 高前缀</li>
+<p>复用这一特定组合**。本篇的 PP 优势根源是"避免逐层跨节点 EP 通信"</p>
+<p><a href="/papers/2609.16491/detail.html#6-论证链" class="ref-link" title="2609.16491#6-论证链">[2609.16491]</a>，只在跨节点带宽受限、且 prefill 远未饱和</p>
+<p>（<1K 新 token 摊在长缓存上）时成立。一旦换成稠密模型（无 EP 通信）、</p>
+<p>或 scale-up 域内带宽充足、或非 agent 的长 prefill 负载，PP 的 prefill</p>
+<p>优势就消失。作者自己在 §8 承认"PP 不总是最优、只是值得重新关注"</p>
+<p><a href="/papers/2609.16491/detail.html#§8-discussion-and-future-work" class="ref-link" title="2609.16491#§8-discussion-and-future-work">[2609.16491]</a>，但这个 caveat 在</p>
+<p>headline 数字里被淡化了。</p>
+</ul>
+
+<ol>
+<li><strong>内部数值不一致削弱 MTP 贡献的可信度</strong>。同一 MTP-stage 贡献</li>
+<p>§7.2 写"1.83×"、§7.5/Tab.5 写"1.74×"（17.64 vs 30.73）</p>
+<p><a href="/papers/2609.16491/detail.html#4-作者证明" class="ref-link" title="2609.16491#4-作者证明">[2609.16491]</a>，两处正文自相矛盾未消解。这不影响主结论</p>
+<p>方向，但对于一篇以精确 breakdown（1.31× scheduling × 1.74× MTP）作为</p>
+<p>核心卖点的论文，暴露了 breakdown 的脆弱性。</p>
+</ul>
+
+<ol>
+<li><strong>命名不一致（PipeSwift vs PDWeaver）暗示 artifact 未定型</strong>。系统在正文</li>
+<p>叫 PipeSwift、Fig.6/Tab.3 叫 PDWeaver <a href="/papers/2609.16491/detail.html#4-作者证明" class="ref-link" title="2609.16491#4-作者证明">[2609.16491]</a>。</p>
+<p>对一篇声称"开源"的系统论文，这种不一致让人怀疑代码/评测脚本的成熟度。</p>
+</ul>
+
+<ol>
+<li><strong>2P2D baseline 可能被"稻草人化"</strong>。PipeSwift 对 2P2D 的碾压很大程度</li>
+<p>来自"开源实现传全量 KV 而非增量"这一<em>实现 artifact</em></p>
+<p><a href="/papers/2609.16491/detail.html#5-实验与数据" class="ref-link" title="2609.16491#5-实验与数据">[2609.16491]</a>，而非 PD-disaggregation <em>原理</em>的劣势。</p>
+<p>作者也承认"待增量 KV 传输成熟后需重新评估"</p>
+<p><a href="/papers/2609.16491/detail.html#§8-discussion-and-future-work" class="ref-link" title="2609.16491#§8-discussion-and-future-work">[2609.16491]</a>。因此"colocated PP ></p>
+<p>PD-disaggregation"这一比较对当下开源实现成立、对原理不成立——攻击点是</p>
+<p>把实现缺陷包装成范式结论。</p>
+</ul>
+
+<ol>
+<li><strong>固定 $I=32$ 的"免调参"论断被自身消融削弱</strong>。作者称 $I=32$ 全程不调</li>
+<p>仍有效，但 Fig.8 显示 PP 的真正最优是 $I=16$、$I=32$ 并非 per-cell 最优</p>
+<p><a href="/papers/2609.16491/detail.html#6-论证链" class="ref-link" title="2609.16491#6-论证链">[2609.16491]</a>。"forgiving knob"的说法掩盖了"最优点</p>
+<p>workload-dependent"这一事实——这正是 Autellix 用 non-clairvoyant</p>
+<p>自适应调度所攻击的问题 <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a>，</p>
+<p>而 PipeSwift 用了一个静态常数。</p>
+</ul>
+
+<ol>
+<li><strong>成功率被完全隔离，无法排除调度对 agent 质量的副作用</strong>。与 Autellix</li>
+<p>同样的盲区 <a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a>：trace 确定性回放固定了</p>
+<p>逻辑输出，但真实在线服务里，激进的 prefill 延后（大 $I$）会抬高</p>
+<p>$t_{\text{queue}}$、拉长每轮延迟，可能改变 agent 的超时/重试行为——这层</p>
+<p>耦合本篇未测。</p>
+</ul>
+
+<hr>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<p><strong>范式定位</strong>：PipeSwift 是"agent serving"这一新兴子领域从<strong>调度层</strong></p>
+<p>（Autellix, 2502.13965）向<strong>调度×并行 co-design 层</strong>的推进。它把 chatbot</p>
+<p>时代"prefill 优先 + 大 decode batch"的正统</p>
+<p><a href="/papers/2609.16491/detail.html#4-作者证明" class="ref-link" title="2609.16491#4-作者证明">[2609.16491]</a> 明确判定为 agent 时代的错配，并给出一个</p>
+<p>反直觉的系统结论——被冷落多年的 PP 在 JCT 目标下反超 de-facto 的 wide-EP。</p>
+<p>这是对"decode latency 决定一切"这一 serving 常识的一次局部反转。</p>
+
+<p><strong>在 agent 栈中的位置</strong>：它坐在最底层——上面是 agent 编排范式（Reflexion</p>
+<p>外循环、MetaGPT SOP、AutoGen 对话）、再上是任务 benchmark（SWE-bench,</p>
+<p>BrowseComp）、再上是可靠性分析（MAST 失败分类）。PipeSwift 明确把自己定位</p>
+<p>为"可作为 agentic RL rollout 引擎，坐在 Heddle/ROSE/DORA 等编排层之下"</p>
+<p><a href="/papers/2609.16491/detail.html#§9-related-work" class="ref-link" title="2609.16491#§9-related-work">[2609.16491]</a>——即它不与 agent-framework 竞争，而是</p>
+<p>给它们提速的底座。</p>
+
+<p><strong>采纳证据（谨慎）</strong>：</p>
+<ul>
+<li>正相关信号：声称开源 PP runtime；填补 vLLM/SGLang 都缺的"PP + MTP"能力</li>
+<p><a href="/papers/2609.16491/detail.html#2-q1-q2-q3" class="ref-link" title="2609.16491#2-q1-q2-q3">[2609.16491]</a>，这是真实的工程空白（vLLM PP 不支持投机</p>
+<p>解码、SGLang PP 跑不起评测模型）。</p>
+<li>负相关信号：命名不一致 + 内部数值矛盾（见 §3）暗示 artifact 尚未定型；</li>
+<p>L1/L2 均未给出仓库 URL 或行号</p>
+<p><a href="/papers/2609.16491/detail.html#5-实验与数据" class="ref-link" title="2609.16491#5-实验与数据">[2609.16491]</a>，可复现性目前只到"确定性 trace 回放"</p>
+<p>的口头承诺，未见公开代码链接。</p>
+</ul>
+
+<p><strong>与 benchmark 生态的耦合</strong>：直接消费 SWE-bench 的执行验证式任务</p>
+<p><a href="/papers/2310.06770/detail.html#5-实验与数据" class="ref-link" title="2310.06770#5-实验与数据">[2310.06770]</a> 作为 workload，使其性能主张锚定在被广泛</p>
+<p>接受的 agent benchmark 上——这是相对"自建合成 workload"的 Autellix</p>
+<p><a href="/papers/2502.13965/detail.html#§5-实验与数据" class="ref-link" title="2502.13965#§5-实验与数据">[2502.13965]</a> 的一个生态位优势（更可信的负载来源）。</p>
+
+<hr>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<p>从这个 cluster 的交叉点，可提炼几个 hybrid / adaptive 方向：</p>
+
+<ol>
+<li><strong>PipeSwift × Autellix：两级完成时间调度的叠加</strong>。Autellix 的</li>
+<p>program-level LAS 优先级 <a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a></p>
+<p>决定"哪个 trajectory 先服务"，PipeSwift 的 JCT-aware wave 聚合</p>
+<p><a href="/papers/2609.16491/detail.html#2-q1-q2-q3" class="ref-link" title="2609.16491#2-q1-q2-q3">[2609.16491]</a> 决定"就绪 turn 何时成 wave"。二者作用于</p>
+<p>不同粒度、目标一致（缩短完成时间），但无人把它们组合。开放问题：</p>
+<p>program 级优先级如何影响 wave 的最优 orchestration interval？</p>
+</ul>
+
+<ol>
+<li><strong>自适应 $I$ 替代静态常数</strong>。本篇 §3 攻击点 #5 与作者 §8 future work</li>
+<p>都指向：$I$ 的最优点 workload-dependent</p>
+<p><a href="/papers/2609.16491/detail.html#6-论证链" class="ref-link" title="2609.16491#6-论证链">[2609.16491]</a>，应像 Autellix 的 non-clairvoyant 调度</p>
+<p><a href="/papers/2502.13965/detail.html#§2-q1-痛点-q2-方法-q3-结果" class="ref-link" title="2502.13965#§2-q1-痛点-q2-方法-q3-结果">[2502.13965]</a> 一样在线自适应，而非固定</p>
+<p>32。可借 Autellix 的 wait/service ratio 思路，用运行时 prefill/decode</p>
+<p>占比反馈驱动 $I$。</p>
+</ul>
+
+<ol>
+<li><strong>增量 KV 传输 + PP colocated 的再对比</strong>。本篇把 2P2D 的失败归因于全量</li>
+<p>KV 传输 <a href="/papers/2609.16491/detail.html#5-实验与数据" class="ref-link" title="2609.16491#5-实验与数据">[2609.16491]</a>；一旦增量传输成熟，</p>
+<p>PD-disaggregation 与 colocated PP 的公平再评测是明确的技术可解空白</p>
+<p>（作者自己在 §8 flag <a href="/papers/2609.16491/detail.html#§8-discussion-and-future-work" class="ref-link" title="2609.16491#§8-discussion-and-future-work">[2609.16491]</a>）。</p>
+</ul>
+
+<ol>
+<li><strong>把 serving 性能耦合回 agent 成功率</strong>。SWE-bench 指出 agent 需要多轮</li>
+<p>主动收集上下文 <a href="/papers/2310.06770/detail.html#2-q1-q2-q3" class="ref-link" title="2310.06770#2-q1-q2-q3">[2310.06770]</a>；若引擎侧的 $I$/调度改变</p>
+<p>每轮延迟，可能改变 agent 的超时/重试/探索行为，进而改变最终 Pass@1。</p>
+<p>把 PipeSwift 的引擎指标与 Reflexion 式外循环</p>
+<p><a href="/papers/2303.11366/detail.html#§2-q1-q2-q3" class="ref-link" title="2303.11366#§2-q1-q2-q3">[2303.11366]</a> 的收敛速度联合建模，是无人触碰的</p>
+<p>"serving↔任务质量"闭环。</p>
+</ul>
+
+<ol>
+<li><strong>可靠性感知调度</strong>。MAST 的失败模式（如 step 重复、未觉终止）</li>
+<p><a href="/papers/2503.13657/detail.html#2-q1-q2-q3" class="ref-link" title="2503.13657#2-q1-q2-q3">[2503.13657]</a> 会产生"无效但仍占 GPU"的 turn；一个</p>
+<p>MAST-aware 的 PipeSwift 可以在 wave 聚合时降权疑似失败轨迹，把完成时间</p>
+<p>优化与失败检测统一——把性能层（本篇）与可靠性层（MAST）打通，目前完全</p>
+<p>分离。</p>
+</ul>
+
+<ol>
+<li><strong>异构模型/路由感知的并行选择</strong>。RouteLLM 的 strong/weak 路由</li>
+<p><a href="/papers/2406.18665/detail.html#§2-痛点-方法-结果" class="ref-link" title="2406.18665#§2-痛点-方法-结果">[2406.18665]</a> 会把不同难度 turn 分给不同规模</p>
+<p>模型；不同模型规模对应不同的 prefill–decode 前沿，因此"路由 × 并行策略</p>
+<p>× orchestration interval"三者联合选择是一个自然但未探索的组合空间。</p>
+</ul>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/2412.19437.html">2412.19437</a> (baseline) 
+<a href="/papers/2308.16369.html">2308.16369</a> (baseline) 
+<a href="/papers/2502.13965.html">2502.13965</a> (related) 
+<a href="/papers/2602.13692.html">2602.13692</a> (related) 
+<a href="/papers/2602.21548.html">2602.21548</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

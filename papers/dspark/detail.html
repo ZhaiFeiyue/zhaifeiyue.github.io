@@ -197,7 +197,7 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 <div class="w">
 <h1 id="page-title">DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation</h1>
 <div class="card-meta"><span class="badge badge-framework">framework</span> dspark</div>
-<div class="card-tags" style="margin-bottom:16px"><span class="tag">speculative-decoding</span><span class="tag">semi-autoregressive-drafter</span><span class="tag">confidence-scheduled-verification</span><span class="tag">throughput-scheduling</span><span class="tag">llm-serving</span><span class="tag">deepseek-v4</span></div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">speculative-decoding</span><span class="tag">semi-autoregressive-drafter</span><span class="tag">MTP</span><span class="tag">confidence-scheduled-verification</span><span class="tag">throughput-scheduling</span><span class="tag">verification-scheduling</span></div>
 <div class="link-area" style="border-top:none;margin-top:0">
 <a href="/papers/dspark.html">← Synthesis</a>
 <a href="/overview/framework.html">← framework Survey</a>
@@ -205,153 +205,232 @@ h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
 </div>
 <div class="detail-content">
 
-<h1 id="dspark-—-作者意图蒸馏">DSpark — 作者意图蒸馏 <a class="heading-anchor" href="#dspark-—-作者意图蒸馏" aria-label="Link to dspark-—-作者意图蒸馏">#</a></h1>
+<h1 id="dspark-confidence-scheduled-speculative-decoding-with-semi-autoregressive-generation">DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation <a class="heading-anchor" href="#dspark-confidence-scheduled-speculative-decoding-with-semi-autoregressive-generation" aria-label="Link to dspark-confidence-scheduled-speculative-decoding-with-semi-autoregressive-generation">#</a></h1>
 
 <h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
 
-<p>DSpark 把"起草更快更准"与"验证更省"两条线合成一个无损投机解码系统。起草端用半自回归结构：并行 DFlash 主干一次前向出全块 base logits，再挂一个轻量序列头（Markov 或 RNN）注入块内依赖以抑制后缀衰减。验证端用置信度调度：置信头估计每位前缀存活率，硬件感知调度器按实测 $\text{SPS}(B)$ 吞吐曲线动态选每请求验证长度，早停机制保证严格无损。离线接受长度超 Eagle3 约 26.7%–30.9%、超 DFlash 约 16.3%–18.4%；在 DeepSeek-V4 上较 MTP-1 每用户生成加速 60%–85%（Flash）/ 57%–78%（Pro），把服务的吞吐-交互 Pareto 前沿外推。</p>
+<p>DSpark bolts a lightweight sequential head (Markov or RNN) onto a parallel draft backbone (DFlash) to inject intra-block token dependency and stop suffix decay, then adds a calibrated confidence head + hardware-aware scheduler that prunes verification length per request to maximize throughput. +16–30% accepted length offline; 60–85% faster per-user generation vs MTP-1 in DeepSeek-V4 production.</p>
+
+<hr>
 
 <h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
 
-<p><strong>Q1 痛点（为什么要做）</strong></p>
-<p>大并行草块理论上能一次前向提出很多 token，但落地遇到两个正交瓶颈：</p>
-<ul>
-<li>生成质量：并行起草器各位置独立预测，无法建模块内 token 间依赖，出现"多模态碰撞"（如把 "of course" 与 "no problem" 混成 "of problem"），接受率沿块位置快速衰减。</li>
-<li>系统效率：草块越长，无差别验证越浪费。验证一个尾部低置信 token 在轻载时几乎免费，但在高并发下会占用本可服务其它请求的目标模型批容量，反而拉低吞吐。理想验证长度同时随数据（code > chat）和系统负载变化。</li>
+<h3 id="q1-—-痛点-the-two-bottlenecks-of-large-parallel-draft-blocks">Q1 — 痛点 (the two bottlenecks of large parallel draft blocks) <a class="heading-anchor" href="#q1-—-痛点-the-two-bottlenecks-of-large-parallel-draft-blocks" aria-label="Link to q1-—-痛点-the-two-bottlenecks-of-large-parallel-draft-blocks">#</a></h3>
+
+<p>Parallel drafters generate all $\gamma$ tokens in one forward pass, so drafting latency is nearly independent of block size — but this creates two failures when you actually try to exploit long blocks:</p>
+
+<ol>
+<li><strong>Quality bottleneck (acceptance decay).</strong> Because each draft position is predicted independently, the drafter cannot model inter-token dependency. When the context admits multiple plausible continuations ("of course" vs "no problem"), a parallel model marginalizes over all predecessors and can emit incoherent cross-mode combinations ("of problem"). This <em>multi-modal collision</em> makes conditional acceptance decay rapidly deeper into the block.</li>
+<li><strong>System bottleneck (verification waste).</strong> Producing more draft tokens does not translate to end-to-end speedup. Verifying every proposed token indiscriminately burns target-model batch capacity. The right verification length varies along two axes: <strong>data</strong> (code sustains higher acceptance than open-ended chat) and <strong>load</strong> (verifying an extra token is nearly free under light load, but under heavy concurrency it steals batch capacity from other active requests).</li>
 </ul>
 
-<p><strong>Q2 方法（怎么做）</strong></p>
-<p>两个互补机制对应上面两个瓶颈：</p>
+<p>The latency model that frames everything is Eq. 1:</p>
+
+<p>$$L = \frac{T_{\text{draft}} + T_{\text{verify}}}{\tau}$$</p>
+
+<p>with three levers — lower $T_{\text{draft}}$ (draft faster), raise $\tau$ (draft better), or shrink effective $T_{\text{verify}}$ (verify smarter). Autoregressive drafters get high $\tau$ but pay $T_{\text{draft}} \propto \gamma$; parallel drafters collapse $T_{\text{draft}}$ but sacrifice $\tau$.</p>
+
+<h3 id="q2-—-方法-two-complementary-mechanisms">Q2 — 方法 (two complementary mechanisms) <a class="heading-anchor" href="#q2-—-方法-two-complementary-mechanisms" aria-label="Link to q2-—-方法-two-complementary-mechanisms">#</a></h3>
+
 <ul>
-<li><strong>半自回归起草</strong>：并行主干（DFlash）承担重计算保持 $T_{\text{draft}}$ 近似与 $\gamma$ 无关；再叠一个轻量序列头，通过局部归一化的自回归因式分解 $P(X\mid x_0)=\prod_k p_k(x_k\mid x_0,x_{<k})$ 注入依赖，用极小延迟换回接受率。</li>
-<li><strong>置信度调度验证</strong>：置信头输出每位存活概率 $c_k$，经 Sequential Temperature Scaling (STS) 校准；硬件感知前缀调度器把"选多长验证"formulate 成全局吞吐最大化 $\Theta=\tau\cdot\text{SPS}(B)$，用贪心 + 早停在线求解并保持无损。</li>
+<li><strong>Semi-autoregressive generation.</strong> Keep the heavy parallel backbone (DFlash) fully parallel for $\tau$-cheap bulk computation, and append a <em>lightweight sequential head</em> that adds a prefix-dependent transition bias $B_k$ so each position can condition on the actually-sampled prefix. Crucially the head uses <strong>local (per-position) softmax normalization</strong>, not a global partition function, so exact per-token probabilities remain computable for lossless rejection sampling.</li>
+<li><strong>Confidence-scheduled verification.</strong> A confidence head emits per-position survival probability $c_k$, calibrated via Sequential Temperature Scaling (STS). A hardware-aware prefix scheduler then casts verification-length selection as a <strong>global throughput-maximization problem</strong> $\Theta = \tau \cdot \text{SPS}(B)$ solved by a greedy, early-stopping admission over survival probabilities — routing target compute only to tokens with positive expected return.</li>
 </ul>
 
-<blockquote>
-<strong>核心技术壁垒</strong>：让一个"回顾式吞吐最大化搜索"同时满足无损性。关键在两处耦合——序列头采用局部（而非全局）softmax 归一化，使每 token 精确概率仍可算（rejection sampling 的前提）；同时早停 / 异步两步前因果屏障使前缀 $x_1$ 的准入决策不依赖 $x_1$ 自身的实现值（non-anticipating）。缺任一处，调度就会引入选择偏差、破坏目标分布（Appendix A 反例证明）。
-</blockquote>
+<p><strong>核心技术壁垒 (the single hardest-to-replicate insight):</strong> achieving <em>load-aware, lossless</em> verification-length scheduling. The scheduler must consume <em>absolute-magnitude</em> calibrated survival probabilities (not just rankings) to estimate $\tau$, yet the greedy search's early-stopping is exactly what preserves the non-anticipating property (admission of token $k$ must not depend on the realization of $x_k$). The genuinely subtle part — and the one that would trip a re-implementer — is that in production the early-stopping break is <em>removed</em> for jagged-hardware reasons, and losslessness is instead restored by an asynchronous "two-steps-prior" causal barrier. Getting this interaction right (calibration ↔ greedy monotonicity ↔ causality ↔ ZOS compatibility) is the moat.</p>
 
-<p><strong>Q3 结果（做到了什么）</strong></p>
-<p>离线（关调度器、固定块）4 个目标模型 × 9 benchmark 全部最优；宏平均接受长度超 Eagle3 30.9%/26.7%/30.0%（Qwen3-4B/8B/14B）、超 DFlash 16.3%/18.4%/18.3%。在线（DeepSeek-V4-Flash/Pro 真实流量）较 MTP-1 每用户生成 +60%–85% / +57%–78%（等吞吐口径），并在严格 SLA（Flash 120 TPS、Pro 50 TPS）下维持非退化吞吐，外推 Pareto 前沿。</p>
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<ul>
+<li><strong>Offline:</strong> DSpark is best in every cell of Table 1 (4 targets × 9 benchmarks). Macro-average accepted length improves over Eagle3 by <strong>30.9% / 26.7% / 30.0%</strong> (Qwen3-4B/8B/14B) and over DFlash by <strong>16.3% / 18.4% / 18.3%</strong>. The gap over DFlash <em>widens</em> with block size (16% → 30% on math from $\gamma{=}7$ to $\gamma{=}15$).</li>
+<li><strong>Ablation:</strong> a <strong>2-layer DSpark beats a 5-layer DFlash</strong> across all domains; the sequential head adds only <strong>0.2–1.3%</strong> round latency for up to 30% accepted-length gain. STS cuts ECE from 3–8% to ~1% while preserving AUC 0.81–0.90.</li>
+<li><strong>Production (DeepSeek-V4):</strong> vs MTP-1, <strong>60–85%</strong> (V4-Flash) / <strong>57–78%</strong> (V4-Pro) faster per-user generation at matched throughput; the scheduler expands verification budget to 4–6 tokens under light load and shrinks it under heavy load, shifting the throughput–interactivity Pareto frontier outward.</li>
+</ul>
+
+<hr>
 
 <h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
 
-<p><img src="/assets/dspark/fig1.png" alt="Figure 1: DSpark 架构与解码循环"></p>
+<p>No figures were extracted for this source; the decoding cycle (paper's Figure 1) and the two-module data path are reconstructed below as Mermaid diagrams.</p>
 
-<p><em>Paper's Figure 1（caption: "The DSpark architecture and decoding cycle …"）。</em> 给定 prompt ABC，目标模型走一步生成 D 作为 anchor；DSpark 用重并行主干 + 轻量序列头一次性产出草 token EFGH 及置信分 $c_1$–$c_4$；硬件感知前缀调度器据置信分保留前缀 EFG、丢弃低置信的 H；目标模型并行验证被调度前缀，E、F 接受、G 拒绝并补生成修正 token G∗；D E F G∗ 进入下一轮。读者应注意：起草（重并行 + 轻序列）与验证（置信调度）是同一循环内的两个可分别优化的阶段。</p>
-
-<p>解码循环三步的时序结构：</p>
+<p><strong>Decoding cycle</strong> (prompt <code>ABC</code> → anchor <code>D</code> → draft <code>EFGH</code> → schedule → verify):</p>
 
 <div class="mermaid">
-sequenceDiagram
-    participant T as Target Model
-    participant B as Parallel Backbone
-    participant S as Sequential Head
-    participant Sch as Prefix Scheduler
-    T->>T: step1 从 ABC 生成 anchor D
-    T->>B: D + (γ-1) mask
-    B->>B: 一次前向 → h_1..h_γ, base logits U_1..U_γ
-    B->>S: hidden h_k, base logits U_k
-    S->>S: 左到右采样 x_k ~ softmax(U_k + B_k), 出 c_1..c_γ
-    S->>Sch: 草 token + 置信 c_k
-    Sch->>Sch: 按 a_{r,j}=∏c_i 排序, 按 SPS(B) 选 ℓ*
-    Sch->>T: 被调度前缀 (如 EFG)
-    T->>T: step3 并行验证, 接受最长前缀 + 补 bonus/修正 token
+flowchart LR
+    subgraph Target1["Target step 1"]
+        ABC["prompt ABC"] --> D["anchor D"]
+    end
+    subgraph Draft["Draft phase"]
+        D --> PB["Parallel backbone (DFlash, 5L)"]
+        PB -->|"h_k, U_k"| SH["Sequential head (Markov)"]
+        SH -->|"sample E F G H"| CH["Confidence head c1..c4"]
+    end
+    CH --> SCH["Hardware-Aware Prefix Scheduler"]
+    SCH -->|"keep EFG, drop H"| Verify["Target step 3: verify EFG"]
+    Verify -->|"accept E,F; reject G"| Gstar["target emits corrected G*"]
+    Gstar -->|"next round anchor"| PB
 </div>
 
-<p>主干只做一处改动：不再"anchor + γ 个 mask 只预测 mask 位"，而是把 anchor 本身当第一个预测位，$\gamma$ 个输入（anchor + $\gamma-1$ mask）产 $\gamma$ 个 logits，降起草计算而质量近似不变。序列头两种实例化：Markov 头把转移偏置限制为一阶 $B(x_{k-1},x_k)$ 并低秩分解 $B=W_1W_2$（$r=256$）；RNN 头维护跨全块前缀的门控状态 $s_k$。</p>
+<p>The parallel backbone does the expensive work once per block; the sequential head runs a <em>cheap</em> left-to-right loop to inject dependency; the confidence head scores each position; the scheduler truncates the block <em>before</em> it reaches the target model, so the target only verifies a load-appropriate prefix.</p>
+
+<p><strong>Two-module composition</strong> (where each equation lives):</p>
+
+<div class="mermaid">
+flowchart TB
+    A["anchor x0 + (gamma-1) masks"] --> B["Parallel backbone: h_k, base logits U_k  (Eq. modification: anchor = position 1)"]
+    B --> C["Sequential head: bias B_k -> p_k = softmax(U_k + B_k)  (Eq. 4)"]
+    C -->|"Markov: B = W1[x_{k-1}] W2 (Eq.5)"| C
+    C -->|"RNN: gated state s_k (Eq.6)"| C
+    B --> E["Confidence head: c_k = sigma(w^T [h_k; W1[x_{k-1}]])  (Eq.7)"]
+    C --> E
+    E --> F["STS calibration of cumulative product prod c_i"]
+    F --> G["Scheduler: maximize Theta = tau * SPS(B)  (Alg.1)"]
+</div>
+
+<p>Note the <strong>parameter coupling</strong>: the confidence head (Eq. 7) reuses the Markov embedding $W_1$ from the sequential head as a feature, so it conditions on the actually-sampled predecessor at essentially no extra parameter cost.</p>
+
+<hr>
 
 <h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
 
-<p>本篇既有形式化模型（延迟模型 + 吞吐最大化 + 无损性证明），亦有实证，属"模型 + 实证"双轨。</p>
-
-<p><strong>记号表</strong></p>
+<p>DSpark has one formal theoretical result (Appendix A losslessness counterexample) plus a set of analytical identities the design rests on. Notation table:</p>
 
 <table>
-<tr><th>符号</th><th>含义</th></tr>
-<tr><td>$L$</td><td>每生成 token 的平均延迟</td></tr>
-<tr><td>$T_{\text{draft}}, T_{\text{verify}}$</td><td>起草 / 验证前向的墙钟时间</td></tr>
-<tr><td>$\tau$</td><td>每轮接受 token 数（含 bonus）</td></tr>
-<tr><td>$\gamma$</td><td>块大小（proposal length）</td></tr>
-<tr><td>$U_k, B_k$</td><td>位置 $k$ 的主干 base logit / 序列头转移偏置</td></tr>
-<tr><td>$c_k, c^*_k$</td><td>位置 $k$ 的预测 / 解析存活概率</td></tr>
-<tr><td>$a_{r,j}=\prod_{i\le j}c_{r,i}$</td><td>请求 $r$ 到位置 $j$ 的前缀存活概率</td></tr>
-<tr><td>$\text{SPS}(B)$</td><td>batch 大小 $B$ 时引擎 steps/second（初始化时 profile 成查表）</td></tr>
-<tr><td>$\Theta=\tau\cdot\text{SPS}(B)$</td><td>系统级期望 token 吞吐</td></tr>
-<tr><td>$\ell_r$</td><td>请求 $r$ 被调度的验证长度</td></tr>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$M_t, M_d$</td><td>target / draft model</td></tr>
+<tr><td>$\gamma$</td><td>draft block size (proposal length)</td></tr>
+<tr><td>$x_0$</td><td>anchor (bonus) token from previous cycle</td></tr>
+<tr><td>$U_k$</td><td>base logit vector from parallel backbone at position $k$</td></tr>
+<tr><td>$B_k$</td><td>prefix-dependent transition bias from sequential head</td></tr>
+<tr><td>$p^d_k, p^t_k$</td><td>draft / target distribution at position $k$</td></tr>
+<tr><td>$\tau$</td><td>accepted tokens per cycle</td></tr>
+<tr><td>$c_k \in (0,1)$</td><td>predicted per-position survival prob (given prefix accepted)</td></tr>
+<tr><td>$c^*_k$</td><td>analytical (ground-truth) per-step acceptance rate</td></tr>
+<tr><td>$a_{r,j}=\prod_{i\le j}c_{r,i}$</td><td>prefix survival probability of request $r$ at position $j$</td></tr>
+<tr><td>$\text{SPS}(B)$</td><td>profiled engine throughput (steps/sec) at batch $B$</td></tr>
+<tr><td>$\Theta = \tau\cdot\text{SPS}(B)$</td><td>expected system token throughput</td></tr>
 </table>
 
-<p><strong>关键方程物理意义</strong></p>
+<p><strong>方程物理意义 (key equations):</strong></p>
+
 <ul>
-<li>延迟 $L=(T_{\text{draft}}+T_{\text{verify}})/\tau$：分数而非和，说明每轮固定开销被"该轮接受 token 数"摊薄，故加速三杠杆为降 $T_{\text{draft}}$、升 $\tau$、降有效 $T_{\text{verify}}$。</li>
-<li>局部归一化 $p_k(v\mid x_0,x_{<k})=\dfrac{\exp(U_k(v)+B_k(\cdot,v))}{\sum_{u}\exp(U_k(u)+B_k(\cdot,u))}$：逐位 softmax 而非全局配分函数，保证每 token 精确概率可算——这是能用于 rejection sampling 的必要条件。</li>
-<li>置信监督 $c^*_k=1-\tfrac12\lVert p^d_k-p^t_k\rVert_1$：per-step 接受概率即 TV 距离的补，作为置信头软标签；训练 loss $\mathcal{L}_{\text{tv}}$ 直接最小化 TV 距离即最大化接受率。</li>
-<li>吞吐目标 $\Theta=\tau\cdot\text{SPS}(B)$，其中 $B=\sum_r(1+\ell_r)$、$\tau=\sum_r(1+\sum_{j\le\ell_r}a_{r,j})$：验证多一个 token 使 $\tau$ 增 $a_{r,j}$ 但使 $B$ 增 1 从而 $\text{SPS}$ 降，两者乘积捕捉"验证边际收益 vs 批容量代价"。</li>
+<li><strong>Local factorization (Eq. 4):</strong> $P(X\mid x_0)=\prod_k p_k(x_k\mid x_0,x_{<k})$ with each $p_k=\text{softmax}(U_k+B_k)$. Because normalization is <em>per-position</em> (not a global energy model), exact per-token probabilities survive — the property that CRF-NAT and CTC-drafter lack.</li>
+<li><strong>Analytical acceptance label (Eq. 8):</strong> $c^*_k = 1 - \tfrac12\lVert p^d_k - p^t_k\rVert_1$. This is the standard rejection-sampling identity used both as the confidence-head supervision label and as the TV loss's justification.</li>
+<li><strong>Throughput objective:</strong> $B=\sum_r(1+\ell_r)$, $\tau=\sum_r(1+\sum_{j=1}^{\ell_r}a_{r,j})$, $\Theta=\tau\cdot\text{SPS}(B)$.</li>
 </ul>
 
-<p><strong>证明检查（≥6）</strong></p>
+<p><strong>Monotonicity / greedy-optimality proposition (§3.2.2, informal).</strong> Statement: because $a_{r,j}\le a_{r,j-1}$ (survival probability is non-increasing in $j$), the marginal gain of extending request $r$ from $j-1$ to $j$ is <em>exactly</em> $a_{r,j}$. Therefore, for a fixed batch size $B$, the optimal length allocation is obtained by greedily admitting the globally-highest-$a_{r,j}$ tokens; sorting descending by $a_{r,j}$ automatically respects intra-block prefix ordering. <strong>Assumption:</strong> stepwise early-stopping yields the global-max $\Theta$ <strong>iff</strong> $\Theta$ is unimodal in $B$, which requires a <em>smoothly decaying</em> SPS curve. <strong>When it breaks:</strong> real hardware SPS is jagged/step-wise (tensor-core tile quantization), so the unimodality assumption fails in production — addressed in §7 below.</p>
+
+<p><strong>Losslessness counterexample (Appendix A, reproduced).</strong> Setup: $R=1$, $\gamma=2$, $a_1=0.8$, capacity $\text{SPS}(1)=1.0,\ \text{SPS}(2)=0.5,\ \text{SPS}(3)=0.45$.</p>
+
+<p>$$\Theta_0 = 1\cdot 1.0 = 1.0, \qquad \Theta_1 = (1+0.8)\cdot 0.5 = 0.9.$$</p>
+
+<p>Without early-stopping the scheduler evaluates $\Theta_2$, but $c_2$ (and thus $a_2=a_1 c_2$) depends on the realization of $x_1$: if $c_2=0.9$ then $\Theta_2=(1+0.8+0.72)\cdot0.45=1.134$ (returns $\ell=2$, admits $x_1$); if $c_2=0$ then $\Theta_2=0.81$ and the max stays $\Theta_0$ (returns $\ell=0$, rejects $x_1$). So admission of $x_1$ depends on $x_1$ — selection bias. Made explicit with vocab $\{A,B\}$, $p^t=(0.7,0.3)$, $p^d=(0.5,0.5)$: acceptance $\sum_x\min(p^t,p^d)=0.8$ matches $a_1$. The retrospective scheduler yields</p>
+
+<p>$$\Pr(Y=A) = 0.5\cdot 1 + 0.5\cdot 0.7 = 0.85 \ne p^t(A)=0.7,$$</p>
+
+<p>proving the global-search scheduler is <strong>not lossless</strong>. Early-stopping fixes it: since $\Theta_1<\Theta_0$, the scheduler halts at $\ell=0$ <em>before</em> touching any $x_1$-dependent quantity, restoring the non-anticipating property.</p>
+
+<p><strong>Six minimum checks:</strong></p>
+
 <ol>
-<li>精确概率：序列头保持局部 softmax，避免 CRF-NAT 式全局归一化 / CTC 式路径边缘化，故 rejection sampling 的 $\min(1,p^t/p^d)$ 仍可精确计算。✓</li>
-<li>标签正确性：$c^*_k=1-\tfrac12\lVert p^d-p^t\rVert_1$ 是标准投机解码接受率公式，用作软标签自洽。✓</li>
-<li>贪心最优性：$a_{r,j}$ 关于 $j$ 单调非增，故延长请求 $r$ 从 $j-1$ 到 $j$ 的边际接受收益恰为 $a_{r,j}$；对全局池按 $a_{r,j}$ 降序贪心，在 $B$ 固定时即最优分配，且自然尊重块内前缀依赖。✓</li>
-<li>假设边界：早停贪心给全局吞吐最优当且仅当 $\Theta$ 单峰，隐含要求 $\text{SPS}$ 平滑衰减；真实张量核容量呈阶梯状 jagged，此假设破裂——这正是 §5.2 去掉早停的动机。✓（假设失效点）</li>
-<li>无损性（non-anticipating）：早停在 $\Theta$ 一旦下降即中断，使 $x_1$ 的准入只依赖观测 $x_1$ 之前的信息，恢复标准无损性论证所需的非预期属性。✓</li>
-<li>首序数值核验（Appendix A）：取 $\text{SPS}(1)=1.0,\text{SPS}(2)=0.5,\text{SPS}(3)=0.45,a_1=0.8$，则 $\Theta_0=1{\cdot}1.0=1.0$、$\Theta_1=(1+0.8){\cdot}0.5=0.9$，复现论文数值；无早停的回顾式搜索使 $\ell$ 依赖 $x_1$，导致首 token 输出分布 $(0.85,0.15)\ne$ 目标 $(0.7,0.3)$，证回顾式搜索非无损。✓</li>
-<li>生产因果屏障：异步调度用"两步前"的置信预测决定截断长度 $K$，准入决策与当前 token $x_{r,k}$ 的实现隔离，故可去早停做无约束全局搜索而仍无损。✓</li>
+<li><strong>Units.</strong> $L$ = time/token: numerator wall-clock time, denominator dimensionless token count — consistent.</li>
+<li><strong>Boundary $\gamma{=}1$.</strong> DSpark reduces to a single-position parallel prediction with no sequential loop; matches the MTP-1 single-token regime it is compared against.</li>
+<li><strong>Boundary $B_k\equiv 0$.</strong> Sequential head off → $p_k=\text{softmax}(U_k)$, i.e. pure DFlash — the stated backbone, sanity-consistent.</li>
+<li><strong>Probability range.</strong> $c_k=\sigma(\cdot)\in(0,1)$; $c^*_k=1-\tfrac12\lVert\cdot\rVert_1\in[0,1]$ since $\lVert p^d-p^t\rVert_1\in[0,2]$ — labels and predictions share a valid range for BCE.</li>
+<li><strong>Monotone survival.</strong> $a_{r,j}=\prod_{i\le j}c_{r,i}$ with $c_i\in(0,1)$ ⇒ non-increasing in $j$, exactly the property the greedy proof needs.</li>
+<li><strong>Loss-weight extremes.</strong> With $\alpha_{\text{ce}}=0.1,\alpha_{\text{tv}}=0.9,\alpha_{\text{conf}}=1.0$, TV dominates draft quality while confidence loss (absolute-largest weight) forces calibrated scores; setting $\alpha_{\text{conf}}=0$ recovers a scheduler-less drafter — degrades gracefully.</li>
 </ul>
+
+<hr>
 
 <h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
 
-<p><strong>离线主结果（关调度器、固定块）</strong></p>
+<p>No figures were extracted; the load-bearing tables/plots are reproduced numerically below.</p>
 
-<p><img src="/assets/dspark/tab1.png" alt="Table 1: 主投机解码结果（接受长度 τ）"></p>
+<p><strong>Table 1 — accepted length $\tau$ per round (scheduler disabled, fixed block).</strong> DSpark is bold/best in every cell.</p>
 
-<p><em>Paper's Table 1，逐格 bold 处 DSpark 最优。</em> 4 个目标模型（Qwen3-4B/8B/14B、Gemma4-12B）× 9 benchmark，DSpark 在每一格均为最优。可见强域效应：结构化任务（Math ~5.6、Code ~5.1，Qwen3-4B）接受长度天然高于开放式 Chat（~3.5），这一数据侧方差正是引入置信调度的动机。</p>
+<table>
+<tr><th>Target</th><th>Drafter</th><th>GSM8K</th><th>MATH</th><th>AIME25</th><th>MBPP</th><th>HumanEval</th><th>LCB</th><th>MT-Bench</th><th>Alpaca</th><th>Arena-Hard</th></tr>
+<tr><td>Qwen3-4B</td><td>Eagle3</td><td>5.14</td><td>4.62</td><td>3.92</td><td>3.69</td><td>4.16</td><td>3.77</td><td>2.39</td><td>2.26</td><td>2.55</td></tr>
+<tr><td>Qwen3-4B</td><td>DFlash</td><td>5.40</td><td>4.85</td><td>4.15</td><td>4.40</td><td>4.74</td><td>4.18</td><td>3.07</td><td>2.96</td><td>2.83</td></tr>
+<tr><td>Qwen3-4B</td><td><strong>DSpark</strong></td><td><strong>6.11</strong></td><td><strong>5.70</strong></td><td><strong>4.89</strong></td><td><strong>5.13</strong></td><td><strong>5.38</strong></td><td><strong>4.86</strong></td><td><strong>3.64</strong></td><td><strong>3.54</strong></td><td><strong>3.29</strong></td></tr>
+<tr><td>Qwen3-8B</td><td>Eagle3</td><td>5.30</td><td>4.77</td><td>3.91</td><td>3.96</td><td>4.33</td><td>4.17</td><td>2.66</td><td>2.54</td><td>2.54</td></tr>
+<tr><td>Qwen3-8B</td><td>DFlash</td><td>5.33</td><td>4.91</td><td>4.07</td><td>4.36</td><td>4.64</td><td>4.39</td><td>3.11</td><td>2.98</td><td>2.81</td></tr>
+<tr><td>Qwen3-8B</td><td><strong>DSpark</strong></td><td><strong>6.17</strong></td><td><strong>5.78</strong></td><td><strong>5.01</strong></td><td><strong>5.16</strong></td><td><strong>5.52</strong></td><td><strong>5.17</strong></td><td><strong>3.72</strong></td><td><strong>3.58</strong></td><td><strong>3.21</strong></td></tr>
+<tr><td>Qwen3-14B</td><td>Eagle3</td><td>5.24</td><td>4.60</td><td>3.71</td><td>3.81</td><td>4.14</td><td>4.01</td><td>2.62</td><td>2.47</td><td>2.48</td></tr>
+<tr><td>Qwen3-14B</td><td>DFlash</td><td>5.41</td><td>4.84</td><td>3.98</td><td>4.44</td><td>4.59</td><td>4.33</td><td>3.10</td><td>2.94</td><td>2.72</td></tr>
+<tr><td>Qwen3-14B</td><td><strong>DSpark</strong></td><td><strong>6.21</strong></td><td><strong>5.74</strong></td><td><strong>4.94</strong></td><td><strong>5.26</strong></td><td><strong>5.43</strong></td><td><strong>5.02</strong></td><td><strong>3.70</strong></td><td><strong>3.58</strong></td><td><strong>3.13</strong></td></tr>
+<tr><td>Gemma4-12B</td><td>Eagle3</td><td>5.87</td><td>5.46</td><td>4.83</td><td>4.72</td><td>5.37</td><td>4.16</td><td>3.19</td><td>3.06</td><td>2.72</td></tr>
+<tr><td>Gemma4-12B</td><td>DFlash</td><td>5.45</td><td>5.04</td><td>4.22</td><td>4.39</td><td>4.95</td><td>3.70</td><td>2.98</td><td>2.84</td><td>2.59</td></tr>
+<tr><td>Gemma4-12B</td><td><strong>DSpark</strong></td><td><strong>6.05</strong></td><td><strong>5.78</strong></td><td><strong>5.12</strong></td><td><strong>5.11</strong></td><td><strong>5.64</strong></td><td><strong>4.51</strong></td><td><strong>3.49</strong></td><td><strong>3.35</strong></td><td><strong>2.92</strong></td></tr>
+</table>
 
-<p><strong>为何并行/半自回归能赢自回归</strong></p>
+<p>The table also exposes a strong <strong>domain effect</strong> (Qwen3-4B: ~5.6 math, ~5.1 code, ~3.5 chat). This inherent variance is what makes a <em>static</em> verification length wasteful and directly motivates the scheduler.</p>
 
-<p><img src="/assets/dspark/fig2.png" alt="Figure 2: 位置条件接受率"></p>
+<p><strong>Position-wise conditional acceptance (Fig. 2, numeric).</strong> With the penalty of earlier rejections removed, Eagle3 is flat/rising with position while DFlash decays:</p>
 
-<p><em>Paper's Figure 2。</em> 位置条件接受率剥离早期拒绝惩罚，只看每位的内在预测质量。$O(1)$ 延迟允许并行/半自回归起草器用更深网络，故在位置 1 起点更高（DFlash 0.88 vs Eagle3 0.81，Math）；因投机是严格前缀存活过程，位置 1 杠杆最大，故初始容量优势主导最终接受长度。但纯并行（DFlash）在后段快速衰减（Code 0.87→0.78），Eagle3 靠依赖建模反而回升（Chat 0.53→0.74）。DSpark 继承高起点（Math 起 0.93）并靠序列头抑制衰减，全块维持高且稳的条件接受率。</p>
+<ul>
+<li>Position-1 capacity gap (deeper parallel net wins): DFlash 0.88 vs Eagle3 0.81 (Math); 0.72 vs 0.53 (Chat).</li>
+<li>Tail behavior: Eagle3 <em>rises</em> 0.53→0.74 (Chat) leveraging conditional certainty; DFlash <em>decays</em> 0.87→0.78 (Code), 0.72→0.63 (Chat) via multi-modal collision.</li>
+<li>DSpark inherits the high start (0.93 Math) <strong>and</strong> stays flat — combining both regimes. This is the empirical core of the counter-intuitive "parallel beats AR" result: position 1 has the highest leverage under prefix-survival, so a deep parallel drafter's initial-token advantage dominates.</li>
+</ul>
 
-<p>深度与长度消融：2 层 DSpark 在所有域超 5 层 DFlash（Fig 3），说明轻量局部自回归比堆并行层更参数高效；序列头在 $\gamma$ 从 4 到 16 仅加 0.2%–1.3% 整轮延迟却带来至多 30% 接受长度提升（Fig 4）。置信头静态阈值扫描把 Chat 接受率从 45.7% 提到 95.7%（Fig 5）；STS 校准把 ECE 从 3%–8% 降到 ~1% 而保持 AUC 0.81–0.90（Fig 6）。</p>
+<p><strong>Depth & length ablations (Fig. 3/4, numeric).</strong></p>
 
-<p><strong>在线：Pareto 前沿外推</strong></p>
+<ul>
+<li>2-layer DSpark > 5-layer DFlash across all domains; steepest marginal gain is 1→2 layers ("a little autoregression goes a long way").</li>
+<li>Gap widens with $\gamma$: at $\gamma{=}7$ DSpark beats DFlash by +16% (math) / +15% (code) / +18% (chat); at $\gamma{=}15$ by +30% / +26% / +22%.</li>
+<li>Latency overhead of the sequential loop (batch 128, context-length-averaged): only <strong>+0.2% to +1.3%</strong> full-round latency from $\gamma{=}4$ to $16$.</li>
+<li>RNN head gives only marginal gains over Markov, mostly at long $\gamma$; Markov is default for deployment simplicity.</li>
+</ul>
 
-<p><img src="/assets/dspark/fig7.png" alt="Figure 7: 吞吐 vs 每用户 TPS"></p>
+<p><strong>Confidence-head validation (Fig. 5/6, numeric).</strong></p>
 
-<p><em>Paper's Figure 7。</em> 散点为真实流量遥测、实线为拟合前沿。等吞吐口径 DSpark 每用户生成 +60%–85%（Flash）/ +57%–78%（Pro）。作者罕见地自我警示：120 TPS 下 +661%、50 TPS 下 +406% 的巨大比值是 MTP-1 塌缩到极小 batch 的产物，应解读为"扩展了可行交互前沿"而非代表性倍速。</p>
+<ul>
+<li>Static threshold sweep: raising the confidence threshold lifts overall acceptance by pruning doomed suffixes. Most dramatic on chat: <strong>45.7% → 95.7%</strong>; milder on structured tasks (Math 76.9%→92.5%, Code 67.6%→92.0%).</li>
+<li>Reliability (Alpaca): raw head has strong discrimination (AUC 0.818/0.812/0.864/0.907 at positions 1/3/5/7) but is overconfident (ECE 3–8%). <strong>STS</strong> cuts ECE to ~1% (e.g. position 3: 8.2%→1.7%) while, being order-preserving, leaving AUC intact.</li>
+</ul>
 
-<p><img src="/assets/dspark/fig8.png" alt="Figure 8: 负载自适应吞吐与验证预算"></p>
+<p><strong>Production (Fig. 7/8, numeric).</strong></p>
 
-<p><em>Paper's Figure 8。</em> 底行揭示机制：中等并发（Flash <200、Pro <150 请求）时调度器利用空闲目标算力把每请求验证预算从 MTP-1 静态 2 token 扩到 ~4–6 token；并发升高、目标容量饱和时预算随负载平滑收缩，剪掉低置信尾 token 以保批容量。这一负载自适应正是吞吐增益与稳定性的来源。</p>
+<ul>
+<li>Throughput–interactivity frontier vs MTP-1. V4-Flash: +51% throughput at 80 tok/s/user SLA; at the stricter 120 tok/s/user SLA a nominal +661% (the baseline collapses to a tiny batch — authors explicitly caveat this as frontier-extension, not a representative speedup). At matched throughput: <strong>60–85%</strong> faster per user.</li>
+<li>V4-Pro: +52% at 35 tok/s/user; nominal +406% at 50 tok/s/user SLA; <strong>57–78%</strong> faster per user at matched capacity.</li>
+<li>Load-adaptive budget (Fig. 8): under moderate concurrency the scheduler expands verification from MTP-1's static 2 tokens to ~<strong>4–6 tokens</strong>; as concurrency saturates it smoothly shrinks the budget to protect batch capacity.</li>
+</ul>
 
-<p>局限：即便调度剪掉验证浪费，DSpark 仍付固定的草侧成本（并行主干生成初始 $\gamma$ 块）；对内在低接受率的复杂 query，这笔前置起草算力不可回收，作者提出未来做难度感知的草模型早退。</p>
+<hr>
 
 <h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
 
 <table>
-<tr><th>步骤</th><th>论点</th><th>依据（本篇内部）</th></tr>
-<tr><td>1</td><td>并行起草器把 $T_{\text{draft}}$ 压成单次前向，但各位置独立 → 多模态碰撞、后缀接受率快速衰减</td><td>§3.1；Fig 2（DFlash 后段衰减）</td></tr>
-<tr><td>2</td><td>在并行主干上叠局部归一化的轻量序列头，注入块内依赖 → 精确 per-token 概率仍可算、$\tau$ 升而延迟仅 +0.2%–1.3%</td><td>Eq.4–6；Table 1；Fig 3、Fig 4</td></tr>
-<tr><td>3</td><td>更长草块在高并发下浪费验证 → 置信头估存活率 + STS 校准 + 调度器最大化 $\Theta=\tau\cdot\text{SPS}(B)$，早停保无损</td><td>§3.2；Fig 5、Fig 6；Appendix A</td></tr>
-<tr><td>4</td><td>生产环境 SPS 阶梯 + ZOS 冲突 → 异步"两步前"top-$K$ + 展平变长核，去早停靠因果屏障仍无损</td><td>§5.2–5.3</td></tr>
-<tr><td>5</td><td>部署 DeepSeek-V4：等吞吐每用户 +60%–85%/+57%–78%，严格 SLA 维持非退化吞吐，外推 Pareto 前沿</td><td>§5.4；Fig 7、Fig 8</td></tr>
+<tr><th>#</th><th>Step</th><th>Paper-internal support</th></tr>
+<tr><td>1</td><td>Per-token latency is $L=(T_{\text{draft}}+T_{\text{verify}})/\tau$, giving three optimization levers.</td><td>Eq. 1 (§2.1)</td></tr>
+<tr><td>2</td><td>Parallel drafters collapse $T_{\text{draft}}$ but lose $\tau$ because independent positions cause multi-modal collision and suffix decay.</td><td>§3.1 para 1; Fig. 2 tail decay (§4.3.1)</td></tr>
+<tr><td>3</td><td>Adding a locally-normalized sequential bias $B_k$ (Eq. 4–6) restores intra-block dependency while keeping exact per-token probabilities and near-parallel speed.</td><td>Eq. 4–6 (§3.1); latency +0.2–1.3% (Fig. 4)</td></tr>
+<tr><td>4</td><td>This yields both high position-1 acceptance and a flat tail, so accepted length beats both AR and parallel baselines.</td><td>Fig. 2 + Table 1 (§4.2–4.3.1)</td></tr>
+<tr><td>5</td><td>But longer accepted blocks don't help throughput unless verification is load-aware; a confidence head (Eq. 7) supervised by the TV-distance acceptance rate (Eq. 8) predicts survival probability.</td><td>§3.2.1; Fig. 5 pruning</td></tr>
+<tr><td>6</td><td>The scheduler must consume <em>absolute</em> calibrated probabilities to estimate $\Theta=\tau\cdot\text{SPS}(B)$; STS calibrates cumulative products to ~1% ECE without disturbing rankings.</td><td>§3.2.1; Fig. 6</td></tr>
+<tr><td>7</td><td>Verification-length selection is then a throughput-max problem solvable greedily by survival-probability monotonicity, with early-stopping guaranteeing losslessness.</td><td>Alg. 1 (§3.2.2); Appendix A counterexample</td></tr>
+<tr><td>8</td><td>In production, jagged SPS + ZOS force removing early-stopping; an asynchronous two-steps-prior "causal barrier" restores losslessness, shifting the DeepSeek-V4 Pareto frontier.</td><td>§5.2; Fig. 7/8 (§5.4)</td></tr>
 </table>
+
+<hr>
 
 <h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
 
-<p>开源产物：作者开放 DeepSpec（算法驱动的投机解码训练仓库，含 Eagle3 / DFlash / DSpark，<code>source_url</code> 指向 github.com/deepseek-ai/DeepSpec），并释出 DeepSeek-V4-Flash/Pro (preview) 的 DSpark 检查点。仓库无 file:line 级别可引锚点在 L1 中给出。</p>
+<p>The paper open-sources DSpark checkpoints (DeepSeek-V4-Flash/Pro preview) and <strong>DeepSpec</strong>, an algorithm-driven training repository including Eagle3, DFlash, and DSpark (github.com/deepseek-ai/DeepSpec). Specific file:line citations to the released training/inference code are not enumerated in the L1 source. <strong>[实现未公开 — 代码仓库已开源但 L1 未记录具体 file:line]</strong></p>
 
-<p>生产系统内部实现 [实现未公开]：HAI-LLM 训练框架内的两项优化（只通信 LM head 前隐状态把每 token 通信降到 $O(d)$；anchor-bounded 序列打包用 token 级 attention 索引替代 2D mask）、异步调度器、以及 DeepSeek-V4 上为变长路由改造的 index-attention 与 compress 核，均未公开代码。</p>
+<p><strong>核心技术壁垒 (dedicated paragraph).</strong> The load-bearing, hard-to-replicate insight is the <em>interaction</em> between calibration, greedy monotonicity, and causality under a real serving pipeline. The scheduler needs absolute-magnitude survival probabilities (Fig. 6 shows raw scores are 3–8% overconfident and would distort $\tau$ estimation), so STS calibration is a prerequisite, not a nicety. The greedy admission is only optimal because $a_{r,j}$ is monotone; and losslessness hinges on the non-anticipating property, which the offline algorithm secures with an early-stopping break (Appendix A shows removing it yields output $(0.85,0.15)\ne(0.7,0.3)$). Production then <em>removes</em> that break to escape jagged-SPS local minima — and re-earns losslessness only because the asynchronous scheduler evaluates predictions from <strong>two steps prior</strong>, forming a temporal causal barrier that isolates the admission decision from the current token's realization (§5.2). Reproducing DSpark's headline production numbers requires getting <em>all four</em> of these to hold simultaneously alongside ZOS/CUDA-graph compatibility.</p>
 
-<p><strong>核心技术壁垒（复现最难点）</strong>：不是任一单独模块，而是"回顾式全局吞吐搜索"与"严格无损"二者共存的证明与工程实现。局部（非全局）softmax 归一化保住精确 per-token 概率；早停 / 异步两步前因果屏障保住 non-anticipating 属性。Appendix A 的 2-token 反例（输出 $(0.85,0.15)\ne(0.7,0.3)$）精确刻画了缺屏障时的选择偏差，是复现者最易踩空之处。</p>
+<p><strong>关键实现细节 (easy-to-miss tricks):</strong></p>
 
-<p><strong>关键实现细节（易被忽略）</strong></p>
-<ul>
-<li>anchor 即第一预测位：对 DFlash 主干只做此一处改动（$\gamma$ 输入产 $\gamma$ logits），降起草计算而质量近似不变。</li>
-<li>置信头复用序列头的 Markov 嵌入 $W_1$ 作特征（Eq.7），两机制间隐式参数共享；置信条件因此建立在真正采样的前一 token 上。</li>
-<li>去早停"安全"仅因异步只评估两步前的历史预测——若在同步 / 单步内去早停即刻破坏无损，此依赖关系极易被误实现。</li>
+<ol>
+<li><strong>Anchor-as-first-position modification.</strong> Instead of DFlash's "anchor + $\gamma$ masks predict only mask positions," DSpark treats the anchor itself as the first prediction position, so $\gamma$ input tokens yield $\gamma$ draft logits — reducing draft compute at similar quality (§3.1).</li>
+<li><strong>Confidence head reuses the Markov embedding $W_1$.</strong> Eq. 7 features are $[h_k; W_1[x_{k-1}]]$, sharing the sequential head's low-rank embedding table so the confidence estimator conditions on the sampled predecessor almost for free (§3.2.1).</li>
+<li><strong>Variable-length execution via a marker tensor.</strong> Rather than padding variable verified-prefix lengths, all tokens across requests are flattened and processed identically; intra-sequence dependencies are conveyed by a marker tensor in the sparse-attention kernel — on DeepSeek-V4 only the index-attention and compress kernels need modification (§5.3).</li>
+<li><strong>SPS cost table profiled once at init.</strong> The $\text{SPS}(B)$ capacity curve is measured once during engine initialization and stored as a lightweight table, making the scheduler's throughput lookup $O(1)$ (§3.2.2).</li>
 </ul>
 
 </div>

@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>PipeSwift: Revisiting Pipeline Parallelism for Large-Scale Completion-Oriented Agentic LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">PipeSwift: Revisiting Pipeline Parallelism for Large-Scale Completion-Oriented Agentic LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2609.16491</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">agent-serving</span><span class="tag">agent-scheduling</span><span class="tag">agentic-inference</span><span class="tag">pd-disaggregation</span><span class="tag">admission-control</span><span class="tag">speculative-execution</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2609.16491.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2609.16491" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="pipeswift-—-l2-深度蒸馏">PipeSwift — L2 深度蒸馏 <a class="heading-anchor" href="#pipeswift-—-l2-深度蒸馏" aria-label="Link to pipeswift-—-l2-深度蒸馏">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Agentic 批量推理的目标是任务完成时间 (JCT) 而非 token 级 SLO。作者证明 prefill 优先调度虽拿到最优 TTFT 和最高 decode 吞吐却不是最优 JCT —— JCT 由 prefill/decode 效率的<strong>平衡</strong>决定。据此重新启用被冷落的流水并行 (PP)，配合 JCT 感知调度和 PP 内嵌 MTP，构建 PipeSwift，在 64×H800 上比 wide-EP 快最多 1.45×。</p>
+
+<h2 id="2-q1-q2-q3">2. Q1 / Q2 / Q3 <a class="heading-anchor" href="#2-q1-q2-q3" aria-label="Link to 2-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-为什么现有系统不对">Q1 — 痛点 (为什么现有系统不对) <a class="heading-anchor" href="#q1-—-痛点-为什么现有系统不对" aria-label="Link to q1-—-痛点-为什么现有系统不对">#</a></h3>
+
+<p>现有并置 (colocated) 推理系统从 chatbot serving 继承了以 SLO 为中心的策略：立即接纳每个就绪 prefill 以压低 TTFT，同时维持大 decode batch 以最大化 decode 吞吐。但 agentic 工作负载（编码 agent、web-search agent）把中间 token 生成对用户隐藏，用户只感知<strong>每轮完成</strong>和工具调用动作。因此主指标从"满足 TTFT/TPOT 下最大化 goodput"变成"直接最小化完成时间"。作者提出两个根本问题：优化 chatbot SLO 是否等价于优化 agentic JCT？决定 JCT 的底层 trade-off 到底是什么？</p>
+
+<p>Agentic 轮次的一个结构性特征放大了这一错配：相邻轮共享绝大部分上下文，平均前缀缓存命中率 >95%，于是每轮只在数万 token 的缓存前缀上追加不到 1K 新 token —— prefill 极短、极碎、远未打满硬件。</p>
+
+<p><img src="/assets/2609.16491/fig1.png" alt="Figure 1: BrowseComp 轨迹的轮数与会话长度分布"></p>
+
+<p><em>Paper's Figure 1（caption: "Turn-count and session-length distributions of GLM-4.7 and Qwen3.5 trajectories on BrowseComp."）.</em> 该图说明会话长度可达 200k token、轮数长尾，读者应注意：长会话 + 高前缀复用共同导致「短增量 prefill 摊在长缓存前缀上」，正是后文调度优化的靶心。</p>
+
+<h3 id="q2-—-方法-做了什么">Q2 — 方法 (做了什么) <a class="heading-anchor" href="#q2-—-方法-做了什么" aria-label="Link to q2-—-方法-做了什么">#</a></h3>
+
+<p>三个层次的贡献：</p>
+
+<ol>
+<li><strong>问题重构 (§3)</strong>：把 JCT 形式化为 overall（makespan）/ turn-level / trajectory-level 三层嵌套指标（Eq. 2–4），并把 turn-level JCT 分解为 $t_{\text{queue}}+t_{\text{prefill}}+t_{\text{decode}}+t_{\text{stall}}$（Eq. 5）。</li>
+<li><strong>调度探索 (§4)</strong>：引入 PD Orchestration，用单一 orchestration interval $I$ 作旋钮（跑 $I$ 个 decode step 才重新考虑接纳 prefill，$I=1$ 即 prefill 优先），扫描发现内部最优（$I=128$），墙钟时间变化最多 1.40×。</li>
+<li><strong>并行探索 + 系统 (§5–§6)</strong>：证明 PP 提供更优的 prefill–decode 平衡，构建 PipeSwift —— JCT 感知调度层（prefill cost-model 微批划分 + 自适应 decode 重划分）+ PP 内嵌 MTP（verify-extend-draft 循环 + 负载均衡层划分），跑在 SPMD 分布式调度架构上。</li>
+</ul>
+
+<p><strong>核心技术壁垒</strong>：把 MTP 的 draft–verify–extend 循环拆开、重排为 <strong>verify-extend-draft</strong> 并跨流水阶段协调（末阶段独做 extend+draft，其余阶段只做 verify forward），同时用<strong>非均匀层划分</strong>给末阶段留出 MTP 开销 headroom。这是当前开源系统全都缺失的能力（vLLM/SGLang 的 PP 均不支持投机解码），也是 PipeSwift 相对 vLLM PP2 拿到额外 ~1.74× 的来源。</p>
+
+<h3 id="q3-—-结果">Q3 — 结果 <a class="heading-anchor" href="#q3-—-结果" aria-label="Link to q3-—-结果">#</a></h3>
+
+<p>64×H800、两个 360B+ MoE（GLM-4.7-360B、Qwen3.5-397B）、SWE-Bench + BrowseComp 确定性轨迹回放下：overall JCT 比 SGLang wide-EP 快 1.21–1.45×，比 vLLM PP2 快 1.60–2.33×，比用了 2× GPU 的 2P2D PD-disaggregation 快 1.14–1.54×；P99 turn-level JCT 低于最佳 baseline 的一半（10.12s vs 20.86s）。即便给 wide-EP 配上其最优 orchestration，PipeSwift PP2 仍快 1.24×。</p>
+
+<h2 id="3-架构-方法图">3. 架构 / 方法图 <a class="heading-anchor" href="#3-架构-方法图" aria-label="Link to 3-架构-方法图">#</a></h2>
+
+<h3 id="3-1-agent-scope">3.1 Agent scope <a class="heading-anchor" href="#3-1-agent-scope" aria-label="Link to 3-1-agent-scope">#</a></h3>
+
+<ul>
+<li>任务类型：开放式（编码 SWE-Bench、web 搜索 BrowseComp），非闭合式单轮 RAG。</li>
+<li>交互模式：多轮长时（会话长度可达 100k+ token，轮数长尾）。</li>
+<li>自治度：全自治轨迹回放；本文关注的是<strong>引擎侧</strong>服务，而非 agent 决策策略本身 —— agent 逻辑被固定为确定性 trace，隔离出调度/并行的性能。</li>
+</ul>
+
+<h3 id="3-2-the-turn-loop-agent-视角">3.2 The turn loop (agent 视角) <a class="heading-anchor" href="#3-2-the-turn-loop-agent-视角" aria-label="Link to 3-2-the-turn-loop-agent-视角">#</a></h3>
+
+<p>每个 agent 轮次是一个闭环：轨迹在<strong>轮完成</strong>时推进，下一次工具/环境动作必须等完整响应返回后才能开始。</p>
+
+<div class="mermaid">
+stateDiagram-v2
+    [*] --> TurnReady: 上一轮工具结果到达
+    TurnReady --> Queue: 等待被接纳 (t_queue)
+    Queue --> Prefill: 到达 orchestration 边界, 聚合成 wave
+    Prefill --> Decode: MTP draft/verify/extend 循环 (t_decode)
+    Decode --> Stall: 被其他轮的 prefill wave 打断 (t_stall)
+    Stall --> Decode: prefill wave 完成
+    Decode --> ResponseReturn: 生成完整响应 (r_j)
+    ResponseReturn --> ToolCall: 外部工具执行 (t_tool, 引擎外)
+    ToolCall --> TurnReady: 下一轮就绪
+    ResponseReturn --> [*]: 轨迹终止 (成功或到 MaxLen)
+</div>
+
+<ul>
+<li><strong>短期记忆</strong>：上下文窗口即会话累积上下文，靠前缀缓存复用（命中率 >95%）。</li>
+<li><strong>长期/情节记忆</strong>：轨迹日志（trace 回放的 per-turn request、MTP 接受长度、工具延迟）—— 本文把它当作确定性输入。</li>
+<li><strong>工具调用与错误恢复</strong>：工具执行在引擎之外，其记录时长 $t_{\text{tool},j}$ 决定下一轮何时就绪；引擎侧的"错误恢复"体现在 decode 被 prefill 打断后回到 Decode 状态。</li>
+</ul>
+
+<h3 id="3-3-系统架构（引擎侧）">3.3 系统架构（引擎侧） <a class="heading-anchor" href="#3-3-系统架构（引擎侧）" aria-label="Link to 3-3-系统架构（引擎侧）">#</a></h3>
+
+<p>PipeSwift 的两大能力都建在 SPMD 分布式调度架构上：调度决策（batch issue、KV-page 分配、请求驱逐）在每个 worker 上复制，消除中心调度器；靠确定性微批划分算法 + 同步骤加入新请求来保证各分布式调度器一致。</p>
+
+<div class="mermaid">
+flowchart TB
+    subgraph Sched["JCT-aware 调度层 (§6.1)"]
+      O["PD Orchestration 旋钮 I"] --> PW["Prefill wave 聚合"]
+      PW --> PB["Prefill 微批划分 (cost-model, Eq.6-11)"]
+      DR["Decode 自适应重划分 (KV 均衡, Eq.12)"]
+    end
+    subgraph Runtime["PP2 运行时 (两个 EP8 stage)"]
+      S0["Stage P0: verify forward"]
+      S1["Stage P1(last): verify+extend+draft"]
+    end
+    PB --> Runtime
+    DR --> Runtime
+    S0 -. P2P activation .-> S1
+    S1 -. accept length + draft tokens .-> S0
+</div>
+
+<h3 id="3-4-planning-reasoning">3.4 Planning & reasoning <a class="heading-anchor" href="#3-4-planning-reasoning" aria-label="Link to 3-4-planning-reasoning">#</a></h3>
+
+<ul>
+<li>规划风格：<strong>预定工作流</strong>（trace 固定），本文不改 agent 规划；引擎侧的"规划"是调度器决定 prefill 何时成 wave、decode 如何分桶。</li>
+<li>预算：orchestration interval $I$ 全程固定为 32（无 per-workload 调参）；MTP 每步 3 draft token、验证宽度 4；chunk-size 8192。</li>
+<li>回溯：无 agent 级回溯；MTP 的 verify 阶段会根据接受长度回退未接受的 draft token。</li>
+</ul>
+
+<h2 id="4-作者证明">4. 作者证明 <a class="heading-anchor" href="#4-作者证明" aria-label="Link to 4-作者证明">#</a></h2>
+
+<p>本文属系统论文：核心并非闭式收敛证明，而是<strong>成本模型 + 受控扫描 + 消融</strong>。就 agent 类惯例而言：<strong>无形式化作者证明 — 仅实证</strong>（可被形式化界定但作者未界定的量：给定 $(I, P, W, \gamma)$ 下的 wave 时间上界；实际只给了 Eq. 9–10 的近似最优 $K^*$）。下面给出关键 notation 与方程物理意义，并做 6 项一致性检查。</p>
+
+<h3 id="notation-表">Notation 表 <a class="heading-anchor" href="#notation-表" aria-label="Link to notation-表">#</a></h3>
+
+<table>
+<tr><th>符号</th><th>含义</th></tr>
+<tr><td>$A_B, C_i$</td><td>batch 提交时间 / 任务 $i$ 完成时间</td></tr>
+<tr><td>$\text{JCT}_{\text{turn},j}=r_j-s_j$</td><td>轮 $j$ 就绪到完整响应返回的延迟</td></tr>
+<tr><td>$t_{\text{queue}},t_{\text{prefill}},t_{\text{decode}},t_{\text{stall}}$</td><td>turn-level JCT 的四项分解（TTFT $=t_{\text{queue}}+t_{\text{prefill}}$）</td></tr>
+<tr><td>$I$</td><td>orchestration interval（decode step 数）</td></tr>
+<tr><td>$\ell^{\text{cache}}_i,\ell^{\text{new}}_i$</td><td>请求 $i$ 的缓存前缀长 / 新 token 数</td></tr>
+<tr><td>$\alpha,\beta,\gamma$</td><td>prefill 成本模型的二次/线性系数 / 每微批固定开销</td></tr>
+<tr><td>$K, P$</td><td>微批数 / PP degree</td></tr>
+<tr><td>$W$</td><td>wave 内所有就绪轮的总长度相关计算量</td></tr>
+<tr><td>$\ell^{\text{kv}}_i$</td><td>请求 $i$ 当前 KV/上下文长度</td></tr>
+</table>
+
+<h3 id="方程物理意义（load-bearing）">方程物理意义（load-bearing） <a class="heading-anchor" href="#方程物理意义（load-bearing）" aria-label="Link to 方程物理意义（load-bearing）">#</a></h3>
+
+<ul>
+<li><strong>Eq. 2</strong> overall JCT $=\min(\max_{i\in B}C_i - A_B)$：makespan，等价于最大化 $|B|/\text{makespan}$（任务吞吐）。</li>
+<li><strong>Eq. 5</strong> turn-level 分解：把每轮延迟拆成自身工作 + 排队 + 被打断。prefill 优先最小化 $t_{\text{queue}}$ 却忽视 $t_{\text{stall}}$，碎片化 prefill 抬高所有在飞请求的 $t_{\text{stall}}$。</li>
+<li><strong>Eq. 6</strong> $f(x)=\alpha x^2+\beta x$：prefill 成本 = 注意力二次项 + per-token 线性项。</li>
+<li><strong>Eq. 7</strong> $\tilde g(c,x)=f(c+x)-f(c)$：只计新 token 在已缓存前缀之上的边际成本。</li>
+<li><strong>Eq. 9</strong> $T_{\text{wave}}(K)\approx(K+P-1)(W/K+\gamma)$：$K+P-1$ 为 fill+drain 步数；权衡 bubble（随 $K$ 增）与固定开销（随 $K$ 摊薄）。</li>
+<li><strong>Eq. 10</strong> $K^*\approx\sqrt{(P-1)W/\gamma}$：Eq. 9 的闭式最小值点 —— $W$ 或 $P$ 越大微批越多，$\gamma$ 越大微批越少。</li>
+</ul>
+
+<h3 id="6-项最小检查">6 项最小检查 <a class="heading-anchor" href="#6-项最小检查" aria-label="Link to 6-项最小检查">#</a></h3>
+
+<ol>
+<li><strong>成功率/性能扫描沿轴单调性</strong>：Tab. 2 沿 $I$ 扫描，wall time 呈 U 形（3020→2482→3486），P 单调降、D 单调升 —— 与 Eq. 5 的 $t_{\text{prefill}}$↓/$t_{\text{stall}}$-driven decode 效率↓一致。✅</li>
+<li><strong>prefill 聚合量级检查</strong>：Tab. 2 P 列 1093.7→304.6 (≈3.6×)，若个体 prefill 已打满硬件则不可能，反证"远低于 compute-bound"。✅</li>
+<li><strong>tail-percentile 最优点漂移</strong>：P50 最优 $I=32$、P90 $I=128$、P99 $I=512$，与 Insight #3「decode 越长越受益于少打断」的方向一致。✅</li>
+<li><strong>并行—调度耦合预测</strong>：Insight #5 预测更便宜的 prefill 把最优 $I$ 推小；Fig. 8 实测 PP 最优 $I=16$ vs EP $I=32$。✅</li>
+<li><strong>MTP 贡献数值一致性</strong>：Tab. 5 给 1.31× (scheduling) × 1.74× (MTP) = 2.29×；但 §7.2 正文写"a further 1.83×"（30.73→与另一处不符）—— <strong>内部不一致，作者未消解</strong>，两值均保留。⚠️</li>
+<li><strong>命名一致性</strong>：正文系统名 "PipeSwift"，Fig. 6 caption / Tab. 3 却写 "PDWeaver" —— <strong>命名不一致，作者未消解</strong>。⚠️</li>
+</ul>
+
+<h3 id="agent-特定：延迟预算与失败模式">Agent 特定：延迟预算与失败模式 <a class="heading-anchor" href="#agent-特定：延迟预算与失败模式" aria-label="Link to agent-特定：延迟预算与失败模式">#</a></h3>
+
+<ul>
+<li><strong>每轮延迟预算</strong> = LLM 推理（prefill+decode）+ 工具调用 $t_{\text{tool}}$（引擎外）+ 内存读（前缀缓存）。本文关注的是引擎侧那一段；未声称"交互式延迟"绝对值，而是相对 JCT 缩减。</li>
+<li><strong>失败模式分类</strong>：最主要的失败类是 2P2D 的 <strong>KV-transfer 超时崩溃</strong>（开源实现传全量 KV 而非增量，每轮多传 >30×），Tab. 4 显示队列非空占 74.9–100% 状态。PipeSwift 通过并置 + 不做跨池 KV 传输<strong>根本回避</strong>了这一失败类。</li>
+</ul>
+
+<h2 id="5-实验与数据">5. 实验与数据 <a class="heading-anchor" href="#5-实验与数据" aria-label="Link to 5-实验与数据">#</a></h2>
+
+<h3 id="5-1-调度扫描：内部最优的证据">5.1 调度扫描：内部最优的证据 <a class="heading-anchor" href="#5-1-调度扫描：内部最优的证据" aria-label="Link to 5-1-调度扫描：内部最优的证据">#</a></h3>
+
+<p><img src="/assets/2609.16491/fig3.png" alt="Figure 3: PD orchestration 时间线示意"></p>
+
+<p><em>Paper's Figure 3（caption 述 $I=1$ 为 prefill 优先、$I>1$ 把 prefill 推迟聚合成大 batch）.</em> 中排（$I=1$）每个到达请求立即接纳，导致碎片化 prefill 与频繁 decode 打断；下排（$I>1$）把 BCD 聚合成一波，提升 prefill 效率但延后新请求进入 decode。读者应把 $I$ 理解为「prefill 效率 vs decode 效率」的连续旋钮。</p>
+
+<p><img src="/assets/2609.16491/tab2.png" alt="Table 2: orchestration interval I 的扫描结果"></p>
+
+<p><em>Paper's Table 2（Qwen3-VL-235B, 单节点 EP8TP8 无 DP attention）.</em> 这是全文最载重的实验：wall time 在 $I=128$ 取最小 2481.9s，两端更差（$I=1$ 为 3020.3、$I=512$ 为 3485.9，比值 1.40×）；P 列 1093.7→304.6 证明 prefill 远未饱和；P50/P90/P99 最优点随 percentile 右移，直接支撑「平衡而非极值」的核心论点。</p>
+
+<h3 id="5-2-端到端：pp-在-jct-下反超-wide-ep">5.2 端到端：PP 在 JCT 下反超 wide-EP <a class="heading-anchor" href="#5-2-端到端：pp-在-jct-下反超-wide-ep" aria-label="Link to 5-2-端到端：pp-在-jct-下反超-wide-ep">#</a></h3>
+
+<p><img src="/assets/2609.16491/fig6.png" alt="Figure 6: BC/SWE 端到端 overall JCT"></p>
+
+<p><em>Paper's Figure 6（caption: "End-to-end performance on BC and SWE workloads..."；bar 上数字为相对 PDWeaver 的归一化时间）.</em> 12 个子面板覆盖 {GLM-4.7, Qwen-3.5}×{512,1024 tasks}×{64K,80K,96K}。PipeSwift 在每个完成格中最低；"×" 崩溃标记集中在高压力 GLM 格（对应 2P2D 的 KV-transfer 失败）。注意短上下文/低压力下 EP8 或 PipeSwift 偶尔落后 SGLang EP16（<1×），说明优势并非无条件。</p>
+
+<p><img src="/assets/2609.16491/tab3.png" alt="Table 3: 案例研究——turn-level JCT 与引擎侧分解"></p>
+
+<p><em>Paper's Table 3（GLM-4.7 BC, 512 tasks, 80K MaxLen；系统名此处标 "PDWeaver PP2"）.</em> (a) turn-level：PipeSwift P99=10.12s，不到次优 (2P2D 20.86s) 的一半。(b) 引擎侧：SGLang w/o p delay 的 prefill 独占 1962.4s，2P2D 用 2× GPU 仅打平（3004.7 vs 3031.4），vLLM PP2 无聚合无 MTP → decode 高达 2428.3s；PipeSwift 把 prefill 压到 705.8s、wall 到 2243.9s。</p>
+
+<h3 id="5-3-可扩展性与-2p2d-失败的机理">5.3 可扩展性与 2P2D 失败的机理 <a class="heading-anchor" href="#5-3-可扩展性与-2p2d-失败的机理" aria-label="Link to 5-3-可扩展性与-2p2d-失败的机理">#</a></h3>
+
+<p><img src="/assets/2609.16491/fig7.png" alt="Figure 7: concurrency 与 MaxLen 可扩展性"></p>
+
+<p><em>Paper's Figure 7（归一化到 SGLang EP16 w/o p delay）.</em> 争用越大优势越大：C=28 时相对 vLLM PP2 达 1.86×，MaxLen 192K 时达 1.72×。cost-model wave 划分 + 自适应 decode 重划分让微批在长上下文下仍均衡，故增益随压力上升而扩大，而非被侵蚀。</p>
+
+<p><img src="/assets/2609.16491/tab4.png" alt="Table 4: 2P2D 的 KV-transfer 压力"></p>
+
+<p><em>Paper's Table 4.</em> decode 侧传输队列在 74.9–100% 采样状态非空；均值深度随 concurrency 从 1.28 升到 10.93、随上下文从 1.40 升到 4.32，最终超时崩溃。这解释了 2P2D 为何在高压 sweep 中缺席 —— 全量 KV 传输（而非增量）在 agentic「小增量 + 大缓存」下每轮多传 >30× 字节。</p>
+
+<h2 id="6-论证链">6. 论证链 <a class="heading-anchor" href="#6-论证链" aria-label="Link to 6-论证链">#</a></h2>
+
+<table>
+<tr><th>步</th><th>论断</th><th>依据（论文内部）</th></tr>
+<tr><td>1</td><td>Agentic 目标是 JCT（makespan/turn-level），非 token SLO；用户看不到 token 流</td><td>§1 para 2, §3 Eq. 2–4</td></tr>
+<tr><td>2</td><td>prefill 优先虽拿最优 TTFT + 最高 decode 吞吐，却不是最优 JCT</td><td>§4.2 Insight #1；Tab. 2（$I=1$ decode 最低但 wall 差 1.22×）</td></tr>
+<tr><td>3</td><td>原因：prefill 优先最小化 $t_{\text{queue}}$ 却让碎片 prefill 抬高所有请求的 $t_{\text{stall}}$</td><td>Eq. 5 分解 + Tab. 2 P 列 1093.7→304.6</td></tr>
+<tr><td>4</td><td>故 JCT 由 prefill/decode 效率的<strong>平衡</strong>决定，最优在内部（$I=128$）</td><td>§4.2 Insight #3；Tab. 2 wall U 形</td></tr>
+<tr><td>5</td><td>任何改变 prefill/decode 相对成本的机制都会移动最优点 → 转向并行轴</td><td>§4.2 末 → §5</td></tr>
+<tr><td>6</td><td>PP 避免逐层跨节点 EP 通信、只做邻接 activation 传输，prefill 更快</td><td>§5.2 Insight #4；Tab. 3（PP2 prefill 1122 vs EP16 1962）</td></tr>
+<tr><td>7</td><td>PP 无需比 wide-EP 更好的 decode，只要 prefill 优势抵消 decode 增量即降低 JCT</td><td>§5.2 Insight #4</td></tr>
+<tr><td>8</td><td>并行与调度须共同探索：更便宜的 prefill 把最优 $I$ 推小</td><td>§5.2 Insight #5；Fig. 8（PP $I=16$ vs EP $I=32$，PP 仍快 1.24×）</td></tr>
+<tr><td>9</td><td>工程化 PP 需抑制 bubble（cost-model 微批）+ 把 MTP 塞进 PP（verify-extend-draft）</td><td>§6.1–§6.2</td></tr>
+</table>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p>系统为"open-source pipeline-parallel runtime"（摘要/§1/§6 均称开源），但 L1 未提供代码仓库 URL 或文件行号，因此：<strong>[实现未公开 —— L1 无仓库/行号引用]</strong>。以下为可从论文定位的关键实现细节与壁垒。</p>
+
+<h3 id="核心技术壁垒（单一最难复制点）">核心技术壁垒（单一最难复制点） <a class="heading-anchor" href="#核心技术壁垒（单一最难复制点）" aria-label="Link to 核心技术壁垒（单一最难复制点）">#</a></h3>
+
+<p><strong>PP 内嵌 MTP 的 verify-extend-draft 重排 + 非均匀层划分</strong>。SGLang 的 draft-verify-extend 是单机语义；搬到 PP 后，draft/extend 若放在每个 decode step 都要跨阶段协调，中心调度器难以承受。PipeSwift 让<strong>非末阶段只做 verify forward</strong>、<strong>末阶段独做 verify+extend+draft</strong>，每步把 accept length 与下批 draft token 经 P2P 回传给前序阶段更新状态。由于末阶段额外承担 KV 扩展 + MTP 层 + 采样，均匀分层会让末阶段成稳态瓶颈 —— 故<strong>给末阶段分更少 backbone 层</strong>，其余层重分到前序阶段（离线 profile per-layer verify + KV-extend + MTP + sample 成本后选整数层数）。这是 vLLM/SGLang 现有 PP 都不支持的能力，也是相对 vLLM PP2 额外 ~1.74× 的来源（§6.2.2, §7.5 Tab. 5）。</p>
+
+<h3 id="关键实现细节（易漏的-1-2-个-trick）">关键实现细节（易漏的 1-2 个 trick） <a class="heading-anchor" href="#关键实现细节（易漏的-1-2-个-trick）" aria-label="Link to 关键实现细节（易漏的-1-2-个-trick）">#</a></h3>
+
+<ol>
+<li><strong>SPMD 分布式调度器</strong>（§6.3）：调度决策在每个 worker 复制，无中心调度器；靠<strong>确定性</strong>微批划分（Eq. 11 贪心 bin-packing）+ <strong>同一 scheduling step 加入新请求</strong>来保证各 worker 一致 —— 否则分布式调度会发散。这是让动态 PP schedule 可实现的隐性前提。</li>
+<li><strong>decode 自适应重划分只在两处触发</strong>（§6.1.2）：一个 prefill wave 后、以及任一请求生成完成时；每次 flush 仅耗一个 decode step、贪心 bin-packing 几十微秒完成，故开销可忽略。忽略这个"稀疏触发"会误以为重划分很贵。</li>
+</ul>
+
+<h3 id="agent-特定补充">Agent 特定补充 <a class="heading-anchor" href="#agent-特定补充" aria-label="Link to agent-特定补充">#</a></h3>
+
+<ul>
+<li><strong>LLM backbone 要求（§7）</strong>：方法针对 360B+ MoE（GLM-4.7-360B GQA、Qwen3.5-397B 混合 GQA–GDN），需支持 MTP/投机解码格式；Qwen3.5 因混合注意力使 per-token KV 更小，天然缓解 2P2D 的传输压力。未做小 backbone 消融。</li>
+<li><strong>评测（§8 base）</strong>：SWE-Bench + BrowseComp；指标为 overall JCT（makespan）与 turn-level mean/P50/P90/P99；baseline 为 SGLang EP16(±prefill delay)、vLLM PP2、2P2D（2× GPU）、及同引擎 EP8 参照点 —— 全部共享同一 kernel stack（DeepGEMM/DeepEP/FlashAttention-3），故差距只来自调度与并行。</li>
+<li><strong>生产就绪</strong>：确定性 trace 回放保证可复现；沙箱/密钥/限流不在本文范围（引擎侧研究）。</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
