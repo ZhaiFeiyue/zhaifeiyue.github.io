@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Synthesis: HBF Sucks? A Full-Stack Characterization of High-Bandwidth Flash for KV-Centric LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/">Papers</a>
+  <a href="/overview/" class="active">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">HBF Sucks? A Full-Stack Characterization of High-Bandwidth Flash for KV-Centric LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2608.11668 — Cross-paper Synthesis</div>
+<div class="link-area" style="border-top:none;margin-top:8px">
+<a href="/papers/2608.11668/detail.html">→ Detail (L2)</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="/overview/">← All Syntheses</a>
+</div>
+<div class="detail-content">
+
+<h1 id="hbf-sucks-—-相关论文综合-l3-mode-a">HBF Sucks? — 相关论文综合 (L3 Mode A) <a class="heading-anchor" href="#hbf-sucks-—-相关论文综合-l3-mode-a" aria-label="Link to hbf-sucks-—-相关论文综合-l3-mode-a">#</a></h1>
+
+<blockquote>
+Target: <strong>2608.11668</strong> — *HBF Sucks? A Full-Stack Characterization of High-Bandwidth
+Flash for KV-Centric LLM Serving.* Positioned against 6 framework peers in the
+KV-cache hierarchy lineage. Two supplied peers (<code>2310.0724</code>, <code>2401.0967</code>) have no
+L2 in the KB and are marked MISSING; the analysis below draws only on the 6 present.
+</blockquote>
+
+<hr>
+
+<h2 id="1-相关论文">1. 相关论文 <a class="heading-anchor" href="#1-相关论文" aria-label="Link to 1-相关论文">#</a></h2>
+
+<p>本篇是 KV-cache <strong>存储层级</strong>这条主线上的一篇"反结论/器件-负载错配"论文：它不提出新系统，而是把"把 SSD 换成 package-local 闪存 (HBF)、运行时不变"这个 drop-in 部署放进 falsification harness 里证伪</p>
+<p><a href="/papers/2608.11668/detail.html#q2-—-方法-the-method" class="ref-link" title="2608.11668#q2-—-方法-the-method">[2608.11668]</a>。因此它的相关论文全部来自它所批判、复用、或反证的那条 KV-层级演进链。按角色分四簇：</p>
+
+<p><strong>(A) 近端 KV 内存抽象——被复用的地基</strong></p>
+<ul>
+<li><strong>2309.06180 (vLLM / PagedAttention)</strong>：把 OS 分页引入 KV，固定 16-token block、非连续映射、按需分配，把每请求浪费限制在一个 block 内 <a href="/papers/2309.06180/detail.html#§2-痛点-方法-结果" class="ref-link" title="2309.06180#§2-痛点-方法-结果">[2309.06180]</a>。本篇的 connector 用 "hashed 16-token KV identifiers" 做 prefix lookup，其 block 粒度正是 PagedAttention 的直系后裔；vLLM 管的是 <strong>HBM 之内</strong>，本篇管的是 <strong>HBM 之下的那一层</strong>。</li>
+</ul>
+
+<p><strong>(B) 分层 KV offloading——最直接的对照 (正面样本)</strong></p>
+<ul>
+<li><strong>2403.19708 (CachedAttention / AttentionStore)</strong>：DRAM+SSD 分层 KV 存储 + scheduler-aware fetch/evict，把 >99.6% 命中搬进 DRAM，TTFT ↓ 高达 87% <a href="/papers/2403.19708/detail.html#q3-—-结果-the-result" class="ref-link" title="2403.19708#q3-—-结果-the-result">[2403.19708]</a>。这是"分层 KV 该怎么做才赢"的范本，与本篇的建设性结论（reuse-aware placement）高度同构——却得到相反的净结果，是本篇最关键的对照。</li>
+</ul>
+
+<p><strong>(C) 复用挖掘——C2 论证的前提</strong></p>
+<ul>
+<li><strong>2312.07104 (SGLang / RadixAttention)</strong>：radix 树 + LRU + longest-shared-prefix-first 调度，命中率 50–99%，证明前缀复用巨大且值得缓存 <a href="/papers/2312.07104/detail.html#q3-—-结果-results" class="ref-link" title="2312.07104#q3-—-结果-results">[2312.07104]</a>。本篇 Finding 3 正是接过"复用高度倾斜"这个事实——热块留在近端、HBF 只拿到 write-once 冷尾。</li>
+</ul>
+
+<p><strong>(D) 第二层 KV 的搬运 / 近数据计算——C1 的两面</strong></p>
+<ul>
+<li><strong>2305.05920 (FastServe)</strong>：proactive KV swapping 把 KV 扩到 host memory，用 PCIe-计算重叠隐藏传输延迟 <a href="/papers/2305.05920/detail.html#§2-痛点-方法-结果" class="ref-link" title="2305.05920#§2-痛点-方法-结果">[2305.05920]</a>。</li>
+<li><strong>2403.11421 (FastDecode)</strong>：把 attention 计算搬到 KVCache 所在的 CPU（compute near data），而非把 KV 搬回 GPU <a href="/papers/2403.11421/detail.html#§2-痛点-方法-结果" class="ref-link" title="2403.11421#§2-痛点-方法-结果">[2403.11421]</a>。这两篇是本篇 C1（尤其 Finding 2 base-die NMP）的正面参照：搬运/近数据在它们那里成立，为什么在 HBF 上不成立。</li>
+</ul>
+
+<p><strong>(E) 放置作为一等公民——meta 主题 (最远的一簇)</strong></p>
+<ul>
+<li><strong>2312.11819 (FlexRLHF)</strong>：训练侧的 disaggregated / interleaving placement，把"训练 vs 推理运行时"物理分离 <a href="/papers/2312.11819/detail.html#核心三问" class="ref-link" title="2312.11819#核心三问">[2312.11819]</a>。域不同（RLHF 训练，非 serving），但与本篇的 reverse implication（把 read-mostly 权重与 write-heavy KV 物理隔离）共享"放置比器件原始速度更决定性能"这一元论点。</li>
+</ul>
+
+<hr>
+
+<h2 id="2-本篇-vs-相关论文的-delta">2. 本篇 vs 相关论文的 delta <a class="heading-anchor" href="#2-本篇-vs-相关论文的-delta" aria-label="Link to 2-本篇-vs-相关论文的-delta">#</a></h2>
+
+<h3 id="2-1-方法论-delta：证伪-harness-vs-系统提案">2.1 方法论 delta：证伪 harness vs 系统提案 <a class="heading-anchor" href="#2-1-方法论-delta：证伪-harness-vs-系统提案" aria-label="Link to 2-1-方法论-delta：证伪-harness-vs-系统提案">#</a></h3>
+
+<p>上述 6 篇里有 4 篇（vLLM / SGLang / CachedAttention / FastServe / FastDecode）都是"我提出系统 X，赢基线 N×"。本篇反其道：给出一个一阶成本-收益恒等式 $\Delta_{\text{HBF}}=f\Delta t_{\text{media}}-C_{\text{move}}-C_{\text{pkg}}-C_{\text{var}}-C_{\text{life}}$，把它拆成三个可证伪的必要条件 C1/C2/C3，再用六个 Finding 逐个证伪</p>
+<p><a href="/papers/2608.11668/detail.html#4-作者证明-author-s-model" class="ref-link" title="2608.11668#4-作者证明-author-s-model">[2608.11668]</a>。<strong>真正难复制的一手</strong>是把"介质变快"与"介质变快所被迫触发的封装取舍"解耦——用 media-only sweep（$k=3.75\times$ 只动 HBF 延迟）反演出暴露分数 $f\approx1\%$，从一次 serving 测量里直接量出来</p>
+<p><a href="/papers/2608.11668/detail.html#q2-—-方法-the-method" class="ref-link" title="2608.11668#q2-—-方法-the-method">[2608.11668]</a>。所有 KV-层级系统论文都默认"更快的层→更快的系统"，本篇是这条链上第一次给出反例并量化其边界。</p>
+
+<h3 id="2-2-增量部分（站在肩膀上）">2.2 增量部分（站在肩膀上） <a class="heading-anchor" href="#2-2-增量部分（站在肩膀上）" aria-label="Link to 2-2-增量部分（站在肩膀上）">#</a></h3>
+
+<ul>
+<li>复用 <strong>vLLM</strong> 的 paged 16-token block 作为 connector 的哈希粒度 <a href="/papers/2309.06180/detail.html#§2-痛点-方法-结果" class="ref-link" title="2309.06180#§2-痛点-方法-结果">[2309.06180]</a>。</li>
+<li>复用 <strong>Mooncake</strong> 式异步 offload 运行时（KB 内无 L2；本篇作为"被测对象"held fixed）。</li>
+<li>复用 TokenSim 作为模拟器底座。</li>
+<p>本篇几乎没有新系统机制，其新意 100% 在建模与测量方法上。</p>
+</ul>
+
+<h3 id="2-3-矛盾点（cross-source-冲突，标注根因）">2.3 矛盾点（cross-source 冲突，标注根因） <a class="heading-anchor" href="#2-3-矛盾点（cross-source-冲突，标注根因）" aria-label="Link to 2-3-矛盾点（cross-source-冲突，标注根因）">#</a></h3>
+
+<p><strong>矛盾 1 — 分层 KV 存储：赢 vs 输。</strong></p>
+<p>CachedAttention 证明分层 KV（DRAM+SSD）大赢，Figure 24 显示加 SSD 把命中从 ~0% 拉到 71–90%，"是容量而非带宽在约束" <a href="/papers/2403.19708/detail.html#5-实验与数据" class="ref-link" title="2403.19708#5-实验与数据">[2403.19708]</a>；本篇却说分层 KV（换成 HBF）在每条 trace 上净负、E2E 慢 2–5.5×</p>
+<p><a href="/papers/2608.11668/detail.html#q3-—-结果-the-result" class="ref-link" title="2608.11668#q3-—-结果-the-result">[2608.11668]</a>。</p>
+
+<blockquote>
+<strong>矛盾根源（放置位置 + 负载框定，非结论对立）</strong>：CachedAttention 的第二层是 <strong>off-package SSD</strong>，它<em>不</em>牺牲近端容量——SSD 在加速器封装之外，近端 HBM 一字节不减；本篇的 HBF 是 <strong>on-package</strong>，它用 interposer 槽位换闪存，把近端从 96 GB 砍到 48 GB（$C_{\text{pkg}}$），而正是近端容量 gate 了 admission
+<a href="/papers/2608.11668/detail.html#q1-—-痛点-the-problem" class="ref-link" title="2608.11668#q1-—-痛点-the-problem">[2608.11668]</a>。其次负载不同：CachedAttention 打的是 multi-turn（history >99%、天然读多写少）；本篇覆盖整条生产 trace，含大量 write-once 瞬态 KV。两者在各自设定下都对——CachedAttention 恰好是本篇 §10 "reuse-aware placement 才能让 HBF 赢"的存在性证明，只是它把该策略用在了没有 $C_{\text{pkg}}$ 惩罚的 SSD 上。
+</blockquote>
+
+<p><strong>矛盾 2 — 近数据计算：成立 vs 失效。</strong></p>
+<p>FastDecode 的核心 insight 是 decode attention 是 memory-bandwidth-bound，应 compute near data（KVCache 留 CPU），据此拿到 1.88–5.04× <a href="/papers/2403.11421/detail.html#§2-痛点-方法-结果" class="ref-link" title="2403.11421#§2-痛点-方法-结果">[2403.11421]</a>；本篇 Finding 2 把 attention 引擎放到 HBF base die（同样是 near-data），却只得 −0.03%，还不如 GPU attention</p>
+<p><a href="/papers/2608.11668/detail.html#5-实验与数据-experiments" class="ref-link" title="2608.11668#5-实验与数据-experiments">[2608.11668]</a>。</p>
+
+<blockquote>
+<strong>矛盾根源（覆盖率 + 带宽匹配）</strong>：FastDecode 把 <strong>100%</strong> 的 KVCache 放到 CPU R-worker，且用<strong>分布式聚合 CPU 带宽</strong>去匹配 GPU 处理率 <a href="/papers/2403.11421/detail.html#§2-痛点-方法-结果" class="ref-link" title="2403.11421#§2-痛点-方法-结果">[2403.11421]</a>；本篇 base-die 引擎只能看到运行时已经放进 HBF 的<strong>冷 KV，覆盖率仅 15.48%</strong>，热 KV 仍在 HBM 回退到 GPU，且每步付 12 μs 访问延迟摊不平 <a href="/papers/2608.11668/detail.html#5-实验与数据-experiments" class="ref-link" title="2608.11668#5-实验与数据-experiments">[2608.11668]</a>。同一句"把计算搬到数据旁"，在全覆盖+带宽匹配下成立，在低覆盖+微秒延迟切片上失效。
+</blockquote>
+
+<h3 id="2-4-与-sglang-fastserve-的非冲突性-delta">2.4 与 SGLang / FastServe 的非冲突性 delta <a class="heading-anchor" href="#2-4-与-sglang-fastserve-的非冲突性-delta" aria-label="Link to 2-4-与-sglang-fastserve-的非冲突性-delta">#</a></h3>
+
+<ul>
+<li>与 <strong>SGLang</strong>：不冲突而是承接。SGLang 的高命中率量的是<strong>近端 (HBM) radix 复用</strong> <a href="/papers/2312.07104/detail.html#5-实验与数据" class="ref-link" title="2312.07104#5-实验与数据">[2312.07104]</a>；本篇 Finding 3 正是用这条"复用极度倾斜、热块常驻近端"的事实解释为什么 HBF 只拿到 $\rho=0.20$–$0.88<1$ 的写多流 <a href="/papers/2608.11668/detail.html#q3-—-结果-the-result" class="ref-link" title="2608.11668#q3-—-结果-the-result">[2608.11668]</a>。SGLang 越成功（近端复用越充分），HBF 拿到的尾巴越冷——二者相互印证。</li>
+<li>与 <strong>FastServe</strong>：FastServe 的 proactive swap 之所以赢，是因为瓶颈在<strong>可被隐藏的传输延迟</strong> <a href="/papers/2305.05920/detail.html#§4-作者证明" class="ref-link" title="2305.05920#§4-作者证明">[2305.05920]</a>；本篇证明 HBF 场景瓶颈<strong>不在</strong>传输延迟（$f\approx1\%$，连接器时间砍 3.2× 也无用），而在近端容量。FastServe 的重叠术在 $f\approx1\%$ 时无处施力——这是同一"第二层 KV"主题下的边界补充。</li>
+</ul>
+
+<hr>
+
+<h2 id="3-可攻击面">3. 可攻击面 <a class="heading-anchor" href="#3-可攻击面" aria-label="Link to 3-可攻击面">#</a></h2>
+
+<p>对本篇具体断言的对抗性反驳：</p>
+
+<ol>
+<li><strong>$f\approx1\%$ 依赖一阶线性假设。</strong> Eq. (7) $\Delta T/T=f(1-1/k)$ 把暴露项当作随介质延迟线性缩放，再反演 $f$ <a href="/papers/2608.11668/detail.html#4-作者证明-author-s-model" class="ref-link" title="2608.11668#4-作者证明-author-s-model">[2608.11668]</a>。但若 secondary-tier I/O 与 compute 存在非线性排队耦合（介质变快改变 batch 组成 → 改变 $T_{\text{rest}}$），反演出的 $f$ 会被系统性低估。本篇自己的 Fig 4(c) 显示连接器时间砍半时 tokens/s 反降到 0.75×——说明介质与队列并非可加，恰恰动摇了"$f$ 是纯乘性暴露分数"的前提。<strong>攻击点</strong>：$f$ 可能是负载相关变量而非常数上限。</li>
+</ul>
+
+<ol>
+<li><strong>"运行时不变"是自设的稻草人。</strong> 本篇 held-fixed 的是未改的 Mooncake watermark 驱逐策略 <a href="/papers/2608.11668/detail.html#3-架构-方法图-architecture" class="ref-link" title="2608.11668#3-架构-方法图-architecture">[2608.11668]</a>；而 CachedAttention 已证明 scheduler-aware 驱逐能把命中从 LRU 的 58% 提到 86%、并把 >99.6% 命中搬进快层 <a href="/papers/2403.19708/detail.html#5-实验与数据" class="ref-link" title="2403.19708#5-实验与数据">[2403.19708]</a>。批评者可主张：本篇量到的 $\rho<1$、write-heavy 是<strong>策略产物而非器件属性</strong>——换成 reuse-aware admission，送进 HBF 的就不是冷尾。本篇在 §10 其实<strong>承认</strong>了这点（"HBF earns its place when used selectively"），所以这是"drop-in 会输"而非"HBF 会输"，标题的绝对化措辞可攻击。</li>
+</ul>
+
+<ol>
+<li><strong>$C_{\text{pkg}}$ 的量级来自 roadmap 假设。</strong> 96→48 GB 近端减半、HBF-1/HBF-2 的 2028/2030 组织都是 KAIST roadmap 投影 <a href="/papers/2608.11668/detail.html#q1-—-痛点-the-problem" class="ref-link" title="2608.11668#q1-—-痛点-the-problem">[2608.11668]</a>。若未来 interposer 密度使 HBF 不必挤占 HBM 槽位（roadmap 里的 HBF-3/2032 就朝这个方向），$C_{\text{pkg}}$ 大幅缩小，主导项消失，结论可能反转。<strong>攻击点</strong>：核心成本项是工艺时点假设，非物理定律。</li>
+</ul>
+
+<ol>
+<li><strong>纯模拟、无硅片验证。</strong> 全部结果来自扩展 TokenSim + 3D-ICE 模型 <a href="/papers/2608.11668/detail.html#5-实验与数据-experiments" class="ref-link" title="2608.11668#5-实验与数据-experiments">[2608.11668]</a>；热限 202.27 GB/s 依赖选定的 80°C 结温与节流策略，endurance 用"刻意有利"的 TLC 预算。与之对比，vLLM / SGLang / CachedAttention 均有真实系统或生产命中数据（SGLang 一个月 Chatbot Arena 52.4/74.1% 命中 <a href="/papers/2312.07104/detail.html#q3-—-结果-results" class="ref-link" title="2312.07104#q3-—-结果-results">[2312.07104]</a>；CachedAttention 9K ShareGPT 实测 <a href="/papers/2403.19708/detail.html#q3-—-结果-the-result" class="ref-link" title="2403.19708#q3-—-结果-the-result">[2403.19708]</a>）。本篇的证据层级低于它所批判的对象——一个真实 HBF+reuse-aware 栈可能落在模型未覆盖的角落。</li>
+</ul>
+
+<ol>
+<li><strong>建设性结论未被自证。</strong> 本篇断言"selective + reuse-aware + write-budgeted + thermal-coordinated"的 HBF 才有价值 <a href="/papers/2608.11668/detail.html#q3-—-结果-the-result" class="ref-link" title="2608.11668#q3-—-结果-the-result">[2608.11668]</a>，但没有实现并测量这个正面配置——它只证伪了 drop-in，没证成替代方案。CachedAttention 已用 off-package SSD 实现了同型策略并赢，反而暗示把该策略移到 on-package HBF 未必再赢（$C_{\text{pkg}}$ 仍在）。<strong>攻击点</strong>：负面结论扎实，正面处方是未经验证的猜想。</li>
+</ul>
+
+<hr>
+
+<h2 id="4-生态位">4. 生态位 <a class="heading-anchor" href="#4-生态位" aria-label="Link to 4-生态位">#</a></h2>
+
+<p><strong>范式定位：KV-层级演进链的第一块"边界石"。</strong></p>
+<p>这条链是 vLLM（HBM 内分页）→ Mooncake / CachedAttention（HBM→DRAM→SSD 分层）→ 更低的 package-local 闪存（HBF）。前面每一步都是"多加一层更便宜的容量、系统更好"，社区默认此单调性。本篇是这条链上第一次系统性地问"再加一层什么时候<strong>不</strong>成立"，并给出三个器件无关的判据 $f$、$\rho$、sustained BW</p>
+<p><a href="/papers/2608.11668/detail.html#4-作者证明-author-s-model" class="ref-link" title="2608.11668#4-作者证明-author-s-model">[2608.11668]</a>。它在生态里的位置不是"又一个 KV 系统"，而是所有 KV 系统的<strong>准入检查表</strong>：任何 package-local far tier（CXL-attached flash、其他 stacked NAND）在部署前都应先量这三个数。</p>
+
+<p><strong>与 CachedAttention 互为阴阳。</strong> CachedAttention 给出"scheduler-aware placement 让分层存储大赢"的<strong>正面</strong>存在性证明 <a href="/papers/2403.19708/detail.html#q2-—-方法-the-method" class="ref-link" title="2403.19708#q2-—-方法-the-method">[2403.19708]</a>；本篇给出"drop-in placement 让分层存储大输"的<strong>反面</strong>证明。两篇合起来精确刻画了同一条 placement 轴：赢的一侧要求 reuse-aware + 不牺牲近端；输的一侧是 reuse-blind + 牺牲近端。本篇的 Fig 12 placement map 与 CachedAttention 的 >99.6% DRAM-hit 反演，讲的是同一件事的两端。</p>
+
+<p><strong>采用证据（弱）。</strong> 本篇明确 <code>[实现未公开]</code>，是 simulator study，无 artifact release <a href="/papers/2608.11668/detail.html#7-实现-cross-reference" class="ref-link" title="2608.11668#7-实现-cross-reference">[2608.11668]</a>。对比生态位坐标里的采用度：vLLM 已是事实标准引擎 <a href="/papers/2309.06180/detail.html#§7-实现-cross-reference" class="ref-link" title="2309.06180#§7-实现-cross-reference">[2309.06180]</a>、SGLang runtime 开源且 radix cache 已部分上游进 vLLM <a href="/papers/2312.07104/detail.html#7-实现-cross-reference" class="ref-link" title="2312.07104#7-实现-cross-reference">[2312.07104]</a>、CachedAttention 与 FastDecode 亦 <code>[实现未公开]</code> <a href="/papers/2403.19708/detail.html#7-实现-cross-reference" class="ref-link" title="2403.19708#7-实现-cross-reference">[2403.19708]</a>。本篇的影响力载体不是代码，而是那张"三条件 + Eq. (6)"的分析框架——它更可能作为<strong>设计准则被引用</strong>（如同 FlexRLHF 的 placement-ratio 抽象被后续框架吸收 <a href="/papers/2312.11819/detail.html#核心三问" class="ref-link" title="2312.11819#核心三问">[2312.11819]</a>），而非被 fork。</p>
+
+<hr>
+
+<h2 id="5-未探索方向">5. 未探索方向 <a class="heading-anchor" href="#5-未探索方向" aria-label="Link to 5-未探索方向">#</a></h2>
+
+<p>从这个 cluster 的交叉点长出的 hybrid / adaptive 方向：</p>
+
+<ol>
+<li><strong>Reuse-aware HBF 放置 = SGLang 复用倾斜 × CachedAttention scheduler-aware 驱逐。</strong></li>
+<p>本篇 Fig 12 指出 HBF 的"强区"是 read-mostly + $\rho\gg1$（权重、共享前缀）。把 SGLang 的 radix 命中统计（哪些块真被复用）<a href="/papers/2312.07104/detail.html#5-实验与数据" class="ref-link" title="2312.07104#5-实验与数据">[2312.07104]</a> 与 CachedAttention 的 look-ahead 驱逐窗口 <a href="/papers/2403.19708/detail.html#q2-—-方法-the-method" class="ref-link" title="2403.19708#q2-—-方法-the-method">[2403.19708]</a> 融合成一个 admission 门：只把预测 $\rho>\rho^\star$ 的对象降进 HBF，把 write-once 冷尾留在 SSD。这直接把本篇量到的 $\rho=0.20$–$0.88$ 往 break-even 之上推——是本篇处方的可实现版本，且是它自己没做的实验。</p>
+</ul>
+
+<ol>
+<li><strong>Object-aware channels：权重 / KV 物理隔离 + 写预算。</strong></li>
+<p>本篇 reverse implication 主张用 OCP 的独立 weight/KV 通道隔离 read-mostly 与 write-heavy 流量 <a href="/papers/2608.11668/detail.html#6-论证链-argument-chain" class="ref-link" title="2608.11668#6-论证链-argument-chain">[2608.11668]</a>。这与 FlexRLHF 的"按模型/阶段特性差异化放置"是同构思想跨域移植 <a href="/papers/2312.11819/detail.html#核心三问" class="ref-link" title="2312.11819#核心三问">[2312.11819]</a>：把"训练 vs 推理运行时分离"换成"read-mostly vs write-heavy KV 类别分离"，让 endurance/thermal 预算只花在能回本的数据上。</p>
+</ul>
+
+<ol>
+<li><strong>提高 HBF 覆盖率以救活 base-die 近数据计算。</strong></li>
+<p>Finding 2 失效的根因是 15.48% 覆盖率，而 FastDecode 的成功前提是 100% 覆盖 + 带宽匹配 <a href="/papers/2403.11421/detail.html#胜负场景" class="ref-link" title="2403.11421#胜负场景">[2403.11421]</a>。未探索的 hybrid：主动把可预测复用的 KV 提升到 HBF（提高常驻分数）后，再让 base-die 引擎去算——即先解决覆盖率再谈近数据计算，而非在冷 15% 上强行加引擎。</p>
+</ul>
+
+<ol>
+<li><strong>$f$-自适应的搬运策略。</strong></li>
+<p>FastServe 的 proactive overlap 只在瓶颈是可隐藏传输延迟时有效 <a href="/papers/2305.05920/detail.html#§4-作者证明" class="ref-link" title="2305.05920#§4-作者证明">[2305.05920]</a>，本篇证明 drop-in 下 $f\approx1\%$ 使其无处施力。方向：把 Eq. (7) 的在线 $f$ 反演做成运行时信号，当 reuse-aware 策略把 $f$ 抬高（HBF 服务真的落到关键路径）时才启用 HBF 层与重叠搬运，否则退回 SSD——一个由 $f$ 门控的自适应层级。</p>
+</ul>
+
+<ol>
+<li><strong>热状态作为一等调度输入（器件无关）。</strong></li>
+<p>本篇 Finding 5 显示 delivered bandwidth 是时变的（热节流到 202 GB/s）<a href="/papers/2608.11668/detail.html#5-实验与数据-experiments" class="ref-link" title="2608.11668#5-实验与数据-experiments">[2608.11668]</a>，而现有所有 KV 调度器（SGLang / CachedAttention / FastServe）都假设 far-tier 带宽是常数。未探索：把 per-plane 热/endurance 信号喂给 scheduler-aware 驱逐，让驱逐同时规避"最冷未来会话"（CachedAttention 已有）<strong>和</strong>"最热物理平面"（本篇新增维度）。这对 CXL-flash 等其他 near-data NAND 层同样适用。</p>
+</ul>
+
+<hr>
+
+<blockquote>
+<strong>MISSING 依赖</strong>：<code>2310.0724</code>、<code>2401.0967</code> 的 L2 在 KB 中不存在，未纳入本次综合；若后续补齐可能新增"调度/放置"或"KV 复用"方向的对照，届时应触发 diff-aware 重建。
+</blockquote>
+
+</div>
+<div class="link-area">
+<strong>Related:</strong> 
+<a href="/papers/mooncake.html">mooncake</a> (baseline) 
+<a href="/papers/tokensim.html">tokensim</a> (tool) 
+<a href="/papers/h3-hbf.html">h3-hbf</a> (related) 
+<a href="/papers/haven-hbf.html">haven-hbf</a> (related) 
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>

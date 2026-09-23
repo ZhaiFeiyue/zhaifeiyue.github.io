@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>HBF Sucks? A Full-Stack Characterization of High-Bandwidth Flash for KV-Centric LLM Serving — Feiyue KB</title>
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<style>:root {
+  --bg: #faf8f3; --sf: #fff; --tx: #1a1a2e; --mt: #6b7280;
+  --bd: #e5e7eb; --accent: #2563eb; --nav: #1b2a4a;
+  --card-bg: #fff; --card-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  --tag-bg: #eef2ff; --tag-tx: #3b4cca;
+  --badge-algo: #059669; --badge-kernel: #d97706; --badge-fw: #2563eb;
+  --badge-model: #7c3aed; --badge-agent: #dc2626; --badge-cluster: #0891b2;
+  --badge-hw: #4b5563; --badge-code: #64748b;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); line-height: 1.8;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav */
+body > nav {
+  background: var(--nav); color: #fff; padding: 0 24px;
+  height: 52px; display: flex; align-items: center; gap: 28px;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+body > nav .logo { font-weight: 700; font-size: 1.05rem; }
+body > nav .logo a { color: #fff; }
+body > nav a { color: #cbd5e1; font-size: 0.88rem; font-weight: 500; }
+body > nav a:hover { color: #fff; text-decoration: none; }
+body > nav a.active { color: #fff; border-bottom: 2px solid var(--accent); }
+
+/* Layout */
+.w { max-width: 960px; margin: 0 auto; padding: 24px 24px 64px; }
+h1 { font-size: 1.6rem; margin-bottom: 12px; }
+h2 { font-size: 1.25rem; margin: 24px 0 8px; border-bottom: 1px solid var(--bd); padding-bottom: 4px; }
+h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+
+/* Stats bar */
+.stats { display: flex; gap: 16px; margin-bottom: 16px; color: var(--mt); font-size: 0.9rem; }
+.stats strong { color: var(--tx); }
+
+/* Search */
+.search-box {
+  width: 100%; padding: 10px 16px; border: 1px solid var(--bd);
+  border-radius: 8px; font-size: 0.95rem; margin-bottom: 20px;
+  background: var(--sf);
+}
+.search-box:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+/* Category filter */
+.cat-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.cat-btn {
+  padding: 4px 12px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt);
+  transition: all 0.15s;
+}
+.cat-btn:hover, .cat-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Category badge */
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.75rem; font-weight: 600; color: #fff; margin-right: 6px;
+}
+.badge-algorithm { background: var(--badge-algo); }
+.badge-kernel { background: var(--badge-kernel); }
+.badge-framework { background: var(--badge-fw); }
+.badge-model { background: var(--badge-model); }
+.badge-agent { background: var(--badge-agent); }
+.badge-cluster { background: var(--badge-cluster); }
+.badge-hardware { background: var(--badge-hw); }
+.badge-code { background: var(--badge-code); }
+
+/* Heading anchor links */
+.heading-anchor {
+  opacity: 0; font-size: 0.8em; margin-left: 6px;
+  color: var(--mt); text-decoration: none; font-weight: 400;
+  transition: opacity 0.15s;
+}
+h1:hover .heading-anchor, h2:hover .heading-anchor,
+h3:hover .heading-anchor, h4:hover .heading-anchor,
+h5:hover .heading-anchor, h6:hover .heading-anchor { opacity: 0.6; }
+.heading-anchor:hover { opacity: 1 !important; color: var(--accent); }
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 60px; }
+
+/* Card — compact, category color as background tint */
+.card {
+  background: var(--card-bg); border-radius: 8px; padding: 10px 14px;
+  margin-bottom: 6px; box-shadow: var(--card-shadow); transition: box-shadow 0.15s;
+  border-left: 4px solid var(--accent);
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+
+/* Category-colored cards: tinted background, no text badge needed */
+.card-algorithm { border-left-color: var(--badge-algo); background: #f0fdf4; }
+.card-kernel    { border-left-color: var(--badge-kernel); background: #fffbeb; }
+.card-framework { border-left-color: var(--badge-fw); background: #eff6ff; }
+.card-model     { border-left-color: var(--badge-model); background: #f5f3ff; }
+.card-agent     { border-left-color: var(--badge-agent); background: #fef2f2; }
+.card-cluster   { border-left-color: var(--badge-cluster); background: #ecfeff; }
+.card-hardware  { border-left-color: var(--badge-hw); background: #f9fafb; }
+.card-code      { border-left-color: var(--badge-code); background: #f8fafc; }
+
+.card-head { display: flex; align-items: baseline; gap: 8px; }
+.card-title { font-size: 0.95rem; font-weight: 600; flex: 1; min-width: 0; }
+.card-title a { color: var(--tx); }
+.card-date { font-size: 0.78rem; color: var(--mt); white-space: nowrap; flex-shrink: 0; }
+
+.card-summary {
+  font-size: 0.85rem; color: #555; line-height: 1.5; margin: 3px 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.card-foot { font-size: 0.78rem; color: var(--mt); }
+.card-foot a { color: var(--accent); }
+
+/* Category section */
+.cat-section { margin-bottom: 32px; }
+.cat-section-title {
+  font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-count { font-size: 0.85rem; color: var(--mt); font-weight: 400; }
+
+/* Detail page */
+.detail-content { line-height: 1.9; }
+.detail-content h2 { margin-top: 32px; }
+.detail-content table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.9rem; }
+.detail-content th, .detail-content td { border: 1px solid var(--bd); padding: 6px 10px; text-align: left; }
+.detail-content th { background: #f3f4f6; font-weight: 600; }
+.detail-content blockquote {
+  border-left: 3px solid var(--accent); padding: 8px 16px; margin: 12px 0;
+  background: #f8fafc; color: #374151; font-size: 0.92rem;
+}
+.detail-content code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; }
+.detail-content pre { background: #1e293b; color: #e2e8f0; padding: 16px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.detail-content pre code { background: transparent; padding: 0; color: inherit; }
+.detail-content img { max-width: 100%; border-radius: 6px; margin: 8px 0; }
+
+/* Link area */
+.link-area { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--bd); }
+.link-area a { margin-right: 16px; font-size: 0.9rem; }
+
+/* Footer */
+.footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--bd); color: var(--mt); font-size: 0.82rem; }
+
+/* Grid for domain cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+/* Autocomplete dropdown */
+.autocomplete-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--sf); border: 1px solid var(--bd); border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 320px; overflow-y: auto;
+}
+.ac-item {
+  padding: 8px 16px; cursor: pointer; font-size: 0.9rem;
+  border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; gap: 8px;
+}
+.ac-item:hover { background: #f1f5f9; }
+.ac-item:last-child { border-bottom: none; }
+
+/* Histogram */
+.histogram-wrap { margin-bottom: 20px; background: var(--sf); border-radius: 10px; padding: 16px; box-shadow: var(--card-shadow); }
+.hist-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+.hist-tab {
+  padding: 4px 14px; border-radius: 16px; font-size: 0.82rem; cursor: pointer;
+  border: 1px solid var(--bd); background: var(--sf); color: var(--mt); transition: all 0.15s;
+}
+.hist-tab:hover, .hist-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hist-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.hist-label { width: 90px; font-size: 0.82rem; text-align: right; color: var(--mt); flex-shrink: 0; }
+.hist-bar-wrap { flex: 1; height: 18px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.hist-count { width: 30px; font-size: 0.82rem; color: var(--mt); text-align: right; }
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo"><a href="/">Feiyue Zhai</a></span>
+  <a href="/" class="active">Papers</a>
+  <a href="/overview/">Overview</a>
+  <a href="/topics/">Topics</a>
+  <a href="/knowledge/">Knowledge</a>
+  <a href="/knowledge-graph.html">Graph</a>
+  <a href="/tools/">Tools</a>
+  <a href="https://github.com/ZhaiFeiyue" target="_blank">GitHub</a>
+</nav>
+
+<div class="w">
+<h1 id="page-title">HBF Sucks? A Full-Stack Characterization of High-Bandwidth Flash for KV-Centric LLM Serving</h1>
+<div class="card-meta"><span class="badge badge-framework">framework</span> 2608.11668</div>
+<div class="card-tags" style="margin-bottom:16px"><span class="tag">kv-cache-offloading</span><span class="tag">kv-cache</span><span class="tag">offloading</span><span class="tag">hbf-flash</span><span class="tag">serving-hierarchy</span><span class="tag">cost-model</span></div>
+<div class="link-area" style="border-top:none;margin-top:0">
+<a href="/papers/2608.11668.html">← Synthesis</a>
+<a href="/overview/framework.html">← framework Survey</a>
+<a href="https://arxiv.org/abs/2608.11668" target="_blank">Source ↗</a>
+</div>
+<div class="detail-content">
+
+<h1 id="hbf-sucks-a-full-stack-characterization-of-high-bandwidth-flash-for-kv-centric-llm-serving">HBF Sucks? A Full-Stack Characterization of High-Bandwidth Flash for KV-Centric LLM Serving <a class="heading-anchor" href="#hbf-sucks-a-full-stack-characterization-of-high-bandwidth-flash-for-kv-centric-llm-serving" aria-label="Link to hbf-sucks-a-full-stack-characterization-of-high-bandwidth-flash-for-kv-centric-llm-serving">#</a></h1>
+
+<h2 id="1-tl-dr">1. TL;DR <a class="heading-anchor" href="#1-tl-dr" aria-label="Link to 1-tl-dr">#</a></h2>
+
+<p>Dropping High-Bandwidth Flash (HBF) in as an SSD replacement under an unchanged Mooncake KV-pooling runtime makes serving <strong>2–5.5× slower</strong> (SLO goodput down 1.1–2.7×). A cost model shows why: the far tier sits on ~1% of the critical path, gets a write-heavy ($\rho<1$) cold stream, and thermally throttles at 202 GB/s. Faster media barely matters; losing near-tier capacity dominates.</p>
+
+<hr>
+
+<h2 id="2-痛点-方法-结果-q1-q2-q3">2. 痛点 / 方法 / 结果 (Q1 / Q2 / Q3) <a class="heading-anchor" href="#2-痛点-方法-结果-q1-q2-q3" aria-label="Link to 2-痛点-方法-结果-q1-q2-q3">#</a></h2>
+
+<h3 id="q1-—-痛点-the-problem">Q1 — 痛点 (the problem) <a class="heading-anchor" href="#q1-—-痛点-the-problem" aria-label="Link to q1-—-痛点-the-problem">#</a></h3>
+
+<p>KV cache grows with context length, batch size, and concurrent requests, exceeding GPU memory. The standard fix is to offload reusable KV into a larger tier (Mooncake: CPU DRAM → SSD → network). HBF promises flash-scale capacity behind a wide package-local interface with ~10× lower read latency than an SSD. The "obvious" upgrade is to keep the SSD-style stack and swap HBF underneath. The paper's motivating anomaly: <strong>a strictly faster storage device produces a strictly slower system</strong>, and nobody has measured <em>why</em> under a real production runtime.</p>
+
+<h3 id="q2-—-方法-the-method">Q2 — 方法 (the method) <a class="heading-anchor" href="#q2-—-方法-the-method" aria-label="Link to q2-—-方法-the-method">#</a></h3>
+
+<p>Rather than propose a new framework, this paper builds a <strong>falsification harness</strong> around the drop-in deployment:</p>
+
+<ol>
+<li><strong>A cost–benefit model</strong> (Eq. 6) decomposing HBF's net latency change into one benefit term ($f\,\Delta t_{\text{media}}$) and four subtracted cost terms ($C_{\text{move}}, C_{\text{pkg}}, C_{\text{var}}, C_{\text{life}}$), yielding three necessary conditions:</li>
+<li><strong>C1</strong> — the exposed secondary-tier I/O fraction $f$ must be large;</li>
+<li><strong>C2</strong> — useful reads per byte written $\rho$ must exceed break-even $\rho^{\star}=AC/S$;</li>
+<li><strong>C3</strong> — delivered bandwidth must sustain near the datasheet peak.</li>
+<li><strong>Full-stack simulation</strong>: an extended TokenSim modeling continuous batching, paged KV, admission/preemption, Mooncake-style hashed 16-token lookup, per-tier read/write byte counters, and HBF-1/HBF-2 roadmap organizations — driven by four complete 2-hour Qwen-Bailian production traces, five dense/MoE models, and H100/B200 profiles.</li>
+<li><strong>Physical models</strong>: a 3D-ICE thermal model of a 16-Hi TLC stack and a write-endurance budget, both driven by the same 16-token access energy.</li>
+</ul>
+
+<p><strong>核心技术壁垒 (THE single hardest-to-replicate insight)</strong>: the paper cleanly <strong>separates media speed from the package tradeoff it forces</strong>. Every prior HBF study conflates "faster flash" with "the whole organization changed." By running a <em>media-only</em> sweep (vary HBF latency $k=3.75\times$, hold GPU organization fixed) alongside a <em>complete-architecture</em> comparison, they invert Eq. (7) to recover the exposed fraction $f\approx1\%$ <em>directly from a serving measurement</em> — proving the loss comes from the demoted near tier ($C_{\text{pkg}}$), not the medium. Reproducing this requires the invertibility trick plus a simulator instrumented for per-tier byte accounting under production replay.</p>
+
+<h3 id="q3-—-结果-the-result">Q3 — 结果 (the result) <a class="heading-anchor" href="#q3-—-结果-the-result" aria-label="Link to q3-—-结果-the-result">#</a></h3>
+
+<p>Across H100 and B200: average end-to-end latency <strong>rises 2–5.5×</strong>, delivered throughput falls 4–34%, maximum SLO goodput falls 1.1–2.7×. A $3.75\times$ media-latency improvement moves E2E latency <1%. Every trace is write-heavy at the flash tier ($\rho=0.20$–$0.88$, all below break-even). The stack thermally throttles at <strong>202.27 GB/s / 53.72 W</strong> (far below the ~1.2 TB/s interface peak), and the TLC tier lasts a constant <strong>0.56×</strong> the capacity-matched SSD pool's life on every trace. Verdict: <em>the device is fine; the drop-in deployment is not.</em></p>
+
+<hr>
+
+<h2 id="3-架构-方法图-architecture">3. 架构 / 方法图 (Architecture) <a class="heading-anchor" href="#3-架构-方法图-architecture" aria-label="Link to 3-架构-方法图-architecture">#</a></h2>
+
+<h3 id="system-scope-framework-pin-down">System scope (framework pin-down) <a class="heading-anchor" href="#system-scope-framework-pin-down" aria-label="Link to system-scope-framework-pin-down">#</a></h3>
+
+<ul>
+<li><strong>Stage coverage</strong>: both prefill (materializes KV, writes new blocks after prefix-filter) and decode (reads retained KV history); the runtime does not fuse them.</li>
+<li><strong>Serving, continuous batching.</strong> Admission, retention, lookup, and KV save/restore are the <em>unmodified</em> Mooncake-style policy — only the backing tier and transport change.</li>
+<li><strong>Parallelism</strong>: TP=8, PP=DP=1, expert parallelism for MoE. The framework owns KV <em>placement</em> across the near/far hierarchy; it delegates compute parallelism to the model executor.</li>
+<li><strong>Deployment mode</strong>: single-node 8-GPU with a shared secondary tier (SSD, or HBF-1/HBF-2 package-local flash).</li>
+</ul>
+
+<p><img src="/assets/2608.11668/fig1.png" alt="Figure 1: HBF-1 (GDDR–HBF) and HBF-2 (HBM–HBF) package layouts"></p>
+
+<p><em>Paper's Figure 1 — the two roadmap organizations under test. HBF-1 (2028) fills the interposer entirely with 6 HBF stacks (3 TB) and pushes the near tier off-package to GDDR7; HBF-2 (2030) splits the interposer 50/50 between 3 HBM stacks and 3 HBF stacks. Both buy flash capacity by <strong>halving near-tier capacity and bandwidth</strong> — the trade that Finding 1 later shows is fatal.</em></p>
+
+<h3 id="kv-save-load-data-path">KV save/load data path <a class="heading-anchor" href="#kv-save-load-data-path" aria-label="Link to kv-save-load-data-path">#</a></h3>
+
+<p>The runtime is a Mooncake-style pool where flash writes are <em>scheduling decisions off the compute path</em>: new KV lands in the near tier; after a watermark, a background policy flushes cold blocks down; a later matching request restores blocks up before its suffix executes.</p>
+
+<p><img src="/assets/2608.11668/fig3.png" alt="Figure 3: Host-staged SSD path (a) vs GPU-direct path (b)"></p>
+
+<p><em>Paper's Figure 3 — the baseline is not a naive path. Modern GDS/io_uring/Tutti paths (b) remove host staging so the SSD baseline is strong; HBF's "shorter path" advantage over this is already narrow.</em></p>
+
+<p>The request lifecycle and where the scheduler makes its batching decision:</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant R as Request
+    participant Sched as Scheduler (admission + continuous batch)
+    participant Near as Near tier (HBM/GDDR7, weights+hot KV)
+    participant HBF as Far tier (HBF, cold KV)
+    R->>Sched: arrive + tokenize
+    Sched->>Sched: hash 16-token blocks, prefix lookup
+    alt prefix hit resident in near tier
+        Near-->>Sched: serve from HBM/GDDR (fast, 64% of reuse)
+    else block only in far tier
+        HBF-->>Near: restore (load) before suffix executes
+    end
+    Sched->>Near: admit into batch (bounded by near-tier capacity)
+    Near->>HBF: background flush of cold blocks (save, write-heavy)
+    Note over Sched,HBF: admission width is set by NEAR-tier GB,<br/>not by HBF speed — this is the bottleneck
+</div>
+
+<p>The scheduler's queueing discipline is admission-gated continuous batching: the <strong>near tier's GB capacity governs how many requests are concurrently admitted</strong>. HBF's KV/memory manager allocates in 16-token hash blocks; reuse is served from wherever the block is resident (radix-style prefix match), and the eviction watermark decides what descends to flash.</p>
+
+<hr>
+
+<h2 id="4-作者证明-author-s-model">4. 作者证明 (Author's model) <a class="heading-anchor" href="#4-作者证明-author-s-model" aria-label="Link to 4-作者证明-author-s-model">#</a></h2>
+
+<p>The paper is centrally a modeling paper: Eq. (6) is a first-order accounting identity, and Eqs. (7)–(8) are its two testable specializations.</p>
+
+<h3 id="notation-table">Notation table <a class="heading-anchor" href="#notation-table" aria-label="Link to notation-table">#</a></h3>
+
+<table>
+<tr><th>Symbol</th><th>Meaning</th></tr>
+<tr><td>$\Delta_{\text{HBF}}$</td><td>net change in E2E latency from swapping SSD→HBF (positive = HBF helps)</td></tr>
+<tr><td>$f$</td><td>fraction of E2E time spent in <strong>exposed, non-overlapped</strong> secondary-tier I/O</td></tr>
+<tr><td>$\Delta t_{\text{media}}$</td><td>per-access latency improvement of HBF vs SSD</td></tr>
+<tr><td>$C_{\text{move}}$</td><td>movement/control overhead from HBF's management requirements</td></tr>
+<tr><td>$C_{\text{pkg}}$</td><td>opportunity cost of reduced near-tier capacity/bandwidth (the package trade)</td></tr>
+<tr><td>$C_{\text{var}}$</td><td>cost of thermal throttling and bandwidth variability</td></tr>
+<tr><td>$C_{\text{life}}$</td><td>endurance and capacity cost</td></tr>
+<tr><td>$k$</td><td>media speedup factor of HBF vs SSD ($=3.75$ in the sweep)</td></tr>
+<tr><td>$\rho$</td><td>useful read bytes returned per byte written at the flash tier</td></tr>
+<tr><td>$\rho^{\star}$</td><td>break-even reads-per-write threshold $=AC/S$</td></tr>
+<tr><td>$A$</td><td>write amplification</td></tr>
+<tr><td>$C$</td><td>per-byte capacity + write-budget cost</td></tr>
+<tr><td>$S$</td><td>exposed time saved per read byte</td></tr>
+</table>
+
+<h3 id="equations-and-their-physical-meaning">Equations and their physical meaning <a class="heading-anchor" href="#equations-and-their-physical-meaning" aria-label="Link to equations-and-their-physical-meaning">#</a></h3>
+
+<p><strong>Master identity (Eq. 6):</strong></p>
+
+<p>$$\Delta_{\text{HBF}} = f \Delta t_{\text{media}} - C_{\text{move}} - C_{\text{pkg}} - C_{\text{var}} - C_{\text{life}}.$$</p>
+
+<p>Only the <em>first</em> term is a benefit, and it is <em>gated by $f$</em> — a faster medium can improve at most the exposed slice. Every other thing HBF changes enters as a subtracted cost. HBF is net-positive only when $\Delta_{\text{HBF}}>0$.</p>
+
+<p><strong>C1 ceiling (Eq. 7):</strong></p>
+
+<p>$$\frac{\Delta T}{T} = f\left(1 - \frac{1}{k}\right) \leq f.$$</p>
+
+<p>Why $\le f$: even an infinitely fast tier ($k\to\infty$) removes only the exposed fraction. The equation is <strong>invertible</strong>: measure $\Delta T/T$ under a known $k$, solve for $f$. This is the load-bearing move — $f$ becomes a <em>measured</em> quantity, not an assumption.</p>
+
+<p><strong>C2 break-even (Eq. 8):</strong></p>
+
+<p>$$\rho > \rho^{\star} = \frac{AC}{S}.$$</p>
+
+<p>Why $\rho^{\star}>1$ in practice: the write cost is paid <em>unconditionally</em> the moment an object enters HBF, while repaying reads are <em>speculative</em>; and a single NAND program costs several reads in energy and wear ($A$ and $C$ inflate the numerator). So HBF only pays off as a genuinely read-heavy tier.</p>
+
+<p><strong>Sustained-bandwidth bound (Eq. 2, underlying C3):</strong></p>
+
+<p>$$BW_{\text{effective}} = \min(BW_{\text{interface}}, BW_{\text{array}}, BW_{\text{controller}}, BW_{\text{power}}, BW_{\text{thermal}}, BW_{\text{workload}}).$$</p>
+
+<p>The <code>min</code> (not a sum) is the point: delivered bandwidth collapses to whichever limit binds first, and for a write-heavy stream that is $BW_{\text{thermal}}$ / $BW_{\text{power}}$ — well below the interface peak.</p>
+
+<h3 id="six-minimum-checks">Six minimum checks <a class="heading-anchor" href="#six-minimum-checks" aria-label="Link to six-minimum-checks">#</a></h3>
+
+<ol>
+<li><strong>Dimensional consistency</strong>: Eq. (6) is in latency units; $f$ is dimensionless, $\Delta t_{\text{media}}$ is time, each $C$ is a latency-equivalent cost. Consistent. ✔</li>
+<li><strong>Boundary $k\to\infty$</strong>: Eq. (7) → $\Delta T/T = f$. A perfect medium recovers exactly the exposed fraction, no more. ✔</li>
+<li><strong>Boundary $k=1$</strong>: Eq. (7) → $\Delta T/T=0$ (no media change, no effect). ✔</li>
+<li><strong>First-order mapping to reported number</strong>: sweep gives $\Delta T/T = 0.75\%$ (HBF-1) at $k=3.75$; invert: $f = 0.0075/(1-1/3.75) = 0.0075/0.733 \approx 1.02\%$ — matches the paper's $f\approx1\%$. ✔</li>
+<li><strong>Monotonicity / interior-vs-boundary</strong>: $\Delta_{\text{HBF}}$ is decreasing in $C_{\text{pkg}}$; with $f\approx0.01$ and $C_{\text{pkg}}$ measured 2 orders of magnitude larger than $f\Delta t_{\text{media}}$, the optimum is at the boundary "do not deploy" — no interior tuning point exists. ✔</li>
+<li><strong>C2 plug-in</strong>: measured $\rho\in[0.20,0.88]$ (Table 8), all $<\rho^{\star}\gtrsim1$, so $\rho S < AC$ on every trace — the write is never repaid, consistent with the model's prediction. ✔</li>
+</ul>
+
+<p>The model is analytic and self-consistent; the paper does not overclaim a fitted boundary — it gives the <em>axes and break-even rule</em>, not a calibrated latency×bandwidth curve (a deliberate, stated limitation).</p>
+
+<hr>
+
+<h2 id="5-实验与数据-experiments">5. 实验与数据 (Experiments) <a class="heading-anchor" href="#5-实验与数据-experiments" aria-label="Link to 5-实验与数据-experiments">#</a></h2>
+
+<h3 id="c1-—-media-is-off-the-critical-path">C1 — media is off the critical path <a class="heading-anchor" href="#c1-—-media-is-off-the-critical-path" aria-label="Link to c1-—-media-is-off-the-critical-path">#</a></h3>
+
+<p><img src="/assets/2608.11668/fig4.png" alt="Figure 4: A faster connector, a slower system"></p>
+
+<p><em>Paper's Figure 4 — the central paradox in one figure. (a) matched-pair medians: HBF/SSD E2E ratio 2.65× despite (b) a media sweep that moves connector time 124% but TTFT/TBT/E2E <2%. (c) the mechanism: HBF cuts connector and save-wait time (0.41–0.50×) yet tokens/s falls to 0.75× because the smaller near tier destabilizes the queue.</em></p>
+
+<p><img src="/assets/2608.11668/fig5.png" alt="Figure 5: End-to-end latency vs offered load (B200)"></p>
+
+<p><em>Paper's Figure 5 — across all 5 models × 4 traces, every HBF curve rises above the SSD12 baseline and saturates at <strong>lower offered load</strong>. The near-tier loss caps admission, so the server tips into queue growth earlier regardless of how fast HBF reads.</em></p>
+
+<table>
+<tr><th>Model (B200)</th><th>ΔE2E HBF-1</th><th>ΔE2E HBF-2</th><th>ΔGoodput HBF-1</th><th>ΔGoodput HBF-2</th></tr>
+<tr><td>Kimi-K2.7</td><td>+285.2%</td><td>+131.4%</td><td>−51.7%</td><td>−41.7%</td></tr>
+<tr><td>GLM-5.2</td><td>+280.0%</td><td>+133.2%</td><td>−37.5%</td><td>−12.5%</td></tr>
+<tr><td>DeepSeek-V3.2</td><td>+284.7%</td><td>+131.3%</td><td>−51.7%</td><td>−41.7%</td></tr>
+<tr><td>Qwen3-32B</td><td>+267.4%</td><td>+136.0%</td><td>−40.0%</td><td>−25.1%</td></tr>
+<tr><td>Qwen3-4B</td><td>+184.1%</td><td>+103.4%</td><td>−46.3%</td><td>−35.9%</td></tr>
+</table>
+
+<p><em>Table 5 — HBF loses on every model, every metric. Even HBF-1, carrying twice HBF-2's flash capacity/bandwidth, is 16–64% slower than HBF-2 end-to-end because the </em>near<em> tier, not the flash, governs serving.</em></p>
+
+<p><img src="/assets/2608.11668/fig8.png" alt="Figure 8: Base-die NMP leverage, coverage, and dilution"></p>
+
+<p><em>Paper's Figure 8 — the "move compute to the data" escape hatch fails. Under maximally favorable assumptions (no area/power charge, 100% hit for eligible tokens), an HBF base-die attention engine averages <strong>−0.03%</strong> decode-attention gain vs <strong>42.84%</strong> for the equivalent HBM engine, because only <strong>15.48%</strong> of KV is HBF-resident. Base-die silicon should go to control, not attention.</em></p>
+
+<h3 id="c2-—-the-hierarchy-hands-hbf-a-write-heavy-stream">C2 — the hierarchy hands HBF a write-heavy stream <a class="heading-anchor" href="#c2-—-the-hierarchy-hands-hbf-a-write-heavy-stream" aria-label="Link to c2-—-the-hierarchy-hands-hbf-a-write-heavy-stream">#</a></h3>
+
+<table>
+<tr><th>Metric</th><th>traceA</th><th>traceB</th><th>coder</th><th>thinking</th></tr>
+<tr><td>Write/read ratio</td><td>2.14×</td><td>4.90×</td><td>1.14×</td><td>2.20×</td></tr>
+<tr><td>$\rho$ (reads/write)</td><td>0.47</td><td>0.20</td><td>0.88</td><td>0.45</td></tr>
+<tr><td>Prefix hit rate</td><td>38.21%</td><td>52.46%</td><td>45.58%</td><td>44.12%</td></tr>
+</table>
+
+<p><em>Table 8 — every trace writes more than it reads at the flash tier. The reconciliation with the 38–53% prefix hit rate: reuse is extremely skewed (top decile supplies 64–100% of reuse reads, Gini 0.80–1.0), and those hot blocks stay resident in the near tier. What reaches HBF is the write-once cold tail — the hierarchy doing its job routes the </em>least<em> reusable KV to the device </em>least<em> able to absorb writes.</em></p>
+
+<h3 id="c3-—-thermal-throttle-and-endurance">C3 — thermal throttle and endurance <a class="heading-anchor" href="#c3-—-thermal-throttle-and-endurance" aria-label="Link to c3-—-thermal-throttle-and-endurance">#</a></h3>
+
+<p><img src="/assets/2608.11668/fig10.png" alt="Figure 10: Dynamic power/temperature and thermal-capped replay"></p>
+
+<p><em>Paper's Figure 10 — (a) power scales linearly with bandwidth; the 16-Hi TLC stack hits the 80 °C junction limit at only <strong>202.27 GB/s / 53.72 W</strong>, far below interface peak. (b)–(c) in replay, the thermal controller drops the constrained run to that safe point and holds temperature near 80 °C — delivered bandwidth becomes time- and space-varying, breaking any scheduler that assumes a fixed flash bandwidth.</em></p>
+
+<p><img src="/assets/2608.11668/fig11.png" alt="Figure 11: KV write volume vs endurance budget"></p>
+
+<p><em>Paper's Figure 11 — every trace writes 48–140 TB/day, past both the SSD (38.4 TB/day, 3-DWPD) and the deliberately-favorable HBF TLC (21.7 TB/day) budgets. Under linear TBW exhaustion the HBF tier lasts a constant <strong>0.56×</strong> the SSD pool's life on all four traces. Coarsening blocks 16→512 tokens </em>raises<em> write volume 1.38× (partial reuse rewrites the whole block).</em></p>
+
+<hr>
+
+<h2 id="6-论证链-argument-chain">6. 论证链 (Argument chain) <a class="heading-anchor" href="#6-论证链-argument-chain" aria-label="Link to 6-论证链-argument-chain">#</a></h2>
+
+<table>
+<tr><th>Step</th><th>Claim</th><th>Support (paper-internal)</th></tr>
+<tr><td>1</td><td>E2E latency change from HBF = one $f$-gated benefit minus four subtracted costs.</td><td>Eq. (6) accounting identity, §5.</td></tr>
+<tr><td>2</td><td>The benefit is capped by the exposed I/O fraction $f$, and Eq. (7) recovers $f$ from a media sweep.</td><td>Eq. (7) invertibility, §5/§6.1.</td></tr>
+<tr><td>3</td><td>The measured $f\approx1\%$ (0.75% E2E move at $k=3.75$), so media speed is irrelevant; the loss is the demoted near tier ($C_{\text{pkg}}$ dominates by 2 orders of magnitude).</td><td>Fig. 4, Table 5, §6.1 Finding 1.</td></tr>
+<tr><td>4</td><td>Moving attention compute onto the base die cannot raise $f$: only 15.48% of KV is HBF-resident, so the engine averages −0.03%.</td><td>Fig. 8, Tables 6–7, §6.2 Finding 2.</td></tr>
+<tr><td>5</td><td>The two-tier hierarchy keeps reuse in the near tier and sends HBF a write-heavy cold stream: $\rho=0.20$–$0.88 < \rho^{\star}$ on every trace.</td><td>Table 8, §7.1 Finding 3.</td></tr>
+<tr><td>6</td><td>SSD write-batching does not rescue $\rho$ on HBF (2.69% vs 13.98% gain), because HBF's write cost lacks the random-access penalty batching attacks.</td><td>Table 9, Fig. 9, §7.2 Finding 4.</td></tr>
+<tr><td>7</td><td>The write-heavy stream thermally throttles delivered bandwidth to 202.27 GB/s (C3 fails on power/thermal).</td><td>Fig. 10, §8.1 Finding 5.</td></tr>
+<tr><td>8</td><td>The same stream exhausts endurance 0.56× faster than the SSD pool it replaced (C3 fails on lifetime, $C_{\text{life}}$).</td><td>Fig. 11, §8.2 Finding 6.</td></tr>
+<tr><td>9</td><td>All three necessary conditions fail simultaneously for transient KV → the drop-in swap is net-negative; HBF belongs only in the high-stall, high-$\rho$ corner (weights, shared prefixes).</td><td>Fig. 12 placement map, §9.1.</td></tr>
+</table>
+
+<hr>
+
+<h2 id="7-实现-cross-reference">7. 实现 cross-reference <a class="heading-anchor" href="#7-实现-cross-reference" aria-label="Link to 7-实现-cross-reference">#</a></h2>
+
+<p><strong>[实现未公开]</strong> — no artifact release is stated. The evaluation is a simulator study, so the "implementation" is the extended <strong>TokenSim</strong> [26] plus physical models rather than a serving-system patch:</p>
+
+<ul>
+<li><strong>Simulator base</strong>: TokenSim (arXiv:2503.08415), extended with Mooncake-style lookup, hashed 16-token KV identifiers, object save/load events, SSD + HBF tiers, per-tier read/write counters, HBF-1/HBF-2 profiles, connector-wait accounting, and SLO outputs (§4.1). Validated by regression checks on block/byte conservation, save/load ordering, deterministic replay, per-tier counters.</li>
+<li><strong>Thermal model</strong>: 3D-ICE [23] over a 16-Hi TLC stack; access energy per 16-token block; 80 °C junction policy that closes hottest/highest-traffic planes and redirects writes (§4.4, §8.1).</li>
+<li><strong>Endurance model</strong>: linear TBW exhaustion vs a 3-DWPD KIOXIA CM7-V reference (38.4 TB/day) and a favorable TLC budget (21.7 TB/day) (§4.4, §8.2).</li>
+<li><strong>Baseline runtime of record</strong>: unmodified Mooncake SSD-offloading path (async, off the write critical path) [14, 20] — the object under test, held fixed while the backing tier changes.</li>
+<li><strong>Host/device contract</strong>: taken verbatim from the OCP HBF base-die spec v0.7.0 [1] (AXI over UCIe, 64-byte reads, complete-4 KiB-page writes, page-zero-triggered block erase, host-managed wear leveling).</li>
+</ul>
+
+<h3 id="关键实现细节-easy-to-miss-tricks">关键实现细节 (easy-to-miss tricks) <a class="heading-anchor" href="#关键实现细节-easy-to-miss-tricks" aria-label="Link to 关键实现细节-easy-to-miss-tricks">#</a></h3>
+
+<ol>
+<li><strong>The invertibility of Eq. (7) is the whole method</strong>: instead of instrumenting the simulator to <em>directly</em> attribute time to secondary-tier I/O (hard, overlap-sensitive), they sweep media latency $k=3.75\times$ and back out $f$ from the observed E2E delta. This sidesteps the hardest measurement problem in the paper.</li>
+<li><strong>Equal random/sequential HBF bandwidth in the batching experiment (§7.2)</strong>: they deliberately hold HBF's random and sequential bandwidth equal so batching can <em>only</em> help by amortizing fixed per-operation latency. This isolates why Mooncake bucketing — which on SSD attacks the random-access penalty too — collapses to 2.69% on HBF (bucket occupancy 94→4 blocks as block size grows, Fig. 9b).</li>
+</ul>
+
+<hr>
+
+<h2 id="§10-deployment-context-实践上下文">§10 Deployment context (实践上下文) <a class="heading-anchor" href="#§10-deployment-context-实践上下文" aria-label="Link to §10-deployment-context-实践上下文">#</a></h2>
+
+<ul>
+<li><strong>Serving stage</strong>: orchestration/placement layer over a KV-pooling runtime; touches both prefill (writes) and decode (reads).</li>
+<li><strong>Concurrency regime</strong>: mid-to-high; the failure mode <em>sharpens</em> with load because near-tier capacity gates admission and HBF variants saturate at lower QPS (Fig. 5). At very low load HBF's slower access is simply exposed; at high load the queue collapses.</li>
+<li><strong>Hardware affinity</strong>: H100 pairs sit at the <em>severe</em> end (2–5.5×), B200 at the mild end — B200's larger, faster near tier partly absorbs the package trade. HBF-1 (off-interposer GDDR7 near tier) is worse than HBF-2 (on-interposer HBM3e near tier) despite more flash.</li>
+<li><strong>Ecosystem integration</strong>: the takeaway for a shop running vLLM+Mooncake on SSD today is <em>do not swap the medium under the same policy</em>. Adopting HBF beneficially requires a new placement policy (critical-path-aware access, reuse-aware admission, write budgeting, thermal coordination), not a config flag or library swap.</li>
+<li><strong>Workload regime table</strong> (where it wins / loses):</li>
+</ul>
+
+<table>
+<tr><th>Workload regime</th><th>HBF drop-in</th><th>SSD baseline</th><th>Why</th></tr>
+<tr><td>transient private decode KV</td><td>loses (poor fit)</td><td>wins</td><td>low stall $f$, low $\rho$, write-heavy</td></tr>
+<tr><td>short-output API traffic (traceB)</td><td>worst case</td><td>wins</td><td>only 6% blocks reused, $\rho=0.20$, 4.90× write/read</td></tr>
+<tr><td>code multi-turn (coder)</td><td>least-bad</td><td>wins</td><td>highest $\rho=0.88$ but still <1</td></tr>
+<tr><td>shared prefixes / weights (read-mostly)</td><td><strong>would win</strong> (not the deployment here)</td><td>—</td><td>high stall + $\rho\gg1$; where H3/HAVEN place HBF data</td></tr>
+</table>
+
+<p><img src="/assets/2608.11668/fig12.png" alt="Figure 12: Placement map — exposed stall vs reads-per-write"></p>
+
+<p><em>Paper's Figure 12 — the constructive conclusion. Transient decode KV sits in the low-stall/low-$\rho$ "poor fit" corner where all three conditions fail; weights and shared prefixes sit in the "strong HBF regime" corner. HBF is not useless — it is </em>misplaced<em> by an SSD-style hierarchy that routes exactly the wrong object class to it.</em></p>
+
+<hr>
+
+<h2 id="§12-software-→-hardware-reverse-implication">§12 Software → Hardware reverse implication <a class="heading-anchor" href="#§12-software-→-hardware-reverse-implication" aria-label="Link to §12-software-→-hardware-reverse-implication">#</a></h2>
+
+<p><strong>Triggered</strong> — this framework is hardware-proximal (KV physical layout on NAND, base-die control plane, thermal-aware plane throttling, package interposer budget). The reverse implications the paper's complexity argues for:</p>
+
+<ul>
+<li>A <strong>base-die control plane</strong> (reuse tracking, write budgeting, thermal-aware placement) rather than a general attention engine — Finding 2 shows compute is the wrong lever; the silicon should manage <em>which</em> KV lands in flash.</li>
+<li><strong>Object-aware channels</strong>: OCP's separate weight and KV channels (§13.3.3) point at hardware that lets the host physically segregate read-mostly (weights, shared prefixes) from write-heavy (transient KV) traffic, so the endurance/thermal budget is spent only on data that repays it.</li>
+<li>A <strong>thermal state exposed to the scheduler</strong>: delivered bandwidth is not a constant; the runtime needs a per-plane thermal/endurance signal as first-class scheduling input, not a single peak-bandwidth number.</li>
+<li>These conditions are <strong>device-agnostic</strong> ($f$, $\rho$, sustained BW), so the same argument shapes CXL-attached flash and other near-data NAND tiers, not only HBF.</li>
+</ul>
+
+</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'neutral'});</script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  renderMathInElement(document.body, {
+    delimiters: [
+      {left: "$$", right: "$$", display: true},
+      {left: "$", right: "$", display: false}
+    ]
+  });
+});
+</script>
+<script>/* Client-side search with autocomplete + category/year filter + histogram */
+
+document.addEventListener('DOMContentLoaded', function() {
+  var searchBox = document.querySelector('.search-box');
+  var catBtns = document.querySelectorAll('.cat-btn');
+  var cards = document.querySelectorAll('.card:not(.survey-card)');
+  // no more cat-section divs; all cards are in a flat list sorted by date
+  var activeCategory = 'all';
+  var activeYear = 'all';
+
+  // === Card filtering ===
+  function filterCards() {
+    var query = (searchBox ? searchBox.value : '').toLowerCase();
+    cards.forEach(function(card) {
+      var text = card.textContent.toLowerCase();
+      var cat = card.dataset.category || '';
+      var date = card.dataset.date || '';
+      var year = date.substring(0, 4);
+      var matchesSearch = !query || text.includes(query);
+      var matchesCat = activeCategory === 'all' || cat === activeCategory;
+      var matchesYear = activeYear === 'all' || year === activeYear;
+      card.style.display = (matchesSearch && matchesCat && matchesYear) ? '' : 'none';
+    });
+    // flat list, no section visibility toggling needed
+    updateHistogram();
+  }
+
+  if (searchBox) searchBox.addEventListener('input', function() {
+    filterCards();
+    showAutocomplete();
+  });
+
+  catBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      catBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      activeCategory = btn.dataset.category || 'all';
+      activeYear = 'all';
+      filterCards();
+    });
+  });
+
+  // === Autocomplete dropdown ===
+  var dropdown = null;
+  function createDropdown() {
+    dropdown = document.createElement('div');
+    dropdown.className = 'autocomplete-dropdown';
+    dropdown.style.display = 'none';
+    if (searchBox) searchBox.parentNode.style.position = 'relative';
+    if (searchBox) searchBox.parentNode.appendChild(dropdown);
+  }
+  if (searchBox) createDropdown();
+
+  function showAutocomplete() {
+    if (!dropdown || !searchBox || !window.KB_ENTITIES) return;
+    var q = searchBox.value.toLowerCase().trim();
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+
+    var matches = KB_ENTITIES.filter(function(e) {
+      return e.title.toLowerCase().includes(q) ||
+             e.id.toLowerCase().includes(q) ||
+             e.category.toLowerCase().includes(q) ||
+             (e.tags || []).some(function(t) { return t.toLowerCase().includes(q); });
+    }).slice(0, 8);
+
+    if (matches.length === 0) { dropdown.style.display = 'none'; return; }
+
+    dropdown.innerHTML = matches.map(function(e) {
+      var badge = '<span class="badge badge-' + e.category + '">' + e.category + '</span>';
+      return '<div class="ac-item" data-id="' + e.id + '">' +
+        badge + ' <strong>' + e.title.substring(0, 60) + '</strong>' +
+        ' <span style="color:#999;font-size:0.8em">' + (e.date || '') + '</span></div>';
+    }).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.ac-item').forEach(function(item) {
+      item.addEventListener('click', function() {
+        var eid = item.dataset.id;
+        window.location.href = '/papers/' + eid + '/detail.html';
+      });
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (dropdown && !dropdown.contains(e.target) && e.target !== searchBox) {
+      dropdown.style.display = 'none';
+    }
+  });
+  if (searchBox) searchBox.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') dropdown.style.display = 'none';
+  });
+
+  // === Histogram ===
+  var histChart = document.getElementById('histChart');
+  var histTabs = document.querySelectorAll('.hist-tab');
+  var histMode = 'category';
+
+  if (histChart) {
+    var catData = JSON.parse(histChart.dataset.category || '{}');
+    var yearData = JSON.parse(histChart.dataset.year || '{}');
+
+    histTabs.forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        histTabs.forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        histMode = tab.dataset.mode;
+        updateHistogram();
+      });
+    });
+
+    updateHistogram();
+  }
+
+  function updateHistogram() {
+    if (!histChart) return;
+
+    // Recount from visible cards
+    var visibleCards = document.querySelectorAll('.card:not(.survey-card):not([style*="display: none"])');
+    var counts = {};
+
+    if (histMode === 'category') {
+      visibleCards.forEach(function(c) {
+        var cat = c.dataset.category || '?';
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+    } else {
+      visibleCards.forEach(function(c) {
+        var d = c.dataset.date || '';
+        var y = d.substring(0, 4) || '?';
+        counts[y] = (counts[y] || 0) + 1;
+      });
+    }
+
+    var entries = Object.entries(counts).sort(function(a, b) { return b[1] - a[1]; });
+    var max = entries.length > 0 ? entries[0][1] : 1;
+
+    var colors = {
+      algorithm:'#059669', kernel:'#d97706', framework:'#2563eb',
+      model:'#7c3aed', agent:'#dc2626', cluster:'#0891b2',
+      hardware:'#4b5563', code:'#64748b'
+    };
+
+    histChart.innerHTML = entries.map(function(e) {
+      var label = e[0];
+      var count = e[1];
+      var pct = Math.round(count / max * 100);
+      var color = colors[label] || 'var(--accent)';
+      return '<div class="hist-row" data-label="' + label + '">' +
+        '<span class="hist-label">' + label + '</span>' +
+        '<div class="hist-bar-wrap"><div class="hist-bar" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+        '<span class="hist-count">' + count + '</span></div>';
+    }).join('');
+
+    // Click histogram bar to filter
+    histChart.querySelectorAll('.hist-row').forEach(function(row) {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', function() {
+        var label = row.dataset.label;
+        if (histMode === 'category') {
+          activeCategory = (activeCategory === label) ? 'all' : label;
+          activeYear = 'all';
+          catBtns.forEach(function(b) {
+            b.classList.toggle('active', b.dataset.category === activeCategory || (activeCategory === 'all' && b.dataset.category === 'all'));
+          });
+        } else {
+          activeYear = (activeYear === label) ? 'all' : label;
+        }
+        filterCards();
+      });
+    });
+  }
+});
+</script>
+</body>
+</html>
